@@ -23,6 +23,13 @@ public final class ViewerFontEnvironment: NSObject {
     private(set) var revision: UInt64 = 0
     var onInvalidated: ((UInt64) -> Void)?
 
+    private enum GenericFamily {
+        case system
+        case serif
+        case monospaced
+        case rounded
+    }
+
     override convenience init() { self.init(notificationCenter: .default) }
 
     init(notificationCenter: NotificationCenter) {
@@ -79,6 +86,7 @@ public final class ViewerFontEnvironment: NSObject {
         family: String?,
         size: CGFloat,
         fallback: UIFont,
+        weight: UIFont.Weight? = nil,
         additionalTraits: UIFontDescriptor.SymbolicTraits = [],
         semanticGeneration: String
     ) -> UIFont {
@@ -87,6 +95,12 @@ public final class ViewerFontEnvironment: NSObject {
         let base: UIFont
         if normalized.isEmpty {
             base = fallback.withSize(resolvedSize)
+        } else if let generic = Self.genericFamily(for: normalized) {
+            base = Self.genericFont(
+                generic,
+                size: resolvedSize,
+                weight: weight ?? (additionalTraits.contains(.traitBold) ? .bold : .regular)
+            )
         } else if let registered = UIFont(name: normalized, size: resolvedSize) {
             base = registered
         } else {
@@ -95,7 +109,7 @@ public final class ViewerFontEnvironment: NSObject {
             }
             base = fallback.withSize(resolvedSize)
         }
-        return applyingTraits(additionalTraits, to: base)
+        return applyingTraits(additionalTraits, to: base, preservesFallbackFamily: normalized.isEmpty)
     }
 
     func resolveFont(
@@ -106,28 +120,65 @@ public final class ViewerFontEnvironment: NSObject {
     ) -> UIFont {
         guard let style else { return fallback }
         let size = style.fontSize.map { $0 * fontScale } ?? fallback.pointSize
-        var deterministicFallback = fallback.withSize(size)
-        if (style.fontFamily?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
-           let weight = style.fontWeight {
-            deterministicFallback = UIFont.systemFont(ofSize: size, weight: EditorTheme.fontWeight(from: weight))
-        }
         var traits: UIFontDescriptor.SymbolicTraits = []
         if EditorTheme.shouldApplyBoldTrait(style.fontWeight) { traits.insert(.traitBold) }
         if style.fontStyle == "italic" { traits.insert(.traitItalic) }
         return resolveFont(
             family: style.fontFamily,
             size: size,
-            fallback: deterministicFallback,
+            fallback: fallback,
+            weight: style.fontWeight.map { EditorTheme.fontWeight(from: $0) },
             additionalTraits: traits,
             semanticGeneration: semanticGeneration
         )
     }
 
-    /// Apply traits one at a time. Some custom families expose bold and italic
-    /// separately but not a combined face; if either transform cannot be
-    /// represented, switch deterministically to a system face and synthesize
-    /// the full requested pair rather than silently losing italic.
-    private func applyingTraits(_ additionalTraits: UIFontDescriptor.SymbolicTraits, to font: UIFont) -> UIFont {
+    private static func genericFamily(for family: String) -> GenericFamily? {
+        switch family.lowercased() {
+        case "default", "system", "system-ui", "sans", "sans-serif", "ui-sans-serif",
+             "cursive", "casual", "sans-serif-smallcaps", "sans-serif-condensed",
+             "sans-serif-light", "sans-serif-medium", "sans-serif-black", "sans-serif-thin",
+             "sans-serif-condensed-light":
+            return .system
+        case "serif", "ui-serif":
+            return .serif
+        case "monospace", "monospaced", "ui-monospace", "serif-monospace":
+            return .monospaced
+        case "ui-rounded":
+            return .rounded
+        default:
+            return nil
+        }
+    }
+
+    private static func genericFont(
+        _ family: GenericFamily,
+        size: CGFloat,
+        weight: UIFont.Weight
+    ) -> UIFont {
+        let system = UIFont.systemFont(ofSize: size, weight: weight)
+        switch family {
+        case .system:
+            return system
+        case .serif:
+            guard let descriptor = system.fontDescriptor.withDesign(.serif) else { return system }
+            return UIFont(descriptor: descriptor, size: size)
+        case .monospaced:
+            return UIFont.monospacedSystemFont(ofSize: size, weight: weight)
+        case .rounded:
+            guard let descriptor = system.fontDescriptor.withDesign(.rounded) else { return system }
+            return UIFont(descriptor: descriptor, size: size)
+        }
+    }
+
+    /// Apply traits one at a time. An inherited family stays authoritative
+    /// when it cannot represent a requested trait; an explicit unavailable
+    /// family still falls back deterministically to a system face.
+    private func applyingTraits(
+        _ additionalTraits: UIFontDescriptor.SymbolicTraits,
+        to font: UIFont,
+        preservesFallbackFamily: Bool
+    ) -> UIFont {
         let requested = font.fontDescriptor.symbolicTraits.union(additionalTraits)
         let requestedEmphasis: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
         func applySequentially(to source: UIFont) -> UIFont {
@@ -143,6 +194,7 @@ public final class ViewerFontEnvironment: NSObject {
         if sequential.fontDescriptor.symbolicTraits.intersection(requestedEmphasis) == requested.intersection(requestedEmphasis) {
             return sequential
         }
+        if preservesFallbackFamily { return sequential }
         let systemFallback = UIFont.systemFont(
             ofSize: font.pointSize,
             weight: requested.contains(.traitBold) ? .bold : .regular

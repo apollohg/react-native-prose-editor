@@ -51,30 +51,12 @@ struct EditorTextStyle {
     }
 
     func resolvedFont(fallback: UIFont) -> UIFont {
-        let size = fontSize ?? fallback.pointSize
-        var font = fallback.withSize(size)
-
-        if let fontFamily,
-           let familyFont = UIFont(name: fontFamily, size: size) {
-            font = familyFont
-        } else if let fontWeight {
-            font = UIFont.systemFont(ofSize: size, weight: EditorTheme.fontWeight(from: fontWeight))
-        }
-
-        var traits = font.fontDescriptor.symbolicTraits
-        if EditorTheme.shouldApplyBoldTrait(fontWeight) {
-            traits.insert(.traitBold)
-        }
-        if fontStyle == "italic" {
-            traits.insert(.traitItalic)
-        }
-
-        if traits != font.fontDescriptor.symbolicTraits,
-           let descriptor = font.fontDescriptor.withSymbolicTraits(traits) {
-            font = UIFont(descriptor: descriptor, size: size)
-        }
-
-        return font
+        ViewerFontEnvironment.shared.resolveFont(
+            style: self,
+            fallback: fallback,
+            fontScale: 1,
+            semanticGeneration: "legacy-editor-theme"
+        )
     }
 }
 
@@ -378,7 +360,11 @@ struct EditorTheme {
         }
     }
 
-    func effectiveTextStyle(for nodeType: String, inBlockquote: Bool = false) -> EditorTextStyle {
+    func effectiveTextStyle(
+        for nodeType: String,
+        inBlockquote: Bool = false,
+        defaultStyle: EditorTextStyle? = nil
+    ) -> EditorTextStyle {
         var style = text ?? EditorTextStyle()
         style = style.merged(with: inBlockquote ? blockquote?.text : nil)
         if nodeType == "paragraph" {
@@ -390,6 +376,7 @@ struct EditorTheme {
         if nodeType == "codeBlock" {
             style = style.merged(with: codeBlock?.text)
         }
+        style = style.merged(with: defaultStyle)
         style = style.merged(with: headings[nodeType])
         return style
     }

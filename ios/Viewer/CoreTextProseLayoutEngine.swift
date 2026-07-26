@@ -137,11 +137,16 @@ struct PreparedProseTheme {
             )
         }
         let text = paint(theme.text)
-        if let linkFamily = theme.links?.fontFamily {
+        if let link = theme.links {
             _ = ViewerFontEnvironment.shared.resolveFont(
-                family: linkFamily,
-                size: text.font.pointSize,
+                style: EditorTextStyle(
+                    fontFamily: link.fontFamily,
+                    fontSize: link.fontSize,
+                    fontWeight: link.fontWeight,
+                    fontStyle: link.fontStyle
+                ),
                 fallback: text.font,
+                fontScale: resolvedScale,
                 semanticGeneration: semanticGeneration
             )
         }
@@ -158,7 +163,10 @@ struct PreparedProseTheme {
         let defaults: [(String, CGFloat)] = [("h1", 32), ("h2", 28), ("h3", 24), ("h4", 21), ("h5", 19), ("h6", 17)]
         for (name, size) in defaults {
             let defaultHeading = EditorTextStyle(fontSize: size, fontWeight: "700", spacingAfter: 10)
-            headings[name] = paint(defaultHeading.merged(with: theme.headings[name]), fallback: paragraph)
+            headings[name] = paint(
+                theme.effectiveTextStyle(for: name, defaultStyle: defaultHeading),
+                fallback: paragraph
+            )
         }
         return PreparedProseTheme(
             fontScale: resolvedScale,
@@ -577,7 +585,13 @@ final class CoreTextProseLayoutEngine {
                     result.append(NSAttributedString(string: "\n", attributes: baseAttributes(paint)))
                     continue
                 }
-                let appearance = atomAppearance(nodeType: nodeType, attrsJSON: attrsJSON, paint: paint, theme: theme)
+                let appearance = atomAppearance(
+                    nodeType: nodeType,
+                    attrsJSON: attrsJSON,
+                    paint: paint,
+                    theme: theme,
+                    warningSemanticGeneration: warningSemanticGeneration
+                )
                 let displayLabel = label.isEmpty ? " " : label
                 let labelLine = CTLineCreateWithAttributedString(
                     NSAttributedString(string: displayLabel, attributes: appearance.attributes)
@@ -802,7 +816,8 @@ final class CoreTextProseLayoutEngine {
         nodeType: String,
         attrsJSON: String,
         paint: PreparedTextPaint,
-        theme: PreparedProseTheme
+        theme: PreparedProseTheme,
+        warningSemanticGeneration: String
     ) -> PreparedAtomAppearance {
         if nodeType == "mention" {
             let values = jsonDictionary(attrsJSON)
@@ -810,7 +825,12 @@ final class CoreTextProseLayoutEngine {
             let mention = theme.mention?.merged(with: localMention) ?? localMention
             var attributes = baseAttributes(paint)
             if let weight = mention?.fontWeight {
-                let font = UIFont.systemFont(ofSize: paint.font.pointSize, weight: EditorTheme.fontWeight(from: weight))
+                let font = ViewerFontEnvironment.shared.resolveFont(
+                    style: EditorTextStyle(fontWeight: weight),
+                    fallback: paint.font,
+                    fontScale: 1,
+                    semanticGeneration: warningSemanticGeneration
+                )
                 attributes[kCTFontAttributeName as NSAttributedString.Key] = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
             }
             attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] = (mention?.textColor ?? paint.color).cgColor

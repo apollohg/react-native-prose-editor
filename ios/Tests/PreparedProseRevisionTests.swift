@@ -301,6 +301,92 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertTrue(environment.shouldWarnForMissingFamily("definitely-missing", semanticGeneration: "b"))
     }
 
+    func testGenericAliasesResolveSilentlyAndInlineCodeUsesMonospacedSystemFont() {
+        let environment = ViewerFontEnvironment(notificationCenter: .default)
+        let semanticGeneration = "generic-fonts-\(UUID().uuidString)"
+        let fallback = UIFont.systemFont(ofSize: 17)
+        let inlineCode = environment.resolveFont(
+            family: "monospace",
+            size: 17,
+            fallback: fallback,
+            additionalTraits: [.traitBold, .traitItalic],
+            semanticGeneration: semanticGeneration
+        )
+
+        XCTAssertTrue(inlineCode.fontDescriptor.symbolicTraits.contains(.traitMonoSpace))
+        XCTAssertTrue(inlineCode.fontDescriptor.symbolicTraits.contains(.traitBold))
+        XCTAssertTrue(inlineCode.fontDescriptor.symbolicTraits.contains(.traitItalic))
+        XCTAssertFalse(
+            environment.shouldWarnForMissingFamily("monospace", semanticGeneration: semanticGeneration),
+            "generic monospace must not enter the missing-family warning registry"
+        )
+
+        for alias in ["system-ui", "sans-serif", "serif", "ui-sans-serif", "sans-serif-condensed", "cursive"] {
+            _ = environment.resolveFont(
+                family: alias,
+                size: 17,
+                fallback: fallback,
+                semanticGeneration: semanticGeneration
+            )
+            XCTAssertTrue(
+                environment.shouldWarnForMissingFamily(alias, semanticGeneration: semanticGeneration),
+                "generic alias \(alias) must resolve without a missing-family warning"
+            )
+        }
+    }
+
+    func testHeadingInheritsCustomBaseFamilyWhileApplyingDefaultBold() {
+        let base = UIFont(name: "Courier", size: 17)!
+        let theme = PreparedProseTheme.resolve(
+            themeJSON: #"{"text":{"fontFamily":"Courier"},"paragraph":{"fontSize":18},"blockquote":{"text":{"fontStyle":"italic"}},"codeBlock":{"text":{"fontSize":16}}}"#,
+            semanticGeneration: "heading-inheritance-\(UUID().uuidString)"
+        )
+        let heading = theme.headings["h1"]!
+
+        XCTAssertEqual(theme.paragraph.font.familyName, base.familyName)
+        XCTAssertEqual(theme.blockquote.font.familyName, base.familyName)
+        XCTAssertEqual(theme.code.font.familyName, base.familyName)
+        XCTAssertEqual(heading.font.familyName, base.familyName)
+        XCTAssertTrue(heading.font.fontDescriptor.symbolicTraits.contains(.traitBold))
+    }
+
+    func testExplicitHeadingFamilyOverridesInheritedBaseFamily() {
+        let expected = UIFont(name: "Courier-Bold", size: 32)!
+        let theme = PreparedProseTheme.resolve(
+            themeJSON: #"{"text":{"fontFamily":"Courier"},"headings":{"h1":{"fontFamily":"Courier-Bold"}}}"#,
+            semanticGeneration: "heading-override-\(UUID().uuidString)"
+        )
+
+        XCTAssertEqual(theme.headings["h1"]?.font.fontName, expected.fontName)
+    }
+
+    func testMissingLiteralFamilyWarnsOnceAndFallsBack() {
+        let environment = ViewerFontEnvironment(notificationCenter: .default)
+        let family = "missing-literal-font-\(UUID().uuidString)"
+        let semanticGeneration = "missing-literal-\(UUID().uuidString)"
+        let fallback = UIFont(name: "Courier", size: 17)!
+
+        let first = environment.resolveFont(
+            family: family,
+            size: 17,
+            fallback: fallback,
+            semanticGeneration: semanticGeneration
+        )
+        let second = environment.resolveFont(
+            family: family,
+            size: 17,
+            fallback: fallback,
+            semanticGeneration: semanticGeneration
+        )
+
+        XCTAssertEqual(first.fontName, fallback.fontName)
+        XCTAssertEqual(second.fontName, fallback.fontName)
+        XCTAssertFalse(
+            environment.shouldWarnForMissingFamily(family, semanticGeneration: semanticGeneration),
+            "two literal-name resolutions in one semantic generation must emit only one warning"
+        )
+    }
+
     func testThemeFamiliesUseOneSemanticWarningAcrossStylesAndLayoutRevisions() {
         let family = "missing-theme-family-\(UUID().uuidString)"
         let semanticA = "theme-warning-a-\(UUID().uuidString)"

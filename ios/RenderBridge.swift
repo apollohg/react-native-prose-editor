@@ -912,22 +912,7 @@ final class RenderBridge {
 
     private static func mentionFont(from baseFont: UIFont, theme: EditorMentionTheme?) -> UIFont? {
         guard let fontWeight = theme?.fontWeight else { return nil }
-        let descriptorTraits = EditorTheme.shouldApplyBoldTrait(fontWeight)
-            ? UIFontDescriptor.SymbolicTraits.traitBold
-            : []
-        if descriptorTraits.isEmpty {
-            return UIFont.systemFont(
-                ofSize: baseFont.pointSize,
-                weight: EditorTheme.fontWeight(from: fontWeight)
-            )
-        }
-        guard let descriptor = baseFont.fontDescriptor.withSymbolicTraits(descriptorTraits) else {
-            return UIFont.systemFont(
-                ofSize: baseFont.pointSize,
-                weight: EditorTheme.fontWeight(from: fontWeight)
-            )
-        }
-        return UIFont(descriptor: descriptor, size: baseFont.pointSize)
+        return EditorTextStyle(fontWeight: fontWeight).resolvedFont(fallback: baseFont)
     }
 
     // MARK: - Block Styling
