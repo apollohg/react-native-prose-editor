@@ -37,7 +37,7 @@ final class PreparedProseLayoutCache {
         let result = Result(catching: build)
 
         condition.lock()
-        if case let .success(layout) = result {
+        if case let .success(layout) = result, layout.error == nil {
             completed[key] = layout
             retainedBytes += layout.retainedBytes
             touch(key)
@@ -64,6 +64,12 @@ final class PreparedProseLayoutCache {
         accessOrder.removeAll()
         retainedBytes = 0
         condition.unlock()
+    }
+
+    var countForTesting: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return completed.count
     }
 
     private func touch(_ key: ProseLayoutKey) {

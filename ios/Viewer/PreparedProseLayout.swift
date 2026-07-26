@@ -5,24 +5,30 @@ struct ProseLayoutKey: Hashable {
     let semanticKey: String
     let widthPixels: Int
     let themeDigest: String
-    let fontRevision: UInt64
+    let nativeFontRevision: UInt64
+    let fontEnvironmentRevision: UInt64
     let displayScaleBits: UInt64
     let attachmentRevision: UInt64
+    let generationIdentity: String
 
     init(
         semanticKey: String,
         widthPixels: Int,
         themeDigest: String,
-        fontRevision: UInt64,
+        nativeFontRevision: UInt64,
+        fontEnvironmentRevision: UInt64,
         displayScale: CGFloat,
-        attachmentRevision: UInt64
+        attachmentRevision: UInt64,
+        generationIdentity: String
     ) {
         self.semanticKey = semanticKey
         self.widthPixels = widthPixels
         self.themeDigest = themeDigest
-        self.fontRevision = fontRevision
+        self.nativeFontRevision = nativeFontRevision
+        self.fontEnvironmentRevision = fontEnvironmentRevision
         self.displayScaleBits = Double(displayScale).bitPattern
         self.attachmentRevision = attachmentRevision
+        self.generationIdentity = generationIdentity
     }
 }
 

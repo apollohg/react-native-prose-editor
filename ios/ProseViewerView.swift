@@ -64,7 +64,7 @@ public final class ProseViewerView: UIView {
     @discardableResult
     public func apply(source: ProseViewerSource, configuration: ProseViewerConfiguration) -> Bool {
         let nextRequest = ProseViewerRequest(source: source, configuration: configuration)
-        if request == nextRequest, pendingError == nil { return true }
+        if request == nextRequest { return pendingError == nil }
         request = nextRequest
         ownedLayout = nil
         drawingView.layout = nil
@@ -89,8 +89,8 @@ public final class ProseViewerView: UIView {
     }
 
     public override func sizeThatFits(_ size: CGSize) -> CGSize {
-        guard size.width.isFinite, size.width > 0 else { return .zero }
         let layout = preparedLayout(width: size.width, scale: displayScale)
+        guard size.width.isFinite, size.width > 0 else { return .zero }
         let hostHeight = size.height
         let height = hostHeight.isFinite && hostHeight >= 0 ? min(layout.size.height, hostHeight) : layout.size.height
         return CGSize(width: layout.size.width, height: height)
@@ -136,24 +136,36 @@ public final class ProseViewerView: UIView {
     private func preparedLayout(width: CGFloat, scale: CGFloat) -> PreparedProseLayout {
         guard let request else {
             let empty = PreparedProseLayout.error(
-                key: ProseLayoutKey(semanticKey: "empty", widthPixels: Int((width * scale).rounded()), themeDigest: "", fontRevision: 0, displayScale: scale, attachmentRevision: 0),
-                width: width,
+                key: ProseLayoutKey(
+                    semanticKey: "empty",
+                    widthPixels: Int((max(0, width.isFinite ? width : 0) * scale).rounded()),
+                    themeDigest: "",
+                    nativeFontRevision: 0,
+                    fontEnvironmentRevision: 0,
+                    displayScale: scale,
+                    attachmentRevision: 0,
+                    generationIdentity: "empty"
+                ),
+                width: max(0, width.isFinite ? width : 0),
                 error: .hostContract(message: "No prose viewer source has been applied.")
             )
             ownedLayout = empty
             return empty
         }
         if let pendingError {
+            let safeWidth = max(0, width.isFinite ? width : 0)
             let errorLayout = PreparedProseLayout.error(
                 key: ProseLayoutKey(
                     semanticKey: "error:" + request.compiledCacheKey,
-                    widthPixels: Int((width * scale).rounded()),
+                    widthPixels: Int((safeWidth * scale).rounded()),
                     themeDigest: request.themeDigest,
-                    fontRevision: request.fontRevision,
+                    nativeFontRevision: request.nativeFontRevision,
+                    fontEnvironmentRevision: request.fontEnvironmentRevision,
                     displayScale: scale,
-                    attachmentRevision: request.attachmentRevision
+                    attachmentRevision: request.attachmentRevision,
+                    generationIdentity: request.generationIdentity
                 ),
-                width: width,
+                width: safeWidth,
                 error: pendingError
             )
             ownedLayout = errorLayout

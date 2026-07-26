@@ -48,8 +48,8 @@ final class CoreTextProseLayoutEngine {
                 var descent: CGFloat = 0
                 var leading: CGFloat = 0
                 let lineWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
-                let lineHeight = ceil(ascent + descent + leading)
-                let bounds = CGRect(x: 0, y: cursorY, width: min(widthPoints, ceil(lineWidth)), height: lineHeight)
+                let lineHeight = ascent + descent + leading
+                let bounds = CGRect(x: 0, y: cursorY, width: min(widthPoints, lineWidth), height: lineHeight)
                 blocks.append(
                     PreparedProseBlock(
                         line: line,

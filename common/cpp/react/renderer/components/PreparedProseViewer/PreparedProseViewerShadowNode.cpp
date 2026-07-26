@@ -25,26 +25,27 @@ Size PreparedProseViewerShadowNode::measureContent(
     const LayoutConstraints& layoutConstraints) const {
   const auto maximumWidth = layoutConstraints.maximumSize.width;
   const auto pointScaleFactor = layoutContext.pointScaleFactor;
-  if (!std::isfinite(maximumWidth) || maximumWidth < 0 ||
-      !std::isfinite(pointScaleFactor) || pointScaleFactor <= 0 ||
-      !measurementsManager_) {
+  if (!measurementsManager_) {
     return {};
   }
 
-  const auto physicalWidth = std::round(maximumWidth * pointScaleFactor);
-  if (!std::isfinite(physicalWidth) || physicalWidth < 0) {
-    return {};
-  }
-
-  const auto effectiveWidth = physicalWidth / pointScaleFactor;
+  const auto hasUsableMeasurement = std::isfinite(maximumWidth) && maximumWidth > 0 &&
+      std::isfinite(pointScaleFactor) && pointScaleFactor > 0;
+  const auto effectiveWidth = hasUsableMeasurement
+      ? std::round(maximumWidth * pointScaleFactor) / pointScaleFactor
+      : maximumWidth;
+  const auto& props = getConcreteProps();
   const auto& state = getStateData();
   return measurementsManager_->measure(
       getSurfaceId(),
-      getConcreteProps(),
+      props,
       effectiveWidth,
       pointScaleFactor,
       state.attachmentRevision,
-      state.nativeFontRevision);
+      state.nativeFontRevision,
+      props.fontEnvironmentRevision > 0
+          ? static_cast<uint64_t>(props.fontEnvironmentRevision)
+          : 0);
 }
 
 } // namespace facebook::react

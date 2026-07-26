@@ -22,7 +22,8 @@ class PreparedProseMeasurementsManager {
       Float effectiveWidth,
       Float pointScaleFactor,
       uint64_t attachmentRevision,
-      uint64_t nativeFontRevision) const;
+      uint64_t nativeFontRevision,
+      uint64_t fontEnvironmentRevision) const;
 
  private:
   const ContextContainer::Shared contextContainer_;

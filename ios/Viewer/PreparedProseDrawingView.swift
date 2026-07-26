@@ -14,6 +14,16 @@ public final class PreparedProseDrawingView: UIView {
     @objc var errorCode: String? { layout?.error?.code }
     @objc var errorMessage: String? { layout?.error?.message }
 
+    /// Converts an artifact-top baseline to the flipped Core Graphics coordinate system.
+    /// The view bounds, not the intrinsic artifact height, defines the flip origin.
+    static func textPosition(
+        baselineFromArtifactTop: CGFloat,
+        in bounds: CGRect,
+        artifactHeight _: CGFloat
+    ) -> CGPoint {
+        CGPoint(x: 0, y: bounds.height - baselineFromArtifactTop)
+    }
+
     override func draw(_ rect: CGRect) {
         guard let layout, let context = UIGraphicsGetCurrentContext(), !layout.blocks.isEmpty else { return }
         let blocks = layout.blocks
@@ -30,7 +40,12 @@ public final class PreparedProseDrawingView: UIView {
         for index in lower..<blocks.count {
             let block = blocks[index]
             guard block.bounds.minY <= rect.maxY else { break }
-            context.textPosition = CGPoint(x: block.origin.x, y: layout.size.height - block.origin.y)
+            let textPosition = Self.textPosition(
+                baselineFromArtifactTop: block.origin.y,
+                in: bounds,
+                artifactHeight: layout.size.height
+            )
+            context.textPosition = CGPoint(x: block.origin.x, y: textPosition.y)
             CTLineDraw(block.line, context)
         }
         context.restoreGState()

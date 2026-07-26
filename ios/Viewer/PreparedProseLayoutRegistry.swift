@@ -18,11 +18,21 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private let lock = NSLock()
     private let compiledCondition = NSCondition()
     private var compiledDocuments: [String: ViewerDocument] = [:]
+    private var compiledAccessOrder: [String] = []
     private var compiledInFlight: [String: Compilation] = [:]
+    private var compiledRetainedBytes = 0
+    private let compiledByteBudget: Int
     private let layoutCache: PreparedProseLayoutCache
     private let compile: DocumentCompiler
     private let prepare: LayoutPreparation
     private(set) var layoutPreparationCount = 0
+
+    var preparedLayoutCacheCountForTesting: Int { layoutCache.countForTesting }
+    var compiledDocumentBytesForTesting: Int {
+        compiledCondition.lock()
+        defer { compiledCondition.unlock() }
+        return compiledRetainedBytes
+    }
 
     override convenience init() {
         self.init(compile: Self.compileWithRust, prepare: Self.prepareWithCoreText)
@@ -30,12 +40,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     init(
         byteBudget: Int = 32 * 1024 * 1024,
+        compiledByteBudget: Int = 8 * 1024 * 1024,
         compile: @escaping DocumentCompiler,
         prepare: @escaping LayoutPreparation = Self.prepareWithCoreText
     ) {
         self.compile = compile
         self.prepare = prepare
         layoutCache = PreparedProseLayoutCache(byteBudget: byteBudget)
+        self.compiledByteBudget = compiledByteBudget
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -51,6 +63,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         let cacheKey = request.compiledCacheKey
         compiledCondition.lock()
         if let document = compiledDocuments[cacheKey] {
+            touchCompiled(cacheKey)
             compiledCondition.unlock()
             return document
         }
@@ -79,6 +92,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.lock()
         if case let .success(document) = result {
             compiledDocuments[cacheKey] = document
+            compiledRetainedBytes += document.retainedBytes
+            touchCompiled(cacheKey)
+            trimCompiledToBudget()
         }
         compilation.result = result
         compiledInFlight.removeValue(forKey: cacheKey)
@@ -97,15 +113,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             )
         }
         do {
-            var document = try compileDocument(request: request)
-            if document.isEmpty && !request.configuration.collapsesWhenEmpty {
-                document = ViewerDocument(
-                    semanticKey: document.semanticKey,
-                    paragraphs: document.paragraphs,
-                    isEmpty: false,
-                    retainedBytes: document.retainedBytes
-                )
-            }
+            let document = try preparedDocument(request: request)
             let key = layoutKey(for: document, request: request, widthPoints: widthPoints, scale: scale)
             return try layoutCache.value(for: key) { [weak self] in
                 guard let self else {
@@ -117,9 +125,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 return try self.prepare(document, key, CGFloat(key.widthPixels) / scale, scale)
             }
         } catch let error as ProseViewerError {
-            return publishErrorArtifact(request: request, widthPoints: widthPoints, scale: scale, error: error)
+            return errorArtifact(request: request, widthPoints: widthPoints, scale: scale, error: error)
         } catch {
-            return publishErrorArtifact(
+            return errorArtifact(
                 request: request,
                 widthPoints: widthPoints,
                 scale: scale,
@@ -128,7 +136,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         }
     }
 
-    @objc(measureSourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:widthPoints:scale:)
+    @objc(measureSourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
     public func measure(
         sourceKind: NSString,
         source: NSString,
@@ -137,23 +145,28 @@ public final class PreparedProseLayoutRegistry: NSObject {
         imagePolicyJSON: NSString?,
         imagesEnabled: Bool,
         collapsesWhenEmpty: Bool,
+        attachmentRevision: UInt64,
+        nativeFontRevision: UInt64,
+        fontEnvironmentRevision: UInt64,
         widthPoints: CGFloat,
         scale: CGFloat
     ) -> CGSize {
-        let request = ProseViewerRequest(
-            source: sourceKind == "html" ? .html(source as String) : .json(source as String),
-            configuration: ProseViewerConfiguration(
-                configJSON: configJSON as String,
-                themeJSON: themeJSON as String?,
-                imagePolicyJSON: imagePolicyJSON as String?,
-                imagesEnabled: imagesEnabled,
-                collapsesWhenEmpty: collapsesWhenEmpty
-            )
+        let request = makeRequest(
+            sourceKind: sourceKind,
+            source: source,
+            configJSON: configJSON,
+            themeJSON: themeJSON,
+            imagePolicyJSON: imagePolicyJSON,
+            imagesEnabled: imagesEnabled,
+            collapsesWhenEmpty: collapsesWhenEmpty,
+            attachmentRevision: attachmentRevision,
+            nativeFontRevision: nativeFontRevision,
+            fontEnvironmentRevision: fontEnvironmentRevision
         )
         return measure(request: request, widthPoints: widthPoints, scale: scale).size
     }
 
-    @objc(installCachedLayoutInDrawingView:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:widthPoints:scale:)
+    @objc(installCachedLayoutInDrawingView:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
     public func installCachedLayout(
         in drawingView: PreparedProseDrawingView,
         sourceKind: NSString,
@@ -163,48 +176,59 @@ public final class PreparedProseLayoutRegistry: NSObject {
         imagePolicyJSON: NSString?,
         imagesEnabled: Bool,
         collapsesWhenEmpty: Bool,
+        attachmentRevision: UInt64,
+        nativeFontRevision: UInt64,
+        fontEnvironmentRevision: UInt64,
         widthPoints: CGFloat,
         scale: CGFloat
     ) -> Bool {
-        let request = ProseViewerRequest(
-            source: sourceKind == "html" ? .html(source as String) : .json(source as String),
-            configuration: ProseViewerConfiguration(
-                configJSON: configJSON as String,
-                themeJSON: themeJSON as String?,
-                imagePolicyJSON: imagePolicyJSON as String?,
-                imagesEnabled: imagesEnabled,
-                collapsesWhenEmpty: collapsesWhenEmpty
-            )
+        let request = makeRequest(
+            sourceKind: sourceKind,
+            source: source,
+            configJSON: configJSON,
+            themeJSON: themeJSON,
+            imagePolicyJSON: imagePolicyJSON,
+            imagesEnabled: imagesEnabled,
+            collapsesWhenEmpty: collapsesWhenEmpty,
+            attachmentRevision: attachmentRevision,
+            nativeFontRevision: nativeFontRevision,
+            fontEnvironmentRevision: fontEnvironmentRevision
         )
-        guard var document = try? compileDocument(request: request) else {
-            let artifact = errorArtifact(
+        guard widthPoints.isFinite, widthPoints > 0, scale.isFinite, scale > 0 else {
+            drawingView.install(layout: errorArtifact(
                 request: request,
                 widthPoints: widthPoints,
                 scale: scale,
-                error: .compiler(domain: "viewer", code: "MALFORMED_INPUT", message: "The source could not be compiled.")
-            )
-            guard let cached = layoutCache.cachedValue(for: artifact.key) else { return false }
-            drawingView.install(layout: cached)
+                error: .hostContract(message: "A finite positive width is required for prose measurement.")
+            ))
             return true
         }
-        if document.isEmpty && !request.configuration.collapsesWhenEmpty {
-            document = ViewerDocument(
-                semanticKey: document.semanticKey,
-                paragraphs: document.paragraphs,
-                isEmpty: false,
-                retainedBytes: document.retainedBytes
-            )
+        do {
+            let document = try preparedDocument(request: request)
+            let key = layoutKey(for: document, request: request, widthPoints: widthPoints, scale: scale)
+            guard let artifact = layoutCache.cachedValue(for: key) else { return false }
+            drawingView.install(layout: artifact)
+            return true
+        } catch let error as ProseViewerError {
+            drawingView.install(layout: errorArtifact(request: request, widthPoints: widthPoints, scale: scale, error: error))
+            return true
+        } catch {
+            drawingView.install(layout: errorArtifact(
+                request: request,
+                widthPoints: widthPoints,
+                scale: scale,
+                error: .layout(message: String(describing: error))
+            ))
+            return true
         }
-        let key = layoutKey(for: document, request: request, widthPoints: widthPoints, scale: scale)
-        guard let artifact = layoutCache.cachedValue(for: key) else { return false }
-        drawingView.install(layout: artifact)
-        return true
     }
 
     @objc func didReceiveMemoryWarning() {
         layoutCache.removeAllUnmounted()
         compiledCondition.lock()
         compiledDocuments.removeAll()
+        compiledAccessOrder.removeAll()
+        compiledRetainedBytes = 0
         compiledCondition.unlock()
     }
 
@@ -219,9 +243,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
             semanticKey: document.semanticKey,
             widthPixels: pixels,
             themeDigest: request.themeDigest,
-            fontRevision: request.fontRevision,
+            nativeFontRevision: request.nativeFontRevision,
+            fontEnvironmentRevision: request.fontEnvironmentRevision,
             displayScale: scale,
-            attachmentRevision: request.attachmentRevision
+            attachmentRevision: request.attachmentRevision,
+            generationIdentity: request.generationIdentity
         )
     }
 
@@ -237,21 +263,67 @@ public final class PreparedProseLayoutRegistry: NSObject {
             semanticKey: "error:" + request.compiledCacheKey,
             widthPixels: Int((safeWidth * safeScale).rounded()),
             themeDigest: request.themeDigest,
-            fontRevision: request.fontRevision,
+            nativeFontRevision: request.nativeFontRevision,
+            fontEnvironmentRevision: request.fontEnvironmentRevision,
             displayScale: safeScale,
-            attachmentRevision: request.attachmentRevision
+            attachmentRevision: request.attachmentRevision,
+            generationIdentity: request.generationIdentity
         )
         return .error(key: key, width: safeWidth, error: error)
     }
 
-    private func publishErrorArtifact(
-        request: ProseViewerRequest,
-        widthPoints: CGFloat,
-        scale: CGFloat,
-        error: ProseViewerError
-    ) -> PreparedProseLayout {
-        let artifact = errorArtifact(request: request, widthPoints: widthPoints, scale: scale, error: error)
-        return (try? layoutCache.value(for: artifact.key) { artifact }) ?? artifact
+    private func preparedDocument(request: ProseViewerRequest) throws -> ViewerDocument {
+        var document = try compileDocument(request: request)
+        if document.isEmpty && !request.configuration.collapsesWhenEmpty {
+            document = ViewerDocument(
+                semanticKey: document.semanticKey,
+                paragraphs: document.paragraphs,
+                isEmpty: false,
+                retainedBytes: document.retainedBytes
+            )
+        }
+        return document
+    }
+
+    private func makeRequest(
+        sourceKind: NSString,
+        source: NSString,
+        configJSON: NSString,
+        themeJSON: NSString?,
+        imagePolicyJSON: NSString?,
+        imagesEnabled: Bool,
+        collapsesWhenEmpty: Bool,
+        attachmentRevision: UInt64,
+        nativeFontRevision: UInt64,
+        fontEnvironmentRevision: UInt64
+    ) -> ProseViewerRequest {
+        ProseViewerRequest(
+            source: sourceKind == "html" ? .html(source as String) : .json(source as String),
+            configuration: ProseViewerConfiguration(
+                configJSON: configJSON as String,
+                themeJSON: themeJSON as String?,
+                imagePolicyJSON: imagePolicyJSON as String?,
+                imagesEnabled: imagesEnabled,
+                collapsesWhenEmpty: collapsesWhenEmpty
+            ),
+            nativeFontRevision: nativeFontRevision,
+            fontEnvironmentRevision: fontEnvironmentRevision,
+            attachmentRevision: attachmentRevision
+        )
+    }
+
+    private func touchCompiled(_ cacheKey: String) {
+        compiledAccessOrder.removeAll { $0 == cacheKey }
+        compiledAccessOrder.append(cacheKey)
+    }
+
+    private func trimCompiledToBudget() {
+        while compiledRetainedBytes > compiledByteBudget, let oldest = compiledAccessOrder.first {
+            compiledAccessOrder.removeFirst()
+            if let removed = compiledDocuments.removeValue(forKey: oldest) {
+                compiledRetainedBytes -= removed.retainedBytes
+            }
+        }
     }
 
     private static func prepareWithCoreText(

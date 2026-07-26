@@ -3,12 +3,15 @@
 #import "ReactNativeProseEditor-Swift.h"
 
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerComponentDescriptor.h>
+#include <react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h>
 #include <react/renderer/components/ReactNativeProseEditorSpec/EventEmitters.h>
 #include <react/renderer/components/ReactNativeProseEditorSpec/Props.h>
 #include <react/renderer/core/ConcreteComponentDescriptor.h>
 
 #include <cmath>
+#include <cstring>
 #include <optional>
+#include <string>
 
 using namespace facebook::react;
 
@@ -28,13 +31,68 @@ NSString *SourceKind(const PreparedProseViewerProps &props) {
   return props.sourceKind == PreparedProseViewerSourceKind::Html ? @"html" : @"json";
 }
 
+bool HasEquivalentProps(
+    const PreparedProseViewerProps &left,
+    const PreparedProseViewerProps &right) {
+  return left.sourceKind == right.sourceKind && left.source == right.source &&
+      left.configJson == right.configJson && left.themeJson == right.themeJson &&
+      left.imagePolicyJson == right.imagePolicyJson &&
+      left.imagesEnabled == right.imagesEnabled &&
+      left.collapsesWhenEmpty == right.collapsesWhenEmpty &&
+      left.fontEnvironmentRevision == right.fontEnvironmentRevision;
+}
+
+uint64_t Revision(const PreparedProseViewerState *state, bool attachment) {
+  if (state == nullptr) {
+    return 0;
+  }
+  return attachment ? state->attachmentRevision : state->nativeFontRevision;
+}
+
+std::string GenerationIdentity(
+    const PreparedProseViewerProps &props,
+    const PreparedProseViewerState *state) {
+  return std::string(props.sourceKind == PreparedProseViewerSourceKind::Html ? "html" : "json") +
+      "\x1f" + props.source + "\x1f" + props.configJson + "\x1f" +
+      (props.themeJson ? *props.themeJson : "") + "\x1f" +
+      (props.imagePolicyJson ? *props.imagePolicyJson : "") + "\x1f" +
+      (props.imagesEnabled ? "1" : "0") + "\x1f" +
+      (props.collapsesWhenEmpty ? "1" : "0") + "\x1f" +
+      std::to_string(Revision(state, true)) + "\x1f" +
+      std::to_string(Revision(state, false)) + "\x1f" +
+      std::to_string(props.fontEnvironmentRevision);
+}
+
+uint64_t ScaleBits(CGFloat scale) {
+  const double value = scale;
+  uint64_t bits = 0;
+  static_assert(sizeof(bits) == sizeof(value));
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+std::string MeasurementIdentity(
+    const PreparedProseViewerProps &props,
+    const PreparedProseViewerState *state,
+    CGFloat width,
+    CGFloat scale) {
+  const auto widthPixels = std::isfinite(width) && width > 0 &&
+          std::isfinite(scale) && scale > 0
+      ? static_cast<long long>(std::llround(width * scale))
+      : 0;
+  return GenerationIdentity(props, state) + "\x1f" + std::to_string(widthPixels) +
+      "\x1f" + std::to_string(ScaleBits(scale));
+}
+
 } // namespace
 
 @implementation PREPPreparedProseViewerComponentView {
   PREPPreparedProseDrawingView *_drawingView;
   std::shared_ptr<const PreparedProseViewerProps> _viewerProps;
+  std::shared_ptr<const PreparedProseViewerState> _viewerState;
   LayoutMetrics _layoutMetrics;
   NSString *_reportedErrorGeneration;
+  NSString *_installedMeasurementIdentity;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -55,8 +113,23 @@ NSString *SourceKind(const PreparedProseViewerProps &props) {
 - (void)updateProps:(const Props::Shared &)props oldProps:(const Props::Shared &)oldProps
 {
   [super updateProps:props oldProps:oldProps];
-  _viewerProps = std::static_pointer_cast<const PreparedProseViewerProps>(props);
-  _reportedErrorGeneration = nil;
+  const auto nextProps = std::static_pointer_cast<const PreparedProseViewerProps>(props);
+  if (!_viewerProps || !HasEquivalentProps(*_viewerProps, *nextProps)) {
+    [self beginNewGeneration];
+  }
+  _viewerProps = nextProps;
+  [self installMeasuredArtifact];
+}
+
+- (void)updateState:(const State::Shared &)state oldState:(const State::Shared &)oldState
+{
+  [super updateState:state oldState:oldState];
+  const auto nextState = std::static_pointer_cast<const PreparedProseViewerState>(state);
+  if (!_viewerState || Revision(_viewerState.get(), true) != Revision(nextState.get(), true) ||
+      Revision(_viewerState.get(), false) != Revision(nextState.get(), false)) {
+    [self beginNewGeneration];
+  }
+  _viewerState = nextState;
   [self installMeasuredArtifact];
 }
 
@@ -73,18 +146,34 @@ NSString *SourceKind(const PreparedProseViewerProps &props) {
 {
   [super prepareForRecycle];
   _viewerProps.reset();
+  _viewerState.reset();
   [_drawingView installWithLayout:nil];
+  _reportedErrorGeneration = nil;
+  _installedMeasurementIdentity = nil;
+}
+
+- (void)beginNewGeneration
+{
+  [_drawingView installWithLayout:nil];
+  _installedMeasurementIdentity = nil;
   _reportedErrorGeneration = nil;
 }
 
 - (void)installMeasuredArtifact
 {
-  if (!_viewerProps || !std::isfinite(_layoutMetrics.frame.size.width) ||
-      _layoutMetrics.frame.size.width <= 0) {
+  if (!_viewerProps) {
     return;
   }
   const auto &props = *_viewerProps;
-  const CGFloat scale = UIScreen.mainScreen.scale > 0 ? UIScreen.mainScreen.scale : 1;
+  const auto contentFrame = _layoutMetrics.getContentFrame();
+  const CGFloat width = contentFrame.size.width;
+  const CGFloat scale = _layoutMetrics.pointScaleFactor;
+  const auto measurementIdentity = MeasurementIdentity(props, _viewerState.get(), width, scale);
+  const auto measurementIdentityString = StringFromStdString(measurementIdentity);
+  if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
+    [_drawingView installWithLayout:nil];
+    _installedMeasurementIdentity = nil;
+  }
   const BOOL installed = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       installCachedLayoutInDrawingView:_drawingView
                             sourceKind:SourceKind(props)
@@ -94,12 +183,21 @@ NSString *SourceKind(const PreparedProseViewerProps &props) {
                        imagePolicyJSON:OptionalStringFromStdString(props.imagePolicyJson)
                         imagesEnabled:props.imagesEnabled
                   collapsesWhenEmpty:props.collapsesWhenEmpty
-                          widthPoints:_layoutMetrics.frame.size.width
+                   attachmentRevision:Revision(_viewerState.get(), true)
+                   nativeFontRevision:Revision(_viewerState.get(), false)
+              fontEnvironmentRevision:(props.fontEnvironmentRevision > 0
+                  ? static_cast<uint64_t>(props.fontEnvironmentRevision)
+                  : 0)
+                          widthPoints:width
                                  scale:scale];
-  if (!installed || !_drawingView.errorCode) {
+  if (!installed) {
     return;
   }
-  const auto generation = [NSString stringWithFormat:@"%@:%@:%@", StringFromStdString(props.source), StringFromStdString(props.configJson), _drawingView.errorCode];
+  _installedMeasurementIdentity = measurementIdentityString;
+  if (!_drawingView.errorCode) {
+    return;
+  }
+  const auto generation = StringFromStdString(GenerationIdentity(props, _viewerState.get()));
   if ([_reportedErrorGeneration isEqualToString:generation]) {
     return;
   }

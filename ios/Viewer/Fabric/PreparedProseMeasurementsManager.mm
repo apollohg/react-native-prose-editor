@@ -30,8 +30,9 @@ Size PreparedProseMeasurementsManager::measure(
     const PreparedProseViewerProps &props,
     Float effectiveWidth,
     Float pointScaleFactor,
-    uint64_t /*attachmentRevision*/,
-    uint64_t /*nativeFontRevision*/) const {
+    uint64_t attachmentRevision,
+    uint64_t nativeFontRevision,
+    uint64_t fontEnvironmentRevision) const {
   @autoreleasepool {
     const auto size = [[PREPPreparedProseLayoutRegistry sharedRegistry]
         measureSourceKind:SourceKind(props)
@@ -41,6 +42,9 @@ Size PreparedProseMeasurementsManager::measure(
            imagePolicyJSON:OptionalStringFromStdString(props.imagePolicyJson)
             imagesEnabled:props.imagesEnabled
       collapsesWhenEmpty:props.collapsesWhenEmpty
+       attachmentRevision:attachmentRevision
+       nativeFontRevision:nativeFontRevision
+  fontEnvironmentRevision:(fontEnvironmentRevision)
               widthPoints:effectiveWidth
                      scale:pointScaleFactor];
     return {static_cast<Float>(size.width), static_cast<Float>(size.height)};

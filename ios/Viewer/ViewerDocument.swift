@@ -46,18 +46,21 @@ public struct ProseViewerConfiguration: Hashable {
 struct ProseViewerRequest: Hashable {
     let source: ProseViewerSource
     let configuration: ProseViewerConfiguration
-    let fontRevision: UInt64
+    let nativeFontRevision: UInt64
+    let fontEnvironmentRevision: UInt64
     let attachmentRevision: UInt64
 
     init(
         source: ProseViewerSource,
         configuration: ProseViewerConfiguration,
-        fontRevision: UInt64 = 0,
+        nativeFontRevision: UInt64 = 0,
+        fontEnvironmentRevision: UInt64 = 0,
         attachmentRevision: UInt64 = 0
     ) {
         self.source = source
         self.configuration = configuration
-        self.fontRevision = fontRevision
+        self.nativeFontRevision = nativeFontRevision
+        self.fontEnvironmentRevision = fontEnvironmentRevision
         self.attachmentRevision = attachmentRevision
     }
 
@@ -75,6 +78,18 @@ struct ProseViewerRequest: Hashable {
     }
 
     var themeDigest: String { SHA256Digest.hex(configuration.themeJSON ?? "") }
+
+    /// Includes every input that makes a mounted generation genuinely different.
+    var generationIdentity: String {
+        SHA256Digest.hex([
+            compiledCacheKey,
+            themeDigest,
+            configuration.collapsesWhenEmpty ? "1" : "0",
+            String(attachmentRevision),
+            String(nativeFontRevision),
+            String(fontEnvironmentRevision),
+        ].joined(separator: "\u{1F}"))
+    }
 
     var mentionPrefix: String? { Self.mentionPrefix(in: configuration.configJSON) }
 
