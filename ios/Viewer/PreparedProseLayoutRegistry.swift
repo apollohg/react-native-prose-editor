@@ -25,9 +25,15 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private var documentsByFabricGeneration: [FabricGenerationToken: ViewerDocument] = [:]
     private var failuresByFabricGeneration: [FabricGenerationToken: Error] = [:]
     private var themesByGeneration: [String: PreparedProseTheme] = [:]
+    private var themeAccessOrder: [String] = []
+    private var themeOwners: [FabricGenerationToken: String] = [:]
+    private var themeOwnerCounts: [String: Int] = [:]
+    private var themesRetainedBytes = 0
     private var compiledRetainedBytes = 0
     private let compiledByteBudget: Int
     private let compilationFailureBudget: Int
+    private let themeByteBudget: Int
+    private let themeEntryBudget: Int
     private let layoutCache: PreparedProseLayoutCache
     private let compile: DocumentCompiler
     private let prepare: LayoutPreparation
@@ -41,6 +47,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
     }
     var layoutRetainedBytesForTesting: Int { layoutCache.retainedBytesForTesting }
     var oversizedLeaseCountForTesting: Int { layoutCache.oversizedLeaseCountForTesting }
+    var preparedThemeCountForTesting: Int {
+        compiledCondition.lock()
+        defer { compiledCondition.unlock() }
+        return themesByGeneration.count
+    }
 
     override convenience init() {
         self.init(compile: Self.compileWithRust, prepare: Self.prepareWithCoreText)
@@ -50,6 +61,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         byteBudget: Int = 32 * 1024 * 1024,
         compiledByteBudget: Int = 8 * 1024 * 1024,
         compilationFailureBudget: Int = 128,
+        themeByteBudget: Int = 512 * 1024,
+        themeEntryBudget: Int = 128,
         compile: @escaping DocumentCompiler,
         prepare: @escaping LayoutPreparation = Self.prepareWithCoreText
     ) {
@@ -58,6 +71,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         layoutCache = PreparedProseLayoutCache(byteBudget: byteBudget)
         self.compiledByteBudget = compiledByteBudget
         self.compilationFailureBudget = compilationFailureBudget
+        self.themeByteBudget = themeByteBudget
+        self.themeEntryBudget = themeEntryBudget
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -340,6 +355,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.lock()
         documentsByFabricGeneration = documentsByFabricGeneration.filter { $0.key.surface != surface }
         failuresByFabricGeneration = failuresByFabricGeneration.filter { $0.key.surface != surface }
+        for generation in themeOwners.keys.filter({ $0.surface == surface }) {
+            releaseThemeOwnership(for: generation)
+        }
         compiledCondition.unlock()
     }
 
@@ -348,6 +366,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.lock()
         documentsByFabricGeneration.removeValue(forKey: generation)
         failuresByFabricGeneration.removeValue(forKey: generation)
+        releaseThemeOwnership(for: generation)
         compiledCondition.unlock()
     }
 
@@ -401,6 +420,10 @@ public final class PreparedProseLayoutRegistry: NSObject {
         documentsByFabricGeneration.removeAll()
         failuresByFabricGeneration.removeAll()
         themesByGeneration.removeAll()
+        themeAccessOrder.removeAll()
+        themeOwners.removeAll()
+        themeOwnerCounts.removeAll()
+        themesRetainedBytes = 0
         compiledRetainedBytes = 0
         compiledCondition.unlock()
     }
@@ -491,10 +514,15 @@ public final class PreparedProseLayoutRegistry: NSObject {
             failuresByFabricGeneration = failuresByFabricGeneration.filter {
                 $0.key.surface != generation.surface || $0.key == generation
             }
+            for staleGeneration in themeOwners.keys.filter({
+                $0.surface == generation.surface && $0 != generation
+            }) {
+                releaseThemeOwnership(for: staleGeneration)
+            }
         }
         if let generation, let document = documentsByFabricGeneration[generation] {
             compiledCondition.unlock()
-            return documentForEmptyContentPolicy(document, request: request).withPreparedTheme(preparedTheme(for: request))
+            return documentForEmptyContentPolicy(document, request: request).withPreparedTheme(preparedTheme(for: request, generation: generation))
         }
         if let generation, let failure = failuresByFabricGeneration[generation] {
             compiledCondition.unlock()
@@ -509,7 +537,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 documentsByFabricGeneration[generation] = document
                 compiledCondition.unlock()
             }
-            return documentForEmptyContentPolicy(document, request: request).withPreparedTheme(preparedTheme(for: request))
+            return documentForEmptyContentPolicy(document, request: request).withPreparedTheme(preparedTheme(for: request, generation: generation))
         } catch {
             if let generation {
                 compiledCondition.lock()
@@ -538,13 +566,55 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     /// Parsed paint values are immutable and shared across all width-specific
     /// layouts for the same semantic generation.
-    private func preparedTheme(for request: ProseViewerRequest) -> PreparedProseTheme {
+    private func preparedTheme(
+        for request: ProseViewerRequest,
+        generation: FabricGenerationToken?
+    ) -> PreparedProseTheme {
         compiledCondition.lock()
         defer { compiledCondition.unlock() }
-        if let theme = themesByGeneration[request.generationIdentity] { return theme }
+        if let generation, themeOwners[generation] == nil {
+            themeOwners[generation] = request.generationIdentity
+            themeOwnerCounts[request.generationIdentity, default: 0] += 1
+        }
+        if let theme = themesByGeneration[request.generationIdentity] {
+            touchTheme(request.generationIdentity)
+            return theme
+        }
         let theme = PreparedProseTheme.resolve(themeJSON: request.configuration.themeJSON)
         themesByGeneration[request.generationIdentity] = theme
+        themesRetainedBytes += theme.estimatedRetainedBytes
+        touchTheme(request.generationIdentity)
+        trimThemesToBudget()
         return theme
+    }
+
+    private func touchTheme(_ generationIdentity: String) {
+        themeAccessOrder.removeAll { $0 == generationIdentity }
+        themeAccessOrder.append(generationIdentity)
+    }
+
+    /// Pinned Fabric generations own their exact resolved value until the
+    /// matching release callback. Unowned values form a byte/count-bounded
+    /// LRU, so background source churn cannot grow this cache without limit.
+    private func trimThemesToBudget() {
+        while (themesByGeneration.count > themeEntryBudget || themesRetainedBytes > themeByteBudget),
+              let oldest = themeAccessOrder.first(where: { themeOwnerCounts[$0, default: 0] == 0 }) {
+            themeAccessOrder.removeAll { $0 == oldest }
+            if let theme = themesByGeneration.removeValue(forKey: oldest) {
+                themesRetainedBytes -= theme.estimatedRetainedBytes
+            }
+        }
+    }
+
+    private func releaseThemeOwnership(for generation: FabricGenerationToken) {
+        guard let generationIdentity = themeOwners.removeValue(forKey: generation) else { return }
+        let remaining = max(0, (themeOwnerCounts[generationIdentity] ?? 1) - 1)
+        if remaining == 0 {
+            themeOwnerCounts.removeValue(forKey: generationIdentity)
+        } else {
+            themeOwnerCounts[generationIdentity] = remaining
+        }
+        trimThemesToBudget()
     }
 
     private func makeRequest(

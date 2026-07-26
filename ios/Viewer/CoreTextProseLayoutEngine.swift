@@ -3,6 +3,13 @@ import UIKit
 
 private let preparedAtomAttribute = NSAttributedString.Key("PREPPreparedAtom")
 
+private extension Int {
+    func rendererSaturatingMultiply(_ other: Int) -> Int {
+        let result = multipliedReportingOverflow(by: other)
+        return result.overflow ? Int.max : result.partialValue
+    }
+}
+
 private final class PreparedAtomMetrics {
     let width: CGFloat
     let ascent: CGFloat
@@ -141,6 +148,20 @@ struct PreparedProseTheme {
         if block.inBlockquote { return blockquote }
         return paragraph
     }
+
+    /// UIFont/UIColor bridge objects and the resolved heading dictionary are
+    /// retained by each cached generation theme. Keep the LRU's accounting
+    /// deliberately conservative; paint values themselves are immutable.
+    var estimatedRetainedBytes: Int { 3_072 + headings.count * 384 }
+}
+
+private struct PreparedAtomAppearance {
+    let attributes: [NSAttributedString.Key: Any]
+    let background: UIColor
+    let borderColor: UIColor?
+    let borderWidth: CGFloat
+    let radius: CGFloat
+    let padding: UIEdgeInsets
 }
 
 private struct PreparedAtomSpec {
@@ -148,11 +169,23 @@ private struct PreparedAtomSpec {
     let nodeType: String
     let label: String
     let metrics: PreparedAtomMetrics
+    let line: CTLine
+    let appearance: PreparedAtomAppearance
 }
 
 private struct PreparedAttributedBlock {
     let string: NSAttributedString
     let atoms: [PreparedAtomSpec]
+    let retainedBytes: Int
+}
+
+private struct PreparedListMarker {
+    let line: CTLine?
+    let label: String
+    let width: CGFloat
+    let ascent: CGFloat
+    let descent: CGFloat
+    let checked: Bool
 }
 
 /// Performs the width-dependent, immutable Core Text preparation step.
@@ -199,20 +232,31 @@ final class CoreTextProseLayoutEngine {
     ) -> (block: PreparedProseBlock, nextY: CGFloat, retainedBytes: Int) {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
-        if block.nodeType == "horizontalRule" {
+        if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
             let y = cursorY + theme.ruleMargin
             let rule = CGRect(x: contentX, y: y, width: contentWidth, height: theme.ruleThickness)
             let bounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: theme.ruleMargin * 2 + theme.ruleThickness)
+            let prepared = PreparedProseBlock(
+                fragments: [.init(kind: .rule, bounds: rule, color: theme.ruleColor.cgColor, strokeWidth: theme.ruleThickness)],
+                bounds: bounds
+            )
             return (
-                PreparedProseBlock(fragments: [.init(kind: .rule, bounds: rule, color: theme.ruleColor.cgColor, strokeWidth: theme.ruleThickness)], bounds: bounds),
+                prepared,
                 bounds.maxY,
-                96
+                prepared.estimatedRetainedBytes
             )
         }
 
         let paint = theme.paint(for: block)
+        let marker = block.listContext.map { makeListMarker($0, paint: paint, theme: theme) }
         let listDepth = block.listContext == nil ? 0 : max(0, Int(block.depth) - 1)
-        let listInset = block.listContext == nil ? 0 : theme.listIndent * (CGFloat(listDepth) + theme.listBaseIndentMultiplier)
+        // The marker gutter is an independently measured column. In particular,
+        // baseIndentMultiplier == 0 must not permit text to overlap a scaled
+        // ordered marker or task box.
+        let listBaseIndent = block.listContext == nil ? 0 : max(0, theme.listIndent * theme.listBaseIndentMultiplier)
+        let nestedListIndent = block.listContext == nil ? 0 : max(0, theme.listIndent * CGFloat(listDepth))
+        let markerGutter = marker.map { max(6, $0.width + 6) } ?? 0
+        let listInset = listBaseIndent + nestedListIndent + markerGutter
         let quoteInset = block.inBlockquote ? theme.quoteBorderWidth + theme.quoteMarkerGap + theme.quoteIndent : 0
         let codeInset = block.nodeType == "codeBlock" ? theme.codePaddingHorizontal : 0
         let textX = contentX + listInset + quoteInset + codeInset
@@ -221,8 +265,10 @@ final class CoreTextProseLayoutEngine {
         let typesetter = CTTypesetterCreateWithAttributedString(attributed.string)
         var location = 0
         var fragments: [PreparedProseFragment] = []
-        var textTop = cursorY + (block.nodeType == "codeBlock" ? theme.codePaddingVertical : 0)
+        let markerTopInset = marker.map { max(0, $0.ascent - paint.font.ascender) } ?? 0
+        var textTop = cursorY + (block.nodeType == "codeBlock" ? theme.codePaddingVertical : 0) + markerTopInset
         let textStart = textTop
+        var firstLineBaseline: CGFloat?
         while location < attributed.string.length {
             let suggested = CTTypesetterSuggestLineBreak(typesetter, location, availableWidth)
             let count = max(1, suggested)
@@ -236,6 +282,7 @@ final class CoreTextProseLayoutEngine {
             let baseline = textTop + (lineHeight - naturalHeight) / 2 + ascent
             let lineBounds = CGRect(x: textX, y: textTop, width: min(availableWidth, max(0, lineWidth)), height: lineHeight)
             fragments.append(.init(kind: .text, line: line, origin: CGPoint(x: textX, y: baseline), bounds: lineBounds))
+            if firstLineBaseline == nil { firstLineBaseline = baseline }
             let lineRange = NSRange(location: location, length: count)
             for atom in attributed.atoms where NSIntersectionRange(atom.range, lineRange).length > 0 {
                 let offset = CGFloat(CTLineGetOffsetForStringIndex(line, atom.range.location, nil))
@@ -245,17 +292,17 @@ final class CoreTextProseLayoutEngine {
                     width: atom.metrics.width,
                     height: atom.metrics.ascent + atom.metrics.descent
                 )
-                let atomPaint = atomAppearance(nodeType: atom.nodeType, paint: paint, theme: theme)
-                let atomLine = CTLineCreateWithAttributedString(NSAttributedString(string: atom.label, attributes: atomPaint.attributes))
                 fragments.append(
                     .init(
                         kind: .atom,
-                        line: atomLine,
-                        origin: CGPoint(x: atomBounds.minX + 6, y: baseline),
+                        line: atom.line,
+                        origin: CGPoint(x: atomBounds.minX + atom.appearance.padding.left, y: baseline),
                         bounds: atomBounds,
-                        color: atomPaint.background.cgColor,
-                        cornerRadius: atomPaint.radius,
-                        strokeWidth: atomPaint.borderWidth,
+                        color: atom.appearance.background.cgColor,
+                        borderColor: atom.appearance.borderColor?.cgColor,
+                        cornerRadius: atom.appearance.radius,
+                        strokeWidth: atom.appearance.borderWidth,
+                        padding: atom.appearance.padding,
                         label: atom.label
                     )
                 )
@@ -267,6 +314,7 @@ final class CoreTextProseLayoutEngine {
             let fallbackHeight = paint.lineHeight ?? paint.font.lineHeight
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: "\u{200B}", attributes: baseAttributes(paint)))
             fragments.append(.init(kind: .text, line: line, origin: CGPoint(x: textX, y: textTop + paint.font.ascender), bounds: CGRect(x: textX, y: textTop, width: 0, height: fallbackHeight)))
+            firstLineBaseline = textTop + paint.font.ascender
             textTop += fallbackHeight
         }
         let textEnd = textTop
@@ -277,38 +325,27 @@ final class CoreTextProseLayoutEngine {
         }
         if block.inBlockquote {
             let border = CGRect(x: contentX, y: cursorY, width: theme.quoteBorderWidth, height: max(0, totalEnd - cursorY))
-            fragments.insert(.init(kind: .border, bounds: border, color: theme.quoteBorderColor.cgColor, strokeWidth: theme.quoteBorderWidth), at: 0)
+            fragments.append(.init(kind: .border, bounds: border, color: theme.quoteBorderColor.cgColor, strokeWidth: theme.quoteBorderWidth))
         }
-        if let context = block.listContext {
-            let markerWidth = max(theme.listIndent - 6, paint.font.pointSize * 1.25)
-            let markerBounds = CGRect(x: contentX + listInset - markerWidth, y: textStart, width: markerWidth, height: paint.font.lineHeight)
-            let label: String
-            if context.kind == "task" {
-                label = ""
-            } else if context.ordered {
-                label = "\(context.index)."
-            } else {
-                label = "•"
-            }
-            let markerLine = label.isEmpty ? nil : CTLineCreateWithAttributedString(
-                NSAttributedString(
-                    string: label,
-                    attributes: [
-                        kCTFontAttributeName as NSAttributedString.Key: CTFontCreateWithName(
-                            paint.font.withSize(paint.font.pointSize * theme.listMarkerScale).fontName as CFString,
-                            paint.font.pointSize * theme.listMarkerScale,
-                            nil
-                        ),
-                        kCTForegroundColorAttributeName as NSAttributedString.Key: theme.listMarkerColor.cgColor,
-                    ]
-                )
+        if let marker, let baseline = firstLineBaseline {
+            let markerX = textX - markerGutter + (markerGutter - marker.width)
+            let markerBounds = CGRect(
+                x: markerX,
+                y: baseline - marker.ascent,
+                width: marker.width,
+                height: marker.ascent + marker.descent
             )
-            fragments.append(.init(kind: .marker, line: markerLine, origin: CGPoint(x: markerBounds.minX, y: textStart + paint.font.ascender), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: label, checked: context.checked))
+            fragments.append(.init(kind: .marker, line: marker.line, origin: CGPoint(x: markerX, y: baseline), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
         }
-        let spacing = paint.spacingAfter + (block.listContext == nil ? 0 : theme.listItemSpacing)
+        let spacing = block.listContext == nil ? paint.spacingAfter : theme.listItemSpacing
         let seedBounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: max(0, totalEnd - cursorY))
         let bounds = fragments.reduce(seedBounds) { $0.union($1.bounds) }
-        return (PreparedProseBlock(fragments: fragments, bounds: bounds), max(totalEnd, bounds.maxY) + spacing, 256 + attributed.string.length * MemoryLayout<UInt16>.size)
+        let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
+        return (
+            prepared,
+            max(totalEnd, bounds.maxY) + spacing,
+            256 + attributed.retainedBytes + prepared.estimatedRetainedBytes
+        )
     }
 
     private func makeAttributedString(
@@ -322,23 +359,51 @@ final class CoreTextProseLayoutEngine {
             switch inline {
             case let .text(text: text, marks: marks):
                 result.append(NSAttributedString(string: text, attributes: attributes(for: marks, paint: paint, theme: theme)))
-            case let .atom(nodeType: nodeType, docPos: _, attrsJSON: _, label: label):
+            case let .atom(nodeType: nodeType, docPos: _, attrsJSON: attrsJSON, label: label):
                 if nodeType == "hardBreak" || nodeType == "hard_break" {
                     result.append(NSAttributedString(string: "\n", attributes: baseAttributes(paint)))
                     continue
                 }
+                let appearance = atomAppearance(nodeType: nodeType, attrsJSON: attrsJSON, paint: paint, theme: theme)
                 let displayLabel = label.isEmpty ? " " : label
-                let labelWidth = (displayLabel as NSString).size(withAttributes: [.font: paint.font]).width
-                let metrics = PreparedAtomMetrics(width: max(paint.font.lineHeight, labelWidth + 12), ascent: paint.font.ascender + 4, descent: max(-paint.font.descender, 2) + 4)
+                let labelLine = CTLineCreateWithAttributedString(
+                    NSAttributedString(string: displayLabel, attributes: appearance.attributes)
+                )
+                var labelAscent: CGFloat = 0
+                var labelDescent: CGFloat = 0
+                var labelLeading: CGFloat = 0
+                let labelWidth = CGFloat(CTLineGetTypographicBounds(labelLine, &labelAscent, &labelDescent, &labelLeading))
+                let metrics = PreparedAtomMetrics(
+                    width: max(paint.font.lineHeight, labelWidth + appearance.padding.left + appearance.padding.right),
+                    ascent: labelAscent + appearance.padding.top,
+                    descent: max(labelDescent, 2) + appearance.padding.bottom
+                )
                 let range = NSRange(location: result.length, length: 1)
                 result.append(NSAttributedString(string: "\u{FFFC}", attributes: [
                     kCTRunDelegateAttributeName as NSAttributedString.Key: preparedAtomDelegate(metrics),
                     preparedAtomAttribute: nodeType,
                 ]))
-                atoms.append(PreparedAtomSpec(range: range, nodeType: nodeType, label: displayLabel, metrics: metrics))
+                atoms.append(
+                    PreparedAtomSpec(
+                        range: range,
+                        nodeType: nodeType,
+                        label: displayLabel,
+                        metrics: metrics,
+                        line: labelLine,
+                        appearance: appearance
+                    )
+                )
             }
         }
-        return PreparedAttributedBlock(string: result, atoms: atoms)
+        // NSMutableAttributedString retains UTF-16 storage, attribute runs,
+        // atom delegates, and copied labels. This scales with every character,
+        // even when a narrow width turns it into many CTLines.
+        let stringBytes = result.length.rendererSaturatingMultiply(4)
+        let attributeBytes = max(1, result.length).rendererSaturatingMultiply(48)
+        let atomBytes = atoms.reduce(0) { partial, atom in
+            partial + 256 + atom.label.utf8.count.rendererSaturatingMultiply(2)
+        }
+        return PreparedAttributedBlock(string: result, atoms: atoms, retainedBytes: 256 + stringBytes + attributeBytes + atomBytes)
     }
 
     private func attributes(for marks: [FfiViewerMark], paint: PreparedTextPaint, theme: PreparedProseTheme) -> [NSAttributedString.Key: Any] {
@@ -389,18 +454,74 @@ final class CoreTextProseLayoutEngine {
         ]
     }
 
-    private func atomAppearance(nodeType: String, paint: PreparedTextPaint, theme: PreparedProseTheme) -> (attributes: [NSAttributedString.Key: Any], background: UIColor, radius: CGFloat, borderWidth: CGFloat) {
+    private func makeListMarker(
+        _ context: ViewerListContext,
+        paint: PreparedTextPaint,
+        theme: PreparedProseTheme
+    ) -> PreparedListMarker {
+        let scale = max(0.01, theme.listMarkerScale)
+        let font = paint.font.withSize(max(1, paint.font.pointSize * scale))
+        let label: String
+        if context.kind == "task" {
+            label = ""
+        } else if context.ordered {
+            label = "\(context.index)."
+        } else {
+            label = "•"
+        }
+        guard !label.isEmpty else {
+            let side = max(font.lineHeight, font.pointSize)
+            return PreparedListMarker(line: nil, label: label, width: side, ascent: side * 0.75, descent: side * 0.25, checked: context.checked)
+        }
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(
+                string: label,
+                attributes: [
+                    kCTFontAttributeName as NSAttributedString.Key: CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil),
+                    kCTForegroundColorAttributeName as NSAttributedString.Key: theme.listMarkerColor.cgColor,
+                ]
+            )
+        )
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+        return PreparedListMarker(line: line, label: label, width: max(1, width), ascent: ascent, descent: descent, checked: context.checked)
+    }
+
+    private func atomAppearance(
+        nodeType: String,
+        attrsJSON: String,
+        paint: PreparedTextPaint,
+        theme: PreparedProseTheme
+    ) -> PreparedAtomAppearance {
         if nodeType == "mention" {
-            let mention = theme.mention
+            let values = jsonDictionary(attrsJSON)
+            let localMention = (values["mentionTheme"] as? [String: Any]).map(EditorMentionTheme.init(dictionary:))
+            let mention = theme.mention?.merged(with: localMention) ?? localMention
             var attributes = baseAttributes(paint)
             if let weight = mention?.fontWeight {
                 let font = UIFont.systemFont(ofSize: paint.font.pointSize, weight: EditorTheme.fontWeight(from: weight))
                 attributes[kCTFontAttributeName as NSAttributedString.Key] = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
             }
             attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] = (mention?.textColor ?? paint.color).cgColor
-            return (attributes, mention?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12), mention?.borderRadius ?? 6, mention?.borderWidth ?? 0)
+            return PreparedAtomAppearance(
+                attributes: attributes,
+                background: mention?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12),
+                borderColor: mention?.borderColor,
+                borderWidth: max(0, mention?.borderWidth ?? 0),
+                radius: max(0, mention?.borderRadius ?? 6),
+                padding: UIEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
+            )
         }
-        return (baseAttributes(paint), UIColor.systemGray5, 5, 0)
+        return PreparedAtomAppearance(
+            attributes: baseAttributes(paint),
+            background: UIColor.systemGray5,
+            borderColor: nil,
+            borderWidth: 0,
+            radius: 5,
+            padding: UIEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
+        )
     }
 
     private func jsonDictionary(_ json: String) -> [String: Any] {

@@ -114,8 +114,10 @@ final class PreparedProseFragment {
     let origin: CGPoint
     let bounds: CGRect
     let color: CGColor?
+    let borderColor: CGColor?
     let cornerRadius: CGFloat
     let strokeWidth: CGFloat
+    let padding: UIEdgeInsets
     let label: String?
     let checked: Bool
 
@@ -125,8 +127,10 @@ final class PreparedProseFragment {
         origin: CGPoint = .zero,
         bounds: CGRect,
         color: CGColor? = nil,
+        borderColor: CGColor? = nil,
         cornerRadius: CGFloat = 0,
         strokeWidth: CGFloat = 0,
+        padding: UIEdgeInsets = .zero,
         label: String? = nil,
         checked: Bool = false
     ) {
@@ -135,10 +139,21 @@ final class PreparedProseFragment {
         self.origin = origin
         self.bounds = bounds
         self.color = color
+        self.borderColor = borderColor
         self.cornerRadius = cornerRadius
         self.strokeWidth = strokeWidth
+        self.padding = padding
         self.label = label
         self.checked = checked
+    }
+
+    /// Core Text retains opaque shaping data outside Swift's object graph.
+    /// Charge a conservative fixed payload per line/fragment plus the visible
+    /// label so narrow documents cannot evade the prepared-layout cache.
+    var estimatedRetainedBytes: Int {
+        let lineBytes = line == nil ? 0 : 768
+        let labelBytes = (label?.utf8.count ?? 0).layoutSaturatingMultiply(2)
+        return 192 + lineBytes + labelBytes + (kind == .atom ? 192 : 0)
     }
 }
 
@@ -151,6 +166,10 @@ final class PreparedProseBlock {
     init(fragments: [PreparedProseFragment], bounds: CGRect) {
         self.fragments = fragments
         self.bounds = bounds
+    }
+
+    var estimatedRetainedBytes: Int {
+        160 + fragments.reduce(0) { $0 + $1.estimatedRetainedBytes }
     }
 
     /// Compatibility initializer retained for Task 3 test seams.
@@ -192,5 +211,12 @@ public final class PreparedProseLayout: NSObject {
 
     static func error(key: ProseLayoutKey, width: CGFloat, error: ProseViewerError) -> PreparedProseLayout {
         PreparedProseLayout(key: key, size: CGSize(width: width, height: 0), blocks: [], retainedBytes: 0, error: error)
+    }
+}
+
+private extension Int {
+    func layoutSaturatingMultiply(_ other: Int) -> Int {
+        let result = multipliedReportingOverflow(by: other)
+        return result.overflow ? Int.max : result.partialValue
     }
 }

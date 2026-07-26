@@ -38,27 +38,39 @@ public final class PreparedProseDrawingView: UIView {
         context.translateBy(x: 0, y: bounds.height)
         context.scaleBy(x: 1, y: -1)
         let scale = CGFloat(Double(bitPattern: layout.key.displayScaleBits))
+        var visibleFragments: [PreparedProseFragment] = []
         for index in lower..<blocks.count {
             let block = blocks[index]
             guard block.bounds.minY <= rect.maxY else { break }
-            for fragment in block.fragments {
-                draw(fragment, in: context, scale: scale)
-            }
+            visibleFragments.append(contentsOf: block.fragments)
         }
+        // Keep paint phases global across the visible range: a nested code
+        // background must never cover a quote border from an adjacent block.
+        for fragment in visibleFragments { drawBackground(fragment, in: context) }
+        for fragment in visibleFragments { drawBorderOrRule(fragment, in: context, scale: scale) }
+        for fragment in visibleFragments { drawForeground(fragment, in: context) }
         context.restoreGState()
     }
 
-    private func draw(_ fragment: PreparedProseFragment, in context: CGContext, scale: CGFloat) {
-        let rect = CGRect(
+    private func drawingRect(for fragment: PreparedProseFragment) -> CGRect {
+        CGRect(
             x: fragment.bounds.minX,
             y: bounds.height - fragment.bounds.maxY,
             width: fragment.bounds.width,
             height: fragment.bounds.height
         )
+    }
+
+    private func drawBackground(_ fragment: PreparedProseFragment, in context: CGContext) {
+        guard fragment.kind == .background || fragment.kind == .atom else { return }
+        let rect = drawingRect(for: fragment)
+        context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
+        context.fill(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
+    }
+
+    private func drawBorderOrRule(_ fragment: PreparedProseFragment, in context: CGContext, scale: CGFloat) {
+        let rect = drawingRect(for: fragment)
         switch fragment.kind {
-        case .background:
-            context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
-            context.fill(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
         case .border:
             context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
             context.fill(rect)
@@ -67,13 +79,29 @@ public final class PreparedProseDrawingView: UIView {
             let alignedY = (rect.minY / unit).rounded() * unit
             context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
             context.fill(CGRect(x: rect.minX, y: alignedY, width: rect.width, height: max(unit, rect.height)))
+        case .atom where fragment.strokeWidth > 0:
+            context.setStrokeColor(fragment.borderColor ?? fragment.color ?? UIColor.clear.cgColor)
+            context.setLineWidth(fragment.strokeWidth)
+            let inset = fragment.strokeWidth / 2
+            context.stroke(UIBezierPath(roundedRect: rect.insetBy(dx: inset, dy: inset), cornerRadius: max(0, fragment.cornerRadius - inset)).cgPath)
+        default:
+            break
+        }
+    }
+
+    private func drawForeground(_ fragment: PreparedProseFragment, in context: CGContext) {
+        let rect = CGRect(
+            x: fragment.bounds.minX,
+            y: bounds.height - fragment.bounds.maxY,
+            width: fragment.bounds.width,
+            height: fragment.bounds.height
+        )
+        switch fragment.kind {
         case .text:
             guard let line = fragment.line else { return }
             context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
             CTLineDraw(line, context)
         case .atom:
-            context.setFillColor(fragment.color ?? UIColor.systemGray5.cgColor)
-            context.fill(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
             guard let line = fragment.line else { return }
             context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
             CTLineDraw(line, context)
@@ -84,6 +112,8 @@ public final class PreparedProseDrawingView: UIView {
             } else {
                 drawTaskMarker(in: rect, checked: fragment.checked, color: UIColor(cgColor: fragment.color ?? UIColor.label.cgColor))
             }
+        case .background, .border, .rule:
+            break
         }
     }
 

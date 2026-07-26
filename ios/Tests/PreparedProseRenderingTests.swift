@@ -1,162 +1,197 @@
 import CoreText
+import UIKit
 import XCTest
 
 final class PreparedProseRenderingTests: XCTestCase {
-    func testPreparedFixtureCorpusCoversEveryTypedElementAndMark() throws {
-        let fixtures: [Fixture] = [
-            Fixture("paragraph", blocks: [.text("paragraph", "Paragraph")], kinds: [.text]),
-            Fixture("heading-1", blocks: [.text("h1", "Heading 1")], kinds: [.text]),
-            Fixture("heading-2", blocks: [.text("h2", "Heading 2")], kinds: [.text]),
-            Fixture("heading-3", blocks: [.text("h3", "Heading 3")], kinds: [.text]),
-            Fixture("heading-4", blocks: [.text("h4", "Heading 4")], kinds: [.text]),
-            Fixture("heading-5", blocks: [.text("h5", "Heading 5")], kinds: [.text]),
-            Fixture("heading-6", blocks: [.text("h6", "Heading 6")], kinds: [.text]),
-            Fixture(
-                "nested ordered bullet and task lists",
-                blocks: [
-                    .list("ordered", depth: 1, index: 3, text: "third"),
-                    .list("bullet", depth: 2, index: 1, text: "nested bullet"),
-                    .task(depth: 3, checked: true, text: "nested task"),
-                ],
-                kinds: [.text, .marker]
-            ),
-            Fixture("blockquote", blocks: [.quote("Quoted prose")], kinds: [.text, .border]),
-            Fixture("code block", blocks: [.text("codeBlock", "let x = 1")], kinds: [.text, .background]),
-            Fixture("horizontal rule", blocks: [.rule], kinds: [.rule]),
-            Fixture(
-                "hard break",
-                blocks: [.inline("paragraph", [.text("first", []), .atom("hardBreak", ""), .text("second", [])])],
-                kinds: [.text]
-            ),
-            Fixture("opaque inline atom", blocks: [.inline("paragraph", [.atom("__opaque", "opaque")])], kinds: [.atom]),
-            Fixture("opaque block atom", blocks: [.blockAtom("__opaque", "opaque block")], kinds: [.atom]),
-            Fixture("mention", blocks: [.inline("paragraph", [.atom("mention", "@Ada")])], kinds: [.atom]),
-            Fixture(
-                "link",
-                blocks: [.inline("paragraph", [.text("link", [.mark("link", #"{"href":"https://example.test"}"#)])])],
-                kinds: [.text]
-            ),
-            Fixture(
-                "all marks",
-                blocks: [.inline("paragraph", [
-                    .text("bold ", [.mark("bold")]),
-                    .text("italic ", [.mark("italic")]),
-                    .text("underline ", [.mark("underline")]),
-                    .text("strike ", [.mark("strike")]),
-                    .text("code ", [.mark("code")]),
-                    .text("colour ", [.mark("textColor", #"{"color":"#C00020"}"#)]),
-                    .text("highlight ", [.mark("highlight", #"{"color":"#FFF176"}"#)]),
-                    .text("family size", [.mark("textStyle", #"{"fontFamily":"Courier","fontSize":19}"#)]),
-                ])],
-                kinds: [.text]
-            ),
-            Fixture("unicode emoji bidi", blocks: [.text("paragraph", "עברית 😀 العربية — café")], kinds: [.text]),
-        ]
-
-        let engine = CoreTextProseLayoutEngine()
-        for fixture in fixtures {
-            let document = ViewerDocument(
-                semanticKey: String(repeating: "a", count: 64),
-                blocks: fixture.blocks,
-                isEmpty: false,
-                retainedBytes: 256
-            ).withPreparedTheme(PreparedProseTheme.resolve(themeJSON: fixture.themeJSON))
-            let key = ProseLayoutKey(
-                semanticKey: document.semanticKey,
-                widthPixels: 640,
-                themeDigest: "fixture",
-                nativeFontRevision: 0,
-                fontEnvironmentRevision: 0,
-                displayScale: 2,
-                attachmentRevision: 0,
-                generationIdentity: fixture.name
-            )
-
-            let first = try engine.prepare(document: document, key: key, widthPoints: 320, displayScale: 2)
-            let second = try engine.prepare(document: document, key: key, widthPoints: 320, displayScale: 2)
-            let kinds = Set(first.blocks.flatMap(\.fragments).map(\.kind))
-
-            XCTAssertTrue(fixture.kinds.isSubset(of: kinds), fixture.name)
-            XCTAssertEqual(first.size.height, second.size.height, accuracy: 0.000_1, fixture.name)
-            for block in first.blocks {
-                XCTAssertGreaterThanOrEqual(block.bounds.minY, 0, fixture.name)
-                XCTAssertLessThanOrEqual(block.bounds.maxY, first.size.height, fixture.name)
-                XCTAssertGreaterThanOrEqual(block.bounds.minX, 0, fixture.name)
-                XCTAssertLessThanOrEqual(block.bounds.maxX, first.size.width, fixture.name)
-                for fragment in block.fragments {
-                    XCTAssertTrue(block.bounds.contains(fragment.bounds), "\(fixture.name): \(fragment.kind)")
-                }
+    func testCompilerBackedJSONAndHTMLFixturesPreserveInheritedContexts() throws {
+        for fixture in Fixture.structuralFixtures {
+            try withCompiledDocument(source: fixture.source, configJSON: fixture.configJSON) { document in
+                XCTAssertTrue(fixture.expectedKinds.isSubset(of: preparedKinds(for: document)), fixture.name)
+                XCTAssertTrue(fixture.assertDocument(document), fixture.name)
             }
+        }
+    }
+
+    func testCompilerBackedFixturesExposeEveryMarkAndAttributeToCoreText() throws {
+        try withCompiledDocument(source: Fixture.markSource, configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(document, themeJSON: Fixture.themeJSON)
+            let runs = layout.blocks.flatMap(\.fragments).compactMap(\.line).flatMap(coreTextRuns)
+
+            XCTAssertTrue(runs.contains { fontTraits($0).contains(.traitBold) })
+            XCTAssertTrue(runs.contains { fontTraits($0).contains(.traitItalic) })
+            XCTAssertTrue(runs.contains { attributes($0)[.underlineStyle] != nil })
+            XCTAssertTrue(runs.contains { attributes($0)[.strikethroughStyle] != nil })
+            XCTAssertTrue(runs.contains { CTFontGetSymbolicTraits(font($0)).contains(.traitMonoSpace) })
+            XCTAssertTrue(runs.contains { UIColor(cgColor: foreground($0)).isEqual(EditorTheme.color(from: "#007AFF")!) })
+            XCTAssertTrue(runs.contains { UIColor(cgColor: foreground($0)).isEqual(EditorTheme.color(from: "#FF0000")!) })
+            XCTAssertTrue(runs.contains { attributes($0)[.backgroundColor] != nil })
+            XCTAssertTrue(runs.contains { CTFontGetSize(font($0)) == 19 })
+        }
+    }
+
+    func testExtremeListMarkerAndNestedCodeBlockquoteEdgesAreCompilerBacked() throws {
+        try withCompiledDocument(source: Fixture.edgeSource, configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(
+                document,
+                themeJSON: #"{"list":{"indent":28,"baseIndentMultiplier":0,"markerScale":4,"itemSpacing":3},"codeBlock":{"backgroundColor":"#F2F2F7","paddingHorizontal":12,"paddingVertical":8}}"#
+            )
+            let fragments = layout.blocks.flatMap(\.fragments)
+            guard let listBlock = layout.blocks.first(where: { $0.fragments.contains { $0.kind == .marker } }),
+                  let marker = listBlock.fragments.first(where: { $0.kind == .marker }),
+                  let firstText = listBlock.fragments.first(where: { $0.kind == .text }),
+                  let quoteBorder = fragments.first(where: { $0.kind == .border }),
+                  let codeBackground = fragments.first(where: { $0.kind == .background })
+            else { return XCTFail("edge fixture must prepare marker, text, quote border, and code background") }
+
+            XCTAssertLessThanOrEqual(marker.bounds.maxX, firstText.bounds.minX)
+            XCTAssertGreaterThanOrEqual(marker.bounds.minY, 0)
+            XCTAssertTrue(quoteBorder.bounds.intersects(codeBackground.bounds))
+        }
+    }
+
+    func testCompilerBackedMentionMergesLocalPaintIntoImmutableAtomFragment() throws {
+        let fixture = Fixture.structuralFixtures[2]
+        try withCompiledDocument(source: fixture.source, configJSON: fixture.configJSON) { document in
+            let layout = try prepare(document, themeJSON: Fixture.themeJSON)
+            guard let atom = layout.blocks.flatMap(\.fragments).first(where: { $0.kind == .atom }) else {
+                return XCTFail("compiler-backed mention must produce an atom fragment")
+            }
+            XCTAssertEqual(UIColor(cgColor: atom.color!), EditorTheme.color(from: "#00FF00"))
+            XCTAssertEqual(UIColor(cgColor: atom.borderColor!), EditorTheme.color(from: "#0000FF"))
+            XCTAssertEqual(atom.strokeWidth, 2)
+            XCTAssertEqual(atom.cornerRadius, 9)
+            XCTAssertEqual(atom.padding, UIEdgeInsets(top: 4, left: 6, bottom: 4, right: 6))
+            XCTAssertNotNil(atom.line)
+        }
+    }
+
+    private func prepare(_ document: ViewerDocument, themeJSON: String?) throws -> PreparedProseLayout {
+        let themed = document.withPreparedTheme(PreparedProseTheme.resolve(themeJSON: themeJSON))
+        let key = ProseLayoutKey(
+            semanticKey: themed.semanticKey,
+            widthPixels: 640,
+            themeDigest: "fixture",
+            nativeFontRevision: 0,
+            fontEnvironmentRevision: 0,
+            displayScale: 2,
+            attachmentRevision: 0,
+            generationIdentity: "fixture"
+        )
+        return try CoreTextProseLayoutEngine().prepare(document: themed, key: key, widthPoints: 320, displayScale: 2)
+    }
+
+    private func preparedKinds(for document: ViewerDocument) -> Set<PreparedProseFragmentKind> {
+        let layout = try! prepare(document, themeJSON: Fixture.themeJSON)
+        return Set(layout.blocks.flatMap(\.fragments).map(\.kind))
+    }
+
+    /// Dropping both the result field and the local optional before returning
+    /// deterministically releases UniFFI's generated compiled-document owner.
+    private func withCompiledDocument<T>(
+        source: FixtureSource,
+        configJSON: String,
+        body: (ViewerDocument) throws -> T
+    ) throws -> T {
+        var result = viewerCompile(
+            request: FfiViewerCompileRequest(
+                sourceKind: source.kind,
+                source: source.value,
+                configJson: configJSON,
+                imagesEnabled: true,
+                mentionPrefix: "@"
+            )
+        )
+        if let error = result.error {
+            throw ProseViewerError.compiler(domain: error.domain, code: error.code, message: error.message)
+        }
+        var compiled: ViewerCompiledDocument? = try XCTUnwrap(result.value)
+        result.value = nil
+        defer { compiled = nil }
+        return try body(try ViewerDocument(compiled: try XCTUnwrap(compiled)))
+    }
+
+    private func coreTextRuns(_ line: CTLine) -> [CTRun] {
+        CTLineGetGlyphRuns(line) as? [CTRun] ?? []
+    }
+
+    private func attributes(_ run: CTRun) -> [NSAttributedString.Key: Any] {
+        CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
+    }
+
+    private func font(_ run: CTRun) -> CTFont {
+        attributes(run)[kCTFontAttributeName as NSAttributedString.Key] as! CTFont
+    }
+
+    private func foreground(_ run: CTRun) -> CGColor {
+        attributes(run)[kCTForegroundColorAttributeName as NSAttributedString.Key] as! CGColor
+    }
+
+    private func fontTraits(_ run: CTRun) -> CTFontSymbolicTraits {
+        CTFontGetSymbolicTraits(font(run))
+    }
+}
+
+private enum FixtureSource {
+    case json(String)
+    case html(String)
+
+    var kind: FfiViewerSourceKind {
+        switch self {
+        case .json: .json
+        case .html: .html
+        }
+    }
+    var value: String {
+        switch self {
+        case let .json(value), let .html(value): value
         }
     }
 }
 
 private struct Fixture {
     let name: String
-    let blocks: [ViewerBlock]
-    let kinds: Set<PreparedProseFragmentKind>
-    let themeJSON: String?
+    let source: FixtureSource
+    let configJSON: String
+    let expectedKinds: Set<PreparedProseFragmentKind>
+    let assertDocument: (ViewerDocument) -> Bool
 
-    init(
-        _ name: String,
-        blocks: [ViewerBlock],
-        kinds: Set<PreparedProseFragmentKind>,
-        themeJSON: String? = #"{"mentions":{"backgroundColor":"#DDEEFF"},"codeBlock":{"backgroundColor":"#F2F2F7","paddingHorizontal":12,"paddingVertical":8}}"#
-    ) {
-        self.name = name
-        self.blocks = blocks
-        self.kinds = kinds
-        self.themeJSON = themeJSON
-    }
-}
+    static let themeJSON = #"{"mentions":{"textColor":"#102030","backgroundColor":"#DDEEFF","borderColor":"#445566","borderWidth":2,"borderRadius":7},"links":{"color":"#007AFF"}}"#
+    static let localConfig = #"{"initialization":{"type":"localEmpty"}}"#
+    static let customConfig = #"{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"#
 
-private extension ViewerBlock {
-    static func text(_ nodeType: String, _ text: String) -> ViewerBlock {
-        ViewerBlock(nodeType: nodeType, depth: 0, inBlockquote: false, listContext: nil, inlines: [.text(text: text, marks: [])])
-    }
+    static let structuralFixtures: [Fixture] = [
+        Fixture(
+            name: "nested JSON list and blockquote inheritance",
+            source: .json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"#),
+            configJSON: localConfig,
+            expectedKinds: [.text, .marker, .border],
+            assertDocument: { document in
+                document.blocks.contains { $0.inBlockquote && $0.listContext != nil }
+                    && document.blocks.contains { $0.listContext?.ordered == true && $0.listContext?.index == 12 }
+            }
+        ),
+        Fixture(
+            name: "HTML headings marks rule and hard break",
+            source: .html("<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6><blockquote><p><strong>bold</strong><br>quote</p></blockquote><ol start=\"3\"><li>third</li></ol><hr>"),
+            configJSON: localConfig,
+            expectedKinds: [.text, .marker, .border, .rule],
+            assertDocument: { document in
+                ["h1", "h2", "h3", "h4", "h5", "h6"].allSatisfy { heading in document.blocks.contains { $0.nodeType == heading } }
+                    && document.blocks.contains { $0.inBlockquote }
+            }
+        ),
+        Fixture(
+            name: "custom atoms and snake rule",
+            source: .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"#),
+            configJSON: customConfig,
+            expectedKinds: [.atom, .rule],
+            assertDocument: { document in
+                document.blocks.contains { $0.nodeType == "horizontal_rule" }
+                    && document.blocks.contains { $0.listContext?.kind == "task" && $0.listContext?.checked == true }
+            }
+        ),
+    ]
 
-    static func inline(_ nodeType: String, _ inlines: [ViewerInline]) -> ViewerBlock {
-        ViewerBlock(nodeType: nodeType, depth: 0, inBlockquote: false, listContext: nil, inlines: inlines)
-    }
-
-    static func quote(_ text: String) -> ViewerBlock {
-        ViewerBlock(nodeType: "paragraph", depth: 1, inBlockquote: true, listContext: nil, inlines: [.text(text: text, marks: [])])
-    }
-
-    static func list(_ kind: String, depth: Int, index: Int, text: String) -> ViewerBlock {
-        ViewerBlock(
-            nodeType: "paragraph",
-            depth: UInt16(depth),
-            inBlockquote: false,
-            listContext: ViewerListContext(ordered: kind == "ordered", index: index, kind: kind, checked: false),
-            inlines: [.text(text: text, marks: [])]
-        )
-    }
-
-    static func task(depth: Int, checked: Bool, text: String) -> ViewerBlock {
-        ViewerBlock(
-            nodeType: "paragraph",
-            depth: UInt16(depth),
-            inBlockquote: false,
-            listContext: ViewerListContext(ordered: false, index: 1, kind: "task", checked: checked),
-            inlines: [.text(text: text, marks: [])]
-        )
-    }
-
-    static func blockAtom(_ nodeType: String, _ label: String) -> ViewerBlock {
-        ViewerBlock(nodeType: nodeType, depth: 0, inBlockquote: false, listContext: nil, inlines: [.atom(nodeType: nodeType, docPos: 0, attrsJSON: "{}", label: label)])
-    }
-
-    static var rule: ViewerBlock { blockAtom("horizontalRule", "") }
-}
-
-private extension ViewerInline {
-    static func text(_ text: String, _ marks: [FfiViewerMark]) -> ViewerInline { .text(text: text, marks: marks) }
-    static func atom(_ nodeType: String, _ label: String) -> ViewerInline { .atom(nodeType: nodeType, docPos: 0, attrsJSON: "{}", label: label) }
-}
-
-private extension FfiViewerMark {
-    static func mark(_ type: String, _ attrsJSON: String = "{}") -> FfiViewerMark {
-        FfiViewerMark(markType: type, attrsJson: attrsJSON)
-    }
+    static let markSource = FixtureSource.json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"Courier","fontSize":19}}]}]}]}"#)
+    static let edgeSource = FixtureSource.json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"codeBlock","content":[{"type":"text","text":"nested code"}]},{"type":"orderedList","attrs":{"start":9999},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"marker"}]}]}]}]}]}"#)
 }
