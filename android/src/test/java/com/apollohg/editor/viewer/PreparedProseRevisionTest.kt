@@ -73,6 +73,28 @@ class PreparedProseRevisionTest {
         }
     }
 
+    @Test fun `Fabric terminal sidecar release is idempotent and cannot remove another component`() {
+        val registry = PreparedProseLayoutRegistry()
+        val released = FabricSurfaceToken(71, 9)
+        val sibling = FabricSurfaceToken(71, 10)
+        try {
+            FabricAttachmentSidecars.begin(released, "semantic-a")
+            FabricAttachmentSidecars.begin(sibling, "semantic-b")
+
+            // This models a drop after the UIView tag has reset: teardown is
+            // driven by the recorded token, not a recomputed current tag.
+            registry.releaseFabricSurface(released)
+            assertEquals(null, FabricAttachmentSidecars.state(released))
+            assertTrue(FabricAttachmentSidecars.state(sibling) != null)
+
+            registry.releaseFabricSurface(released)
+            assertTrue(FabricAttachmentSidecars.state(sibling) != null)
+        } finally {
+            registry.releaseFabricSurface(released)
+            registry.releaseFabricSurface(sibling)
+        }
+    }
+
     @Test fun semanticIdentityIncludesAllPublicationInputsButExcludesStateRevisions() {
         val base = ProseViewerRequest(
             ProseViewerSource.Json("{\"type\":\"doc\"}"),

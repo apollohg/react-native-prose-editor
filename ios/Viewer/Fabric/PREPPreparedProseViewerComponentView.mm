@@ -193,6 +193,10 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 
 - (void)dealloc
 {
+  // Deallocation can follow a Fabric discard without prepareForRecycle. This
+  // helper is idempotent and talks only to the stable registry token; it never
+  // asks a detached UIView for its current tag or root surface.
+  [self releaseAllFabricOwnership];
   if (_imageMetadataObserver) [[NSNotificationCenter defaultCenter] removeObserver:_imageMetadataObserver];
   if (_imageResourceObserver) [[NSNotificationCenter defaultCenter] removeObserver:_imageResourceObserver];
   if (_fontEnvironmentObserver) [[NSNotificationCenter defaultCenter] removeObserver:_fontEnvironmentObserver];
@@ -279,9 +283,10 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 {
   [super didMoveToSuperview];
   if (self.superview == nil) {
-    // Detachment may precede recycling and React Native may reset `tag`
-    // before prepareForRecycle. Drop only the persisted generation token.
-    [self releaseFabricOwnership];
+    // Once detached, this view has no trustworthy root from which to prove
+    // that its ownership can survive a remount. Release the persisted owner
+    // now; a real reattachment acquires a fresh exact token through the gate.
+    [self releaseAllFabricOwnership];
     [_drawingView cancelConfiguredImages];
     return;
   }
@@ -359,6 +364,11 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // uses releaseFabricOwnership instead, preserving the token until Yoga has
   // accepted the next semantic generation.
   [self releaseFabricOwnership];
+  [self releaseFabricSidecarOwnership];
+}
+
+- (void)releaseFabricSidecarOwnership
+{
   if (!_hasOwnedSidecar) return;
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
       releaseFabricSurfaceId:_ownedSidecarSurfaceId
@@ -427,10 +437,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
       (_ownedSidecarSurfaceId != *surfaceId || _ownedSidecarComponentTag != componentTag)) {
     // A recycled UIView must never remove a new component's sidecar: only
     // release the stable token it recorded when it bound the old sidecar.
-    [[PREPPreparedProseLayoutRegistry sharedRegistry]
-        releaseFabricSurfaceId:_ownedSidecarSurfaceId
-                   componentTag:_ownedSidecarComponentTag];
-    _hasOwnedSidecar = NO;
+    [self releaseFabricSidecarOwnership];
   }
   if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
     [_drawingView installWithLayout:nil];

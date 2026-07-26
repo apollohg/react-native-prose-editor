@@ -69,7 +69,6 @@ internal class PreparedProseViewerManager :
             state.finishWithoutMountedReplacement(view)
             state.release()
         }
-        FabricAttachmentSidecars.remove(FabricSurfaceToken(UIManagerHelper.getSurfaceId(view), view.id))
         view.onUsableMetricsChanged = null
         view.onVisibleRectChanged = null
         view.onFontConfigurationChanged = null
@@ -84,9 +83,8 @@ internal class PreparedProseViewerManager :
         // the weak view map is only supplemental lifecycle bookkeeping. The
         // registry cleanup is intentionally unconditional and surface-wide.
         PreparedProseLayoutRegistry.shared.releaseFabricSurfaceId(surfaceId)
-        FabricAttachmentSidecars.removeSurface(surfaceId)
         states.entries.forEach { (view, state) ->
-            if (state.generation?.surface?.surfaceId == surfaceId) {
+            if (state.ownsFabricSurface(surfaceId)) {
                 state.release()
                 view.imagePixels = emptyMap()
                 view.install(null)
@@ -352,6 +350,10 @@ internal class PreparedProseViewerManager :
         var revisions: FabricStateRevisions? = null,
         var stateWrapper: StateWrapper? = null,
         var generation: FabricGenerationToken? = null,
+        // This is independent from the generation lease: an accepted props
+        // replacement can release the lease before the next Yoga pass, while
+        // the mounted sidecar is still owned by this exact Fabric token.
+        private var sidecarGeneration: FabricGenerationToken? = null,
         val errorReporter: FabricErrorReporter = FabricErrorReporter(),
         private val replacementAccessibilityTransaction: FabricReplacementAccessibilityTransaction =
             FabricReplacementAccessibilityTransaction(),
@@ -445,6 +447,7 @@ internal class PreparedProseViewerManager :
         ) {
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
+            releaseSidecarOwnership()
             imagePipeline.cancel()
             fontEnvironment.deactivate()
             replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
@@ -474,6 +477,14 @@ internal class PreparedProseViewerManager :
             request: ProseViewerRequest,
         ): FabricGenerationToken {
             val next = FabricGenerationToken(surface, request.generationIdentity)
+            val previousSidecar = sidecarGeneration
+            if (previousSidecar != null && previousSidecar.surface != next.surface) {
+                // The view may already carry another Fabric tag by the time
+                // this callback runs. Remove only the sidecar token recorded
+                // for its former owner, never one reconstructed from the view.
+                PreparedProseLayoutRegistry.shared.releaseFabricSurface(previousSidecar.surface)
+            }
+            sidecarGeneration = next
             if (generation != null && generation != next) {
                 PreparedProseLayoutRegistry.shared.releaseFabricGeneration(generation!!)
             }
@@ -484,6 +495,7 @@ internal class PreparedProseViewerManager :
         fun release() {
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
+            releaseSidecarOwnership()
             imagePipeline.cancel()
             fontEnvironment.deactivate()
             attachmentRevisions.reset()
@@ -491,6 +503,19 @@ internal class PreparedProseViewerManager :
             stateWrapper = null
             revisions = null
             errorReporter.reset()
+        }
+
+        fun ownsFabricSurface(surfaceId: Int): Boolean =
+            generation?.surface?.surfaceId == surfaceId ||
+                sidecarGeneration?.surface?.surfaceId == surfaceId
+
+        private fun releaseSidecarOwnership() {
+            val sidecar = sidecarGeneration ?: return
+            // Sidecars are keyed by the surface/component half of the token.
+            // Clear the recorded owner before dispatching so drop/recycle and
+            // a later surface stop are all safely idempotent.
+            sidecarGeneration = null
+            PreparedProseLayoutRegistry.shared.releaseFabricSurface(sidecar.surface)
         }
     }
 

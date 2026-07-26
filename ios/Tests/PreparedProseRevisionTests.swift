@@ -337,21 +337,27 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertEqual(baseKey.semanticGenerationIdentity, replacementKey.semanticGenerationIdentity)
     }
 
-    func testFabricUpdateThenRecycleBeforeNextMeasureRemovesOnlyItsPersistedSidecar() {
+    func testFabricTerminalSidecarReleaseIsIdempotentAndCannotRemoveAnotherComponent() {
         let registry = PreparedProseLayoutRegistry(compile: { _ in
             ViewerDocument(semanticKey: String(repeating: "a", count: 64), paragraphs: [], isEmpty: true, retainedBytes: 0)
         })
         let surface = FabricSurfaceToken(surfaceId: 711, componentTag: 9)
+        let sibling = FabricSurfaceToken(surfaceId: 711, componentTag: 10)
         _ = FabricAttachmentSidecars.begin(surface, semanticIdentity: "semantic-a")
+        _ = FabricAttachmentSidecars.begin(sibling, semanticIdentity: "semantic-b")
         // updateState releases the old layout generation before Yoga measures
-        // the replacement; recycle must still know this stable sidecar token.
+        // the replacement; terminal cleanup must use this persisted token even
+        // if the UIView's current tag now names the sibling component.
         registry.releaseFabricGeneration(.init(surface: surface, generationIdentity: "replacement-layout"))
         XCTAssertNotNil(FabricAttachmentSidecars.state(for: surface))
 
         registry.releaseFabricSurface(surface)
         XCTAssertNil(FabricAttachmentSidecars.state(for: surface))
+        XCTAssertNotNil(FabricAttachmentSidecars.state(for: sibling))
         registry.releaseFabricSurface(surface)
         XCTAssertNil(FabricAttachmentSidecars.state(for: surface))
+        XCTAssertNotNil(FabricAttachmentSidecars.state(for: sibling))
+        registry.releaseFabricSurface(sibling)
     }
 
     func testExplicitFontAvailabilityAndDynamicTypeEachPublishOneReplacementRevision() {
