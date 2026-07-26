@@ -72,52 +72,60 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
             mentionPrefix = request.mentionPrefix,
         )
     )
-    result.error?.let { error ->
-        throw ProseViewerError.compiler(error.domain, error.code, error.message)
-    }
-    val compiled = result.value ?: throw ProseViewerError.compiler(
-        domain = "viewer",
-        code = "MISSING_COMPILED_DOCUMENT",
-        message = "The compiler returned neither a document nor an error.",
-    )
-    val semanticKey = compiled.semanticKey()
-    if (!semanticKey.matches(Regex("[0-9a-f]{64}"))) {
-        throw ProseViewerError.compiler(
+    try {
+        result.error?.let { error ->
+            throw ProseViewerError.compiler(error.domain, error.code, error.message)
+        }
+        val compiled = result.value ?: throw ProseViewerError.compiler(
             domain = "viewer",
-            code = "INVALID_SEMANTIC_KEY",
-            message = "The compiler returned an invalid semantic key.",
+            code = "MISSING_COMPILED_DOCUMENT",
+            message = "The compiler returned neither a document nor an error.",
         )
-    }
 
-    val paragraphs = mutableListOf<String>()
-    val text = StringBuilder()
-    var inBlock = false
-    compiled.elements().forEach { element ->
-        when (element) {
-            is FfiViewerElement.BlockStart -> {
-                if (inBlock) {
+        // FfiViewerCompileResult owns compiled. Copy every value needed by the Kotlin document
+        // before destroying the result, which recursively destroys its contained Rust object.
+        val semanticKey = compiled.semanticKey()
+        if (!semanticKey.matches(Regex("[0-9a-f]{64}"))) {
+            throw ProseViewerError.compiler(
+                domain = "viewer",
+                code = "INVALID_SEMANTIC_KEY",
+                message = "The compiler returned an invalid semantic key.",
+            )
+        }
+
+        val paragraphs = mutableListOf<String>()
+        val text = StringBuilder()
+        var inBlock = false
+        compiled.elements().forEach { element ->
+            when (element) {
+                is FfiViewerElement.BlockStart -> {
+                    if (inBlock) {
+                        paragraphs += text.toString()
+                        text.clear()
+                    }
+                    inBlock = true
+                }
+                is FfiViewerElement.TextRun -> text.append(element.text)
+                is FfiViewerElement.InlineAtom -> text.append(element.label)
+                is FfiViewerElement.BlockAtom -> text.append(element.label)
+                FfiViewerElement.BlockEnd -> {
                     paragraphs += text.toString()
                     text.clear()
+                    inBlock = false
                 }
-                inBlock = true
-            }
-            is FfiViewerElement.TextRun -> text.append(element.text)
-            is FfiViewerElement.InlineAtom -> text.append(element.label)
-            is FfiViewerElement.BlockAtom -> text.append(element.label)
-            FfiViewerElement.BlockEnd -> {
-                paragraphs += text.toString()
-                text.clear()
-                inBlock = false
             }
         }
+        if (inBlock || (text.isNotEmpty() && paragraphs.isEmpty())) paragraphs += text.toString()
+        return ViewerDocument(
+            semanticKey = semanticKey,
+            paragraphs = if (paragraphs.isEmpty()) listOf("") else paragraphs.toList(),
+            isEmpty = compiled.isEmpty(),
+            retainedBytes = compiled.retainedBytesDecimal().toLongOrNull() ?: 0,
+        )
+    } finally {
+        // Do not destroy compiled separately: result is its sole generated owner.
+        result.destroy()
     }
-    if (inBlock || (text.isNotEmpty() && paragraphs.isEmpty())) paragraphs += text.toString()
-    return ViewerDocument(
-        semanticKey = semanticKey,
-        paragraphs = if (paragraphs.isEmpty()) listOf("") else paragraphs.toList(),
-        isEmpty = compiled.isEmpty(),
-        retainedBytes = compiled.retainedBytesDecimal().toLongOrNull() ?: 0,
-    )
 }
 
 private fun mentionPrefix(configJson: String): String? = runCatching {
