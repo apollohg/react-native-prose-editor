@@ -757,11 +757,16 @@ final class EditorV2Adapter {
         )
         switch Self.normalizeJsonResult(result) {
         case .failure(let error):
-            debugNotes.append("renderUpdate \(error.domain)/\(error.code)")
+            // A render update that fails or violates the frozen shape is a
+            // boundary failure like any other. Returning nil without
+            // reporting it leaves every caller — the paired view and the
+            // stateless render probe alike — holding a bare nil with no
+            // cause to surface, so the engine's own error is what travels.
+            emit(error)
             return nil
         case .success(let json):
             guard let snapshot = Self.parseAtomicRenderSnapshot(json) else {
-                debugNotes.append("renderUpdate shape invalid")
+                emit(Self.contractError("v2 render update violates the frozen shape"))
                 return nil
             }
             return snapshot

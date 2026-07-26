@@ -418,10 +418,56 @@ private func v2ConfigIndicatesRoomBinding(_ configJson: String) -> Bool {
     return initialization["type"] as? String == "room"
 }
 
+private func probeContractErrorJson(_ message: String) -> String {
+    v2ErrorJson(
+        FfiError(
+            domain: "boundary",
+            code: "FFI_RESULT_INVALID",
+            message: message,
+            requestId: nil,
+            operationIndex: nil,
+            limit: nil,
+            actual: nil,
+            detailsJson: nil
+        )
+    )
+}
+
+/// The probe contract: a flat JSON array of render elements (what the legacy
+/// set-content probes returned, and what `ProseViewerView` renders). The v2
+/// render accessor emits block form, so blocks are flattened in order; a
+/// pre-flattened payload passes through.
+///
+/// Module-internal so the flattening contract is testable directly.
+func renderElementsJsonFromUpdate(_ updateJson: String) -> String {
+    guard let data = updateJson.data(using: .utf8),
+          let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        return probeContractErrorJson("v2 render update is not valid JSON")
+    }
+    let elements: [Any]
+    if let flattened = update["renderElements"] as? [Any] {
+        elements = flattened
+    } else if let blocks = update["renderBlocks"] as? [Any] {
+        elements = blocks.flatMap { block in block as? [Any] ?? [] }
+    } else {
+        return probeContractErrorJson("v2 render update carries no render payload")
+    }
+    guard let data = try? JSONSerialization.data(withJSONObject: elements),
+          let json = String(data: data, encoding: .utf8)
+    else {
+        return probeContractErrorJson("v2 render elements could not be serialized")
+    }
+    return json
+}
+
 /// Stateless viewer rendering still needs a transient engine session, but it
 /// receives the complete v2 create envelope from TypeScript. Pairing only
 /// attaches to that existing session; it never recreates or patches config.
-private func renderDocumentProbe(
+///
+/// Module-internal rather than private so the error-propagation contract is
+/// testable against the same entry the view functions call.
+func renderDocumentProbe(
     configJson: String,
     apply: (EditorV2Adapter) -> String?
 ) -> String {
@@ -431,65 +477,57 @@ private func renderDocumentProbe(
     case let (value?, nil):
         guard let parsed = createdV2SessionHandle(value) else {
             cleanupCreatedV2Session(value: value, destroy: editorV2Destroy)
-            return v2ErrorJson(
-                FfiError(
-                    domain: "boundary",
-                    code: "FFI_RESULT_INVALID",
-                    message: "v2 render probe could not bind its created editor",
-                    requestId: nil,
-                    operationIndex: nil,
-                    limit: nil,
-                    actual: nil,
-                    detailsJson: nil
-                )
-            )
+            return probeContractErrorJson("v2 render probe could not bind its created editor")
         }
         createdHandle = parsed
     case let (nil, error?):
         return v2ErrorJson(error)
     default:
         cleanupCreatedV2Session(value: created.value, destroy: editorV2Destroy)
-        return v2ErrorJson(
-            FfiError(
-                domain: "boundary",
-                code: "FFI_RESULT_INVALID",
-                message: "v2 render probe could not bind its created editor",
-                requestId: nil,
-                operationIndex: nil,
-                limit: nil,
-                actual: nil,
-                detailsJson: nil
-            )
-        )
+        return probeContractErrorJson("v2 render probe could not bind its created editor")
     }
     guard let adapter = EditorV2Adapter.attach(editorId: createdHandle.handle, roomBound: false) else {
         _ = editorV2Destroy(editorId: createdHandle.handle)
-        return v2ErrorJson(
-            FfiError(
-                domain: "boundary",
-                code: "FFI_RESULT_INVALID",
-                message: "v2 render probe could not bind its created editor",
-                requestId: nil,
-                operationIndex: nil,
-                limit: nil,
-                actual: nil,
-                detailsJson: nil
-            )
-        )
+        return probeContractErrorJson("v2 render probe could not bind its created editor")
     }
     defer { _ = adapter.destroy() }
-    return apply(adapter) ?? v2ErrorJson(
-        FfiError(
-            domain: "boundary",
-            code: "FFI_RESULT_INVALID",
-            message: "v2 render probe could not apply content",
-            requestId: nil,
-            operationIndex: nil,
-            limit: nil,
-            actual: nil,
-            detailsJson: nil
-        )
-    )
+    // The probe owns no view, so nothing claims the adapter's autonomous
+    // error channel and a failing apply would drop the engine's own
+    // domain/code/message on the floor — leaving JS with a generic contract
+    // error that names no cause. Claim the channel for the probe's lifetime
+    // so the first real error is what reaches the caller.
+    let probeErrorToken = UUID()
+    let capturedError = ProbeErrorBox()
+    adapter.bindAutonomousErrorOwner(token: probeErrorToken) { error in
+        capturedError.captureFirst(error)
+    }
+    defer { adapter.clearAutonomousErrorOwner(token: probeErrorToken) }
+    if let rendered = apply(adapter) { return renderElementsJsonFromUpdate(rendered) }
+    guard let error = capturedError.error else {
+        return probeContractErrorJson("v2 render probe could not apply content")
+    }
+    return v2ErrorJson(error)
+}
+
+/// The first error the probed adapter reported. The adapter's error channel
+/// takes an escaping callback, so the capture needs a reference the callback
+/// and the probe can share; later errors are cascade, not cause.
+private final class ProbeErrorBox {
+    private let lock = NSLock()
+    private var captured: FfiError?
+
+    func captureFirst(_ error: FfiError) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard captured == nil else { return }
+        captured = error
+    }
+
+    var error: FfiError? {
+        lock.lock()
+        defer { lock.unlock() }
+        return captured
+    }
 }
 
 // `Module` is `BaseModule & AnyModule`; the conformance is spelled out so
