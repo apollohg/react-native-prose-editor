@@ -29,6 +29,52 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class PreparedProseRenderingTest {
     @Test
+    fun `fixed density compiler edge fixture has exact nested bidi geometry`() {
+        val document = compile(Fixture.finalAndroidEdge)
+        val first = prepare(document)
+        val second = prepare(document)
+        val expected = requireNotNull(Fixture.finalAndroidEdge.expectedGeometry)
+
+        // These constants are the supported API-34/Robolectric geometry contract
+        // for this compiler-backed source at density 1. One pixel permits only
+        // integer rounding at StaticLayout's visual replacement-slot boundary.
+        assertTrue("artifact height", kotlin.math.abs(expected.heightPx - first.heightPx) <= expected.tolerancePx)
+        expected.blockBounds.forEachIndexed { index, bounds ->
+            assertRectEquals("block $index", bounds, first.blocks[index].bounds, expected.tolerancePx)
+        }
+        expected.fragmentBounds.forEach { expectedFragment ->
+            val actual = first.blocks[expectedFragment.blockIndex].fragments
+                .filter { it.kind == expectedFragment.kind }
+                .elementAt(expectedFragment.ordinal)
+            assertRectEquals(
+                "block ${expectedFragment.blockIndex} ${expectedFragment.kind} ${expectedFragment.ordinal}",
+                expectedFragment.bounds,
+                actual.bounds,
+                expected.tolerancePx,
+            )
+        }
+
+        val outerMarker = first.blocks[0].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }
+        val nestedMarker = first.blocks[3].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }
+        val outerAnchor = first.blocks[0].fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.bounds.left
+        val nestedAnchor = first.blocks[3].fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.bounds.left
+        val atom = first.blocks[0].fragments.single { it.kind == PreparedProseFragmentKind.ATOM }
+        val atomLayout = first.blocks[0].fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.layout!!
+        val atomOffset = atomLayout.text.indexOf('\uFFFC')
+        val visualStart = atomLayout.getPrimaryHorizontal(atomOffset)
+        val visualEnd = atomLayout.getPrimaryHorizontal(atomOffset + 1)
+
+        assertEquals("4294967295.", outerMarker.label)
+        assertEquals("•", nestedMarker.label)
+        assertTrue("nested anchor must retain the outer marker gutter", nestedAnchor > outerAnchor)
+        assertTrue("nested marker must not move left of the outer text anchor", nestedMarker.bounds.left >= outerAnchor)
+        assertTrue("nested marker must stay outside the outer text column", nestedMarker.bounds.right <= nestedAnchor)
+        assertEquals(kotlin.math.min(visualStart, visualEnd).toInt(), atom.bounds.left - first.blocks[0].fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.bounds.left)
+        assertEquals(kotlin.math.max(visualStart, visualEnd).toInt(), atom.bounds.right - first.blocks[0].fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.bounds.left)
+        assertPreparedLayoutsEqual(first, second, Fixture.finalAndroidEdge.name)
+    }
+
+    @Test
     fun `compiler backed structural fixtures preserve every block atom and inherited context`() {
         Fixture.structural.forEach { fixture ->
             val document = compile(fixture)
@@ -290,6 +336,13 @@ class PreparedProseRenderingTest {
             }
         }
     }
+
+    private fun assertRectEquals(name: String, expected: Rect, actual: Rect, tolerance: Int) {
+        assertTrue("$name left", kotlin.math.abs(expected.left - actual.left) <= tolerance)
+        assertTrue("$name top", kotlin.math.abs(expected.top - actual.top) <= tolerance)
+        assertTrue("$name right", kotlin.math.abs(expected.right - actual.right) <= tolerance)
+        assertTrue("$name bottom", kotlin.math.abs(expected.bottom - actual.bottom) <= tolerance)
+    }
 }
 
 private inline fun <reified T> android.text.Spanned.allSpans(): List<T> =
@@ -312,6 +365,7 @@ private data class Fixture(
     val configJson: String,
     val expectedKinds: Set<PreparedProseFragmentKind>,
     val assertDocument: (ViewerDocument) -> Boolean,
+    val expectedGeometry: ExpectedGeometry? = null,
 ) {
     companion object {
         const val widthPx = 640
@@ -329,6 +383,45 @@ private data class Fixture(
         val marks = Fixture("all marks", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"monospace","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT)) { true }
         val multiBlockList = Fixture("multi block nested ordered list boundaries", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":7},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"codeBlock","content":[{"type":"text","text":"second"}]},{"type":"opaqueBlock","attrs":{"label":"third"}},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph"}]}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.ATOM)) { it.blocks.any { block -> block.listContext?.index == 12L } }
         val unicode = Fixture("unicode emoji bidi hard break and opaque atoms", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"שלום 🚀"},{"type":"hardBreak"},{"type":"opaque","attrs":{"label":"inline"}},{"type":"text","text":" café"}]},{"type":"opaqueBlock","attrs":{"label":"block"}}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.ATOM)) { it.blocks.any { block -> block.nodeType == "opaqueBlock" } }
+        val finalAndroidEdge = Fixture(
+            name = "fixed density max u32 nested quote code rule and RTL atom",
+            source = ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"אב"},{"type":"opaque","attrs":{"label":"atom"}},{"type":"text","text":" tail"}]},{"type":"codeBlock","content":[{"type":"text","text":"code"}]},{"type":"horizontal_rule"},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]}]}]}]}"""),
+            configJson = customConfig,
+            expectedKinds = setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE, PreparedProseFragmentKind.ATOM),
+            assertDocument = { document ->
+                document.blocks.size == 4
+                    && document.blocks.last().listItemAncestors.size == 2
+                    && document.blocks.first().listContext?.index == 0xFFFF_FFFFL
+            },
+            expectedGeometry = ExpectedGeometry(
+                heightPx = 120,
+                blockBounds = listOf(
+                    Rect(0, 0, 640, 29),
+                    Rect(0, 29, 640, 66),
+                    Rect(0, 66, 640, 91),
+                    Rect(0, 95, 640, 116),
+                ),
+                fragmentBounds = listOf(
+                    ExpectedFragment(1, PreparedProseFragmentKind.BACKGROUND, 0, Rect(164, 29, 476, 66)),
+                    ExpectedFragment(2, PreparedProseFragmentKind.RULE, 0, Rect(164, 78, 476, 79)),
+                ),
+                tolerancePx = 1,
+            ),
+        )
         val all = structural + listOf(marks, multiBlockList, unicode)
     }
 }
+
+private data class ExpectedGeometry(
+    val heightPx: Int,
+    val blockBounds: List<Rect>,
+    val fragmentBounds: List<ExpectedFragment>,
+    val tolerancePx: Int,
+)
+
+private data class ExpectedFragment(
+    val blockIndex: Int,
+    val kind: PreparedProseFragmentKind,
+    val ordinal: Int,
+    val bounds: Rect,
+)

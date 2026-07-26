@@ -190,12 +190,14 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         var retained = document.retainedBytes + theme.retainedBytes
         val markers = mutableMapOf<Int, PreparedMarker>()
         document.blocks.forEach { block ->
-            val boundary = block.listItemBoundary ?: return@forEach
-            if (markers[boundary.identity] == null) block.listContext?.let { markers[boundary.identity] = markerFor(it, theme.paintFor(block), theme) }
+            listItemAncestors(block).forEach { ancestor ->
+                if (markers[ancestor.identity] == null) {
+                    markers[ancestor.identity] = markerFor(ancestor.context, theme.paintFor(block), theme)
+                }
+            }
         }
         val blocks = document.blocks.map { block ->
-            val marker = block.listItemBoundary?.let { markers[it.identity] }
-            val prepared = prepareBlock(block, marker, theme, contentWidth, cursorY)
+            val prepared = prepareBlock(block, markers, theme, contentWidth, cursorY)
             cursorY = prepared.nextY
             retained += prepared.block.retainedBytes + prepared.extraBytes
             prepared.block
@@ -206,18 +208,30 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private data class BlockResult(val block: PreparedProseBlock, val nextY: Int, val extraBytes: Long)
 
-    private fun prepareBlock(block: ViewerBlock, measuredMarker: PreparedMarker?, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int): BlockResult {
+    private fun prepareBlock(block: ViewerBlock, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int): BlockResult {
         val paint = theme.paintFor(block)
-        val marker = if (block.listItemBoundary?.isFirstRenderableLeaf == true) measuredMarker else null
-        val listDepth = block.listItemBoundary?.nestingDepth ?: max(0, block.depth - 1)
-        val markerGutter = measuredMarker?.let { max(6, it.widthPx + 6) } ?: 0
-        val listInset = if (block.listContext == null) 0 else max(0, (theme.listIndentPx * theme.listBaseIndentMultiplier).toInt()) + theme.listIndentPx * listDepth + markerGutter
+        val ancestors = listItemAncestors(block)
+        val ancestorMarkers = ancestors.mapNotNull { ancestor -> measuredMarkers[ancestor.identity]?.let { ancestor to it } }
+        val firstMarkers = ancestorMarkers.filter { (ancestor, _) -> ancestor.isFirstRenderableLeaf }
+        val markerTopInset = firstMarkers.maxOfOrNull { (_, marker) -> max(0, marker.baselinePx - paint.newTextPaint().fontMetricsInt.run { -ascent }) } ?: 0
+        val baseListInset = if (ancestors.isEmpty()) 0 else max(0, (theme.listIndentPx * theme.listBaseIndentMultiplier).toInt())
+        val ancestorGutters = ancestorMarkers.associate { (ancestor, marker) -> ancestor.identity to max(6, marker.widthPx + 6) }
+        // A nested leaf owns every outer list column too: each ancestor adds
+        // its list indent and independently measured marker gutter.
+        val listInset = baseListInset + ancestorMarkers.sumOf { (ancestor, _) -> theme.listIndentPx + (ancestorGutters[ancestor.identity] ?: 0) }
         val quoteInset = if (block.inBlockquote) theme.quoteBorderWidthPx + theme.quoteMarkerGapPx + theme.quoteIndentPx else 0
         val codeInset = if (block.nodeType == "codeBlock") theme.codePaddingHorizontalPx else 0
         val textX = theme.insetLeftPx + listInset + quoteInset + codeInset
-        val itemSpacing = if (block.listContext == null) paint.spacingAfterPx else if (block.listItemBoundary?.isFinalRenderableLeaf != false) theme.listItemSpacingPx else 0
+        val itemSpacing = if (ancestors.isEmpty()) paint.spacingAfterPx else ancestors.count { it.isFinalRenderableLeaf } * theme.listItemSpacingPx
+        fun markerAnchor(ancestor: ViewerListItemAncestor): Int {
+            var inset = baseListInset
+            ancestorMarkers.forEach { (candidate, _) ->
+                inset += theme.listIndentPx + (ancestorGutters[candidate.identity] ?: 0)
+                if (candidate.identity == ancestor.identity) return theme.insetLeftPx + quoteInset + inset
+            }
+            return textX - codeInset
+        }
         if (block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule") {
-            val markerTopInset = marker?.let { max(0, it.baselinePx - paint.newTextPaint().fontMetricsInt.run { -ascent }) } ?: 0
             val ruleTop = cursorY + markerTopInset + theme.ruleMarginPx
             val ruleLeft = theme.insetLeftPx + listInset + quoteInset
             val ruleRight = max(ruleLeft + 1, theme.insetLeftPx + contentWidth - listInset - quoteInset)
@@ -225,7 +239,9 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             val fragments = mutableListOf(PreparedProseFragment(PreparedProseFragmentKind.RULE, rule, color = theme.ruleColor, strokeWidth = theme.ruleThicknessPx.toFloat()))
             val end = rule.bottom + theme.ruleMarginPx
             if (block.inBlockquote) fragments += PreparedProseFragment(PreparedProseFragmentKind.BORDER, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + theme.quoteBorderWidthPx, end), color = theme.quoteBorderColor)
-            marker?.let { fragments += markerFragment(it, textX, max(cursorY + it.baselinePx, ruleTop + theme.ruleThicknessPx), markerGutter, theme.listMarkerColor) }
+            firstMarkers.forEach { (ancestor, marker) ->
+                fragments += markerFragment(marker, markerAnchor(ancestor), max(cursorY + marker.baselinePx, ruleTop + theme.ruleThicknessPx), ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
+            }
             return finishBlock(fragments, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, end), end, itemSpacing)
         }
 
@@ -235,25 +251,48 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val firstBaseline = layout.getLineBaseline(0)
         // A marker can be taller than the first text line. Reserve its excess
         // ascent before publishing geometry so no marker has a negative top.
-        val markerTopInset = marker?.let { max(0, it.baselinePx - firstBaseline) } ?: 0
-        val textTop = cursorY + markerTopInset + if (block.nodeType == "codeBlock") theme.codePaddingVerticalPx else 0
+        val markerTextInset = firstMarkers.maxOfOrNull { (_, marker) -> max(0, marker.baselinePx - firstBaseline) } ?: 0
+        val textTop = cursorY + markerTextInset + if (block.nodeType == "codeBlock") theme.codePaddingVerticalPx else 0
         val textHeight = max(1, layout.height)
         val totalEnd = textTop + textHeight + if (block.nodeType == "codeBlock") theme.codePaddingVerticalPx else 0
         val fragments = mutableListOf<PreparedProseFragment>()
-        if (block.nodeType == "codeBlock") fragments += PreparedProseFragment(PreparedProseFragmentKind.BACKGROUND, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, totalEnd), color = theme.codeBackground, cornerRadius = theme.codeRadiusPx)
+        if (block.nodeType == "codeBlock") fragments += PreparedProseFragment(PreparedProseFragmentKind.BACKGROUND, Rect(theme.insetLeftPx + listInset + quoteInset, cursorY, theme.insetLeftPx + contentWidth - listInset - quoteInset, totalEnd), color = theme.codeBackground, cornerRadius = theme.codeRadiusPx)
         fragments += PreparedProseFragment(PreparedProseFragmentKind.TEXT, Rect(textX, textTop, textX + availableWidth, textTop + textHeight), layout, textX, textTop)
         attributed.atoms.forEach { atom ->
             val line = layout.getLineForOffset(atom.start)
-            val atomX = textX + layout.getPrimaryHorizontal(atom.start).toInt()
+            // Replacement spans consume a visual slot that can run right-to-left.
+            // The two endpoints, rather than a logical-start-plus-width guess,
+            // are the only hit/draw geometry published for the atom.
+            val visualStart = layout.getPrimaryHorizontal(atom.start)
+            val visualEnd = layout.getPrimaryHorizontal(atom.start + 1)
+            val atomLeft = textX + min(visualStart, visualEnd).toInt()
+            val atomRight = textX + max(visualStart, visualEnd).toInt()
             val baseline = textTop + layout.getLineBaseline(line)
             val atomTop = baseline - atom.appearance.paddingVertical - atom.labelBaselinePx
-            val bounds = Rect(atomX, atomTop, atomX + atom.widthPx, atomTop + atom.heightPx)
+            val bounds = Rect(atomLeft, atomTop, max(atomLeft + 1, atomRight), atomTop + atom.heightPx)
             fragments += PreparedProseFragment(PreparedProseFragmentKind.ATOM, bounds, labelLayout = atom.labelLayout, labelX = bounds.left + atom.appearance.paddingHorizontal, labelY = bounds.top + atom.appearance.paddingVertical, color = atom.appearance.background, borderColor = atom.appearance.borderColor, cornerRadius = atom.appearance.radius, strokeWidth = atom.appearance.borderWidth, label = atom.label)
         }
         if (block.inBlockquote) fragments += PreparedProseFragment(PreparedProseFragmentKind.BORDER, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + theme.quoteBorderWidthPx, totalEnd), color = theme.quoteBorderColor)
-        marker?.let { fragments += markerFragment(it, textX, textTop + firstBaseline, markerGutter, theme.listMarkerColor) }
+        firstMarkers.forEach { (ancestor, marker) ->
+            fragments += markerFragment(marker, markerAnchor(ancestor), textTop + firstBaseline, ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
+        }
         return finishBlock(fragments, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, totalEnd), totalEnd, itemSpacing, attributed.retainedBytes)
     }
+
+    private fun listItemAncestors(block: ViewerBlock): List<ViewerListItemAncestor> =
+        block.listItemAncestors.ifEmpty {
+            val boundary = block.listItemBoundary
+            val context = block.listContext
+            if (boundary == null || context == null) emptyList() else listOf(
+                ViewerListItemAncestor(
+                    boundary.identity,
+                    context,
+                    boundary.nestingDepth,
+                    boundary.isFirstRenderableLeaf,
+                    boundary.isFinalRenderableLeaf,
+                )
+            )
+        }
 
     private fun finishBlock(fragments: List<PreparedProseFragment>, seed: Rect, end: Int, spacing: Int, extraBytes: Long = 0): BlockResult {
         val bounds = fragments.fold(seed) { acc, fragment -> Rect(acc).apply { union(fragment.bounds) } }

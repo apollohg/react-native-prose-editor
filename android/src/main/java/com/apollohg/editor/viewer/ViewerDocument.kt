@@ -28,6 +28,19 @@ internal data class ViewerListItemBoundary(
     val isFinalRenderableLeaf: Boolean,
 )
 
+/**
+ * One list-item owner on a leaf's full semantic path, ordered outermost first.
+ * Every owner keeps its own marker reservation even when a nested descendant is
+ * the nearest list item exposed to interaction/accessibility consumers.
+ */
+internal data class ViewerListItemAncestor(
+    val identity: Int,
+    val context: ViewerListContext,
+    val nestingDepth: Int,
+    val isFirstRenderableLeaf: Boolean,
+    val isFinalRenderableLeaf: Boolean,
+)
+
 internal sealed interface ViewerInline {
     data class Text(val text: String, val marks: List<FfiViewerMark>) : ViewerInline
     /** Rust u32 document position retained exactly; drawing spans never own it. */
@@ -41,6 +54,7 @@ internal data class ViewerBlock(
     val listContext: ViewerListContext?,
     val listItemBoundary: ViewerListItemBoundary?,
     val inlines: List<ViewerInline>,
+    val listItemAncestors: List<ViewerListItemAncestor> = emptyList(),
 )
 
 /** Semantic positions live only in [ViewerInline.Atom], never in Android drawing spans. */
@@ -93,19 +107,28 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
             val depth: Int,
             val listContext: ViewerListContext?,
             val listItemIdentity: Int?,
+            val listItemContext: ViewerListContext?,
             val inlines: MutableList<ViewerInline> = mutableListOf(),
         )
 
         val stack = mutableListOf<Builder>()
         val rendered = mutableListOf<ViewerBlock>()
-        val leavesByListItem = mutableMapOf<Int, MutableList<Int>>()
+        // A list item's terminal spacing belongs after its own direct leaves,
+        // before a child list begins. Descendant leaves are retained only as a
+        // fallback for an item whose sole renderable content is nested.
+        val directLeavesByListItem = mutableMapOf<Int, MutableList<Int>>()
+        val descendantLeavesByListItem = mutableMapOf<Int, MutableList<Int>>()
         val listItemDepths = mutableMapOf<Int, Int>()
         var nextListItemIdentity = 0
 
         fun nearestListContext(builders: List<Builder>): ViewerListContext? = builders.asReversed().firstNotNullOfOrNull { it.listContext }
-        fun nearestListItem(builders: List<Builder>): Int? = builders.asReversed().firstNotNullOfOrNull { it.listItemIdentity }
+        fun listItemAncestors(builders: List<Builder>): List<ViewerListItemAncestor> = builders.mapNotNull { builder ->
+            val identity = builder.listItemIdentity ?: return@mapNotNull null
+            val context = builder.listItemContext ?: return@mapNotNull null
+            ViewerListItemAncestor(identity, context, builder.depth, false, false)
+        }
         fun appendLeaf(nodeType: String, depth: Int, inlines: List<ViewerInline>, ancestors: List<Builder>) {
-            val listItemIdentity = nearestListItem(ancestors)
+            val itemAncestors = listItemAncestors(ancestors)
             rendered += ViewerBlock(
                 nodeType = nodeType,
                 depth = depth,
@@ -113,16 +136,29 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                 listContext = nearestListContext(ancestors),
                 listItemBoundary = null,
                 inlines = inlines,
+                listItemAncestors = itemAncestors,
             )
-            listItemIdentity?.let { leavesByListItem.getOrPut(it) { mutableListOf() } += rendered.lastIndex }
+            itemAncestors.forEach { ancestor ->
+                descendantLeavesByListItem.getOrPut(ancestor.identity) { mutableListOf() } += rendered.lastIndex
+            }
+            itemAncestors.lastOrNull()?.let { nearest ->
+                directLeavesByListItem.getOrPut(nearest.identity) { mutableListOf() } += rendered.lastIndex
+            }
         }
 
         compiled.elements().forEach { element ->
             when (element) {
                 is FfiViewerElement.BlockStart -> {
+                    val context = listContext(element.listContextJson)
                     val identity = if (element.nodeType == "listItem") nextListItemIdentity++ else null
                     identity?.let { listItemDepths[it] = element.depth.toInt() }
-                    stack += Builder(element.nodeType, element.depth.toInt(), listContext(element.listContextJson), identity)
+                    stack += Builder(
+                        element.nodeType,
+                        element.depth.toInt(),
+                        context,
+                        identity,
+                        if (identity == null) null else context,
+                    )
                 }
                 is FfiViewerElement.TextRun -> stack.lastOrNull()?.inlines?.add(ViewerInline.Text(element.text, element.marks))
                 is FfiViewerElement.InlineAtom -> stack.lastOrNull()?.inlines?.add(
@@ -142,17 +178,26 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                 }
             }
         }
-        leavesByListItem.forEach { (identity, leaves) ->
+        descendantLeavesByListItem.forEach { (identity, descendantLeaves) ->
+            val leaves = directLeavesByListItem[identity]?.takeIf { it.isNotEmpty() } ?: descendantLeaves
             val first = leaves.firstOrNull() ?: return@forEach
             val final = leaves.last()
             leaves.forEach { index ->
+                val updatedAncestors = rendered[index].listItemAncestors.map { ancestor ->
+                    if (ancestor.identity == identity) {
+                        ancestor.copy(
+                            nestingDepth = listItemDepths[identity] ?: ancestor.nestingDepth,
+                            isFirstRenderableLeaf = index == first,
+                            isFinalRenderableLeaf = index == final,
+                        )
+                    } else ancestor
+                }
+                val nearest = updatedAncestors.lastOrNull()
                 rendered[index] = rendered[index].copy(
-                    listItemBoundary = ViewerListItemBoundary(
-                        identity = identity,
-                        nestingDepth = listItemDepths[identity] ?: 0,
-                        isFirstRenderableLeaf = index == first,
-                        isFinalRenderableLeaf = index == final,
-                    )
+                    listItemBoundary = nearest?.let {
+                        ViewerListItemBoundary(it.identity, it.nestingDepth, it.isFirstRenderableLeaf, it.isFinalRenderableLeaf)
+                    },
+                    listItemAncestors = updatedAncestors,
                 )
             }
         }
