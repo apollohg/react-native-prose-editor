@@ -12,7 +12,12 @@ public final class ViewerFontEnvironment: NSObject {
     private let lock = NSLock()
     private let notificationCenter: NotificationCenter
     private var tokens: [NSObjectProtocol] = []
-    private var missingWarnings = Set<String>()
+    /// Dedupe is scoped to a semantic generation, not an environment/layout
+    /// revision. Eviction removes whole old generations, so a retained
+    /// generation cannot lose one family's once-only warning independently.
+    private var missingWarningsBySemanticGeneration: [String: Set<String>] = [:]
+    private var missingWarningGenerationOrder: [String] = []
+    private let missingWarningGenerationLimit = 128
     private var lastContentSizeCategory: UIContentSizeCategory?
     private var scaleByRevision: [UInt64: CGFloat] = [0: Self.scale(for: UIApplication.shared.preferredContentSizeCategory)]
     private(set) var revision: UInt64 = 0
@@ -52,9 +57,17 @@ public final class ViewerFontEnvironment: NSObject {
         // A layout/environment revision is not a new semantic request. Keep
         // this bounded process registry keyed solely by semantic generation
         // and family so attachment/font reinstalls cannot re-log.
-        let inserted = missingWarnings.insert("\(semanticGeneration)\u{1f}\(family)").inserted
-        while missingWarnings.count > 512, let oldest = missingWarnings.sorted().first {
-            missingWarnings.remove(oldest)
+        var families = missingWarningsBySemanticGeneration[semanticGeneration] ?? []
+        let inserted = families.insert(family).inserted
+        if inserted {
+            if missingWarningsBySemanticGeneration[semanticGeneration] == nil {
+                missingWarningGenerationOrder.append(semanticGeneration)
+            }
+            missingWarningsBySemanticGeneration[semanticGeneration] = families
+            while missingWarningGenerationOrder.count > missingWarningGenerationLimit {
+                let oldest = missingWarningGenerationOrder.removeFirst()
+                missingWarningsBySemanticGeneration.removeValue(forKey: oldest)
+            }
         }
         return inserted
     }
@@ -80,7 +93,6 @@ public final class ViewerFontEnvironment: NSObject {
         let resolvedScale = scale.isFinite && scale > 0 ? scale : 1
         lock.lock()
         revision &+= 1
-        missingWarnings.removeAll()
         scaleByRevision[revision] = resolvedScale
         while scaleByRevision.count > 64, let oldest = scaleByRevision.keys.sorted().first, oldest != revision {
             scaleByRevision.removeValue(forKey: oldest)

@@ -169,7 +169,8 @@ final class PreparedProseRenderingTests: XCTestCase {
             fontEnvironmentRevision: 0,
             displayScale: 2,
             attachmentRevision: 0,
-            generationIdentity: "fixture"
+            generationIdentity: "fixture",
+            semanticGenerationIdentity: "fixture"
         )
         return try CoreTextProseLayoutEngine().prepare(document: themed, key: key, widthPoints: 320, displayScale: 2)
     }

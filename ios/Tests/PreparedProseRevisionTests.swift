@@ -213,12 +213,66 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertTrue(pipeline.acceptsCompletion(generation: "second"))
     }
 
-    func testMissingFamilyWarnsOnceUntilFontEnvironmentRevision() {
+    func testMissingFamilyWarningSurvivesFontEnvironmentReplacementButNewSemanticGenerationWarns() {
         let environment = ViewerFontEnvironment(notificationCenter: .default)
         XCTAssertTrue(environment.shouldWarnForMissingFamily("definitely-missing", semanticGeneration: "a"))
         XCTAssertFalse(environment.shouldWarnForMissingFamily("definitely-missing", semanticGeneration: "a"))
         environment.invalidateRegisteredFonts()
-        XCTAssertTrue(environment.shouldWarnForMissingFamily("definitely-missing", semanticGeneration: "a"))
+        XCTAssertFalse(environment.shouldWarnForMissingFamily("definitely-missing", semanticGeneration: "a"))
+        XCTAssertTrue(environment.shouldWarnForMissingFamily("definitely-missing", semanticGeneration: "b"))
+    }
+
+    func testWarningContextUsesSemanticIdentityInsteadOfLayoutReplacementIdentity() {
+        let request = ProseViewerRequest(source: .json("{\"type\":\"doc\"}"), configuration: .init())
+        let replacement = ProseViewerRequest(
+            source: request.source,
+            configuration: request.configuration,
+            nativeFontRevision: 1,
+            nativeFontScale: 1.4,
+            fontEnvironmentRevision: 2,
+            attachmentRevision: 3
+        )
+        let baseKey = ProseLayoutKey(
+            semanticKey: String(repeating: "a", count: 64),
+            widthPixels: 200,
+            themeDigest: request.themeDigest,
+            nativeFontRevision: request.nativeFontRevision,
+            fontEnvironmentRevision: request.fontEnvironmentRevision,
+            displayScale: 2,
+            attachmentRevision: request.attachmentRevision,
+            generationIdentity: request.generationIdentity,
+            semanticGenerationIdentity: request.semanticGenerationIdentity
+        )
+        let replacementKey = ProseLayoutKey(
+            semanticKey: baseKey.semanticKey,
+            widthPixels: 240,
+            themeDigest: replacement.themeDigest,
+            nativeFontRevision: replacement.nativeFontRevision,
+            fontEnvironmentRevision: replacement.fontEnvironmentRevision,
+            displayScale: 3,
+            attachmentRevision: replacement.attachmentRevision,
+            generationIdentity: replacement.generationIdentity,
+            semanticGenerationIdentity: replacement.semanticGenerationIdentity
+        )
+        XCTAssertNotEqual(baseKey.generationIdentity, replacementKey.generationIdentity)
+        XCTAssertEqual(baseKey.semanticGenerationIdentity, replacementKey.semanticGenerationIdentity)
+    }
+
+    func testFabricUpdateThenRecycleBeforeNextMeasureRemovesOnlyItsPersistedSidecar() {
+        let registry = PreparedProseLayoutRegistry(compile: { _ in
+            ViewerDocument(semanticKey: String(repeating: "a", count: 64), paragraphs: [], isEmpty: true, retainedBytes: 0)
+        })
+        let surface = FabricSurfaceToken(surfaceId: 711, componentTag: 9)
+        _ = FabricAttachmentSidecars.begin(surface, semanticIdentity: "semantic-a")
+        // updateState releases the old layout generation before Yoga measures
+        // the replacement; recycle must still know this stable sidecar token.
+        registry.releaseFabricGeneration(.init(surface: surface, generationIdentity: "replacement-layout"))
+        XCTAssertNotNil(FabricAttachmentSidecars.state(for: surface))
+
+        registry.releaseFabricSurface(surface)
+        XCTAssertNil(FabricAttachmentSidecars.state(for: surface))
+        registry.releaseFabricSurface(surface)
+        XCTAssertNil(FabricAttachmentSidecars.state(for: surface))
     }
 
     func testExplicitFontAvailabilityAndDynamicTypeEachPublishOneReplacementRevision() {

@@ -46,7 +46,6 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import com.apollohg.editor.viewer.NativeImagePipeline
 import java.util.concurrent.atomic.AtomicLong
 
 object LayoutConstants {

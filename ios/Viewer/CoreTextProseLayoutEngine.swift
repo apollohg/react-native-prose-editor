@@ -242,9 +242,13 @@ final class CoreTextProseLayoutEngine {
         document: ViewerDocument,
         key: ProseLayoutKey,
         widthPoints: CGFloat,
-        displayScale: CGFloat
+        displayScale: CGFloat,
+        semanticGenerationIdentity: String? = nil
     ) throws -> PreparedProseLayout {
-        let warningSemanticGeneration = key.generationIdentity
+        // This context is deliberately passed separately from the layout key's
+        // revision-sensitive generation identity. A replacement layout for an
+        // attachment/font/width revision must not reopen a missing-font warning.
+        let warningSemanticGeneration = semanticGenerationIdentity ?? key.semanticGenerationIdentity
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: displayScale) else {
             return .error(key: key, width: 0, error: .hostContract(message: "A finite positive width is required for prose measurement."))
         }

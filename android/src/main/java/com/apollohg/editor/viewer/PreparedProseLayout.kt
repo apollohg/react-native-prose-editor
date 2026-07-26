@@ -13,6 +13,8 @@ internal data class ProseLayoutKey(
     val densityBits: Long,
     val attachmentRevision: Long,
     val generationIdentity: String,
+    /** Immutable semantic diagnostic context; excludes replacement revisions. */
+    val semanticGenerationIdentity: String = semanticKey,
 )
 
 internal data class FabricSurfaceToken(val surfaceId: Int, val componentTag: Int)

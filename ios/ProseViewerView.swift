@@ -251,7 +251,8 @@ public final class ProseViewerView: UIView {
                     fontEnvironmentRevision: 0,
                     displayScale: scale,
                     attachmentRevision: 0,
-                    generationIdentity: "empty"
+                    generationIdentity: "empty",
+                    semanticGenerationIdentity: "empty"
                 ),
                 width: errorWidth,
                 error: .hostContract(message: "No prose viewer source has been applied.")
@@ -273,7 +274,8 @@ public final class ProseViewerView: UIView {
                     fontEnvironmentRevision: request.fontEnvironmentRevision,
                     displayScale: scale,
                     attachmentRevision: request.attachmentRevision,
-                    generationIdentity: request.generationIdentity
+                    generationIdentity: request.generationIdentity,
+                    semanticGenerationIdentity: request.semanticGenerationIdentity
                 ),
                 width: safeWidth,
                 error: pendingError

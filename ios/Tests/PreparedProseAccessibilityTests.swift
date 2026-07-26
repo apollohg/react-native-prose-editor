@@ -159,7 +159,8 @@ final class PreparedProseAccessibilityTests: XCTestCase {
             fontEnvironmentRevision: 0,
             displayScale: 2,
             attachmentRevision: 0,
-            generationIdentity: "fixture"
+            generationIdentity: "fixture",
+            semanticGenerationIdentity: "fixture"
         )
         return try CoreTextProseLayoutEngine().prepare(
             document: document.withPreparedTheme(PreparedProseTheme.resolve(themeJSON: nil)),

@@ -62,7 +62,25 @@ private const val SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX = 1
 
 /** Creates immutable StaticLayout fragments without depending on a mounted View. */
 internal interface AndroidProseLayoutEngine {
-    fun prepare(document: ViewerDocument, key: ProseLayoutKey, theme: PreparedProseTheme, widthPx: Int, density: Float, collapsesWhenEmpty: Boolean): PreparedProseLayout
+    fun prepare(
+        document: ViewerDocument,
+        key: ProseLayoutKey,
+        theme: PreparedProseTheme,
+        widthPx: Int,
+        density: Float,
+        collapsesWhenEmpty: Boolean,
+    ): PreparedProseLayout
+
+    /** Registry callers always provide the immutable semantic warning scope. */
+    fun prepare(
+        document: ViewerDocument,
+        key: ProseLayoutKey,
+        theme: PreparedProseTheme,
+        widthPx: Int,
+        density: Float,
+        collapsesWhenEmpty: Boolean,
+        semanticGenerationIdentity: String,
+    ): PreparedProseLayout = prepare(document, key, theme, widthPx, density, collapsesWhenEmpty)
 }
 
 /** Immutable, density-resolved inputs. No TextPaint is shared with drawing. */
@@ -254,8 +272,33 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     internal var staticLayoutsBuilt: Int = 0
         private set
 
-    override fun prepare(document: ViewerDocument, key: ProseLayoutKey, theme: PreparedProseTheme, widthPx: Int, density: Float, collapsesWhenEmpty: Boolean): PreparedProseLayout {
-        val warningSemanticGeneration = key.generationIdentity
+    override fun prepare(
+        document: ViewerDocument,
+        key: ProseLayoutKey,
+        theme: PreparedProseTheme,
+        widthPx: Int,
+        density: Float,
+        collapsesWhenEmpty: Boolean,
+    ): PreparedProseLayout = prepare(
+        document,
+        key,
+        theme,
+        widthPx,
+        density,
+        collapsesWhenEmpty,
+        key.semanticGenerationIdentity,
+    )
+
+    override fun prepare(
+        document: ViewerDocument,
+        key: ProseLayoutKey,
+        theme: PreparedProseTheme,
+        widthPx: Int,
+        density: Float,
+        collapsesWhenEmpty: Boolean,
+        semanticGenerationIdentity: String,
+    ): PreparedProseLayout {
+        val warningSemanticGeneration = semanticGenerationIdentity
         if (widthPx <= 0 || !density.isFinite() || density <= 0f) return PreparedProseLayout.error(key, 0, ProseViewerError.invalidWidth())
         if (document.isEmpty && collapsesWhenEmpty) return PreparedProseLayout(key, widthPx, 0, emptyList(), retainedBytes = document.retainedBytes)
         val contentWidth = max(1, widthPx - theme.insetLeftPx - theme.insetRightPx)

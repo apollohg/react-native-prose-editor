@@ -493,7 +493,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             fontEnvironmentRevision: request.fontEnvironmentRevision,
             displayScale: scale,
             attachmentRevision: request.attachmentRevision,
-            generationIdentity: request.generationIdentity
+            generationIdentity: request.generationIdentity,
+            semanticGenerationIdentity: request.semanticGenerationIdentity
         )
     }
 
@@ -532,7 +533,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             fontEnvironmentRevision: request.fontEnvironmentRevision,
             displayScale: scale,
             attachmentRevision: request.attachmentRevision,
-            generationIdentity: request.generationIdentity
+            generationIdentity: request.generationIdentity,
+            semanticGenerationIdentity: request.semanticGenerationIdentity
         )
     }
 
@@ -739,7 +741,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             document: document,
             key: key,
             widthPoints: widthPoints,
-            displayScale: scale
+            displayScale: scale,
+            semanticGenerationIdentity: key.semanticGenerationIdentity
         )
     }
 

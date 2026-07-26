@@ -185,6 +185,45 @@ class PreparedProseRevisionTest {
         assertTrue(pipeline.acceptsCompletion("two"))
     }
 
+    @Test fun missingFamilyWarningSurvivesFontReplacementButNewSemanticGenerationWarns() {
+        ViewerFontEnvironment.resetMissingWarningsForTesting()
+        try {
+            assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("missing", "semantic-a"))
+            assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("missing", "semantic-a"))
+            ViewerFontEnvironment().invalidateRegisteredFonts()
+            assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("missing", "semantic-a"))
+            assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("missing", "semantic-b"))
+        } finally {
+            ViewerFontEnvironment.resetMissingWarningsForTesting()
+        }
+    }
+
+    @Test fun warningContextUsesSemanticIdentityInsteadOfLayoutReplacementIdentity() {
+        val base = ProseViewerRequest(ProseViewerSource.Json("{\"type\":\"doc\"}"), ProseViewerConfiguration())
+        val replacement = base.copy(nativeFontRevision = 1, fontEnvironmentRevision = 2, attachmentRevision = 3)
+        val baseKey = ProseLayoutKey(
+            semanticKey = "fixture",
+            widthPx = 100,
+            themeDigest = base.themeDigest,
+            nativeFontRevision = base.nativeFontRevision,
+            fontEnvironmentRevision = base.fontEnvironmentRevision,
+            densityBits = 1f.toRawBits().toLong(),
+            attachmentRevision = base.attachmentRevision,
+            generationIdentity = base.generationIdentity,
+            semanticGenerationIdentity = base.semanticGenerationIdentity,
+        )
+        val replacementKey = baseKey.copy(
+            widthPx = 120,
+            nativeFontRevision = replacement.nativeFontRevision,
+            fontEnvironmentRevision = replacement.fontEnvironmentRevision,
+            attachmentRevision = replacement.attachmentRevision,
+            generationIdentity = replacement.generationIdentity,
+            semanticGenerationIdentity = replacement.semanticGenerationIdentity,
+        )
+        assertFalse(baseKey.generationIdentity == replacementKey.generationIdentity)
+        assertEquals(baseKey.semanticGenerationIdentity, replacementKey.semanticGenerationIdentity)
+    }
+
     @Test fun explicitFontAvailabilityAndSystemScaleEachPublishOneReplacementRevision() {
         val environment = ViewerFontEnvironment()
         val revisions = mutableListOf<Long>()

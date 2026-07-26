@@ -483,6 +483,20 @@ internal object RenderImageDecoder {
     private const val DATA_URL_WHITESPACE_ALLOWANCE_BYTES = 4_096L
 }
 
+/**
+ * Neutral editor/viewer facade over the shared bounded image loader.
+ * Keep viewer code out of the editor render bridge's dependency graph.
+ */
+internal object NativeImagePipeline {
+    fun prepare(source: String, policy: ImageLoadingPolicy): RenderImageLoader.PreparedSource? =
+        RenderImageLoader.prepare(source, policy)
+
+    fun load(
+        source: RenderImageLoader.PreparedSource,
+        callback: (Bitmap?) -> Unit,
+    ): RenderImageLoader.LoadHandle = RenderImageLoader.load(source, callback)
+}
+
 internal object RenderImageLoader {
     // Public policy values are per-policy upper bounds. These process-wide
     // ceilings keep aggregate work bounded when many differently configured

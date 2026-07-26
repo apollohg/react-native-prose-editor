@@ -3,6 +3,7 @@ package com.apollohg.editor.viewer
 import android.graphics.Bitmap
 import android.graphics.Rect
 import com.apollohg.editor.ImageLoadingPolicy
+import com.apollohg.editor.NativeImagePipeline
 import com.apollohg.editor.RenderImageLoader
 import com.apollohg.editor.viewer.ViewerInline.Atom
 import org.json.JSONObject
@@ -70,15 +71,6 @@ internal class ViewerImageIntrinsicStore(entryLimit: Int = 256) {
             values.remove(oldest.key)
         }
     }
-}
-
-/** Shared native image admission/loading boundary used by editor spans and viewer fragments. */
-internal object NativeImagePipeline {
-    fun prepare(source: String, policy: ImageLoadingPolicy): RenderImageLoader.PreparedSource? =
-        RenderImageLoader.prepare(source, policy)
-
-    fun load(source: RenderImageLoader.PreparedSource, callback: (Bitmap?) -> Unit): RenderImageLoader.LoadHandle =
-        RenderImageLoader.load(source, callback)
 }
 
 /**

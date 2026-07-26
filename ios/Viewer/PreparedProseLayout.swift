@@ -35,6 +35,9 @@ struct ProseLayoutKey: Hashable {
     let displayScaleBits: UInt64
     let attachmentRevision: UInt64
     let generationIdentity: String
+    /// Immutable semantic identity used only by generation-scoped diagnostics.
+    /// It intentionally excludes layout, attachment, and font replacements.
+    let semanticGenerationIdentity: String
 
     init(
         semanticKey: String,
@@ -44,7 +47,8 @@ struct ProseLayoutKey: Hashable {
         fontEnvironmentRevision: UInt64,
         displayScale: CGFloat,
         attachmentRevision: UInt64,
-        generationIdentity: String
+        generationIdentity: String,
+        semanticGenerationIdentity: String
     ) {
         self.semanticKey = semanticKey
         self.widthPixels = widthPixels
@@ -54,6 +58,7 @@ struct ProseLayoutKey: Hashable {
         self.displayScaleBits = Double(displayScale).bitPattern
         self.attachmentRevision = attachmentRevision
         self.generationIdentity = generationIdentity
+        self.semanticGenerationIdentity = semanticGenerationIdentity
     }
 }
 

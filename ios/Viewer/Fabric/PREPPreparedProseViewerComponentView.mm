@@ -139,6 +139,11 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   int64_t _ownedSurfaceId;
   int64_t _ownedComponentTag;
   BOOL _hasOwnedSurface;
+  // The image sidecar has a longer lifetime than a per-generation lease:
+  // semantic replacement can clear the latter before Yoga measures again.
+  int64_t _ownedSidecarSurfaceId;
+  int64_t _ownedSidecarComponentTag;
+  BOOL _hasOwnedSidecar;
   id _imageMetadataObserver;
   id _imageResourceObserver;
   id _fontEnvironmentObserver;
@@ -353,12 +358,12 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // sidecar as well as its lease/compiler pin. A normal semantic replacement
   // uses releaseFabricOwnership instead, preserving the token until Yoga has
   // accepted the next semantic generation.
-  if (!_hasOwnedSurface) return;
+  [self releaseFabricOwnership];
+  if (!_hasOwnedSidecar) return;
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
-      releaseFabricSurfaceId:_ownedSurfaceId
-                 componentTag:_ownedComponentTag];
-  _hasOwnedSurface = NO;
-  _ownedGeneration = nil;
+      releaseFabricSurfaceId:_ownedSidecarSurfaceId
+                 componentTag:_ownedSidecarComponentTag];
+  _hasOwnedSidecar = NO;
 }
 
 - (void)installMeasuredArtifactIfAttached
@@ -418,6 +423,15 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     // the current UIView tag, which React Native may already have reset.
     [self releaseFabricOwnership];
   }
+  if (_hasOwnedSidecar &&
+      (_ownedSidecarSurfaceId != *surfaceId || _ownedSidecarComponentTag != componentTag)) {
+    // A recycled UIView must never remove a new component's sidecar: only
+    // release the stable token it recorded when it bound the old sidecar.
+    [[PREPPreparedProseLayoutRegistry sharedRegistry]
+        releaseFabricSurfaceId:_ownedSidecarSurfaceId
+                   componentTag:_ownedSidecarComponentTag];
+    _hasOwnedSidecar = NO;
+  }
   if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
     [_drawingView installWithLayout:nil];
     _installedMeasurementIdentity = nil;
@@ -430,6 +444,11 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   _ownedComponentTag = componentTag;
   _hasOwnedSurface = YES;
   _ownedGeneration = generation;
+  if (!_hasOwnedSidecar) {
+    _ownedSidecarSurfaceId = _ownedSurfaceId;
+    _ownedSidecarComponentTag = _ownedComponentTag;
+    _hasOwnedSidecar = YES;
+  }
   [_drawingView bindFabricAttachmentStateSurfaceId:_ownedSurfaceId
                                       componentTag:_ownedComponentTag];
   const BOOL installed = [[PREPPreparedProseLayoutRegistry sharedRegistry]

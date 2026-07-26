@@ -106,6 +106,7 @@ internal class PreparedProseLayoutRegistry(
                         widthPx,
                         density,
                         request.configuration.collapsesWhenEmpty,
+                        request.semanticGenerationIdentity,
                     )
                 } catch (error: ProseViewerError) {
                     PreparedProseLayout.error(key, widthPx, error)
@@ -226,6 +227,7 @@ internal class PreparedProseLayoutRegistry(
             densityBits = densityBits,
             attachmentRevision = request.attachmentRevision,
             generationIdentity = request.generationIdentity,
+            semanticGenerationIdentity = request.semanticGenerationIdentity,
         )
         return layoutCache.value(key, fabricSurface) { PreparedProseLayout.error(key, widthPx, error) }
     }
@@ -240,6 +242,7 @@ internal class PreparedProseLayoutRegistry(
             densityBits = 0,
             attachmentRevision = request.attachmentRevision,
             generationIdentity = request.generationIdentity,
+            semanticGenerationIdentity = request.semanticGenerationIdentity,
         )
         return PreparedProseLayout.error(key, 0, ProseViewerError.invalidWidth())
     }
@@ -254,6 +257,7 @@ internal class PreparedProseLayoutRegistry(
             densityBits = densityBits,
             attachmentRevision = request.attachmentRevision,
             generationIdentity = request.generationIdentity,
+            semanticGenerationIdentity = request.semanticGenerationIdentity,
         )
 
     private fun trimCompiledLocked() {

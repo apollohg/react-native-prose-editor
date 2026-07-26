@@ -12,7 +12,8 @@ import java.lang.ref.WeakReference
 internal class ViewerFontEnvironment {
     companion object {
         private val warningLock = Any()
-        private val missingWarnings = mutableSetOf<String>()
+        private val missingWarningsBySemanticGeneration = LinkedHashMap<String, MutableSet<String>>(64, 0.75f, true)
+        private const val MISSING_WARNING_GENERATION_LIMIT = 128
         private val familyLock = Any()
         private val registeredFamilies = mutableMapOf<String, Typeface>()
         private val demonstrablyMissingFamilies = mutableSetOf<String>()
@@ -104,14 +105,21 @@ internal class ViewerFontEnvironment {
         }
 
         fun warnOnceForMissingFamily(family: String, semanticGeneration: String): Boolean {
-            val key = "$semanticGeneration\u001f$family"
             val shouldWarn = synchronized(warningLock) {
-                val inserted = missingWarnings.add(key)
-                while (missingWarnings.size > 512) missingWarnings.minOrNull()?.let(missingWarnings::remove)
+                val families = missingWarningsBySemanticGeneration.getOrPut(semanticGeneration) { mutableSetOf() }
+                val inserted = families.add(family)
+                while (missingWarningsBySemanticGeneration.size > MISSING_WARNING_GENERATION_LIMIT) {
+                    val oldest = missingWarningsBySemanticGeneration.entries.iterator().next().key
+                    missingWarningsBySemanticGeneration.remove(oldest)
+                }
                 inserted
             }
             if (shouldWarn) Log.w("NativeEditorImage", "PreparedProseViewer: requested font family $family is unavailable; using system fallback")
             return shouldWarn
+        }
+
+        internal fun resetMissingWarningsForTesting() = synchronized(warningLock) {
+            missingWarningsBySemanticGeneration.clear()
         }
     }
 
