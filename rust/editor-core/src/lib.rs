@@ -28,6 +28,7 @@ pub(crate) mod session;
 #[cfg(test)]
 mod test_support;
 pub(crate) mod transform;
+pub mod viewer;
 pub(crate) mod yrs_engine;
 
 #[cfg(test)]

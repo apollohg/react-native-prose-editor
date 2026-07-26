@@ -37,6 +37,7 @@ use crate::session::{
     CollaborationLimitOverrides, CollaborationLimits, EditorInitialization, EditorSession,
     EditorSessionConfig, ErrorDomain, InitialContent, SessionError,
 };
+use crate::viewer::FfiViewerSourceKind;
 use crate::yrs_engine::{
     DocumentScope, EditingLimitOverrides, EditingLimits, EngineRenderState, ReplacementHistory,
 };
@@ -868,7 +869,27 @@ fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<Str
         parse_create_json(envelope.initialization.get()).map_err(ffi_error)?;
     let (config, room_bound) =
         build_config(envelope, initialization_probe, snapshot_state).map_err(ffi_error)?;
-    let schema = resolve_configured_create_schema(&config).map_err(ffi_error)?;
+    let local_source = match &config.initialization {
+        EditorInitialization::Local {
+            initial_content: InitialContent::Empty,
+        } => Some((
+            FfiViewerSourceKind::Json,
+            r#"{"type":"doc","content":[]}"#.to_string(),
+        )),
+        EditorInitialization::Local {
+            initial_content: InitialContent::Json(source),
+        } => Some((FfiViewerSourceKind::Json, source.clone())),
+        EditorInitialization::Local {
+            initial_content: InitialContent::Html(source),
+        } => Some((FfiViewerSourceKind::Html, source.clone())),
+        EditorInitialization::Room { .. } => None,
+    };
+    let schema = match local_source {
+        Some((source_kind, source)) => resolve_local_document(config_json, source_kind, &source)
+            .map(|resolved| resolved.schema)
+            .map_err(ffi_error)?,
+        None => resolve_configured_create_schema(&config).map_err(ffi_error)?,
+    };
     let id = DocumentApiFacade::create_with_schema(config, schema.clone()).map_err(ffi_error)?;
     if room_bound {
         // Room sessions own the collaboration runtime (bounded outbox,
@@ -934,6 +955,95 @@ fn resolve_configured_create_schema(
     )?;
     crate::schema::Schema::from_json_with_limits(schema.as_value(), &config.resource_limits)
         .map_err(SessionError::from)
+}
+
+/// A fully bounded, local-only document import shared by editor admission and
+/// immutable viewer compilation. It intentionally stops before any registry,
+/// Yjs, collaboration, or editor-handle allocation.
+pub(crate) struct ResolvedLocalDocument {
+    pub document: crate::model::Document,
+    pub schema: crate::schema::Schema,
+    pub resource_limits: crate::boundary::ResourceLimits,
+}
+
+pub(crate) fn resolve_local_document(
+    config_json: &str,
+    source_kind: FfiViewerSourceKind,
+    source: &str,
+) -> Result<ResolvedLocalDocument, SessionError> {
+    admit_create_wire_bytes(config_json.len())?;
+    admit_create_retained_envelope(config_json)?;
+    let envelope: CreateEnvelope<'_> = parse_create_json(config_json)?;
+    let initialization_probe: InitializationProbe =
+        parse_create_json(envelope.initialization.get())?;
+    let (config, room_bound) = build_config(envelope, initialization_probe, None)?;
+    if room_bound {
+        return Err(config_invalid(
+            None,
+            "viewer compilation requires a local initialization configuration",
+        ));
+    }
+    let schema = resolve_configured_create_schema(&config)?;
+    let input_kind = match source_kind {
+        FfiViewerSourceKind::Json => InputKind::DocumentJson,
+        FfiViewerSourceKind::Html => InputKind::Html,
+    };
+    let input = BoundedInput::new(source, input_kind, &config.resource_limits)?;
+    let document = match source_kind {
+        FfiViewerSourceKind::Json => {
+            let depth_limit = crate::boundary::document_json_container_depth_limit(
+                config.resource_limits.max_document_depth,
+            )?;
+            let value = parse_json_value_stack_safe(
+                input.as_str(),
+                depth_limit,
+                config.resource_limits.max_document_depth,
+                "DOCUMENT_LIMIT_EXCEEDED",
+                "DOCUMENT_INVALID",
+            )?;
+            crate::serialize::from_prosemirror_json_with_limits(
+                value.as_value(),
+                &schema,
+                crate::serialize::UnknownTypeMode::Preserve,
+                &config.resource_limits,
+            )
+            .map_err(viewer_json_parse_error)?
+        }
+        FfiViewerSourceKind::Html => crate::serialize::from_html_with_limits(
+            input.as_str(),
+            &schema,
+            &crate::serialize::FromHtmlOptions {
+                strict: false,
+                allow_base64_images: config.allow_base64_images,
+            },
+            &config.resource_limits,
+        )
+        .map_err(viewer_html_parse_error)?,
+    };
+
+    Ok(ResolvedLocalDocument {
+        document,
+        schema,
+        resource_limits: config.resource_limits,
+    })
+}
+
+fn viewer_json_parse_error(error: crate::serialize::JsonParseError) -> SessionError {
+    match error {
+        crate::serialize::JsonParseError::ResourceLimit { limit, actual } => {
+            BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual).into()
+        }
+        error => SessionError::new(ErrorDomain::Document, "DOCUMENT_INVALID", error.to_string()),
+    }
+}
+
+fn viewer_html_parse_error(error: crate::serialize::ParseError) -> SessionError {
+    match error {
+        crate::serialize::ParseError::ResourceLimit { limit, actual } => {
+            BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual).into()
+        }
+        error => SessionError::new(ErrorDomain::Document, "DOCUMENT_INVALID", error.to_string()),
+    }
 }
 
 fn build_config(

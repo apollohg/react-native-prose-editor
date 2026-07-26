@@ -1,5 +1,10 @@
 use crate::session::{ErrorDomain, SessionError};
 
+pub use crate::viewer::{
+    FfiViewerCompileRequest, FfiViewerCompileResult, FfiViewerElement, FfiViewerMark,
+    FfiViewerSourceKind, ViewerCompiledDocument,
+};
+
 /// The one JSON representation for every u64-shaped v2 wire field.
 pub(crate) fn decimal_u64(value: u64) -> serde_json::Value {
     serde_json::Value::String(value.to_string())

@@ -125,6 +125,16 @@ nm -gU "$CDYLIB_PATH" | grep -q "uniffi_editor_core_fn_func_editor_core_version"
     echo "error: dylib is missing the editor_core_version query" >&2
     exit 1
 }
+nm -gU "$CDYLIB_PATH" | grep -q "uniffi_editor_core_fn_func_viewer_compile" || {
+    echo "error: dylib is missing uniffi_editor_core_fn_func_viewer_compile" >&2
+    exit 1
+}
+for method in semantic_key elements is_empty retained_bytes_decimal; do
+    nm -gU "$CDYLIB_PATH" | grep -q "uniffi_editor_core_fn_method_viewercompileddocument_${method}" || {
+        echo "error: dylib is missing ViewerCompiledDocument.${method}" >&2
+        exit 1
+    }
+done
 LEGACY_LINES="$(nm -gU "$CDYLIB_PATH" | grep -E 'uniffi_editor_core_(fn|checksum)_func_(editor_|collaboration_)' | grep -v 'editor_v2\|editor_core_version' || true)"
 if [[ -n "$LEGACY_LINES" ]]; then
     echo "error: dylib exposes legacy editor_*/collaboration_* symbols (expected 0):" >&2
@@ -166,6 +176,21 @@ for symbol in "${V2_SYMBOLS[@]}"; do
         "$OUT_DIR/kotlin/uniffi/editor_core/editor_core.kt"; do
         grep -q "uniffi_editor_core_fn_func_${symbol}" "$artifact" || {
             echo "error: generated binding $artifact is missing uniffi_editor_core_fn_func_${symbol}" >&2
+            exit 1
+        }
+    done
+done
+for artifact in \
+    "$OUT_DIR/swift/editor_coreFFI.h" \
+    "$OUT_DIR/swift/editor_core.swift" \
+    "$OUT_DIR/kotlin/uniffi/editor_core/editor_core.kt"; do
+    grep -q "uniffi_editor_core_fn_func_viewer_compile" "$artifact" || {
+        echo "error: generated binding $artifact is missing viewer_compile" >&2
+        exit 1
+    }
+    for method in semantic_key elements is_empty retained_bytes_decimal; do
+        grep -q "uniffi_editor_core_fn_method_viewercompileddocument_${method}" "$artifact" || {
+            echo "error: generated binding $artifact is missing ViewerCompiledDocument.${method}" >&2
             exit 1
         }
     done
