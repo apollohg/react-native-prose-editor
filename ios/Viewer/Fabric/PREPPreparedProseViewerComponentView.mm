@@ -232,6 +232,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     [self beginNewGeneration];
   }
   _viewerProps = nextProps;
+  [self beginSemanticImageGenerationIfPossible];
   _drawingView.linkInteractionsEnabled = nextProps->enableLinkTaps;
   if (generationChanged && _hasReceivedUsableLayoutMetrics) {
     [self installMeasuredArtifactIfAttached];
@@ -248,6 +249,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     [self beginNewGeneration];
   }
   _viewerState = nextState;
+  [self beginSemanticImageGenerationIfPossible];
   if (_hasReceivedUsableLayoutMetrics) {
     [self installMeasuredArtifactIfAttached];
   }
@@ -311,6 +313,25 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // representable layout metrics. The install gate clears it only
   // after independently validating the replacement measurement.
   _installedMeasurementIdentity = nil;
+}
+
+- (void)beginSemanticImageGenerationIfPossible
+{
+  if (!_viewerProps || !_viewerState) return;
+  const auto &props = *_viewerProps;
+  const auto semanticGeneration = [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      fabricSemanticGenerationIdentitySourceKind:SourceKind(props)
+                              source:StringFromStdString(props.source)
+                          configJSON:StringFromStdString(props.configJson)
+                           themeJSON:OptionalStringFromStdString(props.themeJson)
+                     imagePolicyJSON:OptionalStringFromStdString(props.imagePolicyJson)
+                      imagesEnabled:props.imagesEnabled
+                collapsesWhenEmpty:props.collapsesWhenEmpty
+                 attachmentRevision:Revision(_viewerState, true)
+                 nativeFontRevision:Revision(_viewerState, false)
+                   nativeFontScale:NativeFontScale(_viewerState)
+            fontEnvironmentRevision:FontEnvironmentRevision(props)];
+  [_drawingView beginSemanticImageGeneration:semanticGeneration];
 }
 
 - (void)releaseFabricOwnership

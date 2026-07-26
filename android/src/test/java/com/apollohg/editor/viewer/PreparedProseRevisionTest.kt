@@ -1,5 +1,6 @@
 package com.apollohg.editor.viewer
 
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.content.res.Configuration
@@ -49,6 +50,24 @@ class PreparedProseRevisionTest {
         state.admit(1)
         assertFalse(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
         assertEquals(1, state.revision)
+    }
+
+    @Test fun fabricMeasurementResetsSemanticSidecarBeforeMountBindsOrdinals() {
+        val surface = FabricSurfaceToken(71, 9)
+        try {
+            val first = FabricAttachmentSidecars.begin(surface, "semantic-a")
+            first.admit(1)
+            assertTrue(first.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
+
+            val replacement = FabricAttachmentSidecars.begin(surface, "semantic-b")
+            assertTrue(first === replacement)
+            assertEquals(0, replacement.revision)
+            replacement.admit(1)
+            assertTrue(replacement.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
+            assertEquals(1, replacement.revision)
+        } finally {
+            FabricAttachmentSidecars.remove(surface)
+        }
     }
 
     @Test fun semanticIdentityIncludesAllPublicationInputsButExcludesStateRevisions() {
@@ -117,15 +136,37 @@ class PreparedProseRevisionTest {
 
     @Test fun globalMetadataLRUEvictionFallsBackToActiveSidecarWithoutRepublishing() {
         val state = ViewerAttachmentRevisionState()
-        val evictedMetadata = ViewerImageIntrinsicStore(entryLimit = 1)
-        assertTrue(state.beginSemanticGeneration("semantic-a"))
-        state.admit(1)
-        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
-        evictedMetadata.store("7:https://example.test/a", 10 to 20)
-        evictedMetadata.store("8:https://example.test/b", 20 to 10)
-        assertEquals(null, evictedMetadata.globalSize("7:https://example.test/a"))
-        assertEquals(10 to 20, evictedMetadata.size("7:https://example.test/a"))
-        assertFalse(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
+        ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
+        try {
+            assertTrue(state.beginSemanticGeneration("semantic-a"))
+            state.admit(1)
+            assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
+            ViewerImageIntrinsicStore.shared.store("8:https://example.test/b", 20 to 10)
+            assertEquals(null, ViewerImageIntrinsicStore.shared.globalSize("7:https://example.test/a"))
+            assertEquals(10 to 20, ViewerImageIntrinsicStore.shared.size("7:https://example.test/a"))
+            assertFalse(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
+            assertEquals(1, state.revision)
+        } finally {
+            ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting()
+        }
+    }
+
+    @Test fun mountedPixelOwnershipCountsMapEntriesAndUniqueBitmapAllocationsExactly() {
+        val shared = Bitmap.createBitmap(3, 2, Bitmap.Config.ARGB_8888)
+        val replacement = Bitmap.createBitmap(4, 2, Bitmap.Config.ARGB_8888)
+        assertEquals(
+            PreparedProseDrawingView.IMAGE_PIXEL_MAP_RETAINED_BYTES +
+                PreparedProseDrawingView.IMAGE_PIXEL_ENTRY_RETAINED_BYTES * 2 +
+                shared.allocationByteCount.toLong(),
+            PreparedProseDrawingView.retainedImagePixelsBytes(mapOf("first" to shared, "second" to shared)),
+        )
+        assertEquals(
+            PreparedProseDrawingView.IMAGE_PIXEL_MAP_RETAINED_BYTES +
+                PreparedProseDrawingView.IMAGE_PIXEL_ENTRY_RETAINED_BYTES +
+                replacement.allocationByteCount.toLong(),
+            PreparedProseDrawingView.retainedImagePixelsBytes(mapOf("first" to replacement)),
+        )
+        assertEquals(0, PreparedProseDrawingView.retainedImagePixelsBytes(emptyMap()))
     }
 
     @Test fun boundedIntrinsicMetadataEvictsOldestEntryDeterministically() {
@@ -163,15 +204,15 @@ class PreparedProseRevisionTest {
         assertEquals(51f, scaled.paragraph.sizePx)
     }
 
-    @Test fun registeredCustomFamilyIsNotWarnedAndDemonstrablyMissingFamilyWarnsOnce() {
+    @Test fun registeredCustomFamilyNeverFalseWarnsAndOrdinaryPlatformFallbackWarnsOnce() {
         ViewerFontEnvironment.resetFamilyRegistryForTesting()
         ViewerFontEnvironment.registerAvailableFamily("viewer-test-font", Typeface.DEFAULT)
         assertFalse(ViewerFontEnvironment.resolveFamily("viewer-test-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
-        ViewerFontEnvironment.markFamilyUnavailable("viewer-missing-font")
-        assertTrue(ViewerFontEnvironment.resolveFamily("viewer-missing-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
-        assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("viewer-missing-font", "semantic", "revision"))
-        assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("viewer-missing-font", "semantic", "revision"))
-        assertFalse(ViewerFontEnvironment.resolveFamily("unproven-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+        ViewerFontEnvironment.setPlatformFamilyResolverForTesting { _, _ -> Typeface.DEFAULT }
+        assertTrue(ViewerFontEnvironment.resolveFamily("ordinary-missing-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+        assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic", "revision"))
+        assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic", "revision"))
+        assertFalse(ViewerFontEnvironment.resolveFamily("sans-serif", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
         ViewerFontEnvironment.resetFamilyRegistryForTesting()
     }
 

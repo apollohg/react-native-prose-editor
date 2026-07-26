@@ -16,6 +16,12 @@ internal class ViewerFontEnvironment {
         private val registeredFamilies = mutableMapOf<String, Typeface>()
         private val demonstrablyMissingFamilies = mutableSetOf<String>()
         private val familyObservers = FamilyObservers()
+        private val platformFamilyNames = setOf(
+            "default", "sans", "sans-serif", "serif", "monospace", "cursive", "casual",
+            "sans-serif-smallcaps", "sans-serif-condensed", "sans-serif-light", "sans-serif-medium",
+            "sans-serif-black", "sans-serif-thin", "sans-serif-condensed-light",
+        )
+        private var platformResolverForTesting: ((String, Int) -> Typeface)? = null
 
         internal data class ResolvedFamily(val typeface: Typeface, val isDemonstrablyMissing: Boolean)
 
@@ -54,14 +60,28 @@ internal class ViewerFontEnvironment {
                 registeredFamilies[normalized]?.let { return ResolvedFamily(Typeface.create(it, style), false) }
                 if (normalized in demonstrablyMissingFamilies) return ResolvedFamily(Typeface.create(fallback, style), true)
             }
-            // Typeface.create silently falls back, so unknown is not absence.
-            return ResolvedFamily(Typeface.create(normalized, style), false)
+            // Typeface.create silently returns the platform default for an
+            // unknown family. Compare that result to the same styled default;
+            // known Android generic family aliases are valid even when they
+            // intentionally resolve to that default. Registrations above win
+            // before this comparison so custom families never false-warn.
+            val resolved = synchronized(familyLock) {
+                platformResolverForTesting?.invoke(normalized, style)
+            } ?: Typeface.create(normalized, style)
+            val platformFallback = Typeface.create(Typeface.DEFAULT, style)
+            val isKnownPlatformFamily = normalized.lowercase() in platformFamilyNames
+            return ResolvedFamily(resolved, !isKnownPlatformFamily && resolved == platformFallback)
+        }
+
+        internal fun setPlatformFamilyResolverForTesting(resolver: ((String, Int) -> Typeface)?) {
+            synchronized(familyLock) { platformResolverForTesting = resolver }
         }
 
         internal fun resetFamilyRegistryForTesting() {
             synchronized(familyLock) {
                 registeredFamilies.clear()
                 demonstrablyMissingFamilies.clear()
+                platformResolverForTesting = null
             }
             familyObservers.resetForTesting()
         }

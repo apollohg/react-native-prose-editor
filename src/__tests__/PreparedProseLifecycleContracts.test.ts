@@ -38,4 +38,25 @@ describe('prepared prose native lifecycle contracts', () => {
 
         expect(setter.match(/invalidateAccessibilityNodes\(\)/g)).toHaveLength(1);
     });
+
+    it('starts Fabric semantic image ownership before a mount artifact can bind ordinal descriptors', () => {
+        const ios = readSource('ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm');
+        const iosDrawing = readSource('ios/Viewer/PreparedProseDrawingView.swift');
+        const android = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseViewerManager.kt');
+        const iosProps = methodBody(ios, '- (void)updateProps:');
+        const iosState = methodBody(ios, '- (void)updateState:');
+        const androidUpdate = android.slice(android.indexOf('private fun update('), android.indexOf('private fun installCachedLayout('));
+        const androidMount = android.slice(android.indexOf('fun beginImages('), android.indexOf('fun requestVisibleImages('));
+        const androidMeasure = android.slice(android.indexOf('override fun measure('), android.indexOf('private fun update('));
+
+        expect(iosProps.indexOf('_viewerProps = nextProps;')).toBeLessThan(iosProps.indexOf('[self beginSemanticImageGenerationIfPossible];'));
+        expect(iosState.indexOf('_viewerState = nextState;')).toBeLessThan(iosState.indexOf('[self beginSemanticImageGenerationIfPossible];'));
+        expect(iosDrawing).toContain('@objc(beginSemanticImageGeneration:)');
+        expect(androidUpdate.indexOf('state.mutation()')).toBeLessThan(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)'));
+        expect(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)')).toBeLessThan(androidUpdate.indexOf('reconcile(view, state)'));
+        expect(androidMeasure.indexOf('FabricAttachmentSidecars.begin(it, request.semanticGenerationIdentity)')).toBeLessThan(
+            androidMeasure.indexOf('PreparedProseLayoutRegistry.shared.measure(')
+        );
+        expect(androidMount).not.toContain('attachmentRevisions.beginSemanticGeneration');
+    });
 });

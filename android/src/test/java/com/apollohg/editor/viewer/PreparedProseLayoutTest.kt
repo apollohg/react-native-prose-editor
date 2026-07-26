@@ -93,7 +93,7 @@ class PreparedProseLayoutTest {
     }
 
     @Test
-    fun `direct prepared detachment clears virtual focus before removing its subtree`() {
+    fun `direct prepared detach reattach retains artifact and clears focus without republishing`() {
         val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine()))
         val parent = CapturingAccessibilityParent(context).apply { addView(viewer) }
 
@@ -111,13 +111,15 @@ class PreparedProseLayoutTest {
         viewer.preparePreparedHostForWindowDetachment()
 
         assertEquals(
-            listOf(
-                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-            ),
+            listOf(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED),
             parent.eventTypes,
         )
-        assertEquals(1, parent.subtreeChangeCount())
+        assertEquals(0, parent.subtreeChangeCount())
+        val retained = viewer.preparedLayoutForTesting
+        assertNotNull(retained)
+        ProseViewerView::class.java.getDeclaredMethod("onAttachedToWindow").apply { isAccessible = true }.invoke(viewer)
+        assertTrue(viewer.preparedLayoutForTesting === retained)
+        assertEquals(0, parent.subtreeChangeCount())
     }
 
     @Test
@@ -277,7 +279,7 @@ class PreparedProseLayoutTest {
             .obtain("x", 0, 1, TextPaint().apply { textSize = 14f }, 10)
             .build()
         val artifact = PreparedProseLayout(
-            key = ProseLayoutKey("culling", 10, "", 0, 0, 0, "culling"),
+            key = ProseLayoutKey("culling", 10, "", 0, 0, 0, 0, "culling"),
             widthPx = 10,
             heightPx = 10_000,
             blocks = List(1_000) { index ->

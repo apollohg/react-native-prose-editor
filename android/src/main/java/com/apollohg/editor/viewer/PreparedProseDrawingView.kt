@@ -2,6 +2,7 @@ package com.apollohg.editor.viewer
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
@@ -23,8 +24,16 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     var onVisibleRectChanged: ((Rect) -> Unit)? = null
     var onFontConfigurationChanged: ((Configuration) -> Unit)? = null
     var onInteractionActivated: ((PreparedProseInteraction) -> Boolean)? = null
-    var imagePixels: Map<String, android.graphics.Bitmap> = emptyMap()
+    var imagePixels: Map<String, Bitmap> = emptyMap()
         set(value) { field = value; invalidate() }
+    /**
+     * Pixels are owned by this mounted surface, not by the immutable layout or
+     * the shared decode cache. Count map/entry ownership once per mapping and
+     * backing allocation once per distinct bitmap so replacement and recycle
+     * naturally recalculate a current total.
+     */
+    internal val retainedImagePixelsBytesForTesting: Long
+        get() = retainedImagePixelsBytes(imagePixels)
     /** False when a public host owns this view's virtual subtree and notifications. */
     var publishesAccessibilitySubtree: Boolean = true
     var linkInteractionsEnabled: Boolean = true
@@ -38,6 +47,42 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private var pendingTap: PendingTap? = null
     private var focusedVirtualId = View.NO_ID
+
+    internal companion object {
+        const val IMAGE_PIXEL_MAP_RETAINED_BYTES = 48L
+        const val IMAGE_PIXEL_ENTRY_RETAINED_BYTES = 48L
+
+        fun retainedImagePixelsBytes(pixels: Map<String, Bitmap>): Long {
+            if (pixels.isEmpty()) return 0L
+            val seen = java.util.IdentityHashMap<Bitmap, Unit>()
+            var retained = IMAGE_PIXEL_MAP_RETAINED_BYTES
+            pixels.values.forEach { bitmap ->
+                retained = saturatingAdd(retained, IMAGE_PIXEL_ENTRY_RETAINED_BYTES)
+                if (seen.put(bitmap, Unit) == null) retained = saturatingAdd(retained, bitmapAllocationBytes(bitmap))
+            }
+            return retained
+        }
+
+        private fun bitmapAllocationBytes(bitmap: Bitmap): Long {
+            val allocation = runCatching { bitmap.allocationByteCount.toLong() }.getOrNull()
+            if (allocation != null && allocation >= 0L) return allocation
+            return runCatching {
+                saturatingMultiply(
+                    saturatingMultiply(bitmap.width.coerceAtLeast(0).toLong(), bitmap.height.coerceAtLeast(0).toLong()),
+                    4L,
+                )
+            }.getOrDefault(0L)
+        }
+
+        private fun saturatingAdd(left: Long, right: Long): Long =
+            if (right > 0 && left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
+
+        private fun saturatingMultiply(left: Long, right: Long): Long = when {
+            left <= 0L || right <= 0L -> 0L
+            left > Long.MAX_VALUE / right -> Long.MAX_VALUE
+            else -> left * right
+        }
+    }
 
     /**
      * Publishes a prepared artifact. Replacement owners suppress the transient

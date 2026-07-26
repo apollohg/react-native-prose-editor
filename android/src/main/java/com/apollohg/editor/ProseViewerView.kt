@@ -203,7 +203,11 @@ class ProseViewerView @JvmOverloads constructor(
         get() = preparedArtifact
     /** Mounted host total; the shared layout cache excludes mutable sidecars. */
     internal val preparedSurfaceRetainedBytesForTesting: Long
-        get() = (preparedArtifact?.retainedBytes ?: 0L) + attachmentRevisions.retainedPublicationBytesForTesting
+        get() = saturatedRetainedBytes(
+            preparedArtifact?.retainedBytes ?: 0L,
+            attachmentRevisions.retainedPublicationBytesForTesting.toLong(),
+            preparedDrawingView.retainedImagePixelsBytesForTesting,
+        )
 
     init {
         proseView.setBaseStyle(
@@ -481,6 +485,13 @@ class ProseViewerView @JvmOverloads constructor(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         if (preparedRequest != null) fontEnvironment.activate(deliverPending = true)
+        // Detachment only cancels image work. The immutable prepared artifact
+        // remains installed, so a direct host can draw/measure immediately on
+        // reattach without a semantic replacement or republish.
+        if (preparedRequest != null) {
+            requestLayout()
+            preparedDrawingView.invalidate()
+        }
         requestVisibleImageAttachments()
     }
 
@@ -499,14 +510,11 @@ class ProseViewerView @JvmOverloads constructor(
     internal fun preparePreparedHostForWindowDetachment() {
         clearVirtualAccessibilityFocus()
         if (preparedRequest != null) {
-            preparedArtifact = null
-            preparedDrawingView.install(null)
             viewerImagePipeline.cancel()
             // Cancellation/detachment does not create a new semantic source;
-            // retain publication bits and revision for a later remount.
+            // retain its artifact/publication bits and revision for a later
+            // remount. Pixel ownership is released with the drawing map.
             preparedDrawingView.imagePixels = emptyMap()
-            preparedAccessibilityGeneration = null
-            notifyAccessibilitySubtreeChanged()
         }
     }
 
@@ -585,6 +593,10 @@ class ProseViewerView @JvmOverloads constructor(
         if (revision <= request.fontEnvironmentRevision) return
         preparedRequest = request.copy(fontEnvironmentRevision = revision)
         requestLayout()
+    }
+
+    private fun saturatedRetainedBytes(vararg values: Long): Long = values.fold(0L) { total, value ->
+        if (value > 0 && total > Long.MAX_VALUE - value) Long.MAX_VALUE else total + value
     }
 
     private fun updateCollapsedEmptyState() {

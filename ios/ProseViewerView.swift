@@ -51,7 +51,13 @@ public final class ProseViewerView: UIView {
     /// Mounted host total; the layout cache intentionally excludes this
     /// mutable sidecar because it is not shared immutable layout state.
     internal var preparedSurfaceRetainedBytesForTesting: Int {
-        (ownedLayout?.retainedBytes ?? 0) + attachmentRevisions.retainedPublicationBytesForTesting
+        PreparedProseDrawingView.saturatingAdd(
+            PreparedProseDrawingView.saturatingAdd(
+                ownedLayout?.retainedBytes ?? 0,
+                attachmentRevisions.retainedPublicationBytesForTesting
+            ),
+            drawingView.retainedImagePixelsBytesForTesting
+        )
     }
 
     public override init(frame: CGRect) {

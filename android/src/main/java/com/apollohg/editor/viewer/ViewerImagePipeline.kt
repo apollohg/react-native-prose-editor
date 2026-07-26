@@ -32,11 +32,12 @@ internal data class ViewerImageAttachment(
     }
 }
 
-internal class ViewerImageIntrinsicStore(private val entryLimit: Int = 256) {
+internal class ViewerImageIntrinsicStore(entryLimit: Int = 256) {
     companion object { val shared = ViewerImageIntrinsicStore() }
 
     private data class Entry(val size: Pair<Int, Int>, var access: Long)
     private val lock = Any()
+    private var entryLimit = entryLimit.coerceAtLeast(1)
     private val values = mutableMapOf<String, Entry>()
     private var access = 0L
 
@@ -52,6 +53,13 @@ internal class ViewerImageIntrinsicStore(private val entryLimit: Int = 256) {
 
     /** Test-only global-LRU inspection; [size] intentionally consults active sidecars. */
     fun globalSize(id: String): Pair<Int, Int>? = synchronized(lock) { values[id]?.size }
+
+    /** Test-only seam for the actual process-global store, never a fixture-local LRU. */
+    internal fun clearAndSetEntryLimitForTesting(limit: Int = 256) = synchronized(lock) {
+        values.clear()
+        access = 0L
+        entryLimit = limit.coerceAtLeast(1)
+    }
 
     fun store(id: String, size: Pair<Int, Int>) = synchronized(lock) {
         if (size.first <= 0 || size.second <= 0) return@synchronized

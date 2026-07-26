@@ -51,7 +51,7 @@ final class ViewerImageIntrinsicStore {
     }
 
     private let lock = NSLock()
-    private let entryLimit: Int
+    private var entryLimit: Int
     private var access: UInt64 = 0
     private var values: [String: Entry] = [:]
 
@@ -74,6 +74,16 @@ final class ViewerImageIntrinsicStore {
     /// to mounted sidecars, so it cannot prove an LRU eviction on its own.
     func globalSize(for id: String) -> CGSize? {
         lock.withLock { values[id]?.size }
+    }
+
+    /// Test-only control of the actual process-global LRU. `size(for:)` keeps
+    /// its active-sidecar fallback, while this inspection proves eviction.
+    func clearAndSetEntryLimitForTesting(_ limit: Int = 256) {
+        lock.withLock {
+            entryLimit = max(1, limit)
+            access = 0
+            values.removeAll(keepingCapacity: false)
+        }
     }
 
     func store(_ size: CGSize, for id: String) {

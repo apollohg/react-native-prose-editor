@@ -389,7 +389,7 @@ class PreparedProseRenderingTest {
     private fun prepare(document: ViewerDocument, theme: PreparedProseTheme, widthPx: Int): PreparedProseLayout =
         StaticLayoutAndroidProseLayoutEngine().prepare(document, key(), theme, widthPx, theme.density, false)
 
-    private fun key() = ProseLayoutKey("fixture", Fixture.widthPx, "fixture", 0, 0, 0, "fixture")
+    private fun key() = ProseLayoutKey("fixture", Fixture.widthPx, "fixture", 0, 0, 0, 0, "fixture")
 
     private fun assertGeometryContained(layout: PreparedProseLayout, name: String) {
         layout.blocks.forEach { block ->

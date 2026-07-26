@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import NativeEditor
 
 final class PreparedProseRevisionTests: XCTestCase {
@@ -125,15 +126,55 @@ final class PreparedProseRevisionTests: XCTestCase {
 
     func testGlobalMetadataLRUEvictionFallsBackToActiveSidecarWithoutRepublishing() {
         let state = ViewerAttachmentRevisionState()
-        let evictedMetadata = ViewerImageIntrinsicStore(entryLimit: 1)
+        ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
+        defer { ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting() }
         XCTAssertTrue(state.beginSemanticGeneration("semantic-a"))
         state.admit(attachmentCount: 1)
         XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
-        evictedMetadata.store(CGSize(width: 40, height: 20), for: "7:https://example.test/a")
-        evictedMetadata.store(CGSize(width: 20, height: 40), for: "8:https://example.test/b")
-        XCTAssertNil(evictedMetadata.globalSize(for: "7:https://example.test/a"))
-        XCTAssertEqual(evictedMetadata.size(for: "7:https://example.test/a"), CGSize(width: 40, height: 20))
+        ViewerImageIntrinsicStore.shared.store(CGSize(width: 20, height: 40), for: "8:https://example.test/b")
+        XCTAssertNil(ViewerImageIntrinsicStore.shared.globalSize(for: "7:https://example.test/a"))
+        XCTAssertEqual(ViewerImageIntrinsicStore.shared.size(for: "7:https://example.test/a"), CGSize(width: 40, height: 20))
         XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
+        XCTAssertEqual(state.revision, 1)
+    }
+
+    func testMountedPixelOwnershipCountsMapEntriesAndUniqueCGImageBackingExactly() {
+        let drawing = PreparedProseDrawingView()
+        let image = paddedImage(bytesPerRow: 64, height: 2)
+        drawing.imagePixels = ["first": image, "second": image]
+        XCTAssertEqual(
+            PreparedProseDrawingView.imagePixelMapRetainedBytes
+                + PreparedProseDrawingView.imagePixelEntryRetainedBytes * 2
+                + 128,
+            drawing.retainedImagePixelsBytesForTesting
+        )
+        drawing.imagePixels = ["replacement": paddedImage(bytesPerRow: 32, height: 3)]
+        XCTAssertEqual(
+            PreparedProseDrawingView.imagePixelMapRetainedBytes
+                + PreparedProseDrawingView.imagePixelEntryRetainedBytes
+                + 96,
+            drawing.retainedImagePixelsBytesForTesting
+        )
+        drawing.imagePixels = [:]
+        XCTAssertEqual(drawing.retainedImagePixelsBytesForTesting, 0)
+    }
+
+    private func paddedImage(bytesPerRow: Int, height: Int) -> UIImage {
+        let data = Data(repeating: 0, count: bytesPerRow * height)
+        let image = CGImage(
+            width: 2,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: CGDataProvider(data: data as CFData)!,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+        return UIImage(cgImage: image)
     }
 
     func testBoundedIntrinsicMetadataEvictsOldestEntryDeterministically() {

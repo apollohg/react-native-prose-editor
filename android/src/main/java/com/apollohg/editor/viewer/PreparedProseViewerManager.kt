@@ -69,10 +69,12 @@ internal class PreparedProseViewerManager :
             state.finishWithoutMountedReplacement(view)
             state.release()
         }
+        FabricAttachmentSidecars.remove(FabricSurfaceToken(UIManagerHelper.getSurfaceId(view), view.id))
         view.onUsableMetricsChanged = null
         view.onVisibleRectChanged = null
         view.onFontConfigurationChanged = null
         view.onInteractionActivated = null
+        view.imagePixels = emptyMap()
         view.install(null)
         super.onDropViewInstance(view)
     }
@@ -82,11 +84,21 @@ internal class PreparedProseViewerManager :
         // the weak view map is only supplemental lifecycle bookkeeping. The
         // registry cleanup is intentionally unconditional and surface-wide.
         PreparedProseLayoutRegistry.shared.releaseFabricSurfaceId(surfaceId)
-        states.values.forEach { state ->
-            if (state.generation?.surface?.surfaceId == surfaceId) state.release()
+        FabricAttachmentSidecars.removeSurface(surfaceId)
+        states.entries.forEach { (view, state) ->
+            if (state.generation?.surface?.surfaceId == surfaceId) {
+                state.release()
+                view.imagePixels = emptyMap()
+                view.install(null)
+            }
         }
         super.onSurfaceStopped(surfaceId)
     }
+
+    /** Test-only Fabric-side per-surface accounting; cache bytes stay separate. */
+    internal fun retainedSurfaceBytesForTesting(view: PreparedProseDrawingView): Long =
+        states[view]?.retainedSurfaceBytesForTesting(view)
+            ?: PreparedProseDrawingView.retainedImagePixelsBytes(emptyMap())
 
     override fun updateState(
         view: PreparedProseDrawingView,
@@ -95,6 +107,7 @@ internal class PreparedProseViewerManager :
     ): Any? {
         val state = states.getOrPut(view, ::ViewState)
         state.replaceStateWrapper(stateWrapper, stateWrapper.stateData?.fabricRevisionsOrNull())
+        state.beginSemanticImageGeneration(view)
         reconcile(view, state)
         return null
     }
@@ -149,6 +162,10 @@ internal class PreparedProseViewerManager :
             return YogaMeasureOutput.make(0f, 0f)
         }
         val widthPx = widthToPixels(width, density)
+        // Yoga is the first consumer that can consult intrinsic metadata. Reset
+        // this surface before preparation so stale semantic fallback cannot
+        // influence a new artifact.
+        surface?.let { FabricAttachmentSidecars.begin(it, request.semanticGenerationIdentity) }
         val artifact = if (
             (widthMode != YogaMeasureMode.EXACTLY && widthMode != YogaMeasureMode.AT_MOST) ||
             widthPx == null
@@ -170,6 +187,7 @@ internal class PreparedProseViewerManager :
     private fun update(view: PreparedProseDrawingView, mutation: ViewState.() -> Unit) {
         val state = states.getOrPut(view, ::ViewState)
         state.mutation()
+        state.beginSemanticImageGeneration(view)
         reconcile(view, state)
     }
 
@@ -188,6 +206,7 @@ internal class PreparedProseViewerManager :
         }
         val surface = FabricSurfaceToken(surfaceId, view.id)
         val generation = state.adopt(surface, request)
+        state.bindFabricAttachmentState(surface)
         val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(surface, request, widthPx, density)
         if (artifact == null) {
             PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation)
@@ -361,16 +380,39 @@ internal class PreparedProseViewerManager :
             revisions = nextRevisions
         }
 
-        val attachmentRevisions = ViewerAttachmentRevisionState()
+        private var attachmentRevisions = ViewerAttachmentRevisionState()
         val fontEnvironment = ViewerFontEnvironment()
         val imagePipeline = ViewerImagePipeline()
         private var visibleRect: android.graphics.Rect = android.graphics.Rect()
 
         fun beginImages(view: PreparedProseDrawingView, artifact: PreparedProseLayout, request: ProseViewerRequest) {
-            attachmentRevisions.beginSemanticGeneration(request.semanticGenerationIdentity)
+            // The semantic reset happens when props/state are accepted, before
+            // Yoga can prepare a replacement. Mount binds only this artifact's
+            // ordinal descriptors and must preserve a permitted revision.
             attachmentRevisions.admit(artifact.imageAttachments.size)
             fontEnvironment.activate()
             imagePipeline.begin(request.semanticGenerationIdentity, request.configuration.imagesEnabled, ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson))
+        }
+
+        /** Phase one of Fabric image setup: no artifact is required yet. */
+        fun beginSemanticImageGeneration(view: PreparedProseDrawingView) {
+            val request = requestOrNull() ?: return
+            if (!attachmentRevisions.beginSemanticGeneration(request.semanticGenerationIdentity)) return
+            imagePipeline.cancel()
+            view.imagePixels = emptyMap()
+        }
+
+        fun bindFabricAttachmentState(surface: FabricSurfaceToken) {
+            attachmentRevisions = FabricAttachmentSidecars.state(surface) ?: attachmentRevisions
+        }
+
+        internal fun retainedSurfaceBytesForTesting(view: PreparedProseDrawingView): Long {
+            val layout = view.preparedLayout?.retainedBytes ?: 0L
+            val sidecar = attachmentRevisions.retainedPublicationBytesForTesting.toLong()
+            val pixels = view.retainedImagePixelsBytesForTesting
+            return listOf(layout, sidecar, pixels).fold(0L) { total, value ->
+                if (value > 0 && total > Long.MAX_VALUE - value) Long.MAX_VALUE else total + value
+            }
         }
 
         fun requestVisibleImages(view: PreparedProseDrawingView, visible: android.graphics.Rect) {
@@ -408,6 +450,7 @@ internal class PreparedProseViewerManager :
             imagePipeline.cancel()
             fontEnvironment.deactivate()
             replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
+            view.imagePixels = emptyMap()
             view.install(null)
         }
 

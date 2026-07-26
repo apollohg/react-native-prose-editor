@@ -10,6 +10,36 @@ import UIKit
 @objc(PREPPreparedProseDrawingView)
 public final class PreparedProseDrawingView: UIView {
     var imagePixels: [String: UIImage] = [:] { didSet { setNeedsDisplay() } }
+    /// This map is the mounted surface's pixel owner. Immutable layouts and
+    /// shared decode caches retain no image pixels, and a shared UIImage is
+    /// charged only once even when multiple attachments reference it.
+    internal var retainedImagePixelsBytesForTesting: Int {
+        guard !imagePixels.isEmpty else { return 0 }
+        var seen = Set<ObjectIdentifier>()
+        var retained = Self.imagePixelMapRetainedBytes
+        for image in imagePixels.values {
+            retained = Self.saturatingAdd(retained, Self.imagePixelEntryRetainedBytes)
+            // UIImage wrappers can share one CGImage backing allocation.
+            let identity: ObjectIdentifier
+            if let cgImage = image.cgImage {
+                identity = ObjectIdentifier(cgImage)
+            } else {
+                identity = ObjectIdentifier(image)
+            }
+            if seen.insert(identity).inserted {
+                retained = Self.saturatingAdd(retained, Self.pixelAllocationBytes(for: image))
+            }
+        }
+        return retained
+    }
+    internal var preparedSurfaceRetainedBytesForTesting: Int {
+        Self.saturatingAdd(
+            Self.saturatingAdd(layout?.retainedBytes ?? 0, imageRevisions.retainedPublicationBytesForTesting),
+            retainedImagePixelsBytesForTesting
+        )
+    }
+    internal static let imagePixelMapRetainedBytes = 48
+    internal static let imagePixelEntryRetainedBytes = 48
     @objc public static let imageMetadataDidResolve = Notification.Name("com.apollohg.editor.viewer.imageMetadataDidResolve")
     @objc public static let imageResourceDidFail = Notification.Name("com.apollohg.editor.viewer.imageResourceDidFail")
     private lazy var imagePipeline = ViewerImagePipeline(policy: .default)
@@ -53,13 +83,23 @@ public final class PreparedProseDrawingView: UIView {
                 userInfo: ["generation": generation, "attachment": attachment.id]
             )
         }
-        _ = imageRevisions.beginSemanticGeneration(generation)
         imagePipeline.begin(
             generation: imageGeneration,
             imagesEnabled: imageConfiguration.enabled,
             policy: imageConfiguration.policy
         )
         imageRevisions.admit(attachmentCount: layout?.imageAttachments.count ?? 0)
+    }
+
+    /// Phase one of Fabric setup: semantic props/state have been accepted but
+    /// no mounted artifact exists yet. This clears active intrinsic fallback
+    /// before measurement/preparation and phase two only binds ordinals.
+    @objc(beginSemanticImageGeneration:)
+    public func beginSemanticImageGeneration(_ generation: String) {
+        guard imageRevisions.beginSemanticGeneration(generation) else { return }
+        imageGeneration = ""
+        imagePipeline.cancel()
+        imagePixels = [:]
     }
 
     @objc public func updateConfiguredImagesForVisibleWindow() {
@@ -113,6 +153,28 @@ public final class PreparedProseDrawingView: UIView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("PreparedProseDrawingView does not support NSCoder") }
+
+    internal static func pixelAllocationBytes(for image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            return saturatingMultiply(cgImage.bytesPerRow, cgImage.height)
+        }
+        let width = image.size.width * image.scale
+        let height = image.size.height * image.scale
+        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return 0 }
+        let pixels = min(Double(Int.max), width.rounded(.up) * height.rounded(.up))
+        return saturatingMultiply(Int(pixels), 4)
+    }
+
+    internal static func saturatingAdd(_ left: Int, _ right: Int) -> Int {
+        guard left > Int.max - right else { return Int.max }
+        return left + right
+    }
+
+    internal static func saturatingMultiply(_ left: Int, _ right: Int) -> Int {
+        guard left > 0, right > 0 else { return 0 }
+        guard left <= Int.max / right else { return Int.max }
+        return left * right
+    }
 
     func interaction(at point: CGPoint) -> PreparedProseInteraction? {
         guard let layout else { return nil }
