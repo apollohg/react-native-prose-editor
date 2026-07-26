@@ -13,6 +13,30 @@ private extension Int {
     }
 }
 
+private enum PreparedProseInteractionGeometry {
+    static func visualOrder(_ left: CGRect, _ right: CGRect) -> Bool {
+        left.minY == right.minY ? left.minX < right.minX : left.minY < right.minY
+    }
+
+    static func appendSameLinePiece(
+        _ rect: CGRect,
+        to rects: inout [CGRect],
+        displayScale: CGFloat,
+        mayMergeWithPrior: Bool
+    ) {
+        let pixel = 1 / max(1, displayScale)
+        guard mayMergeWithPrior,
+              let prior = rects.last,
+              prior.minY == rect.minY,
+              prior.maxX >= rect.minX - pixel
+        else {
+            rects.append(rect)
+            return
+        }
+        rects[rects.count - 1] = prior.union(rect)
+    }
+}
+
 private final class PreparedAtomMetrics {
     let width: CGFloat
     let ascent: CGFloat
@@ -365,17 +389,40 @@ final class CoreTextProseLayoutEngine {
                 displayScale: displayScale
             ))
             for (index, semantic) in attributed.semanticRanges.enumerated() {
-                let overlap = NSIntersectionRange(semantic.range, lineRange)
-                guard overlap.length > 0 else { continue }
-                let start = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location, nil))
-                let end = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location + overlap.length, nil))
-                let rect = CGRect(x: textX + min(start, end), y: lineBounds.minY, width: max(1 / displayScale, abs(end - start)), height: lineBounds.height)
-                if let prior = interactionRects[index].last,
-                   prior.minY == rect.minY,
-                   prior.maxX >= rect.minX - (1 / displayScale) {
-                    interactionRects[index][interactionRects[index].count - 1] = prior.union(rect)
-                } else {
-                    interactionRects[index].append(rect)
+                // A single logical range can cross multiple visual Core Text
+                // runs (particularly around bidi boundaries). Intersect it with
+                // each shaped run instead of manufacturing one endpoint rect.
+                var visualPieces: [(rect: CGRect, rightToLeft: Bool)] = []
+                for run in CTLineGetGlyphRuns(line) as NSArray {
+                    guard let run = run as? CTRun else { continue }
+                    let stringRange = CTRunGetStringRange(run)
+                    let runRange = NSRange(location: stringRange.location, length: stringRange.length)
+                    let overlap = NSIntersectionRange(NSIntersectionRange(semantic.range, lineRange), runRange)
+                    guard overlap.length > 0 else { continue }
+                    let start = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location, nil))
+                    let end = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location + overlap.length, nil))
+                    visualPieces.append((
+                        CGRect(
+                            x: textX + min(start, end),
+                            y: lineBounds.minY,
+                            width: max(1 / displayScale, abs(end - start)),
+                            height: lineBounds.height
+                        ),
+                        CTRunGetStatus(run).contains(.rightToLeft)
+                    ))
+                }
+                var priorDirection: Bool?
+                for piece in visualPieces.sorted(by: { PreparedProseInteractionGeometry.visualOrder($0.rect, $1.rect) }) {
+                    PreparedProseInteractionGeometry.appendSameLinePiece(
+                        piece.rect,
+                        to: &interactionRects[index],
+                        displayScale: displayScale,
+                        // Do not join adjacent opposite-direction runs: they
+                        // are separately shaped visual geometry even when their
+                        // x edges touch.
+                        mayMergeWithPrior: priorDirection == piece.rightToLeft
+                    )
+                    priorDirection = piece.rightToLeft
                 }
             }
             if firstLineBaseline == nil { firstLineBaseline = baseline }

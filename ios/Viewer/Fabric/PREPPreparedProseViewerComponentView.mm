@@ -141,35 +141,38 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     _drawingView = [PREPPreparedProseDrawingView new];
     _drawingView.interactionDelegate = self;
     _drawingView.backgroundColor = UIColor.clearColor;
+    _drawingView.isAccessibilityElement = NO;
+    self.isAccessibilityElement = NO;
     [self addSubview:_drawingView];
   }
   return self;
 }
 
-- (void)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
+- (BOOL)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
                  didActivateLink:(NSString *)href
                             text:(NSString *)text
 {
   const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
-  if (eventEmitter) {
-    eventEmitter->onPressLink({
-        .href = std::string(href.UTF8String ?: ""),
-        .text = std::string(text.UTF8String ?: ""),
-    });
-  }
+  if (!eventEmitter) return NO;
+  eventEmitter->onPressLink({
+      .href = std::string(href.UTF8String ?: ""),
+      .text = std::string(text.UTF8String ?: ""),
+  });
+  return YES;
 }
 
-- (void)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
+- (BOOL)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
               didActivateMention:(uint32_t)docPos
                             label:(NSString *)label
 {
   const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
-  if (eventEmitter) {
-    eventEmitter->onPressMention({
-        .docPos = static_cast<int>(docPos),
-        .label = std::string(label.UTF8String ?: ""),
-    });
-  }
+  if (!eventEmitter) return NO;
+  eventEmitter->onPressMention({
+      // Codegen's Double contract preserves the complete UInt32 domain in JS.
+      .docPos = static_cast<double>(docPos),
+      .label = std::string(label.UTF8String ?: ""),
+  });
+  return YES;
 }
 
 - (void)updateProps:(const Props::Shared &)props oldProps:(const Props::Shared &)oldProps

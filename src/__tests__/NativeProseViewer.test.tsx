@@ -135,7 +135,7 @@ describe('NativeProseViewer', () => {
             nativeEvent: { href: 'https://example.com', text: 'Example' },
         });
         fireEvent(nativeView, 'onPressMention', {
-            nativeEvent: { docPos: 7, label: '@alice' },
+            nativeEvent: { docPos: 4_294_967_295, label: '@alice' },
         });
         fireEvent(nativeView, 'onError', {
             nativeEvent: {
@@ -147,7 +147,7 @@ describe('NativeProseViewer', () => {
         });
 
         expect(onPressLink).toHaveBeenCalledWith({ href: 'https://example.com', text: 'Example' });
-        expect(onMentionPress).toHaveBeenCalledWith({ docPos: 7, label: '@alice' });
+        expect(onMentionPress).toHaveBeenCalledWith({ docPos: 4_294_967_295, label: '@alice' });
         expect(onError).toHaveBeenCalledWith({
             domain: 'viewer',
             code: 'DOCUMENT_INVALID',

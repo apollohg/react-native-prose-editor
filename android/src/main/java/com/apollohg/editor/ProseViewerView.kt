@@ -165,6 +165,7 @@ class ProseViewerView @JvmOverloads constructor(
             if (field == value) return
             clearVirtualAccessibilityFocus()
             field = value
+            preparedDrawingView.linkInteractionsEnabled = value
             notifyAccessibilitySubtreeChanged()
         }
     internal val isContentCollapsedForHost: Boolean
@@ -207,6 +208,10 @@ class ProseViewerView @JvmOverloads constructor(
         proseView.setOnTouchListener { _, event -> handleProseTouch(event) }
 
         preparedDrawingView.visibility = View.GONE
+        // The public facade owns virtual accessibility. The drawing child is
+        // still interactive, but must not expose a duplicate virtual subtree.
+        preparedDrawingView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        preparedDrawingView.linkInteractionsEnabled = linkTapsEnabled
         preparedDrawingView.onInteractionActivated = { activatePreparedInteraction(it) }
         addView(
             preparedDrawingView,
@@ -234,7 +239,10 @@ class ProseViewerView @JvmOverloads constructor(
         preparedArtifact = null
         directError = null
         reportedGenerationIdentity = null
+        clearVirtualAccessibilityFocus()
+        preparedAccessibilityGeneration = null
         preparedDrawingView.install(null)
+        notifyAccessibilitySubtreeChanged()
         preparedDrawingView.visibility = View.VISIBLE
         proseView.visibility = View.GONE
         return try {
@@ -329,9 +337,10 @@ class ProseViewerView @JvmOverloads constructor(
                 density = resources.displayMetrics.density,
                 compiledDocument = retainedDocument,
             )
+            val artifactChanged = preparedArtifact !== artifact
             preparedArtifact = artifact
             preparedDrawingView.install(artifact)
-            if (preparedAccessibilityGeneration != artifact.key.generationIdentity) {
+            if (artifactChanged || preparedAccessibilityGeneration != artifact.key.generationIdentity) {
                 clearVirtualAccessibilityFocus()
                 preparedAccessibilityGeneration = artifact.key.generationIdentity
                 notifyAccessibilitySubtreeChanged()
@@ -425,6 +434,7 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     private fun clearDirectGeneration() {
+        clearVirtualAccessibilityFocus()
         preparedRequest = null
         retainedDocument = null
         preparedArtifact = null
@@ -433,6 +443,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.install(null)
         preparedDrawingView.visibility = View.GONE
         preparedAccessibilityGeneration = null
+        notifyAccessibilitySubtreeChanged()
         proseView.visibility = View.VISIBLE
     }
 

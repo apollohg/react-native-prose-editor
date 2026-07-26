@@ -36,7 +36,6 @@ public final class ProseViewerView: UIView {
         didSet {
             guard oldValue != linkTapsEnabled else { return }
             drawingView.linkInteractionsEnabled = linkTapsEnabled
-            invalidateAccessibilityNodes()
         }
     }
     internal var onContentHeightChange: ((CGFloat) -> Void)?
@@ -65,76 +64,28 @@ public final class ProseViewerView: UIView {
         drawingView.backgroundColor = .clear
         drawingView.isOpaque = false
         drawingView.linkInteractionsEnabled = linkTapsEnabled
-        drawingView.onActivateInteraction = { [weak self] interaction in self?.activate(interaction) }
+        drawingView.onActivateInteraction = { [weak self] interaction in self?.activate(interaction) ?? false }
         isAccessibilityElement = false
         addSubview(drawingView)
     }
 
-    private var accessibilityElementsByIndex: [Int: PreparedProseAccessibilityElement] = [:]
-    private var accessibilityGeneration: String?
-
-    public override func accessibilityElementCount() -> Int {
-        accessibilityNodes.count
-    }
-
-    public override func accessibilityElement(at index: Int) -> Any? {
-        guard accessibilityNodes.indices.contains(index) else { return nil }
-        if let existing = accessibilityElementsByIndex[index] { return existing }
-        let element = PreparedProseAccessibilityElement(container: self, index: index)
-        accessibilityElementsByIndex[index] = element
-        return element
-    }
-
-    public override func index(ofAccessibilityElement element: Any) -> Int {
-        (element as? PreparedProseAccessibilityElement)?.viewer === self ? (element as! PreparedProseAccessibilityElement).index : NSNotFound
-    }
-
-    private var accessibilityNodes: [PreparedProseAccessibilityNode] {
-        guard let ownedLayout else { return [] }
-        return ownedLayout.accessibilityNodes.filter { linkTapsEnabled || $0.role != .link }
-    }
-
-    fileprivate func accessibilityNode(at index: Int) -> PreparedProseAccessibilityNode? {
-        accessibilityNodes[safe: index]
-    }
-
-    fileprivate func accessibilityFrame(for node: PreparedProseAccessibilityNode) -> CGRect {
-        UIAccessibility.convertToScreenCoordinates(node.bounds, in: drawingView)
-    }
-
-    fileprivate func activateAccessibilityNode(at index: Int) -> Bool {
-        guard let node = accessibilityNode(at: index),
-              let interaction = ownedLayout?.interactions[safe: node.interactionIndex]
-        else { return false }
-        activate(interaction)
-        return true
-    }
-
-    private func activate(_ interaction: PreparedProseInteraction) {
+    @discardableResult
+    private func activate(_ interaction: PreparedProseInteraction) -> Bool {
         switch interaction.kind {
         case .link:
-            guard linkTapsEnabled, let href = interaction.href else { return }
+            guard linkTapsEnabled, let href = interaction.href else { return false }
             interactionDelegate?.proseViewer(self, didTapLink: href, text: interaction.visibleText)
+            return true
         case .mention:
-            guard let docPos = interaction.docPos else { return }
+            guard let docPos = interaction.docPos else { return false }
             interactionDelegate?.proseViewer(self, didTapMention: docPos, label: interaction.label)
+            return true
         }
     }
 
     private func installPreparedLayout(_ layout: PreparedProseLayout?) {
-        let prior = accessibilityGeneration
         ownedLayout = layout
-        drawingView.layout = layout
-        let next = layout?.key.generationIdentity
-        if prior != next {
-            invalidateAccessibilityNodes()
-            accessibilityGeneration = next
-        }
-    }
-
-    private func invalidateAccessibilityNodes() {
-        accessibilityElementsByIndex.removeAll(keepingCapacity: true)
-        UIAccessibility.post(notification: .layoutChanged, argument: nil)
+        drawingView.install(layout: layout)
     }
 
     /// Compiles once for this immutable generation. The first finite measurement prepares layout.
@@ -187,7 +138,7 @@ public final class ProseViewerView: UIView {
     public override func layoutSubviews() {
         super.layoutSubviews()
         drawingView.frame = bounds
-        drawingView.layout = ownedLayout
+        drawingView.install(layout: ownedLayout)
     }
 
     /// Releases this surface's artifact ownership without clearing its delegate.
@@ -331,32 +282,4 @@ enum NativeProseViewerEmptyContent {
         }
         return !openParagraph
     }
-}
-
-private final class PreparedProseAccessibilityElement: UIAccessibilityElement {
-    weak var viewer: ProseViewerView?
-    let index: Int
-
-    init(container: ProseViewerView, index: Int) {
-        self.viewer = container
-        self.index = index
-        super.init(accessibilityContainer: container)
-    }
-
-    private var node: PreparedProseAccessibilityNode? { viewer?.accessibilityNode(at: index) }
-
-    override var accessibilityLabel: String? { node?.label }
-    override var accessibilityTraits: UIAccessibilityTraits {
-        guard let node else { return .none }
-        return node.role == .link ? .link : .button
-    }
-    override var accessibilityFrame: CGRect {
-        guard let viewer, let node else { return .zero }
-        return viewer.accessibilityFrame(for: node)
-    }
-    override func accessibilityActivate() -> Bool { viewer?.activateAccessibilityNode(at: index) ?? false }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

@@ -1,7 +1,10 @@
 package com.apollohg.editor
 
 import android.view.View
+import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityEvent
+import android.view.ViewGroup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -108,6 +111,62 @@ class ProseViewerViewTest {
         assertEquals(listOf(31L to "@Alice"), listener.mentions)
     }
 
+    @Test
+    fun `disabled public links are absent from accessibility and cannot activate`() {
+        val viewer = ProseViewerView(context)
+        viewer.apply(linkRenderJson(), "{}")
+        measureAndLayout(viewer)
+
+        assertTrue(viewer.accessibilityNodeProvider.createAccessibilityNodeInfo(1) != null)
+        viewer.linkTapsEnabled = false
+
+        assertNull(viewer.accessibilityNodeProvider.createAccessibilityNodeInfo(1))
+        assertFalse(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLICK,
+                null,
+            )
+        )
+    }
+
+    @Test
+    fun `touch slop cancels public link activation`() {
+        val viewer = ProseViewerView(context)
+        val listener = RecordingListener()
+        viewer.interactionListener = listener
+        viewer.apply(linkRenderJson(), "{}")
+        measureAndLayout(viewer)
+        val bounds = requireNotNull(viewer.proseViewForTesting.accessibleAnnotations().firstOrNull()).bounds
+        val x = bounds.centerX().toFloat()
+        val y = bounds.centerY().toFloat()
+
+        viewer.proseViewForTesting.dispatchTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, x, y, 0))
+        viewer.proseViewForTesting.dispatchTouchEvent(MotionEvent.obtain(0, 1, MotionEvent.ACTION_MOVE, x + viewer.touchSlopForTesting + 1, y, 0))
+        viewer.proseViewForTesting.dispatchTouchEvent(MotionEvent.obtain(0, 2, MotionEvent.ACTION_UP, x + viewer.touchSlopForTesting + 1, y, 0))
+
+        assertTrue(listener.links.isEmpty())
+    }
+
+    @Test
+    fun `virtual focus clears when public host recycles`() {
+        val viewer = ProseViewerView(context)
+        val parent = CapturingAccessibilityParent().apply { addView(viewer) }
+        viewer.apply(linkRenderJson(), "{}")
+        measureAndLayout(viewer)
+
+        assertTrue(viewer.accessibilityNodeProvider.performAction(1, AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null))
+        viewer.prepareForReuse()
+
+        assertFalse(viewer.accessibilityNodeProvider.performAction(1, AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS, null))
+        assertTrue(parent.events.any { it.type == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED })
+        assertTrue(parent.events.any { it.type == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED })
+        assertTrue(parent.events.any {
+            it.type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+                (it.changeTypes and AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE) != 0
+        })
+    }
+
     private fun paragraphRenderJson(text: String): String =
         """
         [
@@ -116,6 +175,22 @@ class ProseViewerViewTest {
           {"type":"blockEnd"}
         ]
         """.trimIndent()
+
+    private fun linkRenderJson(): String =
+        """
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"Open","marks":[{"type":"link","href":"https://example.test"}]},
+          {"type":"blockEnd"}
+        ]
+        """.trimIndent()
+
+    private fun measureAndLayout(viewer: ProseViewerView) {
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        viewer.measure(widthSpec, heightSpec)
+        viewer.layout(0, 0, viewer.measuredWidth, viewer.measuredHeight)
+    }
 
     private class RecordingListener : ProseViewerInteractionListener {
         val links = mutableListOf<Pair<String, String>>()
@@ -132,5 +207,17 @@ class ProseViewerViewTest {
         ) {
             mentions += docPos to label
         }
+    }
+
+    private inner class CapturingAccessibilityParent : ViewGroup(context) {
+        data class Event(val type: Int, val changeTypes: Int)
+        val events = mutableListOf<Event>()
+
+        override fun requestSendAccessibilityEvent(child: View, event: AccessibilityEvent): Boolean {
+            events += Event(event.eventType, event.contentChangeTypes)
+            return true
+        }
+
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) = Unit
     }
 }

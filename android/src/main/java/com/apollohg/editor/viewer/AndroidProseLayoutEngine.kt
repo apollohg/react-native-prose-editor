@@ -3,6 +3,9 @@ package com.apollohg.editor.viewer
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
+import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.Typeface
 import android.text.Layout
 import android.text.Spanned
@@ -312,11 +315,16 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 val start = maxOf(semantic.start, lineStart)
                 val end = minOf(semantic.end, lineEnd)
                 if (start >= end) continue
-                val x1 = layout.getPrimaryHorizontal(start)
-                val x2 = layout.getPrimaryHorizontal(end)
-                val rect = Rect(textX + min(x1, x2).toInt(), textTop + layout.getLineTop(line), textX + max(x1, x2).toInt().coerceAtLeast(textX + min(x1, x2).toInt() + 1), textTop + layout.getLineBottom(line))
-                val prior = interactionRects[index].lastOrNull()
-                if (prior != null && prior.top == rect.top && prior.right >= rect.left - 1) prior.union(rect) else interactionRects[index] += rect
+                // StaticLayout's selection path follows its shaped visual runs.
+                // Clipping it to this line preserves discontiguous bidi pieces
+                // rather than collapsing a logical range to endpoint geometry.
+                selectionRectsForLine(layout, start, end, line, availableWidth).forEach { rect ->
+                    rect.offset(textX, textTop)
+                    // One selection-path contour is one shaped visual piece.
+                    // StaticLayout has already coalesced adjacent glyphs in the
+                    // run, so joining contours here would erase bidi splits.
+                    interactionRects[index] += rect
+                }
             }
         }
         attributed.atoms.forEach { atom ->
@@ -364,6 +372,35 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     private fun finishBlock(fragments: List<PreparedProseFragment>, interactions: List<PreparedProseInteraction>, seed: Rect, end: Int, spacing: Int, extraBytes: Long = 0): BlockResult {
         val bounds = fragments.fold(seed) { acc, fragment -> Rect(acc).apply { union(fragment.bounds) } }
         return BlockResult(PreparedProseBlock(fragments.toList(), bounds), interactions, max(end, bounds.bottom) + spacing, extraBytes)
+    }
+
+    private fun selectionRectsForLine(
+        layout: StaticLayout,
+        start: Int,
+        end: Int,
+        line: Int,
+        width: Int,
+    ): List<Rect> {
+        val path = Path()
+        layout.getSelectionPath(start, end, path)
+        val lineClip = Rect(0, layout.getLineTop(line), width, layout.getLineBottom(line))
+        val measure = PathMeasure(path, false)
+        val result = mutableListOf<Rect>()
+        do {
+            if (measure.length == 0f) continue
+            val contour = Path()
+            measure.getSegment(0f, measure.length, contour, true)
+            val bounds = RectF()
+            contour.computeBounds(bounds, true)
+            val piece = Rect(
+                bounds.left.toInt(),
+                bounds.top.toInt(),
+                ceil(bounds.right).toInt(),
+                ceil(bounds.bottom).toInt(),
+            )
+            if (piece.intersect(lineClip) && !piece.isEmpty) result += piece
+        } while (measure.nextContour())
+        return result.sortedWith(compareBy<Rect> { it.top }.thenBy { it.left })
     }
 
     private data class AttributedBlock(val text: SpannableString, val atoms: List<PreparedAtomSpec>, val semanticRanges: List<PreparedSemanticRange>, val retainedBytes: Long)

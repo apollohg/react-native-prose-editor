@@ -2,6 +2,7 @@ import type { ViewProps } from 'react-native';
 import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent';
 import type {
     DirectEventHandler,
+    Double,
     Int32,
     WithDefault,
 } from 'react-native/Libraries/Types/CodegenTypes';
@@ -17,7 +18,9 @@ export interface NativeProps extends ViewProps {
     enableLinkTaps?: WithDefault<boolean, true>;
     fontEnvironmentRevision: Int32;
     onPressLink?: DirectEventHandler<{ href: string; text: string }>;
-    onPressMention?: DirectEventHandler<{ docPos: Int32; label: string }>;
+    // React Native numbers are IEEE-754 doubles, which exactly represent every
+    // UInt32 document position. Int32 would corrupt positions above 2^31 - 1.
+    onPressMention?: DirectEventHandler<{ docPos: Double; label: string }>;
     onError?: DirectEventHandler<{
         domain: string;
         code: string;

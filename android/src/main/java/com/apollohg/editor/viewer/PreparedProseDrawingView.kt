@@ -9,6 +9,7 @@ import android.view.View
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.os.Bundle
+import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
@@ -18,13 +19,13 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     var preparedLayout: PreparedProseLayout? = null
         private set
     var onUsableMetricsChanged: (() -> Unit)? = null
-    var onInteractionActivated: ((PreparedProseInteraction) -> Unit)? = null
+    var onInteractionActivated: ((PreparedProseInteraction) -> Boolean)? = null
     var linkInteractionsEnabled: Boolean = true
         set(value) {
             if (field == value) return
             field = value
-            focusedVirtualId = View.NO_ID
-            sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+            clearVirtualAccessibilityFocus()
+            notifyAccessibilitySubtreeChanged()
         }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
@@ -34,7 +35,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     fun install(layout: PreparedProseLayout?) {
         if (preparedLayout === layout) return
         preparedLayout = layout
-        focusedVirtualId = View.NO_ID
+        clearVirtualAccessibilityFocus()
+        notifyAccessibilitySubtreeChanged()
         invalidate()
     }
 
@@ -151,8 +153,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                 val tap = pendingTap
                 pendingTap = null
                 if (tap != null && event.pointerCount == 1 && event.getPointerId(event.actionIndex) == tap.pointerId && !exceedsSlop(event, tap) && targetAt() == tap.target) {
-                    onInteractionActivated?.invoke(tap.target)
-                    return true
+                    return onInteractionActivated?.invoke(tap.target) ?: false
                 }
             }
         }
@@ -205,9 +206,9 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         override fun performAction(id: Int, action: Int, arguments: Bundle?): Boolean {
             val node = nodes().getOrNull(id - 1) ?: return false
             return when (action) {
-                AccessibilityNodeInfo.ACTION_CLICK -> preparedLayout?.interactions?.getOrNull(node.interactionIndex)?.let { onInteractionActivated?.invoke(it); true } ?: false
-                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> { focusedVirtualId = id; invalidate(); true }
-                AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> if (focusedVirtualId == id) { focusedVirtualId = View.NO_ID; invalidate(); true } else false
+                AccessibilityNodeInfo.ACTION_CLICK -> preparedLayout?.interactions?.getOrNull(node.interactionIndex)?.let { onInteractionActivated?.invoke(it) ?: false } ?: false
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> requestVirtualAccessibilityFocus(id)
+                AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> clearVirtualAccessibilityFocus(id)
                 else -> false
             }
         }
@@ -215,5 +216,41 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
     private fun nodes(): List<PreparedProseAccessibilityNode> = preparedLayout?.accessibilityNodes.orEmpty().filter {
         linkInteractionsEnabled || it.role != PreparedProseAccessibilityNode.Role.LINK
+    }
+
+    private fun requestVirtualAccessibilityFocus(id: Int): Boolean {
+        if (nodes().getOrNull(id - 1) == null || focusedVirtualId == id) return false
+        clearVirtualAccessibilityFocus()
+        focusedVirtualId = id
+        invalidate()
+        sendVirtualAccessibilityEvent(id, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED)
+        return true
+    }
+
+    private fun clearVirtualAccessibilityFocus(id: Int = focusedVirtualId): Boolean {
+        if (id == View.NO_ID || id != focusedVirtualId) return false
+        focusedVirtualId = View.NO_ID
+        invalidate()
+        sendVirtualAccessibilityEvent(id, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
+        return true
+    }
+
+    private fun sendVirtualAccessibilityEvent(id: Int, type: Int) {
+        val event = AccessibilityEvent.obtain(type).apply {
+            packageName = context.packageName
+            className = android.widget.Button::class.java.name
+            setSource(this@PreparedProseDrawingView, id)
+        }
+        parent?.requestSendAccessibilityEvent(this, event)
+    }
+
+    private fun notifyAccessibilitySubtreeChanged() {
+        val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply {
+            packageName = context.packageName
+            className = android.widget.TextView::class.java.name
+            contentChangeTypes = AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
+            setSource(this@PreparedProseDrawingView)
+        }
+        parent?.requestSendAccessibilityEvent(this, event)
     }
 }

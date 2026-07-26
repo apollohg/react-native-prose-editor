@@ -185,7 +185,7 @@ internal class PreparedProseViewerManager :
         )
     }
 
-    private fun dispatchInteraction(view: PreparedProseDrawingView, interaction: PreparedProseInteraction) {
+    private fun dispatchInteraction(view: PreparedProseDrawingView, interaction: PreparedProseInteraction): Boolean {
         val context = UIManagerHelper.getReactContext(view)
         context.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java).receiveEvent(
             view.id,
@@ -200,6 +200,7 @@ internal class PreparedProseViewerManager :
                 }
             },
         )
+        return true
     }
 
     private fun requestFrom(props: ReadableMap?, state: ReadableMap?): ProseViewerRequest? {

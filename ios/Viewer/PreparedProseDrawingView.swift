@@ -2,15 +2,19 @@ import CoreText
 import UIKit
 
 @objc public protocol PreparedProseDrawingViewInteractionDelegate: AnyObject {
-    func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateLink href: String, text: String)
-    func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateMention docPos: UInt32, label: String)
+    func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateLink href: String, text: String) -> Bool
+    func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateMention docPos: UInt32, label: String) -> Bool
 }
 
 /// A rendering-only view: it consumes already prepared Core Text lines.
 @objc(PREPPreparedProseDrawingView)
 public final class PreparedProseDrawingView: UIView {
     var layout: PreparedProseLayout? {
-        didSet { setNeedsDisplay() }
+        didSet {
+            guard oldValue !== layout else { return }
+            invalidateAccessibilityNodes()
+            setNeedsDisplay()
+        }
     }
 
     @objc public func install(layout: PreparedProseLayout?) { self.layout = layout }
@@ -19,9 +23,16 @@ public final class PreparedProseDrawingView: UIView {
     @objc var errorCode: String? { layout?.error?.code }
     @objc var errorMessage: String? { layout?.error?.message }
     /// The owner chooses its delivery channel (UIKit delegate or Fabric event).
-    var onActivateInteraction: ((PreparedProseInteraction) -> Void)?
+    var onActivateInteraction: ((PreparedProseInteraction) -> Bool)?
     @objc public weak var interactionDelegate: PreparedProseDrawingViewInteractionDelegate?
-    var linkInteractionsEnabled = true
+    var linkInteractionsEnabled = true {
+        didSet {
+            guard oldValue != linkInteractionsEnabled else { return }
+            invalidateAccessibilityNodes()
+        }
+    }
+    private var accessibilityElementsByIndex: [Int: PreparedProseDrawingAccessibilityElement] = [:]
+    internal var materializedAccessibilityElementCountForTesting: Int { accessibilityElementsByIndex.count }
 
     private lazy var tapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
@@ -49,13 +60,61 @@ public final class PreparedProseDrawingView: UIView {
         guard recognizer.state == .ended,
               let interaction = interaction(at: recognizer.location(in: self))
         else { return }
-        onActivateInteraction?(interaction)
+        _ = activate(interaction)
+    }
+
+    @discardableResult
+    private func activate(_ interaction: PreparedProseInteraction) -> Bool {
+        if let onActivateInteraction { return onActivateInteraction(interaction) }
         switch interaction.kind {
         case .link:
-            if let href = interaction.href { interactionDelegate?.preparedProseDrawingView(self, didActivateLink: href, text: interaction.visibleText) }
+            guard linkInteractionsEnabled, let href = interaction.href else { return false }
+            return interactionDelegate?.preparedProseDrawingView(self, didActivateLink: href, text: interaction.visibleText) ?? false
         case .mention:
-            if let docPos = interaction.docPos { interactionDelegate?.preparedProseDrawingView(self, didActivateMention: docPos, label: interaction.label) }
+            guard let docPos = interaction.docPos else { return false }
+            return interactionDelegate?.preparedProseDrawingView(self, didActivateMention: docPos, label: interaction.label) ?? false
         }
+    }
+
+    public override func accessibilityElementCount() -> Int { accessibilityNodes.count }
+
+    public override func accessibilityElement(at index: Int) -> Any? {
+        guard accessibilityNodes.indices.contains(index) else { return nil }
+        if let existing = accessibilityElementsByIndex[index] { return existing }
+        let element = PreparedProseDrawingAccessibilityElement(container: self, index: index)
+        accessibilityElementsByIndex[index] = element
+        return element
+    }
+
+    public override func index(ofAccessibilityElement element: Any) -> Int {
+        guard let element = element as? PreparedProseDrawingAccessibilityElement,
+              element.drawingView === self
+        else { return NSNotFound }
+        return element.index
+    }
+
+    private var accessibilityNodes: [PreparedProseAccessibilityNode] {
+        layout?.accessibilityNodes.filter { linkInteractionsEnabled || $0.role != .link } ?? []
+    }
+
+    fileprivate func accessibilityNode(at index: Int) -> PreparedProseAccessibilityNode? {
+        accessibilityNodes[safe: index]
+    }
+
+    fileprivate func accessibilityFrame(for node: PreparedProseAccessibilityNode) -> CGRect {
+        UIAccessibility.convertToScreenCoordinates(node.bounds, in: self)
+    }
+
+    fileprivate func activateAccessibilityNode(at index: Int) -> Bool {
+        guard let node = accessibilityNode(at: index),
+              let interaction = layout?.interactions[safe: node.interactionIndex]
+        else { return false }
+        return activate(interaction)
+    }
+
+    private func invalidateAccessibilityNodes() {
+        accessibilityElementsByIndex.removeAll(keepingCapacity: true)
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
     }
 
     /// Converts an artifact-top baseline to the flipped Core Graphics coordinate system.
@@ -182,4 +241,31 @@ public final class PreparedProseDrawingView: UIView {
         color.setStroke()
         check.stroke()
     }
+}
+
+private final class PreparedProseDrawingAccessibilityElement: UIAccessibilityElement {
+    weak var drawingView: PreparedProseDrawingView?
+    let index: Int
+
+    init(container: PreparedProseDrawingView, index: Int) {
+        drawingView = container
+        self.index = index
+        super.init(accessibilityContainer: container)
+    }
+
+    private var node: PreparedProseAccessibilityNode? { drawingView?.accessibilityNode(at: index) }
+    override var accessibilityLabel: String? { node?.label }
+    override var accessibilityTraits: UIAccessibilityTraits {
+        guard let node else { return .none }
+        return node.role == .link ? .link : .button
+    }
+    override var accessibilityFrame: CGRect {
+        guard let drawingView, let node else { return .zero }
+        return drawingView.accessibilityFrame(for: node)
+    }
+    override func accessibilityActivate() -> Bool { drawingView?.activateAccessibilityNode(at: index) ?? false }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

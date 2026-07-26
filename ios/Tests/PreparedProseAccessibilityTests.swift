@@ -1,6 +1,35 @@
+import UIKit
 import XCTest
 
 final class PreparedProseAccessibilityTests: XCTestCase {
+    func testBidiLinkUsesDiscontiguousShapedRunRectsInVisualOrder() throws {
+        let document = ViewerDocument(
+            semanticKey: "bidi-link-fixture",
+            blocks: [ViewerBlock(
+                nodeType: "paragraph",
+                depth: 0,
+                inBlockquote: false,
+                listContext: nil,
+                listItemBoundary: nil,
+                inlines: [
+                    .text(
+                        text: "Latin \u{05E2}\u{05D1}\u{05E8}\u{05D9}\u{05EA} Latin",
+                        marks: [FfiViewerMark(markType: "link", attrsJson: #"{"href":"https://example.test/bidi"}"#)]
+                    )
+                ]
+            )],
+            isEmpty: false,
+            retainedBytes: 64
+        )
+
+        let link = try prepare(document, width: 300).interactions.single(where: { $0.kind == .link })
+
+        XCTAssertGreaterThanOrEqual(link.rects.count, 2)
+        XCTAssertEqual(link.rects, link.rects.sorted { left, right in
+            left.minY == right.minY ? left.minX < right.minX : left.minY < right.minY
+        })
+    }
+
     func testPreparedInteractionsFreezeWrappedLinkAndUInt32MentionInReadingOrder() throws {
         let document = ViewerDocument(
             semanticKey: "interaction-fixture",
@@ -51,6 +80,43 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         XCTAssertEqual(layout.accessibilityNodes.filter { $0.kind == .mention }.count, 1)
     }
 
+    func testAccessibleDrawingViewLazilyMaterializesPermittedNodesAndRecycles() throws {
+        let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: 180, height: 80))
+        let layout = try prepare(
+            ViewerDocument(
+                semanticKey: "lazy-accessibility-fixture",
+                blocks: [ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false, listContext: nil, listItemBoundary: nil, inlines: [
+                    .text(text: "link", marks: [FfiViewerMark(markType: "link", attrsJson: #"{"href":"https://example.test"}"#)]),
+                    .atom(nodeType: "mention", docPos: UInt32.max, attrsJSON: "{}", label: "@Ada")
+                ])],
+                isEmpty: false,
+                retainedBytes: 64
+            ),
+            width: 180
+        )
+        drawing.install(layout: layout)
+
+        XCTAssertEqual(drawing.accessibilityElementCount(), 2)
+        XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 0)
+        XCTAssertNotNil(drawing.accessibilityElement(at: 1))
+        XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 1)
+        var activatedMention: UInt32?
+        drawing.onActivateInteraction = { interaction in
+            activatedMention = interaction.docPos
+            return interaction.kind == .mention
+        }
+        XCTAssertTrue((drawing.accessibilityElement(at: 1) as? UIAccessibilityElement)?.accessibilityActivate() ?? false)
+        XCTAssertEqual(activatedMention, UInt32.max)
+
+        drawing.linkInteractionsEnabled = false
+        XCTAssertEqual(drawing.accessibilityElementCount(), 1)
+        XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 0)
+
+        drawing.install(layout: nil)
+        XCTAssertEqual(drawing.accessibilityElementCount(), 0)
+        XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 0)
+    }
+
     private func prepare(_ document: ViewerDocument, width: CGFloat) throws -> PreparedProseLayout {
         let key = ProseLayoutKey(
             semanticKey: document.semanticKey,
@@ -69,4 +135,15 @@ final class PreparedProseAccessibilityTests: XCTestCase {
             displayScale: 2
         )
     }
+}
+
+private extension Collection {
+    func single(where predicate: (Element) -> Bool) throws -> Element {
+        let matches = filter(predicate)
+        try XCTUnwrap(matches.single)
+    }
+}
+
+private extension Array {
+    var single: Element? { count == 1 ? first : nil }
 }
