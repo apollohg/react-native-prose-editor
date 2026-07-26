@@ -320,6 +320,13 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.unlock()
     }
 
+    /// Fabric records an owner before it tries to consume Yoga's lease. If
+    /// acquisition misses, this deterministic cleanup drops that generation's
+    /// lease and compiler pin without touching a newly recycled view's token.
+    func releaseFabricMountMiss(_ generation: FabricGenerationToken) {
+        releaseFabricGeneration(generation)
+    }
+
     @objc(releaseFabricSurfaceId:componentTag:)
     public func releaseFabricSurface(surfaceId: Int64, componentTag: Int64) {
         releaseFabricSurface(FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag))
@@ -332,6 +339,20 @@ public final class PreparedProseLayoutRegistry: NSObject {
         generationIdentity: NSString
     ) {
         releaseFabricGeneration(
+            FabricGenerationToken(
+                surface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
+                generationIdentity: generationIdentity as String
+            )
+        )
+    }
+
+    @objc(releaseFabricMountMissSurfaceId:componentTag:generationIdentity:)
+    public func releaseFabricMountMiss(
+        surfaceId: Int64,
+        componentTag: Int64,
+        generationIdentity: NSString
+    ) {
+        releaseFabricMountMiss(
             FabricGenerationToken(
                 surface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
                 generationIdentity: generationIdentity as String

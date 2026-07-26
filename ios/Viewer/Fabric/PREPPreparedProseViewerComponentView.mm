@@ -138,8 +138,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   NSString *_reportedErrorGeneration;
   NSString *_installedMeasurementIdentity;
   NSString *_ownedGeneration;
-  int64_t _leaseSurfaceId;
-  BOOL _hasLeaseSurface;
+  int64_t _ownedSurfaceId;
+  int64_t _ownedComponentTag;
+  BOOL _hasOwnedSurface;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -166,7 +167,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   }
   _viewerProps = nextProps;
   if (_hasReceivedUsableLayoutMetrics) {
-    [self installMeasuredArtifact];
+    [self installMeasuredArtifactIfAttached];
   }
 }
 
@@ -180,7 +181,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   }
   _viewerState = nextState;
   if (_hasReceivedUsableLayoutMetrics) {
-    [self installMeasuredArtifact];
+    [self installMeasuredArtifactIfAttached];
   }
 }
 
@@ -195,7 +196,24 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     return;
   }
   _hasReceivedUsableLayoutMetrics = YES;
-  [self installMeasuredArtifact];
+  [self installMeasuredArtifactIfAttached];
+}
+
+- (void)didMoveToSuperview
+{
+  [super didMoveToSuperview];
+  if (self.superview == nil) {
+    // Detachment may precede recycling and React Native may reset `tag`
+    // before prepareForRecycle. Drop only the persisted generation token.
+    [self releaseFabricOwnership];
+    return;
+  }
+  // Fabric can provide props, state, and layout metrics before the view is
+  // attached to its React root. The update callbacks intentionally defer in
+  // that state; attachment is the first point where the surface token is
+  // resolvable. The shared seam is idempotent, so this cannot duplicate an
+  // installation or error event after a normal layout-driven mount.
+  [self installMeasuredArtifactIfAttached];
 }
 
 - (void)prepareForRecycle
@@ -215,7 +233,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 {
   [self releaseFabricOwnership];
   // Keep the last complete artifact visible while a new generation has no
-  // representable layout metrics. `installMeasuredArtifact` clears it only
+  // representable layout metrics. The install gate clears it only
   // after independently validating the replacement measurement.
   _installedMeasurementIdentity = nil;
   _reportedErrorGeneration = nil;
@@ -223,32 +241,36 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 
 - (void)releaseFabricOwnership
 {
-  if (!_hasLeaseSurface || !_ownedGeneration) {
+  if (!_hasOwnedSurface || !_ownedGeneration) {
     return;
   }
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
-      releaseFabricGenerationSurfaceId:_leaseSurfaceId
-                          componentTag:static_cast<int64_t>(self.tag)
+      releaseFabricGenerationSurfaceId:_ownedSurfaceId
+                          componentTag:_ownedComponentTag
                     generationIdentity:_ownedGeneration];
-  _hasLeaseSurface = NO;
+  _hasOwnedSurface = NO;
   _ownedGeneration = nil;
 }
 
 - (void)releaseAllFabricOwnership
 {
-  if (!_hasLeaseSurface) {
+  if (!_hasOwnedSurface) {
     return;
   }
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
-      releaseFabricSurfaceId:_leaseSurfaceId
-                componentTag:static_cast<int64_t>(self.tag)];
-  _hasLeaseSurface = NO;
+      releaseFabricSurfaceId:_ownedSurfaceId
+                componentTag:_ownedComponentTag];
+  _hasOwnedSurface = NO;
   _ownedGeneration = nil;
 }
 
-- (void)installMeasuredArtifact
+- (void)installMeasuredArtifactIfAttached
 {
-  if (!_viewerProps || !HasUsableLayoutMetrics(_layoutMetrics)) {
+  // This is a deliberate lifecycle test seam: updateProps, updateState,
+  // updateLayoutMetrics, and didMoveToSuperview all enter through this gate.
+  // It must never acquire or dispatch while the component is detached.
+  if (self.superview == nil || !_viewerProps || !_viewerState ||
+      !_hasReceivedUsableLayoutMetrics || !HasUsableLayoutMetrics(_layoutMetrics)) {
     return;
   }
   const auto &props = *_viewerProps;
@@ -259,23 +281,40 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   if (!surfaceId) {
     return;
   }
-  if (_hasLeaseSurface && _leaseSurfaceId != *surfaceId) {
-    [[PREPPreparedProseLayoutRegistry sharedRegistry]
-        releaseFabricSurfaceId:_leaseSurfaceId
-                  componentTag:static_cast<int64_t>(self.tag)];
-    _hasLeaseSurface = NO;
-    _ownedGeneration = nil;
-  }
+  const auto componentTag = static_cast<int64_t>(self.tag);
+  const auto generation = StringFromStdString(GenerationIdentity(props, _viewerState.get()));
   const auto measurementIdentity = MeasurementIdentity(props, _viewerState.get(), width, scale);
   const auto measurementIdentityString = StringFromStdString(measurementIdentity);
+  if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
+      _ownedComponentTag == componentTag &&
+      [_ownedGeneration isEqualToString:generation] &&
+      [_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
+    return;
+  }
+  if (_hasOwnedSurface &&
+      (_ownedSurfaceId != *surfaceId || _ownedComponentTag != componentTag ||
+       ![_ownedGeneration isEqualToString:generation])) {
+    // A reused view may have a different root/token before the previous
+    // lifecycle callback finishes. Release only the persisted owner, never
+    // the current UIView tag, which React Native may already have reset.
+    [self releaseFabricOwnership];
+  }
   if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
     [_drawingView installWithLayout:nil];
     _installedMeasurementIdentity = nil;
   }
+
+  // Establish ownership before acquisition. A mount miss otherwise leaves a
+  // measurement-pinned compiler result or failure alive with no installed
+  // component to release it.
+  _ownedSurfaceId = *surfaceId;
+  _ownedComponentTag = componentTag;
+  _hasOwnedSurface = YES;
+  _ownedGeneration = generation;
   const BOOL installed = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       installCachedLayoutInDrawingView:_drawingView
-                             surfaceId:*surfaceId
-                          componentTag:static_cast<int64_t>(self.tag)
+                             surfaceId:_ownedSurfaceId
+                          componentTag:_ownedComponentTag
                             sourceKind:SourceKind(props)
                                 source:StringFromStdString(props.source)
                             configJSON:StringFromStdString(props.configJson)
@@ -289,16 +328,20 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                           widthPoints:width
                                  scale:scale];
   if (!installed) {
+    // The lease and generation pin were created by Yoga, but Fabric found no
+    // artifact to install. Release this exact persisted owner immediately.
+    [[PREPPreparedProseLayoutRegistry sharedRegistry]
+        releaseFabricMountMissSurfaceId:_ownedSurfaceId
+                           componentTag:_ownedComponentTag
+                     generationIdentity:_ownedGeneration];
+    _hasOwnedSurface = NO;
+    _ownedGeneration = nil;
     return;
   }
-  _leaseSurfaceId = *surfaceId;
-  _hasLeaseSurface = YES;
-  _ownedGeneration = StringFromStdString(GenerationIdentity(props, _viewerState.get()));
   _installedMeasurementIdentity = measurementIdentityString;
   if (!_drawingView.errorCode) {
     return;
   }
-  const auto generation = StringFromStdString(GenerationIdentity(props, _viewerState.get()));
   if ([_reportedErrorGeneration isEqualToString:generation]) {
     return;
   }

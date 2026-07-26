@@ -544,6 +544,47 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(compilations, 0)
     }
 
+    func testFabricMountMissCleanupReleasesOnlyThePersistedGenerationPin() {
+        var compilations = 0
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compiledByteBudget: 1,
+            compile: { request in
+                compilations += 1
+                return ViewerDocument(
+                    semanticKey: String(repeating: request.source.value == "first" ? "a" : "b", count: 64),
+                    paragraphs: [ViewerParagraph(text: request.source.value)],
+                    isEmpty: false,
+                    retainedBytes: 2
+                )
+            },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: 2
+                )
+            }
+        )
+        let first = request(source: "first")
+        let second = request(source: "second")
+        let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: secondSurface)
+        XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+
+        registry.releaseFabricMountMiss(
+            FabricGenerationToken(surface: firstSurface, generationIdentity: first.generationIdentity)
+        )
+        XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry))
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+
+        XCTAssertEqual(compilations, 3)
+    }
+
     func testUIKitApplyRetainsCompiledDocumentThroughRegistryEviction() throws {
         var compilations = 0
         let registry = PreparedProseLayoutRegistry(
