@@ -222,6 +222,36 @@ public final class PreparedProseLayoutRegistry: NSObject {
         ).size
     }
 
+    /// The only Objective-C-visible generation identity boundary. Fabric must
+    /// retain this exact SHA-256 key for every later release of its lease and
+    /// compiler pin; native callers must not reconstruct it from props.
+    @objc(fabricGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:)
+    public func fabricGenerationIdentity(
+        sourceKind: NSString,
+        source: NSString,
+        configJSON: NSString,
+        themeJSON: NSString?,
+        imagePolicyJSON: NSString?,
+        imagesEnabled: Bool,
+        collapsesWhenEmpty: Bool,
+        attachmentRevision: UInt64,
+        nativeFontRevision: UInt64,
+        fontEnvironmentRevision: UInt64
+    ) -> NSString {
+        makeRequest(
+            sourceKind: sourceKind,
+            source: source,
+            configJSON: configJSON,
+            themeJSON: themeJSON,
+            imagePolicyJSON: imagePolicyJSON,
+            imagesEnabled: imagesEnabled,
+            collapsesWhenEmpty: collapsesWhenEmpty,
+            attachmentRevision: attachmentRevision,
+            nativeFontRevision: nativeFontRevision,
+            fontEnvironmentRevision: fontEnvironmentRevision
+        ).generationIdentity as NSString
+    }
+
     @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
     public func installCachedLayout(
         in drawingView: PreparedProseDrawingView,

@@ -52,20 +52,6 @@ uint64_t Revision(const PreparedProseViewerState *state, bool attachment) {
   return attachment ? state->attachmentRevision : state->nativeFontRevision;
 }
 
-std::string GenerationIdentity(
-    const PreparedProseViewerProps &props,
-    const PreparedProseViewerState *state) {
-  return std::string(props.sourceKind == PreparedProseViewerSourceKind::Html ? "html" : "json") +
-      "\x1f" + props.source + "\x1f" + props.configJson + "\x1f" +
-      (props.themeJson ? *props.themeJson : "") + "\x1f" +
-      (props.imagePolicyJson ? *props.imagePolicyJson : "") + "\x1f" +
-      (props.imagesEnabled ? "1" : "0") + "\x1f" +
-      (props.collapsesWhenEmpty ? "1" : "0") + "\x1f" +
-      std::to_string(Revision(state, true)) + "\x1f" +
-      std::to_string(Revision(state, false)) + "\x1f" +
-      std::to_string(props.fontEnvironmentRevision);
-}
-
 uint64_t ScaleBits(CGFloat scale) {
   const double value = scale;
   uint64_t bits = 0;
@@ -102,15 +88,12 @@ uint64_t FontEnvironmentRevision(const PreparedProseViewerProps &props) {
       : 0;
 }
 
-std::string MeasurementIdentity(
-    const PreparedProseViewerProps &props,
-    const PreparedProseViewerState *state,
-    CGFloat width,
-    CGFloat scale) {
+NSString *MeasurementIdentity(NSString *generation, CGFloat width, CGFloat scale) {
   const auto widthPixels = RoundedWidthPixels(width, scale);
-  return GenerationIdentity(props, state) + "\x1f" +
-      (widthPixels ? std::to_string(*widthPixels) : "invalid") +
-      "\x1f" + std::to_string(ScaleBits(scale));
+  return [NSString stringWithFormat:@"%@\x1f%@\x1f%llu",
+                                    generation,
+                                    widthPixels ? [NSString stringWithFormat:@"%lld", *widthPixels] : @"invalid",
+                                    static_cast<unsigned long long>(ScaleBits(scale))];
 }
 
 bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
@@ -254,14 +237,10 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 
 - (void)releaseAllFabricOwnership
 {
-  if (!_hasOwnedSurface) {
-    return;
-  }
-  [[PREPPreparedProseLayoutRegistry sharedRegistry]
-      releaseFabricSurfaceId:_ownedSurfaceId
-                componentTag:_ownedComponentTag];
-  _hasOwnedSurface = NO;
-  _ownedGeneration = nil;
+  // Recycling must use the same persisted canonical key as replacement,
+  // detachment, and mount-miss cleanup. Surface-wide release could otherwise
+  // remove a generation the recycled view never owned.
+  [self releaseFabricOwnership];
 }
 
 - (void)installMeasuredArtifactIfAttached
@@ -282,9 +261,18 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     return;
   }
   const auto componentTag = static_cast<int64_t>(self.tag);
-  const auto generation = StringFromStdString(GenerationIdentity(props, _viewerState.get()));
-  const auto measurementIdentity = MeasurementIdentity(props, _viewerState.get(), width, scale);
-  const auto measurementIdentityString = StringFromStdString(measurementIdentity);
+  const auto generation = [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      fabricGenerationIdentitySourceKind:SourceKind(props)
+                              source:StringFromStdString(props.source)
+                          configJSON:StringFromStdString(props.configJson)
+                           themeJSON:OptionalStringFromStdString(props.themeJson)
+                     imagePolicyJSON:OptionalStringFromStdString(props.imagePolicyJson)
+                      imagesEnabled:props.imagesEnabled
+                collapsesWhenEmpty:props.collapsesWhenEmpty
+                 attachmentRevision:Revision(_viewerState.get(), true)
+                 nativeFontRevision:Revision(_viewerState.get(), false)
+            fontEnvironmentRevision:FontEnvironmentRevision(props)];
+  const auto measurementIdentityString = MeasurementIdentity(generation, width, scale);
   if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
       _ownedComponentTag == componentTag &&
       [_ownedGeneration isEqualToString:generation] &&

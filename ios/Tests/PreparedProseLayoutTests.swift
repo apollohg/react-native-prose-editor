@@ -408,45 +408,26 @@ final class PreparedProseLayoutTests: XCTestCase {
             }
         )
         let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
         let drawingView = PreparedProseDrawingView(frame: .zero)
 
-        let measured = registry.measure(request: request, widthPoints: 160, scale: 2)
+        let measured = registry.measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2,
+            fabricSurface: surface
+        )
 
         XCTAssertEqual(registry.preparedLayoutCacheCountForTesting, 0)
-        XCTAssertTrue(
-            registry.installCachedLayout(
-                in: drawingView,
-                sourceKind: "json",
-                source: request.source.value as NSString,
-                configJSON: request.configuration.configJSON as NSString,
-                themeJSON: nil,
-                imagePolicyJSON: nil,
-                imagesEnabled: request.configuration.imagesEnabled,
-                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
-                attachmentRevision: request.attachmentRevision,
-                nativeFontRevision: request.nativeFontRevision,
-                fontEnvironmentRevision: request.fontEnvironmentRevision,
-                widthPoints: 160,
-                scale: 2
-            )
-        )
+        XCTAssertTrue(install(request, in: drawingView, surface: surface, registry: registry))
         XCTAssertTrue(drawingView.layout === measured)
         XCTAssertEqual(compilations, 1)
         XCTAssertFalse(
-            registry.installCachedLayout(
+            install(
+                request,
                 in: PreparedProseDrawingView(frame: .zero),
-                sourceKind: "json",
-                source: request.source.value as NSString,
-                configJSON: request.configuration.configJSON as NSString,
-                themeJSON: nil,
-                imagePolicyJSON: nil,
-                imagesEnabled: request.configuration.imagesEnabled,
-                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
-                attachmentRevision: request.attachmentRevision,
-                nativeFontRevision: request.nativeFontRevision,
-                fontEnvironmentRevision: request.fontEnvironmentRevision,
-                widthPoints: 160,
-                scale: 2
+                surface: surface,
+                registry: registry
             )
         )
     }
@@ -577,12 +558,49 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
 
         registry.releaseFabricMountMiss(
-            FabricGenerationToken(surface: firstSurface, generationIdentity: first.generationIdentity)
+            FabricGenerationToken(
+                surface: firstSurface,
+                generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry)
+            )
         )
         XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry))
         _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
 
         XCTAssertEqual(compilations, 3)
+    }
+
+    func testCanonicalGenerationReleaseClearsOversizedLeaseAndCompilerPinForRecycle() {
+        var compilations = 0
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compiledByteBudget: 1,
+            compile: { [document = self.document] _ in
+                compilations += 1
+                return document
+            },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: 2
+                )
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        registry.releaseFabricGeneration(
+            FabricGenerationToken(
+                surface: surface,
+                generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+            )
+        )
+
+        XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        XCTAssertEqual(compilations, 2)
     }
 
     func testUIKitApplyRetainsCompiledDocumentThroughRegistryEviction() throws {
@@ -781,6 +799,24 @@ final class PreparedProseLayoutTests: XCTestCase {
             widthPoints: width,
             scale: 2
         )
+    }
+
+    private func canonicalFabricGenerationIdentity(
+        _ request: ProseViewerRequest,
+        registry: PreparedProseLayoutRegistry
+    ) -> String {
+        registry.fabricGenerationIdentity(
+            sourceKind: "json",
+            source: request.source.value as NSString,
+            configJSON: request.configuration.configJSON as NSString,
+            themeJSON: request.configuration.themeJSON as NSString?,
+            imagePolicyJSON: request.configuration.imagePolicyJSON as NSString?,
+            imagesEnabled: request.configuration.imagesEnabled,
+            collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+            attachmentRevision: request.attachmentRevision,
+            nativeFontRevision: request.nativeFontRevision,
+            fontEnvironmentRevision: request.fontEnvironmentRevision
+        ) as String
     }
 
     private final class FailureRecordingDelegate: ProseViewerInteractionDelegate {
