@@ -1,6 +1,7 @@
 package com.apollohg.editor.viewer
 
 import android.graphics.Canvas
+import android.graphics.Bitmap
 import android.view.View
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
@@ -107,6 +108,106 @@ class PreparedProseLayoutTest {
         assertNotNull(viewer.preparedLayoutForTesting)
     }
 
+    @Test
+    fun `Fabric mount only acquires the measured artifact and layout draw do not prepare`() {
+        val engine = CountingLayoutEngine()
+        val registry = testRegistry(engine)
+        val request = request("Fabric acquisition")
+        val surface = FabricSurfaceToken(surfaceId = 41, componentTag = 420)
+
+        registry.measure(request, widthPx = 320, density = 1f, fabricSurface = surface)
+        val artifact = registry.acquireForFabricMount(surface, request, widthPx = 320, density = 1f)
+        val drawingView = PreparedProseDrawingView(context)
+        drawingView.install(artifact)
+        drawingView.layout(0, 0, 320, artifact!!.heightPx)
+        drawingView.draw(Canvas(Bitmap.createBitmap(320, artifact.heightPx.coerceAtLeast(1), Bitmap.Config.ARGB_8888)))
+
+        assertEquals(1, engine.preparationCount)
+    }
+
+    @Test
+    fun `Fabric revision fields produce distinct measurement identities`() {
+        val engine = CountingLayoutEngine()
+        val registry = testRegistry(engine)
+        val base = request("revisions")
+        val requests = listOf(
+            base,
+            base.copy(attachmentRevision = 1),
+            base.copy(nativeFontRevision = 1),
+            base.copy(fontEnvironmentRevision = 1),
+        )
+
+        requests.forEach { registry.measure(it, widthPx = 320, density = 1f) }
+
+        assertEquals(4, requests.map { it.generationIdentity }.toSet().size)
+        assertEquals(4, engine.preparationCount)
+    }
+
+    @Test
+    fun `Fabric surface stop clears every measured generation pin and lease`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        registry.measure(request("first"), 320, 1f, FabricSurfaceToken(7, 71))
+        registry.measure(request("second"), 320, 1f, FabricSurfaceToken(7, 72))
+
+        registry.releaseFabricSurfaceId(7)
+
+        assertEquals(0, registry.fabricGenerationPinCountForTesting)
+        assertEquals(0, registry.fabricLeaseCountForTesting)
+    }
+
+    @Test
+    fun `Fabric mount miss releases the exact generation pin and lease`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val request = request("mount miss")
+        val surface = FabricSurfaceToken(8, 81)
+        registry.measure(request, 320, 1f, surface)
+
+        assertEquals(null, registry.acquireForFabricMount(surface, request, 321, 1f))
+        registry.releaseFabricMountMiss(FabricGenerationToken(surface, request.generationIdentity))
+
+        assertEquals(0, registry.fabricGenerationPinCountForTesting)
+        assertEquals(0, registry.fabricLeaseCountForTesting)
+    }
+
+    @Test
+    fun `oversized Fabric artifacts do not bypass the retained byte budget`() {
+        val registry = PreparedProseLayoutRegistry(
+            compiler = CountingDocumentCompiler(::testDocument),
+            layoutEngine = CountingLayoutEngine(),
+            byteBudget = 1,
+        )
+        val request = request("too large to retain")
+        registry.measure(request, 320, 1f, FabricSurfaceToken(9, 91))
+
+        assertEquals(0, registry.layoutRetainedBytesForTesting)
+        assertEquals(0, registry.fabricLeaseCountForTesting)
+    }
+
+    @Test
+    fun `Fabric leases stay within their bounded handoff count`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        repeat(33) { index ->
+            registry.measure(
+                request("lease $index"),
+                320,
+                1f,
+                FabricSurfaceToken(10, 100 + index),
+            )
+        }
+
+        assertEquals(32, registry.fabricLeaseCountForTesting)
+    }
+
+    @Test
+    fun `Fabric error reporting is once per generation`() {
+        val reporter = FabricErrorReporter()
+
+        assertTrue(reporter.shouldReport("first"))
+        assertFalse(reporter.shouldReport("first"))
+        assertTrue(reporter.shouldReport("replacement"))
+        assertFalse(reporter.shouldReport("replacement"))
+    }
+
     private fun testRegistry(engine: AndroidProseLayoutEngine): PreparedProseLayoutRegistry =
         PreparedProseLayoutRegistry(CountingDocumentCompiler(::testDocument), engine)
 
@@ -120,6 +221,8 @@ class PreparedProseLayoutTest {
     private fun jsonSource(value: String) = ProseViewerSource.Json(value)
 
     private fun configuration() = ProseViewerConfiguration(configJson = "{}")
+
+    private fun request(value: String) = ProseViewerRequest(jsonSource(value), configuration())
 
     private fun exactWidth(width: Int) = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
 

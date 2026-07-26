@@ -34,7 +34,7 @@ internal class PreparedProseLayoutCache(
         val existing = inFlight.putIfAbsent(key, fresh)
         if (existing != null) {
             val layout = existing.join()
-            if (surface != null) synchronized(lock) { leaseLocked(layout, surface) }
+            if (surface != null && isRetainable(layout)) synchronized(lock) { leaseLocked(layout, surface) }
             return layout
         }
         val layout = try {
@@ -45,9 +45,14 @@ internal class PreparedProseLayoutCache(
             throw throwable
         }
         synchronized(lock) {
-            completed[key] = layout
-            mountIndex[mountKey(key)] = key
-            if (surface != null) leaseLocked(layout, surface) else enforceBudgetLocked()
+            // An artifact larger than the whole budget is useful to the caller that
+            // measured it, but retaining it as either an LRU entry or a Fabric lease
+            // would make the advertised byte bound false.
+            if (isRetainable(layout)) {
+                completed[key] = layout
+                mountIndex[mountKey(key)] = key
+                if (surface != null) leaseLocked(layout, surface) else enforceBudgetLocked()
+            }
         }
         fresh.complete(layout)
         inFlight.remove(key, fresh)
@@ -80,6 +85,12 @@ internal class PreparedProseLayoutCache(
         }
     }
 
+    fun releaseSurfaceId(surfaceId: Int) = synchronized(lock) {
+        val released = leases.keys.filter { it.surface.surfaceId == surfaceId }
+        released.forEach { leases.remove(it) }
+        leaseBySurface.entries.removeAll { it.key.surfaceId == surfaceId }
+    }
+
     fun removeAllUnmounted() = synchronized(lock) {
         completed.clear()
         leases.clear()
@@ -89,6 +100,7 @@ internal class PreparedProseLayoutCache(
 
     internal val completedCountForTesting: Int get() = synchronized(lock) { completed.size }
     internal val retainedBytesForTesting: Long get() = synchronized(lock) { retainedBytesLocked() }
+    internal val leaseCountForTesting: Int get() = synchronized(lock) { leases.size }
 
     private fun leaseLocked(layout: PreparedProseLayout, surface: FabricSurfaceToken) {
         releaseLease(surface)
@@ -97,6 +109,9 @@ internal class PreparedProseLayoutCache(
         leaseBySurface[surface] = generation
         enforceBudgetLocked(preferredLease = generation)
     }
+
+    private fun isRetainable(layout: PreparedProseLayout): Boolean =
+        layout.retainedBytes <= byteBudget
 
     private fun enforceBudgetLocked(preferredLease: FabricGenerationToken? = null) {
         while (completed.size > entryBudget || retainedBytesLocked() > byteBudget) {

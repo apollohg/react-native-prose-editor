@@ -142,6 +142,20 @@ internal class PreparedProseLayoutRegistry(
         }
     }
 
+    /**
+     * Surface shutdown is broader than per-view recycling: Yoga may have
+     * measured components that never mounted, so no ViewState remains to name
+     * their exact component token. Clear every lease and generation pin for
+     * this Fabric surface unconditionally.
+     */
+    fun releaseFabricSurfaceId(surfaceId: Int) {
+        layoutCache.releaseSurfaceId(surfaceId)
+        synchronized(compilerLock) {
+            documentsByFabricGeneration.keys.removeAll { it.surface.surfaceId == surfaceId }
+            failuresByFabricGeneration.keys.removeAll { it.surface.surfaceId == surfaceId }
+        }
+    }
+
     fun releaseFabricMountMiss(generation: FabricGenerationToken) = releaseFabricGeneration(generation)
 
     fun didReceiveMemoryWarning() {
@@ -157,6 +171,10 @@ internal class PreparedProseLayoutRegistry(
 
     internal val preparedLayoutCacheCountForTesting: Int get() = layoutCache.completedCountForTesting
     internal val layoutRetainedBytesForTesting: Long get() = layoutCache.retainedBytesForTesting
+    internal val fabricLeaseCountForTesting: Int get() = layoutCache.leaseCountForTesting
+    internal val fabricGenerationPinCountForTesting: Int get() = synchronized(compilerLock) {
+        documentsByFabricGeneration.size + failuresByFabricGeneration.size
+    }
 
     private fun preparedDocument(
         request: ProseViewerRequest,

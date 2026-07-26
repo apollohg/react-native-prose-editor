@@ -6,10 +6,11 @@ import com.apollohg.editor.ProseViewerError
 import com.apollohg.editor.ProseViewerSource
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReadableMap
-import com.facebook.react.bridge.ReactContext
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.uimanager.BaseViewManager
 import com.facebook.react.uimanager.LayoutShadowNode
+import com.facebook.react.uimanager.ReactStylesDiffMap
+import com.facebook.react.uimanager.StateWrapper
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.UIManagerHelper
 import com.facebook.react.uimanager.ViewManagerDelegate
@@ -46,18 +47,32 @@ internal class PreparedProseViewerManager :
     override fun updateExtraData(root: PreparedProseDrawingView, extraData: Any?) = Unit
 
     override fun onDropViewInstance(view: PreparedProseDrawingView) {
-        states.remove(view)?.generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
+        states.remove(view)?.release()
         view.onUsableMetricsChanged = null
         view.install(null)
         super.onDropViewInstance(view)
     }
 
     override fun onSurfaceStopped(surfaceId: Int) {
-        val released = states.values.mapNotNull { state ->
-            state.generation?.takeIf { it.surface.surfaceId == surfaceId }
+        // Yoga can measure a component that never receives a mounted View, so
+        // the weak view map is only supplemental lifecycle bookkeeping. The
+        // registry cleanup is intentionally unconditional and surface-wide.
+        PreparedProseLayoutRegistry.shared.releaseFabricSurfaceId(surfaceId)
+        states.values.forEach { state ->
+            if (state.generation?.surface?.surfaceId == surfaceId) state.release()
         }
-        released.forEach(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
         super.onSurfaceStopped(surfaceId)
+    }
+
+    override fun updateState(
+        view: PreparedProseDrawingView,
+        props: ReactStylesDiffMap,
+        stateWrapper: StateWrapper,
+    ): Any? {
+        val state = states.getOrPut(view, ::ViewState)
+        state.replaceStateWrapper(stateWrapper, stateWrapper.stateData?.fabricRevisionsOrNull())
+        reconcile(view, state)
+        return null
     }
 
     override fun setSourceKind(view: PreparedProseDrawingView, value: String?) =
@@ -97,10 +112,14 @@ internal class PreparedProseViewerManager :
         heightMode: YogaMeasureMode,
         attachmentsPositions: FloatArray?,
     ): Long {
-        val request = requestFrom(props, state)
         val density = context.resources.displayMetrics.density
-        val widthPx = widthToPixels(width, density)
         val surface = localData?.let(::surfaceToken)
+        val request = requestFrom(props, state)
+        if (request == null) {
+            surface?.let(PreparedProseLayoutRegistry.shared::releaseFabricSurface)
+            return YogaMeasureOutput.make(0f, 0f)
+        }
+        val widthPx = widthToPixels(width, density)
         val artifact = if (
             (widthMode != YogaMeasureMode.EXACTLY && widthMode != YogaMeasureMode.AT_MOST) ||
             widthPx == null
@@ -121,33 +140,19 @@ internal class PreparedProseViewerManager :
 
     private fun update(view: PreparedProseDrawingView, mutation: ViewState.() -> Unit) {
         val state = states.getOrPut(view, ::ViewState)
-        val previous = state.generation
         state.mutation()
-        val request = state.request()
-        val surface = FabricSurfaceToken(UIManagerHelper.getSurfaceId(view), view.id)
-        val next = FabricGenerationToken(surface, request.generationIdentity)
-        if (previous != null && previous != next) {
-            PreparedProseLayoutRegistry.shared.releaseFabricGeneration(previous)
-            view.install(null)
-        }
-        state.generation = next
-        if (previous != next) state.reportedGenerationIdentity = null
-        installCachedLayout(view)
+        reconcile(view, state)
     }
 
     private fun installCachedLayout(view: PreparedProseDrawingView) {
         val state = states[view] ?: return
-        val request = state.request()
+        val request = state.requestOrNull() ?: return
         val surfaceId = UIManagerHelper.getSurfaceId(view)
         if (surfaceId < 0 || view.id <= 0 || view.width <= 0) return
         val density = view.resources.displayMetrics.density
         val widthPx = widthToPixels(view.width / density, density) ?: return
         val surface = FabricSurfaceToken(surfaceId, view.id)
-        val generation = FabricGenerationToken(surface, request.generationIdentity)
-        if (state.generation != generation) {
-            state.generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
-            state.generation = generation
-        }
+        val generation = state.adopt(surface, request, view)
         val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(surface, request, widthPx, density)
         if (artifact == null) {
             PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation)
@@ -163,8 +168,7 @@ internal class PreparedProseViewerManager :
         error: ProseViewerError,
     ) {
         val state = states[view] ?: return
-        if (state.reportedGenerationIdentity == request.generationIdentity) return
-        state.reportedGenerationIdentity = request.generationIdentity
+        if (!state.errorReporter.shouldReport(request.generationIdentity)) return
         val context = UIManagerHelper.getReactContext(view)
         context.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java).receiveEvent(
             view.id,
@@ -178,7 +182,12 @@ internal class PreparedProseViewerManager :
         )
     }
 
-    private fun requestFrom(props: ReadableMap?, state: ReadableMap?): ProseViewerRequest {
+    private fun requestFrom(props: ReadableMap?, state: ReadableMap?): ProseViewerRequest? {
+        val revisions = state?.fabricRevisionsOrNull() ?: return null
+        return requestFrom(props, revisions)
+    }
+
+    private fun requestFrom(props: ReadableMap?, revisions: FabricStateRevisions): ProseViewerRequest {
         val sourceKind = props?.stringOrNull("sourceKind") ?: "json"
         val source = if (sourceKind == "html") {
             ProseViewerSource.Html(props?.stringOrNull("source").orEmpty())
@@ -194,10 +203,19 @@ internal class PreparedProseViewerManager :
                 imagesEnabled = props?.booleanOrDefault("imagesEnabled", true) ?: true,
                 collapsesWhenEmpty = props?.booleanOrDefault("collapsesWhenEmpty", true) ?: true,
             ),
-            attachmentRevision = state?.longOrZero("attachmentRevision") ?: 0,
-            nativeFontRevision = state?.longOrZero("nativeFontRevision") ?: 0,
+            attachmentRevision = revisions.attachmentRevision,
+            nativeFontRevision = revisions.nativeFontRevision,
             fontEnvironmentRevision = props?.longOrZero("fontEnvironmentRevision") ?: 0,
         )
+    }
+
+    private fun reconcile(view: PreparedProseDrawingView, state: ViewState) {
+        val request = state.requestOrNull() ?: run {
+            state.releaseGeneration(view)
+            return
+        }
+        state.releaseReplacedGeneration(request, view)
+        installCachedLayout(view)
     }
 
     private fun surfaceToken(data: ReadableMap): FabricSurfaceToken? {
@@ -222,7 +240,21 @@ internal class PreparedProseViewerManager :
     private fun ReadableMap.longOrZero(key: String): Long =
         if (!hasKey(key) || isNull(key)) 0 else getDouble(key).toLong().coerceAtLeast(0)
 
-    private data class ViewState(
+    private fun ReadableMap.fabricRevisionsOrNull(): FabricStateRevisions? {
+        val attachmentRevision = longOrNull("attachmentRevision") ?: return null
+        val nativeFontRevision = longOrNull("nativeFontRevision") ?: return null
+        return FabricStateRevisions(attachmentRevision, nativeFontRevision)
+    }
+
+    private fun ReadableMap.longOrNull(key: String): Long? =
+        if (!hasKey(key) || isNull(key)) null else getDouble(key).toLong().coerceAtLeast(0)
+
+    private data class FabricStateRevisions(
+        val attachmentRevision: Long,
+        val nativeFontRevision: Long,
+    )
+
+    private class ViewState(
         var sourceKind: String = "json",
         var source: String = "",
         var configJson: String = "{}",
@@ -231,23 +263,85 @@ internal class PreparedProseViewerManager :
         var imagesEnabled: Boolean = true,
         var collapsesWhenEmpty: Boolean = true,
         var fontEnvironmentRevision: Long = 0,
+        var revisions: FabricStateRevisions? = null,
+        var stateWrapper: StateWrapper? = null,
         var generation: FabricGenerationToken? = null,
-        var reportedGenerationIdentity: String? = null,
+        val errorReporter: FabricErrorReporter = FabricErrorReporter(),
     ) {
-        fun request() = ProseViewerRequest(
-            source = if (sourceKind == "html") ProseViewerSource.Html(source) else ProseViewerSource.Json(source),
-            configuration = ProseViewerConfiguration(
-                configJson,
-                themeJson,
-                imagePolicyJson,
-                imagesEnabled,
-                collapsesWhenEmpty,
-            ),
-            fontEnvironmentRevision = fontEnvironmentRevision,
-        )
+        fun requestOrNull(): ProseViewerRequest? = revisions?.let { revisions ->
+            ProseViewerRequest(
+                source = if (sourceKind == "html") ProseViewerSource.Html(source) else ProseViewerSource.Json(source),
+                configuration = ProseViewerConfiguration(
+                    configJson,
+                    themeJson,
+                    imagePolicyJson,
+                    imagesEnabled,
+                    collapsesWhenEmpty,
+                ),
+                attachmentRevision = revisions.attachmentRevision,
+                nativeFontRevision = revisions.nativeFontRevision,
+                fontEnvironmentRevision = fontEnvironmentRevision,
+            )
+        }
+
+        fun replaceStateWrapper(next: StateWrapper, nextRevisions: FabricStateRevisions?) {
+            if (stateWrapper !== next) stateWrapper?.destroyState()
+            stateWrapper = next
+            revisions = nextRevisions
+        }
+
+        fun releaseGeneration(view: PreparedProseDrawingView) {
+            generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
+            generation = null
+            view.install(null)
+        }
+
+        fun releaseReplacedGeneration(request: ProseViewerRequest, view: PreparedProseDrawingView) {
+            val previous = generation ?: return
+            if (previous.generationIdentity == request.generationIdentity) return
+            releaseGeneration(view)
+        }
+
+        fun adopt(
+            surface: FabricSurfaceToken,
+            request: ProseViewerRequest,
+            view: PreparedProseDrawingView,
+        ): FabricGenerationToken {
+            val next = FabricGenerationToken(surface, request.generationIdentity)
+            if (generation != null && generation != next) {
+                PreparedProseLayoutRegistry.shared.releaseFabricGeneration(generation!!)
+                view.install(null)
+            }
+            generation = next
+            return next
+        }
+
+        fun release() {
+            generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
+            generation = null
+            stateWrapper?.destroyState()
+            stateWrapper = null
+            revisions = null
+            errorReporter.reset()
+        }
     }
 
     companion object {
         const val REACT_CLASS = "PreparedProseViewer"
+    }
+}
+
+/** Small lifecycle seam that guarantees Fabric emits one error per request generation. */
+internal class FabricErrorReporter {
+    private var reportedGenerationIdentity: String? = null
+
+    fun shouldReport(generationIdentity: String): Boolean {
+        if (reportedGenerationIdentity == generationIdentity) return false
+        reportedGenerationIdentity = generationIdentity
+        return true
+    }
+
+    fun reset() {
+        reportedGenerationIdentity = null
     }
 }

@@ -3,6 +3,7 @@
 #include <fbjni/fbjni.h>
 #include <folly/dynamic.h>
 #include <limits>
+#include <optional>
 #include <react/jni/ReadableNativeMap.h>
 #include <react/renderer/core/conversions.h>
 
@@ -12,6 +13,11 @@ namespace facebook::react {
 
 namespace {
 
+folly::dynamic optionalStringToDynamic(
+    const std::optional<std::string>& value) {
+  return value ? folly::dynamic(*value) : folly::dynamic(nullptr);
+}
+
 folly::dynamic toDynamic(const PreparedProseViewerProps& props) {
   // The generated component props are deliberately copied into a ReadableMap
   // for FabricUIManager.measure; the Java manager is the only Android layout
@@ -20,8 +26,8 @@ folly::dynamic toDynamic(const PreparedProseViewerProps& props) {
       ("sourceKind", props.sourceKind == PreparedProseViewerSourceKind::Html ? "html" : "json")
       ("source", props.source)
       ("configJson", props.configJson)
-      ("themeJson", props.themeJson)
-      ("imagePolicyJson", props.imagePolicyJson)
+      ("themeJson", optionalStringToDynamic(props.themeJson))
+      ("imagePolicyJson", optionalStringToDynamic(props.imagePolicyJson))
       ("imagesEnabled", props.imagesEnabled)
       ("collapsesWhenEmpty", props.collapsesWhenEmpty)
       ("enableLinkTaps", props.enableLinkTaps)
