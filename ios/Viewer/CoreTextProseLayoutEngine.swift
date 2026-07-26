@@ -2,6 +2,9 @@ import CoreText
 import UIKit
 
 private let preparedAtomAttribute = NSAttributedString.Key("PREPPreparedAtom")
+/// Core Text has no strikethrough attribute. This marks a shaped run so its
+/// immutable strike rectangle can be prepared from Core Text's own metrics.
+private let preparedStrikeAttribute = NSAttributedString.Key("PREPPreparedStrike")
 
 private extension Int {
     func rendererSaturatingMultiply(_ other: Int) -> Int {
@@ -218,7 +221,14 @@ final class CoreTextProseLayoutEngine {
         }
         for block in document.blocks {
             let listMarker = block.listItemBoundary.flatMap { listMarkersByIdentity[$0.identity] }
-            let prepared = prepareBlock(block, listMarker: listMarker, theme: theme, width: canonicalWidth, cursorY: cursorY)
+            let prepared = prepareBlock(
+                block,
+                listMarker: listMarker,
+                theme: theme,
+                width: canonicalWidth,
+                cursorY: cursorY,
+                displayScale: displayScale
+            )
             blocks.append(prepared.block)
             cursorY = prepared.nextY
             retainedBytes += prepared.retainedBytes
@@ -238,7 +248,8 @@ final class CoreTextProseLayoutEngine {
         listMarker: PreparedListMarker?,
         theme: PreparedProseTheme,
         width: CGFloat,
-        cursorY: CGFloat
+        cursorY: CGFloat,
+        displayScale: CGFloat
     ) -> (block: PreparedProseBlock, nextY: CGFloat, retainedBytes: Int) {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
@@ -313,6 +324,11 @@ final class CoreTextProseLayoutEngine {
             let baseline = textTop + (lineHeight - naturalHeight) / 2 + ascent
             let lineBounds = CGRect(x: textX, y: textTop, width: min(availableWidth, max(0, lineWidth)), height: lineHeight)
             fragments.append(.init(kind: .text, line: line, origin: CGPoint(x: textX, y: baseline), bounds: lineBounds))
+            fragments.append(contentsOf: strikeFragments(
+                for: line,
+                lineOrigin: CGPoint(x: textX, y: baseline),
+                displayScale: displayScale
+            ))
             if firstLineBaseline == nil { firstLineBaseline = baseline }
             let lineRange = NSRange(location: location, length: count)
             for atom in attributed.atoms where NSIntersectionRange(atom.range, lineRange).length > 0 {
@@ -437,44 +453,110 @@ final class CoreTextProseLayoutEngine {
     }
 
     private func attributes(for marks: [FfiViewerMark], paint: PreparedTextPaint, theme: PreparedProseTheme) -> [NSAttributedString.Key: Any] {
-        var attributes = baseAttributes(paint)
-        var font = paint.font
-        var traits = font.fontDescriptor.symbolicTraits
+        var linkTheme: EditorLinkTheme?
+        var explicitForeground: UIColor?
+        var background: UIColor?
+        var fontFamily: String?
+        var fontSize: CGFloat?
         var underline = false
         var useMonospace = false
+        var strike = false
+        var wantsBold = false
+        var wantsItalic = false
+        var hasLink = false
         for mark in marks {
             let values = jsonDictionary(mark.attrsJson)
             switch mark.markType {
-            case "bold", "strong": traits.insert(.traitBold)
-            case "italic", "em": traits.insert(.traitItalic)
+            case "bold", "strong": wantsBold = true
+            case "italic", "em": wantsItalic = true
             case "underline": underline = true
-            case "strike", "strikethrough": attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            case "strike", "strikethrough": strike = true
             case "code": useMonospace = true
             case "link":
-                let link = theme.link
-                font = link?.resolvedFont(fallback: font) ?? font
-                attributes[.foregroundColor] = link?.color ?? UIColor.systemBlue
-                if let background = link?.backgroundColor { attributes[.backgroundColor] = background }
-                underline = link?.underline ?? true
+                hasLink = true
+                linkTheme = theme.link
+                if let linkBackground = theme.link?.backgroundColor { background = linkBackground }
+                underline = underline || (theme.link?.underline ?? true)
             case "textColor", "color", "foregroundColor":
-                if let color = EditorTheme.color(from: values["color"] ?? values["textColor"]) { attributes[.foregroundColor] = color }
+                explicitForeground = EditorTheme.color(from: values["color"] ?? values["textColor"]) ?? explicitForeground
             case "highlight", "backgroundColor":
-                if let color = EditorTheme.color(from: values["color"] ?? values["backgroundColor"]) { attributes[.backgroundColor] = color }
+                background = EditorTheme.color(from: values["color"] ?? values["backgroundColor"]) ?? background
             case "textStyle", "font":
-                let markedSize = (values["fontSize"] as? NSNumber).map { CGFloat(truncating: $0) }
-                if let family = values["fontFamily"] as? String, let resolved = UIFont(name: family, size: markedSize ?? font.pointSize) { font = resolved }
-                if let markedSize { font = font.withSize(markedSize) }
+                if let family = values["fontFamily"] as? String, !family.isEmpty { fontFamily = family }
+                if let markedSize = (values["fontSize"] as? NSNumber).map({ CGFloat(truncating: $0) }), markedSize.isFinite, markedSize > 0 {
+                    fontSize = markedSize
+                }
             default: break
             }
         }
+        var font = linkTheme?.resolvedFont(fallback: paint.font) ?? paint.font
+        let inheritedTraits = font.fontDescriptor.symbolicTraits
+        if let fontFamily, let resolved = UIFont(name: fontFamily, size: fontSize ?? font.pointSize) { font = resolved }
+        if let fontSize { font = font.withSize(fontSize) }
+        var markTraits: UIFontDescriptor.SymbolicTraits = []
+        if wantsBold { markTraits.insert(.traitBold) }
+        if wantsItalic { markTraits.insert(.traitItalic) }
         if useMonospace {
-            font = UIFont.monospacedSystemFont(ofSize: font.pointSize, weight: traits.contains(.traitBold) ? .bold : .regular)
-        } else if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) {
-            font = UIFont(descriptor: descriptor, size: font.pointSize)
+            font = UIFont.monospacedSystemFont(ofSize: font.pointSize, weight: markTraits.contains(.traitBold) ? .bold : .regular)
+            if markTraits.contains(.traitItalic), let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union([.traitItalic])) {
+                font = UIFont(descriptor: descriptor, size: font.pointSize)
+            }
+        } else {
+            let combinedTraits = inheritedTraits.union(font.fontDescriptor.symbolicTraits).union(markTraits)
+            if let descriptor = font.fontDescriptor.withSymbolicTraits(combinedTraits) {
+                font = UIFont(descriptor: descriptor, size: font.pointSize)
+            } else if markTraits.contains(.traitBold), let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union([.traitBold])) {
+                font = UIFont(descriptor: descriptor, size: font.pointSize)
+            }
         }
+        var attributes = baseAttributes(paint)
+        // An explicit text-color mark is document content and therefore wins
+        // over link-theme paint regardless of compiler mark ordering.
+        let foreground = explicitForeground ?? (hasLink ? linkTheme?.color ?? UIColor.systemBlue : paint.color)
         attributes[kCTFontAttributeName as NSAttributedString.Key] = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
-        if underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] = foreground.cgColor
+        if let background { attributes[kCTBackgroundColorAttributeName as NSAttributedString.Key] = background.cgColor }
+        if underline { attributes[kCTUnderlineStyleAttributeName as NSAttributedString.Key] = NSNumber(value: CTUnderlineStyle.single.rawValue) }
+        if strike { attributes[preparedStrikeAttribute] = NSNumber(value: true) }
         return attributes
+    }
+
+    private func strikeFragments(
+        for line: CTLine,
+        lineOrigin: CGPoint,
+        displayScale: CGFloat
+    ) -> [PreparedProseFragment] {
+        let unit = displayScale.isFinite && displayScale > 0 ? 1 / displayScale : 1
+        return (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).compactMap { run in
+            let attributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
+            guard (attributes[preparedStrikeAttribute] as? NSNumber)?.boolValue == true,
+                  let color = attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] as? CGColor
+            else { return nil }
+
+            var ascent: CGFloat = 0
+            var descent: CGFloat = 0
+            var leading: CGFloat = 0
+            let typographicWidth = CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), &ascent, &descent, &leading))
+            let stringRange = CTRunGetStringRange(run)
+            let start = CGFloat(CTLineGetOffsetForStringIndex(line, stringRange.location, nil))
+            let end = CGFloat(CTLineGetOffsetForStringIndex(line, stringRange.location + stringRange.length, nil))
+            let width = max(typographicWidth, abs(end - start))
+            guard width.isFinite, width > 0, ascent.isFinite, ascent > 0 else { return nil }
+
+            let thickness = max(unit, min(2, ascent * 0.08))
+            let centerY = lineOrigin.y - ascent * 0.35
+            return PreparedProseFragment(
+                kind: .strike,
+                bounds: CGRect(
+                    x: lineOrigin.x + min(start, end),
+                    y: centerY - thickness / 2,
+                    width: width,
+                    height: thickness
+                ),
+                color: color,
+                strokeWidth: thickness
+            )
+        }
     }
 
     private func baseAttributes(_ paint: PreparedTextPaint) -> [NSAttributedString.Key: Any] {

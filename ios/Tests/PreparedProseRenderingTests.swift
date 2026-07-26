@@ -90,20 +90,36 @@ final class PreparedProseRenderingTests: XCTestCase {
         }
     }
 
-    func testCompilerBackedFixturesExposeEveryMarkAndAttributeToCoreText() throws {
+    func testCompilerBackedFixturesExposeCoreTextMarkAttributesAndPreparedStrikeGeometry() throws {
         try withCompiledDocument(source: Fixture.markSource, configJSON: Fixture.customConfig) { document in
             let layout = try prepare(document, themeJSON: Fixture.themeJSON)
             let runs = layout.blocks.flatMap(\.fragments).compactMap(\.line).flatMap(coreTextRuns)
+            let strikes = layout.blocks.flatMap(\.fragments).filter { $0.kind == .strike }
 
             XCTAssertTrue(runs.contains { fontTraits($0).contains(.traitBold) })
             XCTAssertTrue(runs.contains { fontTraits($0).contains(.traitItalic) })
-            XCTAssertTrue(runs.contains { attributes($0)[.underlineStyle] != nil })
-            XCTAssertTrue(runs.contains { attributes($0)[.strikethroughStyle] != nil })
+            XCTAssertTrue(runs.contains {
+                fontTraits($0).contains(.traitBold)
+                    && fontTraits($0).contains(.traitItalic)
+                    && fontTraits($0).contains(.traitMonoSpace)
+                    && CTFontGetSize(font($0)) == 19
+            })
+            XCTAssertTrue(runs.contains { underlineStyle($0) == CTUnderlineStyle.single.rawValue })
             XCTAssertTrue(runs.contains { CTFontGetSymbolicTraits(font($0)).contains(.traitMonoSpace) })
             XCTAssertTrue(runs.contains { UIColor(cgColor: foreground($0)).isEqual(EditorTheme.color(from: "#007AFF")!) })
             XCTAssertTrue(runs.contains { UIColor(cgColor: foreground($0)).isEqual(EditorTheme.color(from: "#FF0000")!) })
-            XCTAssertTrue(runs.contains { attributes($0)[.backgroundColor] != nil })
+            XCTAssertTrue(runs.contains { UIColor(cgColor: foreground($0)).isEqual(EditorTheme.color(from: "#00AA00")!) })
+            XCTAssertTrue(runs.contains { background($0) != nil })
+            XCTAssertTrue(runs.contains { CTFontCopyFamilyName(font($0)) as String == "Courier" })
             XCTAssertTrue(runs.contains { CTFontGetSize(font($0)) == 19 })
+            XCTAssertFalse(strikes.isEmpty)
+            XCTAssertTrue(strikes.allSatisfy { $0.bounds.width > 0 && $0.bounds.height > 0 })
+            XCTAssertTrue(strikes.allSatisfy { strike in
+                layout.blocks.contains { block in
+                    block.bounds.contains(strike.bounds)
+                        && block.fragments.contains { $0.kind == .text && $0.bounds.intersects(strike.bounds) }
+                }
+            })
         }
     }
 
@@ -276,6 +292,14 @@ final class PreparedProseRenderingTests: XCTestCase {
         attributes(run)[kCTForegroundColorAttributeName as NSAttributedString.Key] as! CGColor
     }
 
+    private func background(_ run: CTRun) -> CGColor? {
+        attributes(run)[kCTBackgroundColorAttributeName as NSAttributedString.Key] as? CGColor
+    }
+
+    private func underlineStyle(_ run: CTRun) -> Int32? {
+        (attributes(run)[kCTUnderlineStyleAttributeName as NSAttributedString.Key] as? NSNumber)?.int32Value
+    }
+
     private func fontTraits(_ run: CTRun) -> CTFontSymbolicTraits {
         CTFontGetSymbolicTraits(font(run))
     }
@@ -342,7 +366,7 @@ private struct Fixture {
         ),
     ]
 
-    static let markSource = FixtureSource.json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"Courier","fontSize":19}}]}]}]}"#)
+    static let markSource = FixtureSource.json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"link-color","marks":[{"type":"link","attrs":{"href":"https://example.test"}},{"type":"textColor","attrs":{"color":"#00AA00"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"Courier","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"},{"type":"textStyle","attrs":{"fontSize":19}}]}]}]}"#)
     static let edgeSource = FixtureSource.json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"codeBlock","content":[{"type":"text","text":"nested code"}]},{"type":"orderedList","attrs":{"start":9999},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"marker"}]}]}]}]}]}"#)
     static let markFixture = Fixture(name: "every mark", source: markSource, configJSON: customConfig, expectedKinds: [.text], assertDocument: { _ in true })
     static let edgeFixture = Fixture(name: "nested code blockquote edge", source: edgeSource, configJSON: customConfig, expectedKinds: [.text, .marker, .border, .background], assertDocument: { _ in true })

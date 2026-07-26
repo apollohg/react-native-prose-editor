@@ -103,6 +103,7 @@ enum PreparedProseFragmentKind: String, Hashable {
     case border
     case rule
     case atom
+    case strike
 }
 
 /// A fully prepared paint operation. Core Text lines, colours, metrics, and
@@ -148,8 +149,9 @@ final class PreparedProseFragment {
     }
 
     /// Core Text retains opaque shaping data outside Swift's object graph.
-    /// Charge a conservative fixed payload per line/fragment plus the visible
-    /// label so narrow documents cannot evade the prepared-layout cache.
+    /// Charge a conservative fixed payload per line/fragment (including every
+    /// prepared strike rectangle) plus the visible label so narrow documents
+    /// cannot evade the prepared-layout cache.
     var estimatedRetainedBytes: Int {
         let lineBytes = line == nil ? 0 : 768
         let labelBytes = (label?.utf8.count ?? 0).layoutSaturatingMultiply(2)

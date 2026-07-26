@@ -112,6 +112,9 @@ public final class PreparedProseDrawingView: UIView {
             } else {
                 drawTaskMarker(in: rect, checked: fragment.checked, color: UIColor(cgColor: fragment.color ?? UIColor.label.cgColor))
             }
+        case .strike:
+            context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
+            context.fill(rect)
         case .background, .border, .rule:
             break
         }
