@@ -27,7 +27,7 @@ Pod::Spec.new do |s|
   install_modules_dependencies(s)
 
   # Swift source files (including generated UniFFI bindings)
-  s.source_files = ['*.swift', 'common/cpp/**/*.{h,cpp}']
+  s.source_files = ['*.swift', '../common/cpp/**/*.{h,cpp}']
   s.header_dir = 'react/renderer/components/PreparedProseViewer'
 
   # Prebuilt Rust static library as XCFramework. CocoaPods only reliably
@@ -45,7 +45,6 @@ Pod::Spec.new do |s|
     'DEFINES_MODULE' => 'YES',
     'SWIFT_COMPILATION_MODE' => 'wholemodule',
     'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/editor_coreFFI',
-    'HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/editor_coreFFI',
-    'USER_HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/common/cpp',
+    'HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/editor_coreFFI $(PODS_TARGET_SRCROOT)/../common/cpp',
   }
 end

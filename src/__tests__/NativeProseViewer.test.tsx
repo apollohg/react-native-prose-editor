@@ -2,9 +2,10 @@ const mockNativeModule = {
     renderDocumentJson: jest.fn(),
     measureContentHeight: jest.fn(),
 };
+const mockRequireNativeModule = jest.fn(() => mockNativeModule);
 
 jest.mock('expo-modules-core', () => ({
-    requireNativeModule: () => mockNativeModule,
+    requireNativeModule: mockRequireNativeModule,
 }));
 
 jest.mock('../specs/NativePreparedProseViewer', () => {
@@ -24,6 +25,10 @@ import { NativeProseViewer } from '../NativeProseViewer';
 describe('NativeProseViewer', () => {
     beforeEach(() => {
         jest.clearAllMocks();
+    });
+
+    afterEach(() => {
+        expect(mockRequireNativeModule).not.toHaveBeenCalled();
     });
 
     it('passes JSON directly to the Fabric component with serialized configuration', () => {

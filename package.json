@@ -99,15 +99,18 @@
         "LICENSE",
         "app.plugin.js",
         "dist",
+        "src/specs",
         "android/build.gradle",
         "android/consumer-rules.pro",
         "android/src/main",
+        "common/cpp",
         "ios/*.swift",
         "ios/*.podspec",
         "ios/editor_coreFFI",
         "ios/EditorCore.xcframework",
         "rust/android",
         "rust/bindings/kotlin",
-        "expo-module.config.json"
+        "expo-module.config.json",
+        "react-native.config.js"
     ]
 }
