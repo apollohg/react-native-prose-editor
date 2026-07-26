@@ -55,6 +55,12 @@ uint64_t Revision(const PreparedProseViewerShadowNode::ConcreteState::Shared &st
   return attachment ? data.attachmentRevision : data.nativeFontRevision;
 }
 
+CGFloat NativeFontScale(const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
+  if (!state) return 1;
+  const auto value = state->getData().nativeFontScale;
+  return std::isfinite(value) && value > 0 ? static_cast<CGFloat>(value) : 1;
+}
+
 uint64_t ScaleBits(CGFloat scale) {
   const double value = scale;
   uint64_t bits = 0;
@@ -220,6 +226,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   const BOOL generationChanged =
       !_viewerProps || !HasEquivalentGenerationProps(*_viewerProps, *nextProps);
   if (generationChanged) {
+    [_drawingView resetIntrinsicImagePublication];
     [self beginNewGeneration];
   }
   _viewerProps = nextProps;
@@ -234,7 +241,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   [super updateState:state oldState:oldState];
   const auto nextState = std::static_pointer_cast<const PreparedProseViewerShadowNode::ConcreteState>(state);
   if (!_viewerState || Revision(_viewerState, true) != Revision(nextState, true) ||
-      Revision(_viewerState, false) != Revision(nextState, false)) {
+      Revision(_viewerState, false) != Revision(nextState, false) ||
+      NativeFontScale(_viewerState) != NativeFontScale(nextState)) {
     [self beginNewGeneration];
   }
   _viewerState = nextState;
@@ -265,6 +273,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     // Detachment may precede recycling and React Native may reset `tag`
     // before prepareForRecycle. Drop only the persisted generation token.
     [self releaseFabricOwnership];
+    [_drawingView cancelConfiguredImages];
     return;
   }
   // Fabric can provide props, state, and layout metrics before the view is
@@ -350,6 +359,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                 collapsesWhenEmpty:props.collapsesWhenEmpty
                  attachmentRevision:Revision(_viewerState, true)
                  nativeFontRevision:Revision(_viewerState, false)
+                   nativeFontScale:NativeFontScale(_viewerState)
             fontEnvironmentRevision:FontEnvironmentRevision(props)];
   const auto measurementIdentityString = MeasurementIdentity(generation, width, scale);
   if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
@@ -391,7 +401,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                   collapsesWhenEmpty:props.collapsesWhenEmpty
                    attachmentRevision:Revision(_viewerState, true)
                    nativeFontRevision:Revision(_viewerState, false)
-              fontEnvironmentRevision:FontEnvironmentRevision(props)
+                     nativeFontScale:NativeFontScale(_viewerState)
+               fontEnvironmentRevision:FontEnvironmentRevision(props)
                           widthPoints:width
                                  scale:scale];
   if (!installed) {
@@ -441,14 +452,15 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
       });
 }
 
-- (void)invalidateNativeFontEnvironment
+- (void)invalidateNativeFontEnvironmentWithScale:(CGFloat)scale
 {
   if (!_viewerState) return;
   _viewerState->updateState(
-      [](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
+      [scale](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
           -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
         auto nextData = oldData;
         nextData.nativeFontRevision += 1;
+        nextData.nativeFontScale = std::isfinite(scale) && scale > 0 ? scale : 1;
         return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
       });
 }
@@ -458,7 +470,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   NSNumber *revision = note.userInfo[@"revision"];
   if (!revision || revision.unsignedLongLongValue <= _lastFontEnvironmentRevision) return;
   _lastFontEnvironmentRevision = revision.unsignedLongLongValue;
-  [self invalidateNativeFontEnvironment];
+  NSNumber *scale = note.userInfo[@"scale"];
+  [self invalidateNativeFontEnvironmentWithScale:scale.doubleValue];
 }
 
 - (void)handleImageResourceFailure:(NSNotification *)note

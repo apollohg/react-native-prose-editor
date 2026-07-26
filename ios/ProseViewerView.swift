@@ -115,13 +115,21 @@ public final class ProseViewerView: UIView {
     /// Compiles once for this immutable generation. The first finite measurement prepares layout.
     @discardableResult
     public func apply(source: ProseViewerSource, configuration: ProseViewerConfiguration) -> Bool {
+        let fontRevision = fontEnvironment.revision
+        if let request,
+           request.source == source,
+           request.configuration == configuration,
+           request.fontEnvironmentRevision == fontRevision {
+            return pendingError == nil
+        }
         let nextRequest = ProseViewerRequest(
             source: source,
             configuration: configuration,
-            fontEnvironmentRevision: fontEnvironment.revision,
-            attachmentRevision: attachmentRevisions.revision
+            nativeFontScale: fontEnvironment.fontScale(for: fontRevision),
+            fontEnvironmentRevision: fontRevision,
+            attachmentRevision: 0
         )
-        if request == nextRequest { return pendingError == nil }
+        attachmentRevisions.reset()
         request = nextRequest
         compiledDocument = nil
         viewerImagePipeline.cancel()
@@ -176,6 +184,22 @@ public final class ProseViewerView: UIView {
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
+        guard window != nil else {
+            viewerImagePipeline.cancel()
+            attachmentRevisions.reset()
+            if let request {
+                self.request = ProseViewerRequest(
+                    source: request.source,
+                    configuration: request.configuration,
+                    nativeFontRevision: request.nativeFontRevision,
+                    nativeFontScale: request.nativeFontScale,
+                    fontEnvironmentRevision: request.fontEnvironmentRevision,
+                    attachmentRevision: 0
+                )
+            }
+            drawingView.imagePixels = [:]
+            return
+        }
         requestVisibleImageAttachments()
     }
 
@@ -189,6 +213,7 @@ public final class ProseViewerView: UIView {
         reportedResourceFailures.removeAll()
         legacyImageLoadOwner.cancelAll()
         viewerImagePipeline.cancel()
+        attachmentRevisions.reset()
         drawingView.imagePixels = [:]
         legacyTextView.removeFromSuperview()
         legacyCollapsed = false
@@ -292,6 +317,7 @@ public final class ProseViewerView: UIView {
             source: request.source,
             configuration: request.configuration,
             nativeFontRevision: request.nativeFontRevision,
+            nativeFontScale: request.nativeFontScale,
             fontEnvironmentRevision: request.fontEnvironmentRevision,
             attachmentRevision: attachmentRevisions.revision
         )
@@ -308,6 +334,7 @@ public final class ProseViewerView: UIView {
             source: request.source,
             configuration: request.configuration,
             nativeFontRevision: request.nativeFontRevision,
+            nativeFontScale: fontEnvironment.fontScale(for: revision),
             fontEnvironmentRevision: revision,
             attachmentRevision: request.attachmentRevision
         )

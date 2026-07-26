@@ -91,9 +91,7 @@ private fun PreparedTextPaint.withStyle(style: EditorTextStyle, density: Float):
         italic -> Typeface.ITALIC
         else -> Typeface.NORMAL
     }
-    val resolvedTypeface = style.fontFamily?.takeIf { it.isNotBlank() }
-        ?.let { Typeface.create(it, resolvedStyle) }
-        ?: Typeface.create(typeface, resolvedStyle)
+    val resolvedTypeface = ViewerFontEnvironment.resolveFamily(style.fontFamily, resolvedStyle, typeface).typeface
     return copy(
         typeface = resolvedTypeface,
         sizePx = style.fontSize?.times(density)?.takeIf { it.isFinite() && it > 0f } ?: sizePx,
@@ -142,8 +140,11 @@ internal data class PreparedProseTheme(
             fun px(value: Float, fallback: Float): Int = max(0, (value.takeIf { it.isFinite() } ?: fallback).times(density).toInt())
             fun fontPx(value: Float, fallback: Float): Float = ((value.takeIf { it.isFinite() } ?: fallback) * scaledDensity)
             fun typeface(style: EditorTextStyle?, fallback: Typeface): Typeface {
-                val family = style?.fontFamily
-                return Typeface.create(family ?: fallback.familyName(), style?.typefaceStyle() ?: fallback.style)
+                return ViewerFontEnvironment.resolveFamily(
+                    style?.fontFamily,
+                    style?.typefaceStyle() ?: fallback.style,
+                    fallback,
+                ).typeface
             }
             fun paint(style: EditorTextStyle?, fallback: PreparedTextPaint? = null): PreparedTextPaint {
                 val base = fallback ?: PreparedTextPaint(Typeface.DEFAULT, 17f * scaledDensity, 0xFF212121.toInt(), null, 0)
@@ -550,9 +551,8 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         var resolved = link?.let { base.withStyle(it.asTextStyle(), theme.fontDensity) } ?: base
         if (family != null || size != null) {
             family?.let { requested ->
-                val resolved = Typeface.create(requested, Typeface.NORMAL)
-                if (resolved.familyName() != requested) {
-                ViewerFontEnvironment.warnOnceForMissingFamily(requested, semanticGeneration, fontRevision)
+                if (ViewerFontEnvironment.resolveFamily(requested, Typeface.NORMAL, base.typeface).isDemonstrablyMissing) {
+                    ViewerFontEnvironment.warnOnceForMissingFamily(requested, semanticGeneration, fontRevision)
                 }
             }
             resolved = resolved.withStyle(EditorTextStyle(fontFamily = family, fontSize = size), theme.fontDensity)

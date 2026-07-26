@@ -77,22 +77,31 @@ final class ViewerImageIntrinsicStore {
     }
 }
 
+/// Per-surface publication state. It never owns image geometry: the bounded
+/// global LRU does that. This small set only prevents duplicate reflow events
+/// while one semantic generation is mounted, and must be reset on replacement
+/// or detachment so LRU eviction cannot suppress a later generation.
 final class ViewerAttachmentRevisionState {
+    static let publicationLimit = 256
     private let lock = NSLock()
-    private var intrinsicSizes: [String: CGSize] = [:]
+    private var publishedAttachmentIDs = Set<String>()
     private(set) var revision: UInt64 = 0
 
-    func intrinsicSize(for id: String) -> CGSize? {
-        lock.lock(); defer { lock.unlock() }
-        return intrinsicSizes[id]
+    var retainedPublicationCountForTesting: Int { lock.withLock { publishedAttachmentIDs.count } }
+
+    func reset() {
+        lock.withLock {
+            publishedAttachmentIDs.removeAll(keepingCapacity: false)
+            revision = 0
+        }
     }
 
     @discardableResult
     func recordIntrinsicSize(_ size: CGSize, for id: String, declaredSize: CGSize?) -> Bool {
         guard declaredSize == nil, size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return false }
         lock.lock(); defer { lock.unlock() }
-        guard intrinsicSizes[id] == nil else { return false }
-        intrinsicSizes[id] = size
+        guard !publishedAttachmentIDs.contains(id), publishedAttachmentIDs.count < Self.publicationLimit else { return false }
+        publishedAttachmentIDs.insert(id)
         ViewerImageIntrinsicStore.shared.store(size, for: id)
         revision &+= 1
         return true

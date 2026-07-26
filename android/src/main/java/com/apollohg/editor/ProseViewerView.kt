@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.util.AttributeSet
@@ -261,13 +262,19 @@ class ProseViewerView @JvmOverloads constructor(
      * finite measurement even when the registry evicts its unmounted cache entry.
      */
     fun apply(source: ProseViewerSource, configuration: ProseViewerConfiguration): Boolean {
+        val currentFontRevision = fontEnvironment.revision
+        preparedRequest?.let { current ->
+            if (current.source == source && current.configuration == configuration && current.fontEnvironmentRevision == currentFontRevision) {
+                return directError == null
+            }
+        }
         val next = ProseViewerRequest(
             source,
             configuration,
-            fontEnvironmentRevision = fontEnvironment.revision,
-            attachmentRevision = attachmentRevisions.revision,
+            fontEnvironmentRevision = currentFontRevision,
+            attachmentRevision = 0,
         )
-        if (preparedRequest == next) return directError == null
+        attachmentRevisions.reset()
         preparedRequest = next
         retainedDocument = null
         preparedArtifact = null
@@ -485,6 +492,8 @@ class ProseViewerView @JvmOverloads constructor(
             preparedArtifact = null
             preparedDrawingView.install(null)
             viewerImagePipeline.cancel()
+            attachmentRevisions.reset()
+            preparedRequest = preparedRequest?.copy(attachmentRevision = 0)
             preparedDrawingView.imagePixels = emptyMap()
             preparedAccessibilityGeneration = null
             notifyAccessibilitySubtreeChanged()
@@ -509,6 +518,7 @@ class ProseViewerView @JvmOverloads constructor(
         retainedDocument = null
         preparedArtifact = null
         viewerImagePipeline.cancel()
+        attachmentRevisions.reset()
         preparedDrawingView.imagePixels = emptyMap()
         directError = null
         reportedGenerationIdentity = null
@@ -974,6 +984,18 @@ class ProseViewerView @JvmOverloads constructor(
     companion object {
         private const val EMPTY_TEXT_BLOCK_PLACEHOLDER = '\u200B'
         private const val FIRST_VIRTUAL_ANNOTATION_ID = 1
+
+        /**
+         * Explicit availability signal for custom-family loaders. Unknown
+         * Typeface fallback is intentionally not treated as a missing font.
+         */
+        @JvmStatic
+        fun registerAvailableFontFamily(family: String, typeface: Typeface) =
+            ViewerFontEnvironment.registerAvailableFamily(family, typeface)
+
+        @JvmStatic
+        fun markFontFamilyUnavailable(family: String) =
+            ViewerFontEnvironment.markFamilyUnavailable(family)
 
         /** Measures valid render-ops at an Android width in pixels. */
         @JvmStatic

@@ -33,6 +33,7 @@ Size PreparedProseMeasurementsManager::measure(
     Float pointScaleFactor,
     uint64_t attachmentRevision,
     uint64_t nativeFontRevision,
+    double nativeFontScale,
     uint64_t fontEnvironmentRevision) const {
   @autoreleasepool {
     const auto size = [[PREPPreparedProseLayoutRegistry sharedRegistry]
@@ -47,6 +48,7 @@ Size PreparedProseMeasurementsManager::measure(
       collapsesWhenEmpty:props.collapsesWhenEmpty
        attachmentRevision:attachmentRevision
        nativeFontRevision:nativeFontRevision
+          nativeFontScale:nativeFontScale
   fontEnvironmentRevision:(fontEnvironmentRevision)
               widthPoints:effectiveWidth
                      scale:pointScaleFactor];

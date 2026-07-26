@@ -169,7 +169,9 @@ internal class PreparedProseViewerManager :
 
     private fun update(view: PreparedProseDrawingView, mutation: ViewState.() -> Unit) {
         val state = states.getOrPut(view, ::ViewState)
+        val semanticIdentity = state.semanticIdentity()
         state.mutation()
+        if (semanticIdentity != state.semanticIdentity()) state.resetIntrinsicPublication()
         reconcile(view, state)
     }
 
@@ -365,6 +367,24 @@ internal class PreparedProseViewerManager :
         val imagePipeline = ViewerImagePipeline()
         private var visibleRect: android.graphics.Rect = android.graphics.Rect()
 
+        data class IntrinsicPublicationIdentity(
+            val sourceKind: String,
+            val source: String,
+            val configJson: String,
+            val themeJson: String?,
+            val imagePolicyJson: String?,
+            val imagesEnabled: Boolean,
+            val collapsesWhenEmpty: Boolean,
+            val fontEnvironmentRevision: Long,
+        )
+
+        fun semanticIdentity() = IntrinsicPublicationIdentity(
+            sourceKind, source, configJson, themeJson, imagePolicyJson,
+            imagesEnabled, collapsesWhenEmpty, fontEnvironmentRevision,
+        )
+
+        fun resetIntrinsicPublication() = attachmentRevisions.reset()
+
         fun beginImages(view: PreparedProseDrawingView, artifact: PreparedProseLayout, request: ProseViewerRequest) {
             imagePipeline.begin(request.generationIdentity, request.configuration.imagesEnabled, ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson))
         }
@@ -439,6 +459,7 @@ internal class PreparedProseViewerManager :
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
             imagePipeline.cancel()
+            attachmentRevisions.reset()
             stateWrapper?.destroyState()
             stateWrapper = null
             revisions = null

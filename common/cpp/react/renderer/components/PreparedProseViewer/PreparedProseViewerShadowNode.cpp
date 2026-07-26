@@ -74,6 +74,7 @@ Size PreparedProseViewerShadowNode::measureContent(
       pointScaleFactor,
       state.attachmentRevision,
       state.nativeFontRevision,
+      state.nativeFontScale,
       FontEnvironmentRevision(props));
 }
 

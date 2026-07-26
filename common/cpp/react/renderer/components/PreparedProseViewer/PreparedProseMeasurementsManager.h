@@ -25,6 +25,7 @@ class PreparedProseMeasurementsManager {
       Float pointScaleFactor,
       uint64_t attachmentRevision,
       uint64_t nativeFontRevision,
+      double nativeFontScale,
       uint64_t fontEnvironmentRevision) const;
 
  private:

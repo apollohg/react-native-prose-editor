@@ -47,6 +47,9 @@ struct ProseViewerRequest: Hashable {
     let source: ProseViewerSource
     let configuration: ProseViewerConfiguration
     let nativeFontRevision: UInt64
+    /// Captured by Fabric with its native-font revision. UIKit obtains the
+    /// same value from `ViewerFontEnvironment` when it creates a request.
+    let nativeFontScale: CGFloat
     let fontEnvironmentRevision: UInt64
     let attachmentRevision: UInt64
 
@@ -54,12 +57,14 @@ struct ProseViewerRequest: Hashable {
         source: ProseViewerSource,
         configuration: ProseViewerConfiguration,
         nativeFontRevision: UInt64 = 0,
+        nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64 = 0,
         attachmentRevision: UInt64 = 0
     ) {
         self.source = source
         self.configuration = configuration
         self.nativeFontRevision = nativeFontRevision
+        self.nativeFontScale = nativeFontScale.isFinite && nativeFontScale > 0 ? nativeFontScale : 1
         self.fontEnvironmentRevision = fontEnvironmentRevision
         self.attachmentRevision = attachmentRevision
     }
@@ -87,6 +92,7 @@ struct ProseViewerRequest: Hashable {
             configuration.collapsesWhenEmpty ? "1" : "0",
             String(attachmentRevision),
             String(nativeFontRevision),
+            String(Double(nativeFontScale).bitPattern),
             String(fontEnvironmentRevision),
         ].joined(separator: "\u{1F}"))
     }

@@ -52,6 +52,7 @@ Size PreparedProseMeasurementsManager::measure(
     Float /*pointScaleFactor*/,
     uint64_t attachmentRevision,
     uint64_t nativeFontRevision,
+    double nativeFontScale,
     uint64_t /*fontEnvironmentRevision*/) const {
   const auto& fabricUIManager =
       contextContainer_->at<jni::global_ref<jobject>>("FabricUIManager");
@@ -72,7 +73,8 @@ Size PreparedProseMeasurementsManager::measure(
       ("surfaceId", static_cast<int64_t>(surfaceId))
       ("componentTag", static_cast<int64_t>(componentTag));
   const auto propsDynamic = toDynamic(props);
-  const auto stateDynamic = toState(attachmentRevision, nativeFontRevision);
+  const auto stateDynamic = toState(attachmentRevision, nativeFontRevision)
+      ("nativeFontScale", nativeFontScale);
   const auto localDataNative = ReadableNativeMap::newObjectCxxArgs(localData);
   const auto propsNative = ReadableNativeMap::newObjectCxxArgs(propsDynamic);
   const auto stateNative = ReadableNativeMap::newObjectCxxArgs(stateDynamic);

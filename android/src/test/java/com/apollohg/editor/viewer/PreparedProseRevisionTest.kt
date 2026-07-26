@@ -1,6 +1,7 @@
 package com.apollohg.editor.viewer
 
 import android.graphics.Rect
+import android.graphics.Typeface
 import android.content.res.Configuration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,6 +38,29 @@ class PreparedProseRevisionTest {
         assertEquals(1, revisions.revision)
     }
 
+    @Test fun intrinsicPublicationResetsAfterMetadataLRUEvictionForReuse() {
+        val state = ViewerAttachmentRevisionState()
+        val evictedMetadata = ViewerImageIntrinsicStore(entryLimit = 1)
+        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 10, 20, null))
+        evictedMetadata.store("7:https://example.test/a", 10 to 20)
+        evictedMetadata.store("8:https://example.test/b", 20 to 10)
+        assertEquals(null, evictedMetadata.size("7:https://example.test/a"))
+
+        state.reset()
+        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 10, 20, null))
+        assertEquals(1, state.revision)
+    }
+
+    @Test fun intrinsicPublicationStateIsBoundedWithoutEvictingPublishedIds() {
+        val state = ViewerAttachmentRevisionState()
+        repeat(ViewerAttachmentRevisionState.PUBLICATION_LIMIT) { index ->
+            assertTrue(state.recordIntrinsicSize("$index:https://example.test/image", 1, 1, null))
+        }
+        assertEquals(ViewerAttachmentRevisionState.PUBLICATION_LIMIT, state.retainedPublicationCountForTesting)
+        assertFalse(state.recordIntrinsicSize("overflow:https://example.test/image", 1, 1, null))
+        assertFalse(state.recordIntrinsicSize("0:https://example.test/image", 2, 2, null))
+    }
+
     @Test fun boundedIntrinsicMetadataEvictsOldestEntryDeterministically() {
         val store = ViewerImageIntrinsicStore(entryLimit = 2)
         store.store("a", 10 to 10)
@@ -70,6 +94,18 @@ class PreparedProseRevisionTest {
         val scaled = PreparedProseTheme.resolve(null, density = 2f, fontScale = 1.5f)
         assertEquals(34f, base.paragraph.sizePx)
         assertEquals(51f, scaled.paragraph.sizePx)
+    }
+
+    @Test fun registeredCustomFamilyIsNotWarnedAndDemonstrablyMissingFamilyWarnsOnce() {
+        ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        ViewerFontEnvironment.registerAvailableFamily("viewer-test-font", Typeface.DEFAULT)
+        assertFalse(ViewerFontEnvironment.resolveFamily("viewer-test-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+        ViewerFontEnvironment.markFamilyUnavailable("viewer-missing-font")
+        assertTrue(ViewerFontEnvironment.resolveFamily("viewer-missing-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+        assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("viewer-missing-font", "semantic", "revision"))
+        assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("viewer-missing-font", "semantic", "revision"))
+        assertFalse(ViewerFontEnvironment.resolveFamily("unproven-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+        ViewerFontEnvironment.resetFamilyRegistryForTesting()
     }
 
     @Test fun resourceFailureIsPublishedOncePerGenerationAndAttachment() {

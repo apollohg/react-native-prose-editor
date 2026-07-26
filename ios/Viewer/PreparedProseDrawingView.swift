@@ -69,7 +69,15 @@ public final class PreparedProseDrawingView: UIView {
     @objc public func cancelConfiguredImages() {
         imageGeneration = ""
         imagePipeline.cancel()
+        imageRevisions.reset()
         imagePixels = [:]
+    }
+
+    /// A semantic prop replacement starts a new source-qualified publication
+    /// generation. Attachment-revision replacements deliberately do not call
+    /// this: they are the one reflow being deduplicated.
+    @objc public func resetIntrinsicImagePublication() {
+        imageRevisions.reset()
     }
 
     @objc var errorDomain: String? { layout?.error?.domain }

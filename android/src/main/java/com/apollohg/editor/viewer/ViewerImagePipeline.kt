@@ -63,18 +63,28 @@ internal object NativeImagePipeline {
         RenderImageLoader.load(source, callback)
 }
 
-/** Atomically persists only the first valid intrinsic size for an unknown attachment. */
+/**
+ * Per-surface reflow-publication state. Geometry lives only in the bounded
+ * global LRU; this bounded set prevents duplicate publications while a single
+ * semantic generation is mounted and is reset on apply/reuse/detach.
+ */
 internal class ViewerAttachmentRevisionState {
+    companion object { const val PUBLICATION_LIMIT = 256 }
     private val lock = Any()
-    private val intrinsicSizes = mutableMapOf<String, Pair<Int, Int>>()
+    private val publishedAttachmentIds = mutableSetOf<String>()
     var revision: Long = 0
         private set
 
-    fun intrinsicSize(id: String): Pair<Int, Int>? = synchronized(lock) { intrinsicSizes[id] }
+    val retainedPublicationCountForTesting: Int get() = synchronized(lock) { publishedAttachmentIds.size }
+
+    fun reset() = synchronized(lock) {
+        publishedAttachmentIds.clear()
+        revision = 0
+    }
 
     fun recordIntrinsicSize(id: String, width: Int, height: Int, declaredSize: Pair<Int, Int>?): Boolean = synchronized(lock) {
-        if (declaredSize != null || width <= 0 || height <= 0 || intrinsicSizes.containsKey(id)) return@synchronized false
-        intrinsicSizes[id] = width to height
+        if (declaredSize != null || width <= 0 || height <= 0 || id in publishedAttachmentIds || publishedAttachmentIds.size >= PUBLICATION_LIMIT) return@synchronized false
+        publishedAttachmentIds += id
         ViewerImageIntrinsicStore.shared.store(id, width to height)
         revision += 1
         true

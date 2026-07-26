@@ -201,7 +201,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         }
     }
 
-    @objc(measureSurfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(measureSurfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
     public func measure(
         surfaceId: Int64,
         componentTag: Int64,
@@ -214,6 +214,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         collapsesWhenEmpty: Bool,
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
+        nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64,
         widthPoints: CGFloat,
         scale: CGFloat
@@ -228,6 +229,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             collapsesWhenEmpty: collapsesWhenEmpty,
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
+            nativeFontScale: nativeFontScale,
             fontEnvironmentRevision: fontEnvironmentRevision
         )
         return measure(
@@ -241,7 +243,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     /// The only Objective-C-visible generation identity boundary. Fabric must
     /// retain this exact SHA-256 key for every later release of its lease and
     /// compiler pin; native callers must not reconstruct it from props.
-    @objc(fabricGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:)
+    @objc(fabricGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:)
     public func fabricGenerationIdentity(
         sourceKind: NSString,
         source: NSString,
@@ -252,6 +254,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         collapsesWhenEmpty: Bool,
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
+        nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64
     ) -> NSString {
         makeRequest(
@@ -264,11 +267,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
             collapsesWhenEmpty: collapsesWhenEmpty,
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
+            nativeFontScale: nativeFontScale,
             fontEnvironmentRevision: fontEnvironmentRevision
         ).generationIdentity as NSString
     }
 
-    @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
     public func installCachedLayout(
         in drawingView: PreparedProseDrawingView,
         surfaceId: Int64,
@@ -282,6 +286,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         collapsesWhenEmpty: Bool,
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
+        nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64,
         widthPoints: CGFloat,
         scale: CGFloat
@@ -296,6 +301,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             collapsesWhenEmpty: collapsesWhenEmpty,
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
+            nativeFontScale: nativeFontScale,
             fontEnvironmentRevision: fontEnvironmentRevision
         )
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
@@ -327,6 +333,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         collapsesWhenEmpty: Bool,
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
+        nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64,
         widthPoints: CGFloat,
         scale: CGFloat
@@ -344,6 +351,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             collapsesWhenEmpty: collapsesWhenEmpty,
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
+            nativeFontScale: nativeFontScale,
             fontEnvironmentRevision: fontEnvironmentRevision,
             widthPoints: widthPoints,
             scale: scale
@@ -582,7 +590,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
         }
         let theme = PreparedProseTheme.resolve(
             themeJSON: request.configuration.themeJSON,
-            fontScale: ViewerFontEnvironment.shared.fontScale(for: request.fontEnvironmentRevision)
+            fontScale: request.nativeFontRevision > 0
+                ? request.nativeFontScale
+                : ViewerFontEnvironment.shared.fontScale(for: request.fontEnvironmentRevision)
         )
         themesByGeneration[request.generationIdentity] = theme
         themesRetainedBytes += theme.estimatedRetainedBytes
@@ -630,6 +640,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         collapsesWhenEmpty: Bool,
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
+        nativeFontScale: CGFloat,
         fontEnvironmentRevision: UInt64
     ) -> ProseViewerRequest {
         ProseViewerRequest(
@@ -642,6 +653,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 collapsesWhenEmpty: collapsesWhenEmpty
             ),
             nativeFontRevision: nativeFontRevision,
+            nativeFontScale: nativeFontScale,
             fontEnvironmentRevision: fontEnvironmentRevision,
             attachmentRevision: attachmentRevision
         )
