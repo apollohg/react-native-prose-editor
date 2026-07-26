@@ -298,11 +298,12 @@ private class CountingLayoutEngine : AndroidProseLayoutEngine {
     override fun prepare(
         document: ViewerDocument,
         key: ProseLayoutKey,
+        theme: PreparedProseTheme,
         widthPx: Int,
         density: Float,
         collapsesWhenEmpty: Boolean,
     ): PreparedProseLayout {
         preparationCount += 1
-        return delegate.prepare(document, key, widthPx, density, collapsesWhenEmpty)
+        return delegate.prepare(document, key, theme, widthPx, density, collapsesWhenEmpty)
     }
 }

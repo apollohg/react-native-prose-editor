@@ -5,7 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Rect
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
-import android.text.style.StyleSpan
+import android.text.style.StrikethroughSpan
 import android.text.style.UnderlineSpan
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerSource
@@ -79,9 +79,9 @@ class PreparedProseRenderingTest {
             assertTrue(anchors.all { it == anchors.first() })
         }
 
-        val outer = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 7 } }
-        val nested = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 12 } }
-        val empty = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 8 } }
+        val outer = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 7L } }
+        val nested = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 12L } }
+        val empty = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 8L } }
         assertEquals("7.", layout.blocks[outer.first().index].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.label)
         assertEquals("12.", layout.blocks[nested.first().index].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.label)
         assertEquals("8.", layout.blocks[empty.first().index].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.label)
@@ -99,11 +99,11 @@ class PreparedProseRenderingTest {
         val text = layout.blocks.flatMap { it.fragments }.filter { it.kind == PreparedProseFragmentKind.TEXT }
         val spans = text.flatMap { (it.layout!!.text as android.text.Spanned).allSpans<Any>() }
 
-        assertTrue(spans.any { it is StyleSpan && it.style == android.graphics.Typeface.BOLD })
+        assertTrue(spans.any { it is ResolvedTextStyleSpan })
         assertTrue(spans.any { it is UnderlineSpan })
         assertTrue(spans.any { it is ForegroundColorSpan })
         assertTrue(spans.any { it is BackgroundColorSpan })
-        assertTrue(layout.blocks.flatMap { it.fragments }.any { it.kind == PreparedProseFragmentKind.STRIKE })
+        assertTrue(spans.any { it is StrikethroughSpan })
     }
 
     @Test
@@ -119,9 +119,117 @@ class PreparedProseRenderingTest {
     }
 
     @Test
+    fun `Fabric pins compiler semantics while density one to two resolves fresh bounded theme paints`() {
+        var compilations = 0
+        val engine = CountingRendererEngine()
+        val registry = PreparedProseLayoutRegistry(
+            compiler = { request -> compilations += 1; compileWithRust(request) },
+            layoutEngine = engine,
+        )
+        val fixture = Fixture.structural[2]
+        val request = ProseViewerRequest(fixture.source, ProseViewerConfiguration(configJson = fixture.configJson, themeJson = Fixture.themeJson))
+        val surface = FabricSurfaceToken(77, 701)
+
+        val densityOne = registry.measure(request, Fixture.widthPx, 1f, surface)
+        val densityTwo = registry.measure(request, Fixture.widthPx, 2f, surface)
+        val oneAtom = densityOne.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.ATOM }
+        val twoAtom = densityTwo.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.ATOM }
+
+        assertEquals(1, compilations)
+        assertEquals(2, engine.prepareCount)
+        assertEquals(1, registry.fabricGenerationPinCountForTesting)
+        assertEquals(2, registry.preparedThemeCountForTesting)
+        assertEquals(1f.toRawBits().toLong(), densityOne.key.densityBits)
+        assertEquals(2f.toRawBits().toLong(), densityTwo.key.densityBits)
+        assertEquals(2f, oneAtom.strokeWidth)
+        assertEquals(4f, twoAtom.strokeWidth)
+        assertEquals(9f, oneAtom.cornerRadius)
+        assertEquals(18f, twoAtom.cornerRadius)
+    }
+
+    @Test
+    fun `oversized marker reserves a nonnegative top and shares the first text baseline`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"marker"}]}]}]}]}""",
+            Fixture.structural[2].configJson,
+        )
+        val layout = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerScale":4}}""", 1f))
+        val block = layout.blocks.single()
+        val marker = block.fragments.single { it.kind == PreparedProseFragmentKind.MARKER }
+        val text = block.fragments.single { it.kind == PreparedProseFragmentKind.TEXT }
+
+        assertTrue(marker.bounds.top >= 0)
+        assertEquals(
+            text.bounds.top + text.layout!!.getLineBaseline(0) - marker.layout!!.getLineBaseline(0),
+            marker.bounds.top,
+        )
+        assertTrue(marker.bounds.bottom <= block.bounds.bottom)
+    }
+
+    @Test
+    fun `nested list and quote rule right edge excludes both insets`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"lead"}]},{"type":"horizontal_rule"}]}]}]}]}""",
+            Fixture.structural[2].configJson,
+        )
+        val rule = prepare(document).blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.RULE }
+
+        assertTrue(rule.bounds.left > 0)
+        assertEquals(Fixture.widthPx - rule.bounds.left, rule.bounds.right)
+    }
+
+    @Test
+    fun `atom descenders remain inside metric line and atom bounds`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"opaque","attrs":{"label":"gy"}}]}]}""",
+            Fixture.structural[2].configJson,
+        )
+        val atom = prepare(document).blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.ATOM }
+
+        assertTrue(atom.bounds.bottom >= atom.labelY + atom.labelLayout!!.height)
+        assertTrue(atom.bounds.height() > atom.labelLayout!!.getLineBaseline(0))
+    }
+
+    @Test
+    fun `link typography resolves before mark traits and RTL strike keeps its run foreground`() {
+        val themed = """{"links":{"fontFamily":"monospace","fontSize":23,"fontWeight":"700","fontStyle":"italic","color":"#13579B"}}"""
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"שלום","marks":[{"type":"link","attrs":{"href":"https://example.test"}},{"type":"strike"},{"type":"bold"}]}]}]}""",
+            Fixture.structural[2].configJson,
+        )
+        val text = prepare(document, PreparedProseTheme.resolve(themed, 1f)).blocks.single().fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.layout!!
+        val spans = text.text as android.text.Spanned
+        val style = spans.getSpans(0, spans.length, ResolvedTextStyleSpan::class.java).single()
+        val foreground = spans.getSpans(0, spans.length, ForegroundColorSpan::class.java).single()
+
+        assertEquals(23f, style.sizePx)
+        assertEquals(android.graphics.Typeface.BOLD_ITALIC, style.typeface.style)
+        assertEquals(0xFF13579B.toInt(), foreground.foregroundColor)
+        assertEquals(1, spans.getSpans(0, spans.length, StrikethroughSpan::class.java).size)
+        assertEquals(android.text.Layout.DIR_RIGHT_TO_LEFT, text.getParagraphDirection(0))
+    }
+
+    @Test
+    fun `compiler u32 maximum ordered index and semantic atom position never narrow or wrap`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"max"}]}]}]}]}""",
+            Fixture.structural[2].configJson,
+        )
+        val compilerIndex = document.blocks.single().listContext!!.index
+        val semanticAtom = ViewerInline.Atom("opaque", 0xFFFF_FFFFL, "{}", "max")
+        val atomDocument = ViewerDocument("u32-atom", listOf(ViewerBlock("paragraph", 0, false, null, null, listOf(semanticAtom))), false, 0)
+        val marker = prepare(document).blocks.single().fragments.single { it.kind == PreparedProseFragmentKind.MARKER }
+
+        assertEquals(0xFFFF_FFFFL, compilerIndex)
+        assertEquals("4294967295.", marker.label)
+        assertEquals(0xFFFF_FFFFL, (atomDocument.blocks.single().inlines.single() as ViewerInline.Atom).docPos)
+        assertTrue(prepare(atomDocument).blocks.single().fragments.any { it.kind == PreparedProseFragmentKind.ATOM })
+    }
+
+    @Test
     fun `drawing is culling and paint only after preparation`() {
         val engine = CountingRendererEngine()
-        val layout = engine.prepare(themed(compile(Fixture.unicode)), key(), Fixture.widthPx, 1f, false)
+        val layout = engine.prepare(compile(Fixture.unicode), key(), theme(), Fixture.widthPx, 1f, false)
         val preparedStaticLayouts = engine.staticLayoutsBuilt
         val view = PreparedProseDrawingView(RuntimeEnvironment.getApplication())
         view.install(layout)
@@ -144,10 +252,17 @@ class PreparedProseRenderingTest {
         ProseViewerRequest(fixture.source, ProseViewerConfiguration(configJson = fixture.configJson, themeJson = Fixture.themeJson))
     )
 
-    private fun themed(document: ViewerDocument): ViewerDocument = document.withPreparedTheme(PreparedProseTheme.resolve(Fixture.themeJson, 1f))
+    private fun compileSource(source: String, configJson: String): ViewerDocument = compileWithRust(
+        ProseViewerRequest(ProseViewerSource.Json(source), ProseViewerConfiguration(configJson = configJson, themeJson = Fixture.themeJson))
+    )
+
+    private fun theme(density: Float = 1f): PreparedProseTheme = PreparedProseTheme.resolve(Fixture.themeJson, density)
 
     private fun prepare(document: ViewerDocument): PreparedProseLayout =
-        StaticLayoutAndroidProseLayoutEngine().prepare(themed(document), key(), Fixture.widthPx, 1f, false)
+        StaticLayoutAndroidProseLayoutEngine().prepare(document, key(), theme(), Fixture.widthPx, 1f, false)
+
+    private fun prepare(document: ViewerDocument, theme: PreparedProseTheme): PreparedProseLayout =
+        StaticLayoutAndroidProseLayoutEngine().prepare(document, key(), theme, Fixture.widthPx, theme.density, false)
 
     private fun key() = ProseLayoutKey("fixture", Fixture.widthPx, "fixture", 0, 0, 0, "fixture")
 
@@ -185,9 +300,9 @@ private class CountingRendererEngine : AndroidProseLayoutEngine {
     var prepareCount = 0
     val staticLayoutsBuilt: Int get() = delegate.staticLayoutsBuilt
 
-    override fun prepare(document: ViewerDocument, key: ProseLayoutKey, widthPx: Int, density: Float, collapsesWhenEmpty: Boolean): PreparedProseLayout {
+    override fun prepare(document: ViewerDocument, key: ProseLayoutKey, theme: PreparedProseTheme, widthPx: Int, density: Float, collapsesWhenEmpty: Boolean): PreparedProseLayout {
         prepareCount += 1
-        return delegate.prepare(document, key, widthPx, density, collapsesWhenEmpty)
+        return delegate.prepare(document, key, theme, widthPx, density, collapsesWhenEmpty)
     }
 }
 
@@ -207,12 +322,12 @@ private data class Fixture(
         private const val customConfig = """{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"opaqueBlock","content":"","group":"block","role":"block","isVoid":true,"allowUndeclaredAttrs":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"""
 
         val structural = listOf(
-            Fixture("nested JSON list and blockquote inheritance", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"""), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER)) { it.blocks.any { block -> block.inBlockquote && block.listContext?.index == 12 } },
+            Fixture("nested JSON list and blockquote inheritance", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"""), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER)) { it.blocks.any { block -> block.inBlockquote && block.listContext?.index == 12L } },
             Fixture("HTML headings marks rules and hard breaks", ProseViewerSource.Html("<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6><blockquote><p><strong>bold</strong><br>quote</p></blockquote><ol start=\"3\"><li>third</li></ol><hr>"), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE)) { document -> (1..6).all { document.blocks.any { it.nodeType == "h$it" } } },
             Fixture("custom atoms task list and snake rule", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"""), customConfig, setOf(PreparedProseFragmentKind.ATOM, PreparedProseFragmentKind.RULE)) { document -> document.blocks.any { it.listContext?.kind == "task" && it.listContext.checked } }
         )
-        val marks = Fixture("all marks", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"monospace","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.STRIKE)) { true }
-        val multiBlockList = Fixture("multi block nested ordered list boundaries", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":7},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"codeBlock","content":[{"type":"text","text":"second"}]},{"type":"opaqueBlock","attrs":{"label":"third"}},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph"}]}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.ATOM)) { it.blocks.any { block -> block.listContext?.index == 12 } }
+        val marks = Fixture("all marks", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"monospace","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT)) { true }
+        val multiBlockList = Fixture("multi block nested ordered list boundaries", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":7},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"codeBlock","content":[{"type":"text","text":"second"}]},{"type":"opaqueBlock","attrs":{"label":"third"}},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph"}]}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.ATOM)) { it.blocks.any { block -> block.listContext?.index == 12L } }
         val unicode = Fixture("unicode emoji bidi hard break and opaque atoms", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"שלום 🚀"},{"type":"hardBreak"},{"type":"opaque","attrs":{"label":"inline"}},{"type":"text","text":" café"}]},{"type":"opaqueBlock","attrs":{"label":"block"}}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.ATOM)) { it.blocks.any { block -> block.nodeType == "opaqueBlock" } }
         val all = structural + listOf(marks, multiBlockList, unicode)
     }

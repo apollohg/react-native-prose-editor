@@ -14,7 +14,8 @@ import uniffi.editor_core.viewerCompile
 /** A typed, width-independent projection of Task 1's immutable compiler stream. */
 internal data class ViewerListContext(
     val ordered: Boolean,
-    val index: Int,
+    /** Rust u32 list index retained exactly for interaction/accessibility consumers. */
+    val index: Long,
     val kind: String?,
     val checked: Boolean,
 )
@@ -29,7 +30,8 @@ internal data class ViewerListItemBoundary(
 
 internal sealed interface ViewerInline {
     data class Text(val text: String, val marks: List<FfiViewerMark>) : ViewerInline
-    data class Atom(val nodeType: String, val docPos: Int, val attrsJson: String, val label: String) : ViewerInline
+    /** Rust u32 document position retained exactly; drawing spans never own it. */
+    data class Atom(val nodeType: String, val docPos: Long, val attrsJson: String, val label: String) : ViewerInline
 }
 
 internal data class ViewerBlock(
@@ -47,10 +49,7 @@ internal data class ViewerDocument(
     val blocks: List<ViewerBlock>,
     val isEmpty: Boolean,
     val retainedBytes: Long,
-    val preparedTheme: PreparedProseTheme? = null,
-) {
-    fun withPreparedTheme(theme: PreparedProseTheme): ViewerDocument = copy(preparedTheme = theme)
-}
+)
 
 internal data class ProseViewerRequest(
     val source: ProseViewerSource,
@@ -126,11 +125,13 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                     stack += Builder(element.nodeType, element.depth.toInt(), listContext(element.listContextJson), identity)
                 }
                 is FfiViewerElement.TextRun -> stack.lastOrNull()?.inlines?.add(ViewerInline.Text(element.text, element.marks))
-                is FfiViewerElement.InlineAtom -> stack.lastOrNull()?.inlines?.add(ViewerInline.Atom(element.nodeType, element.docPos.toInt(), element.attrsJson, element.label))
+                is FfiViewerElement.InlineAtom -> stack.lastOrNull()?.inlines?.add(
+                    ViewerInline.Atom(element.nodeType, u32(element.docPos), element.attrsJson, element.label)
+                )
                 is FfiViewerElement.BlockAtom -> appendLeaf(
                     element.nodeType,
                     stack.lastOrNull()?.depth ?: 0,
-                    listOf(ViewerInline.Atom(element.nodeType, element.docPos.toInt(), element.attrsJson, element.label)),
+                    listOf(ViewerInline.Atom(element.nodeType, u32(element.docPos), element.attrsJson, element.label)),
                     stack,
                 )
                 FfiViewerElement.BlockEnd -> {
@@ -167,8 +168,17 @@ private val CONTAINER_BLOCKS = setOf("doc", "blockquote", "bulletList", "ordered
 private fun listContext(json: String?): ViewerListContext? = runCatching {
     json ?: return@runCatching null
     val value = JSONObject(json)
-    ViewerListContext(value.optBoolean("ordered"), value.optInt("index", 1), value.optString("kind", null), value.optBoolean("checked"))
+    val index = if (value.has("index")) u32(value.opt("index")) else 1L
+    ViewerListContext(value.optBoolean("ordered"), index, value.optString("kind", null), value.optBoolean("checked"))
 }.getOrNull()
+
+/** JSON and UniFFI may expose Rust u32 values through different Kotlin number types. */
+private fun u32(value: Any?): Long {
+    val parsed = value?.toString()?.toLongOrNull()
+        ?: throw IllegalArgumentException("Expected an unsigned 32-bit semantic value.")
+    require(parsed in 0L..0xFFFF_FFFFL) { "Semantic value is outside Rust u32 range." }
+    return parsed
+}
 
 private fun mentionPrefix(configJson: String): String? = runCatching {
     val root = JSONObject(configJson)
