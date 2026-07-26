@@ -104,32 +104,44 @@ public final class PreparedProseLayoutRegistry: NSObject {
     }
 
     func measure(request: ProseViewerRequest, widthPoints: CGFloat, scale: CGFloat) -> PreparedProseLayout {
-        guard widthPoints.isFinite, widthPoints > 0, scale.isFinite, scale > 0 else {
-            return errorArtifact(
+        guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
+            return invalidWidthArtifact(
                 request: request,
-                widthPoints: widthPoints,
                 scale: scale,
                 error: .hostContract(message: "A finite positive width is required for prose measurement.")
             )
         }
+        let canonicalWidth = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
         do {
             let document = try preparedDocument(request: request)
-            let key = layoutKey(for: document, request: request, widthPoints: widthPoints, scale: scale)
-            return try layoutCache.value(for: key) { [weak self] in
-                guard let self else {
-                    throw ProseViewerError.layout(message: "The layout registry was released during preparation.")
-                }
+            let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
+            return try layoutCache.value(for: key) {
                 self.lock.lock()
                 self.layoutPreparationCount += 1
                 self.lock.unlock()
-                return try self.prepare(document, key, CGFloat(key.widthPixels) / scale, scale)
+                do {
+                    return try self.prepare(document, key, canonicalWidth, scale)
+                } catch let error as ProseViewerError {
+                    return self.errorArtifact(key: key, width: canonicalWidth, error: error)
+                } catch {
+                    return self.errorArtifact(
+                        key: key,
+                        width: canonicalWidth,
+                        error: .layout(message: String(describing: error))
+                    )
+                }
             }
         } catch let error as ProseViewerError {
-            return errorArtifact(request: request, widthPoints: widthPoints, scale: scale, error: error)
-        } catch {
-            return errorArtifact(
+            return cachedErrorArtifact(
                 request: request,
-                widthPoints: widthPoints,
+                widthPixels: widthPixels,
+                scale: scale,
+                error: error
+            )
+        } catch {
+            return cachedErrorArtifact(
+                request: request,
+                widthPixels: widthPixels,
                 scale: scale,
                 error: .layout(message: String(describing: error))
             )
@@ -194,25 +206,19 @@ public final class PreparedProseLayoutRegistry: NSObject {
             nativeFontRevision: nativeFontRevision,
             fontEnvironmentRevision: fontEnvironmentRevision
         )
-        guard widthPoints.isFinite, widthPoints > 0, scale.isFinite, scale > 0 else {
+        guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
             return false
         }
         do {
             let document = try preparedDocument(request: request)
-            let key = layoutKey(for: document, request: request, widthPoints: widthPoints, scale: scale)
+            let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
             guard let artifact = layoutCache.cachedValue(for: key) else { return false }
             drawingView.install(layout: artifact)
             return true
-        } catch let error as ProseViewerError {
-            drawingView.install(layout: errorArtifact(request: request, widthPoints: widthPoints, scale: scale, error: error))
-            return true
         } catch {
-            drawingView.install(layout: errorArtifact(
-                request: request,
-                widthPoints: widthPoints,
-                scale: scale,
-                error: .layout(message: String(describing: error))
-            ))
+            let key = errorLayoutKey(request: request, widthPixels: widthPixels, scale: scale)
+            guard let artifact = layoutCache.cachedValue(for: key) else { return false }
+            drawingView.install(layout: artifact)
             return true
         }
     }
@@ -229,13 +235,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private func layoutKey(
         for document: ViewerDocument,
         request: ProseViewerRequest,
-        widthPoints: CGFloat,
+        widthPixels: Int,
         scale: CGFloat
     ) -> ProseLayoutKey {
-        let pixels = Int((widthPoints * scale).rounded())
         return ProseLayoutKey(
             semanticKey: document.semanticKey,
-            widthPixels: pixels,
+            widthPixels: widthPixels,
             themeDigest: request.themeDigest,
             nativeFontRevision: request.nativeFontRevision,
             fontEnvironmentRevision: request.fontEnvironmentRevision,
@@ -246,24 +251,54 @@ public final class PreparedProseLayoutRegistry: NSObject {
     }
 
     private func errorArtifact(
+        key: ProseLayoutKey,
+        width: CGFloat,
+        error: ProseViewerError
+    ) -> PreparedProseLayout {
+        .error(key: key, width: width, error: error)
+    }
+
+    private func cachedErrorArtifact(
         request: ProseViewerRequest,
-        widthPoints: CGFloat,
+        widthPixels: Int,
+        scale: CGFloat,
+        error: ProseViewerError
+    ) -> PreparedProseLayout {
+        let key = errorLayoutKey(request: request, widthPixels: widthPixels, scale: scale)
+        let width = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
+        return (try? layoutCache.value(for: key) {
+            self.errorArtifact(key: key, width: width, error: error)
+        }) ?? errorArtifact(key: key, width: width, error: error)
+    }
+
+    private func errorLayoutKey(
+        request: ProseViewerRequest,
+        widthPixels: Int,
+        scale: CGFloat
+    ) -> ProseLayoutKey {
+        ProseLayoutKey(
+            semanticKey: "error:" + request.compiledCacheKey,
+            widthPixels: widthPixels,
+            themeDigest: request.themeDigest,
+            nativeFontRevision: request.nativeFontRevision,
+            fontEnvironmentRevision: request.fontEnvironmentRevision,
+            displayScale: scale,
+            attachmentRevision: request.attachmentRevision,
+            generationIdentity: request.generationIdentity
+        )
+    }
+
+    private func invalidWidthArtifact(
+        request: ProseViewerRequest,
         scale: CGFloat,
         error: ProseViewerError
     ) -> PreparedProseLayout {
         let safeScale = scale.isFinite && scale > 0 ? scale : 1
-        let safeWidth = widthPoints.isFinite && widthPoints > 0 ? widthPoints : 0
-        let key = ProseLayoutKey(
-            semanticKey: "error:" + request.compiledCacheKey,
-            widthPixels: Int((safeWidth * safeScale).rounded()),
-            themeDigest: request.themeDigest,
-            nativeFontRevision: request.nativeFontRevision,
-            fontEnvironmentRevision: request.fontEnvironmentRevision,
-            displayScale: safeScale,
-            attachmentRevision: request.attachmentRevision,
-            generationIdentity: request.generationIdentity
+        return errorArtifact(
+            key: errorLayoutKey(request: request, widthPixels: 0, scale: safeScale),
+            width: 0,
+            error: error
         )
-        return .error(key: key, width: safeWidth, error: error)
     }
 
     private func preparedDocument(request: ProseViewerRequest) throws -> ViewerDocument {

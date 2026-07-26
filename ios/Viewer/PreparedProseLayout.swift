@@ -1,6 +1,31 @@
 import CoreText
 import UIKit
 
+/// Validates the physical-width identity before it crosses into an integer key.
+enum ProseLayoutMetrics {
+    static func widthPixels(widthPoints: CGFloat, scale: CGFloat) -> Int? {
+        guard widthPoints.isFinite, widthPoints > 0, scale.isFinite, scale > 0 else {
+            return nil
+        }
+        let physicalWidth = widthPoints * scale
+        guard physicalWidth.isFinite, physicalWidth > 0 else { return nil }
+        let roundedWidth = physicalWidth.rounded()
+        // `CGFloat(Int.max)` rounds up to 2^63 on 64-bit platforms. Its predecessor
+        // is the largest floating-point value that remains safe to convert to `Int`.
+        guard roundedWidth.isFinite,
+              roundedWidth > 0,
+              roundedWidth <= CGFloat(Int.max).nextDown
+        else {
+            return nil
+        }
+        return Int(roundedWidth)
+    }
+
+    static func canonicalWidth(widthPixels: Int, scale: CGFloat) -> CGFloat {
+        CGFloat(widthPixels) / scale
+    }
+}
+
 struct ProseLayoutKey: Hashable {
     let semanticKey: String
     let widthPixels: Int

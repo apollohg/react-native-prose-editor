@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -71,23 +72,44 @@ uint64_t ScaleBits(CGFloat scale) {
   return bits;
 }
 
+std::optional<long long> RoundedWidthPixels(CGFloat width, CGFloat scale) {
+  const double physicalWidth = static_cast<double>(width) * static_cast<double>(scale);
+  if (!std::isfinite(physicalWidth) || physicalWidth <= 0) {
+    return std::nullopt;
+  }
+  const double roundedWidth = std::round(physicalWidth);
+  const double largestConvertible = std::nextafter(
+      static_cast<double>(std::numeric_limits<long long>::max()), 0.0);
+  if (!std::isfinite(roundedWidth) || roundedWidth <= 0 ||
+      roundedWidth > largestConvertible) {
+    return std::nullopt;
+  }
+  return static_cast<long long>(roundedWidth);
+}
+
+uint64_t FontEnvironmentRevision(const PreparedProseViewerProps &props) {
+  const double value = static_cast<double>(props.fontEnvironmentRevision);
+  const double largestConvertible = std::nextafter(
+      static_cast<double>(std::numeric_limits<uint64_t>::max()), 0.0);
+  return std::isfinite(value) && value > 0 && value <= largestConvertible
+      ? static_cast<uint64_t>(value)
+      : 0;
+}
+
 std::string MeasurementIdentity(
     const PreparedProseViewerProps &props,
     const PreparedProseViewerState *state,
     CGFloat width,
     CGFloat scale) {
-  const auto widthPixels = std::isfinite(width) && width > 0 &&
-          std::isfinite(scale) && scale > 0
-      ? static_cast<long long>(std::llround(width * scale))
-      : 0;
-  return GenerationIdentity(props, state) + "\x1f" + std::to_string(widthPixels) +
+  const auto widthPixels = RoundedWidthPixels(width, scale);
+  return GenerationIdentity(props, state) + "\x1f" +
+      (widthPixels ? std::to_string(*widthPixels) : "invalid") +
       "\x1f" + std::to_string(ScaleBits(scale));
 }
 
 bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   const auto contentFrame = layoutMetrics.getContentFrame();
-  return std::isfinite(contentFrame.size.width) && contentFrame.size.width > 0 &&
-      std::isfinite(layoutMetrics.pointScaleFactor) && layoutMetrics.pointScaleFactor > 0;
+  return RoundedWidthPixels(contentFrame.size.width, layoutMetrics.pointScaleFactor).has_value();
 }
 
 } // namespace
@@ -151,6 +173,7 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   _layoutMetrics = layoutMetrics;
   _drawingView.frame = RCTCGRectFromRect(layoutMetrics.getContentFrame());
   if (!HasUsableLayoutMetrics(layoutMetrics)) {
+    _hasReceivedUsableLayoutMetrics = NO;
     return;
   }
   _hasReceivedUsableLayoutMetrics = YES;
@@ -170,14 +193,16 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
 
 - (void)beginNewGeneration
 {
-  [_drawingView installWithLayout:nil];
+  // Keep the last complete artifact visible while a new generation has no
+  // representable layout metrics. `installMeasuredArtifact` clears it only
+  // after independently validating the replacement measurement.
   _installedMeasurementIdentity = nil;
   _reportedErrorGeneration = nil;
 }
 
 - (void)installMeasuredArtifact
 {
-  if (!_viewerProps) {
+  if (!_viewerProps || !HasUsableLayoutMetrics(_layoutMetrics)) {
     return;
   }
   const auto &props = *_viewerProps;
@@ -201,9 +226,7 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
                   collapsesWhenEmpty:props.collapsesWhenEmpty
                    attachmentRevision:Revision(_viewerState.get(), true)
                    nativeFontRevision:Revision(_viewerState.get(), false)
-              fontEnvironmentRevision:(props.fontEnvironmentRevision > 0
-                  ? static_cast<uint64_t>(props.fontEnvironmentRevision)
-                  : 0)
+              fontEnvironmentRevision:FontEnvironmentRevision(props)
                           widthPoints:width
                                  scale:scale];
   if (!installed) {

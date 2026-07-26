@@ -17,17 +17,24 @@ final class CoreTextProseLayoutEngine {
         widthPoints: CGFloat,
         displayScale: CGFloat
     ) throws -> PreparedProseLayout {
-        guard widthPoints.isFinite, widthPoints > 0, displayScale.isFinite, displayScale > 0 else {
+        guard let widthPixels = ProseLayoutMetrics.widthPixels(
+            widthPoints: widthPoints,
+            scale: displayScale
+        ) else {
             return .error(
                 key: key,
-                width: max(0, widthPoints.isFinite ? widthPoints : 0),
+                width: 0,
                 error: .hostContract(message: "A finite positive width is required for prose measurement.")
             )
         }
+        let canonicalWidth = ProseLayoutMetrics.canonicalWidth(
+            widthPixels: widthPixels,
+            scale: displayScale
+        )
         if document.isEmpty {
             return PreparedProseLayout(
                 key: key,
-                size: CGSize(width: widthPoints, height: 0),
+                size: CGSize(width: canonicalWidth, height: 0),
                 blocks: [],
                 retainedBytes: document.retainedBytes
             )
@@ -42,14 +49,14 @@ final class CoreTextProseLayoutEngine {
             let textLength = attributed.length
             var location = 0
             while location < textLength {
-                let count = max(1, CTTypesetterSuggestLineBreak(typesetter, location, widthPoints))
+                let count = max(1, CTTypesetterSuggestLineBreak(typesetter, location, canonicalWidth))
                 let line = CTTypesetterCreateLine(typesetter, CFRange(location: location, length: count))
                 var ascent: CGFloat = 0
                 var descent: CGFloat = 0
                 var leading: CGFloat = 0
                 let lineWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
                 let lineHeight = ascent + descent + leading
-                let bounds = CGRect(x: 0, y: cursorY, width: min(widthPoints, lineWidth), height: lineHeight)
+                let bounds = CGRect(x: 0, y: cursorY, width: min(canonicalWidth, lineWidth), height: lineHeight)
                 blocks.append(
                     PreparedProseBlock(
                         line: line,
@@ -66,7 +73,7 @@ final class CoreTextProseLayoutEngine {
         let pixelHeight = ceil(cursorY * displayScale)
         return PreparedProseLayout(
             key: key,
-            size: CGSize(width: widthPoints, height: pixelHeight / displayScale),
+            size: CGSize(width: canonicalWidth, height: pixelHeight / displayScale),
             blocks: blocks,
             retainedBytes: estimatedBytes
         )

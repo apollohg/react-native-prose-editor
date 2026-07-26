@@ -135,10 +135,14 @@ public final class ProseViewerView: UIView {
     @discardableResult
     private func preparedLayout(width: CGFloat, scale: CGFloat) -> PreparedProseLayout {
         guard let request else {
+            let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: width, scale: scale) ?? 0
+            let errorWidth = widthPixels > 0
+                ? ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
+                : 0
             let empty = PreparedProseLayout.error(
                 key: ProseLayoutKey(
                     semanticKey: "empty",
-                    widthPixels: Int((max(0, width.isFinite ? width : 0) * scale).rounded()),
+                    widthPixels: widthPixels,
                     themeDigest: "",
                     nativeFontRevision: 0,
                     fontEnvironmentRevision: 0,
@@ -146,18 +150,21 @@ public final class ProseViewerView: UIView {
                     attachmentRevision: 0,
                     generationIdentity: "empty"
                 ),
-                width: max(0, width.isFinite ? width : 0),
+                width: errorWidth,
                 error: .hostContract(message: "No prose viewer source has been applied.")
             )
             ownedLayout = empty
             return empty
         }
         if let pendingError {
-            let safeWidth = max(0, width.isFinite ? width : 0)
+            let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: width, scale: scale) ?? 0
+            let safeWidth = widthPixels > 0
+                ? ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
+                : 0
             let errorLayout = PreparedProseLayout.error(
                 key: ProseLayoutKey(
                     semanticKey: "error:" + request.compiledCacheKey,
-                    widthPixels: Int((safeWidth * scale).rounded()),
+                    widthPixels: widthPixels,
                     themeDigest: request.themeDigest,
                     nativeFontRevision: request.nativeFontRevision,
                     fontEnvironmentRevision: request.fontEnvironmentRevision,

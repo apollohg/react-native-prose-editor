@@ -1,8 +1,34 @@
 #include "PreparedProseViewerShadowNode.h"
 
 #include <cmath>
+#include <limits>
 
 namespace facebook::react {
+
+namespace {
+
+bool HasRepresentablePhysicalWidth(Float width, Float scale) {
+  const double physicalWidth = static_cast<double>(width) * static_cast<double>(scale);
+  if (!std::isfinite(physicalWidth) || physicalWidth <= 0) {
+    return false;
+  }
+  const double roundedWidth = std::round(physicalWidth);
+  const double largestConvertible = std::nextafter(
+      static_cast<double>(std::numeric_limits<long long>::max()), 0.0);
+  return std::isfinite(roundedWidth) && roundedWidth > 0 &&
+      roundedWidth <= largestConvertible;
+}
+
+uint64_t FontEnvironmentRevision(const PreparedProseViewerProps &props) {
+  const double value = static_cast<double>(props.fontEnvironmentRevision);
+  const double largestConvertible = std::nextafter(
+      static_cast<double>(std::numeric_limits<uint64_t>::max()), 0.0);
+  return std::isfinite(value) && value > 0 && value <= largestConvertible
+      ? static_cast<uint64_t>(value)
+      : 0;
+}
+
+} // namespace
 
 extern const char PreparedProseViewerComponentName[] = "PreparedProseViewer";
 
@@ -29,8 +55,8 @@ Size PreparedProseViewerShadowNode::measureContent(
     return {};
   }
 
-  const auto hasUsableMeasurement = std::isfinite(maximumWidth) && maximumWidth > 0 &&
-      std::isfinite(pointScaleFactor) && pointScaleFactor > 0;
+  const auto hasUsableMeasurement =
+      HasRepresentablePhysicalWidth(maximumWidth, pointScaleFactor);
   const auto effectiveWidth = hasUsableMeasurement
       ? std::round(maximumWidth * pointScaleFactor) / pointScaleFactor
       : maximumWidth;
@@ -43,9 +69,7 @@ Size PreparedProseViewerShadowNode::measureContent(
       pointScaleFactor,
       state.attachmentRevision,
       state.nativeFontRevision,
-      props.fontEnvironmentRevision > 0
-          ? static_cast<uint64_t>(props.fontEnvironmentRevision)
-          : 0);
+      FontEnvironmentRevision(props));
 }
 
 } // namespace facebook::react

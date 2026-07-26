@@ -37,7 +37,7 @@ final class PreparedProseLayoutCache {
         let result = Result(catching: build)
 
         condition.lock()
-        if case let .success(layout) = result, layout.error == nil {
+        if case let .success(layout) = result {
             completed[key] = layout
             retainedBytes += layout.retainedBytes
             touch(key)
