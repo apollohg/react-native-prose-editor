@@ -287,6 +287,165 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(drawingView.layout === mountedLayout)
     }
 
+    func testNegativeWidthAndScaleAreInvalidAndDoNotReplaceMountedArtifact() {
+        var preparations = 0
+        let registry = makeRegistry { document, key, width, scale in
+            preparations += 1
+            return try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let request = request()
+        let drawingView = PreparedProseDrawingView(frame: .zero)
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2)
+        XCTAssertTrue(
+            registry.installCachedLayout(
+                in: drawingView,
+                sourceKind: "json",
+                source: request.source.value as NSString,
+                configJSON: request.configuration.configJSON as NSString,
+                themeJSON: nil,
+                imagePolicyJSON: nil,
+                imagesEnabled: request.configuration.imagesEnabled,
+                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+                attachmentRevision: request.attachmentRevision,
+                nativeFontRevision: request.nativeFontRevision,
+                fontEnvironmentRevision: request.fontEnvironmentRevision,
+                widthPoints: 160,
+                scale: 2
+            )
+        )
+        guard let mountedLayout = drawingView.layout else {
+            return XCTFail("A valid measurement should mount its cached artifact.")
+        }
+
+        let invalidMeasurement = registry.measure(request: request, widthPoints: -160, scale: -2)
+
+        XCTAssertNil(ProseLayoutMetrics.widthPixels(widthPoints: -160, scale: -2))
+        XCTAssertEqual(invalidMeasurement.error?.code, "INVALID_WIDTH")
+        XCTAssertFalse(
+            registry.installCachedLayout(
+                in: drawingView,
+                sourceKind: "json",
+                source: request.source.value as NSString,
+                configJSON: request.configuration.configJSON as NSString,
+                themeJSON: nil,
+                imagePolicyJSON: nil,
+                imagesEnabled: request.configuration.imagesEnabled,
+                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+                attachmentRevision: request.attachmentRevision,
+                nativeFontRevision: request.nativeFontRevision,
+                fontEnvironmentRevision: request.fontEnvironmentRevision,
+                widthPoints: -160,
+                scale: -2
+            )
+        )
+        XCTAssertTrue(drawingView.layout === mountedLayout)
+        XCTAssertEqual(preparations, 1)
+    }
+
+    func testCompilerFailureIsPreparedOnceAndMountAcquiresItsErrorArtifact() {
+        var compilations = 0
+        let registry = PreparedProseLayoutRegistry(
+            compile: { _ in
+                compilations += 1
+                throw ProseViewerError.compiler(
+                    domain: "viewer",
+                    code: "MALFORMED_INPUT",
+                    message: "Malformed content"
+                )
+            }
+        )
+        let request = request()
+        let drawingView = PreparedProseDrawingView(frame: .zero)
+
+        let first = registry.measure(request: request, widthPoints: 160, scale: 2)
+        let second = registry.measure(request: request, widthPoints: 160, scale: 2)
+
+        XCTAssertEqual(first.error?.code, "MALFORMED_INPUT")
+        XCTAssertTrue(first === second)
+        XCTAssertEqual(compilations, 1)
+        XCTAssertTrue(
+            registry.installCachedLayout(
+                in: drawingView,
+                sourceKind: "json",
+                source: request.source.value as NSString,
+                configJSON: request.configuration.configJSON as NSString,
+                themeJSON: nil,
+                imagePolicyJSON: nil,
+                imagesEnabled: request.configuration.imagesEnabled,
+                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+                attachmentRevision: request.attachmentRevision,
+                nativeFontRevision: request.nativeFontRevision,
+                fontEnvironmentRevision: request.fontEnvironmentRevision,
+                widthPoints: 160,
+                scale: 2
+            )
+        )
+        XCTAssertTrue(drawingView.layout === first)
+        XCTAssertEqual(compilations, 1)
+    }
+
+    func testOversizedMeasurementLeaseSurvivesEvictionUntilFabricMount() {
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: 2
+                )
+            }
+        )
+        let request = request()
+        let drawingView = PreparedProseDrawingView(frame: .zero)
+
+        let measured = registry.measure(request: request, widthPoints: 160, scale: 2)
+
+        XCTAssertEqual(registry.preparedLayoutCacheCountForTesting, 0)
+        XCTAssertTrue(
+            registry.installCachedLayout(
+                in: drawingView,
+                sourceKind: "json",
+                source: request.source.value as NSString,
+                configJSON: request.configuration.configJSON as NSString,
+                themeJSON: nil,
+                imagePolicyJSON: nil,
+                imagesEnabled: request.configuration.imagesEnabled,
+                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+                attachmentRevision: request.attachmentRevision,
+                nativeFontRevision: request.nativeFontRevision,
+                fontEnvironmentRevision: request.fontEnvironmentRevision,
+                widthPoints: 160,
+                scale: 2
+            )
+        )
+        XCTAssertTrue(drawingView.layout === measured)
+        XCTAssertFalse(
+            registry.installCachedLayout(
+                in: PreparedProseDrawingView(frame: .zero),
+                sourceKind: "json",
+                source: request.source.value as NSString,
+                configJSON: request.configuration.configJSON as NSString,
+                themeJSON: nil,
+                imagePolicyJSON: nil,
+                imagesEnabled: request.configuration.imagesEnabled,
+                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+                attachmentRevision: request.attachmentRevision,
+                nativeFontRevision: request.nativeFontRevision,
+                fontEnvironmentRevision: request.fontEnvironmentRevision,
+                widthPoints: 160,
+                scale: 2
+            )
+        )
+    }
+
     func testRevisionVariantsUseDistinctPreparedArtifacts() {
         var preparations = 0
         let registry = makeRegistry { document, key, width, scale in

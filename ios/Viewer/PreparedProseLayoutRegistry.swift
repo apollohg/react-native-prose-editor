@@ -20,8 +20,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private var compiledDocuments: [String: ViewerDocument] = [:]
     private var compiledAccessOrder: [String] = []
     private var compiledInFlight: [String: Compilation] = [:]
+    private var compilationFailures: [String: Error] = [:]
+    private var compilationFailureAccessOrder: [String] = []
     private var compiledRetainedBytes = 0
     private let compiledByteBudget: Int
+    private let compilationFailureBudget = 128
     private let layoutCache: PreparedProseLayoutCache
     private let compile: DocumentCompiler
     private let prepare: LayoutPreparation
@@ -67,6 +70,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
             compiledCondition.unlock()
             return document
         }
+        if let failure = compilationFailures[cacheKey] {
+            touchCompilationFailure(cacheKey)
+            compiledCondition.unlock()
+            throw failure
+        }
         if let compilation = compiledInFlight[cacheKey] {
             while compilation.result == nil { compiledCondition.wait() }
             let result = compilation.result!
@@ -95,6 +103,10 @@ public final class PreparedProseLayoutRegistry: NSObject {
             compiledRetainedBytes += document.retainedBytes
             touchCompiled(cacheKey)
             trimCompiledToBudget()
+        } else if case let .failure(error) = result {
+            compilationFailures[cacheKey] = error
+            touchCompilationFailure(cacheKey)
+            trimCompilationFailuresToBudget()
         }
         compilation.result = result
         compiledInFlight.removeValue(forKey: cacheKey)
@@ -103,7 +115,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
         return try result.get()
     }
 
-    func measure(request: ProseViewerRequest, widthPoints: CGFloat, scale: CGFloat) -> PreparedProseLayout {
+    func measure(
+        request: ProseViewerRequest,
+        widthPoints: CGFloat,
+        scale: CGFloat,
+        leaseForFabricMount: Bool = true
+    ) -> PreparedProseLayout {
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
             return invalidWidthArtifact(
                 request: request,
@@ -115,7 +132,10 @@ public final class PreparedProseLayoutRegistry: NSObject {
         do {
             let document = try preparedDocument(request: request)
             let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
-            return try layoutCache.value(for: key) {
+            let layout = try layoutCache.value(
+                for: key,
+                retainForFabricMount: leaseForFabricMount
+            ) {
                 self.lock.lock()
                 self.layoutPreparationCount += 1
                 self.lock.unlock()
@@ -131,20 +151,25 @@ public final class PreparedProseLayoutRegistry: NSObject {
                     )
                 }
             }
+            return layout
         } catch let error as ProseViewerError {
-            return cachedErrorArtifact(
+            let layout = cachedErrorArtifact(
                 request: request,
                 widthPixels: widthPixels,
                 scale: scale,
-                error: error
+                error: error,
+                retainForFabricMount: leaseForFabricMount
             )
+            return layout
         } catch {
-            return cachedErrorArtifact(
+            let layout = cachedErrorArtifact(
                 request: request,
                 widthPixels: widthPixels,
                 scale: scale,
-                error: .layout(message: String(describing: error))
+                error: .layout(message: String(describing: error)),
+                retainForFabricMount: leaseForFabricMount
             )
+            return layout
         }
     }
 
@@ -209,6 +234,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
             return false
         }
+        if let artifact = layoutCache.acquireLeasedValue(
+            generationIdentity: request.generationIdentity,
+            widthPixels: widthPixels,
+            displayScale: scale
+        ) {
+            drawingView.install(layout: artifact)
+            return true
+        }
         do {
             let document = try preparedDocument(request: request)
             let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
@@ -228,6 +261,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.lock()
         compiledDocuments.removeAll()
         compiledAccessOrder.removeAll()
+        compilationFailures.removeAll()
+        compilationFailureAccessOrder.removeAll()
         compiledRetainedBytes = 0
         compiledCondition.unlock()
     }
@@ -262,11 +297,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
         request: ProseViewerRequest,
         widthPixels: Int,
         scale: CGFloat,
-        error: ProseViewerError
+        error: ProseViewerError,
+        retainForFabricMount: Bool
     ) -> PreparedProseLayout {
         let key = errorLayoutKey(request: request, widthPixels: widthPixels, scale: scale)
         let width = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
-        return (try? layoutCache.value(for: key) {
+        return (try? layoutCache.value(for: key, retainForFabricMount: retainForFabricMount) {
             self.errorArtifact(key: key, width: width, error: error)
         }) ?? errorArtifact(key: key, width: width, error: error)
     }
@@ -352,6 +388,19 @@ public final class PreparedProseLayoutRegistry: NSObject {
             if let removed = compiledDocuments.removeValue(forKey: oldest) {
                 compiledRetainedBytes -= removed.retainedBytes
             }
+        }
+    }
+
+    private func touchCompilationFailure(_ cacheKey: String) {
+        compilationFailureAccessOrder.removeAll { $0 == cacheKey }
+        compilationFailureAccessOrder.append(cacheKey)
+    }
+
+    private func trimCompilationFailuresToBudget() {
+        while compilationFailures.count > compilationFailureBudget,
+              let oldest = compilationFailureAccessOrder.first {
+            compilationFailureAccessOrder.removeFirst()
+            compilationFailures.removeValue(forKey: oldest)
         }
     }
 

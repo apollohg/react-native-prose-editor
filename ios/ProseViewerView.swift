@@ -180,7 +180,12 @@ public final class ProseViewerView: UIView {
             reportErrorIfNeeded(pendingError)
             return errorLayout
         }
-        let layout = layoutRegistry.measure(request: request, widthPoints: width, scale: scale)
+        let layout = layoutRegistry.measure(
+            request: request,
+            widthPoints: width,
+            scale: scale,
+            leaseForFabricMount: false
+        )
         ownedLayout = layout
         drawingView.layout = layout
         reportErrorIfNeeded(layout.error)

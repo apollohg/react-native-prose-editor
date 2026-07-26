@@ -73,6 +73,10 @@ uint64_t ScaleBits(CGFloat scale) {
 }
 
 std::optional<long long> RoundedWidthPixels(CGFloat width, CGFloat scale) {
+  if (!std::isfinite(width) || width <= 0 || !std::isfinite(scale) ||
+      scale <= 0) {
+    return std::nullopt;
+  }
   const double physicalWidth = static_cast<double>(width) * static_cast<double>(scale);
   if (!std::isfinite(physicalWidth) || physicalWidth <= 0) {
     return std::nullopt;

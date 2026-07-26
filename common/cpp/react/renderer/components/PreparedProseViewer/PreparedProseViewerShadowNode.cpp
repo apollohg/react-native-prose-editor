@@ -8,6 +8,10 @@ namespace facebook::react {
 namespace {
 
 bool HasRepresentablePhysicalWidth(Float width, Float scale) {
+  if (!std::isfinite(width) || width <= 0 || !std::isfinite(scale) ||
+      scale <= 0) {
+    return false;
+  }
   const double physicalWidth = static_cast<double>(width) * static_cast<double>(scale);
   if (!std::isfinite(physicalWidth) || physicalWidth <= 0) {
     return false;
