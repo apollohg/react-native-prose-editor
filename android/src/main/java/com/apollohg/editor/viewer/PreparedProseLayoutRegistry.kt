@@ -1,0 +1,244 @@
+package com.apollohg.editor.viewer
+
+import com.apollohg.editor.ProseViewerError
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+
+/** Shared, thread-safe compiler and prepared-layout registry for View and Fabric hosts. */
+internal class PreparedProseLayoutRegistry(
+    private val compiler: DocumentCompiler = ::compileWithRust,
+    private val layoutEngine: AndroidProseLayoutEngine = StaticLayoutAndroidProseLayoutEngine(),
+    byteBudget: Long = 32L * 1024L * 1024L,
+    private val compiledByteBudget: Long = 8L * 1024L * 1024L,
+    private val compilationFailureBudget: Int = 128,
+) {
+    private sealed interface Compilation {
+        data class Document(val value: ViewerDocument) : Compilation
+        data class Failure(val error: ProseViewerError) : Compilation
+    }
+
+    private val compilerLock = Any()
+    private val compiled = LinkedHashMap<String, ViewerDocument>(16, 0.75f, true)
+    private val compilationFailures = LinkedHashMap<String, ProseViewerError>(16, 0.75f, true)
+    private val compilationInFlight = ConcurrentHashMap<String, CompletableFuture<Compilation>>()
+    private val documentsByFabricGeneration = mutableMapOf<FabricGenerationToken, ViewerDocument>()
+    private val failuresByFabricGeneration = mutableMapOf<FabricGenerationToken, ProseViewerError>()
+    private val layoutCache = PreparedProseLayoutCache(byteBudget = byteBudget)
+    private var compiledRetainedBytes = 0L
+
+    @Volatile internal var layoutPreparationCount = 0
+        private set
+
+    fun compileDocument(request: ProseViewerRequest): ViewerDocument {
+        val cacheKey = request.compiledCacheKey
+        synchronized(compilerLock) {
+            compiled[cacheKey]?.let { return it }
+            compilationFailures[cacheKey]?.let { throw it }
+        }
+        val fresh = CompletableFuture<Compilation>()
+        val existing = compilationInFlight.putIfAbsent(cacheKey, fresh)
+        if (existing != null) return existing.join().documentOrThrow()
+        val result = try {
+            Compilation.Document(compiler(request).also { document ->
+                if (!document.semanticKey.matches(Regex("[0-9a-f]{64}"))) {
+                    throw ProseViewerError.compiler(
+                        "viewer",
+                        "INVALID_SEMANTIC_KEY",
+                        "The compiler returned an invalid semantic key.",
+                    )
+                }
+            })
+        } catch (error: ProseViewerError) {
+            Compilation.Failure(error)
+        } catch (throwable: Throwable) {
+            Compilation.Failure(ProseViewerError.layout(throwable.message ?: "Document compilation failed."))
+        }
+        synchronized(compilerLock) {
+            when (result) {
+                is Compilation.Document -> {
+                    compiled[cacheKey] = result.value
+                    compiledRetainedBytes += result.value.retainedBytes
+                    trimCompiledLocked()
+                }
+                is Compilation.Failure -> {
+                    compilationFailures[cacheKey] = result.error
+                    while (compilationFailures.size > compilationFailureBudget) {
+                        compilationFailures.remove(compilationFailures.entries.first().key)
+                    }
+                }
+            }
+        }
+        fresh.complete(result)
+        compilationInFlight.remove(cacheKey, fresh)
+        return result.documentOrThrow()
+    }
+
+    fun measure(
+        request: ProseViewerRequest,
+        widthPx: Int,
+        density: Float,
+        fabricSurface: FabricSurfaceToken? = null,
+        compiledDocument: ViewerDocument? = null,
+    ): PreparedProseLayout {
+        if (!isValidMeasurement(widthPx, density)) {
+            fabricSurface?.let(::releaseFabricSurface)
+            return invalidWidthArtifact(request)
+        }
+        val densityBits = density.toRawBits().toLong()
+        val generation = fabricSurface?.let { FabricGenerationToken(it, request.generationIdentity) }
+        return try {
+            val document = preparedDocument(request, generation, compiledDocument)
+            val key = layoutKey(document, request, widthPx, densityBits)
+            layoutCache.value(key, fabricSurface) {
+                layoutPreparationCount += 1
+                try {
+                    layoutEngine.prepare(
+                        document,
+                        key,
+                        widthPx,
+                        density,
+                        request.configuration.collapsesWhenEmpty,
+                    )
+                } catch (error: ProseViewerError) {
+                    PreparedProseLayout.error(key, widthPx, error)
+                } catch (throwable: Throwable) {
+                    PreparedProseLayout.error(key, widthPx, ProseViewerError.layout(throwable.message ?: "Layout preparation failed."))
+                }
+            }
+        } catch (error: ProseViewerError) {
+            cachedErrorArtifact(request, widthPx, densityBits, error, fabricSurface)
+        }
+    }
+
+    /** Mount acquisition intentionally cannot invoke Rust or StaticLayout.Builder. */
+    fun acquireForFabricMount(
+        surface: FabricSurfaceToken,
+        request: ProseViewerRequest,
+        widthPx: Int,
+        density: Float,
+    ): PreparedProseLayout? {
+        if (!isValidMeasurement(widthPx, density)) return null
+        return layoutCache.acquireForFabricMount(
+            surface,
+            request.generationIdentity,
+            widthPx,
+            density.toRawBits().toLong(),
+        )
+    }
+
+    fun releaseFabricGeneration(generation: FabricGenerationToken) {
+        layoutCache.releaseLease(generation.surface, generation.generationIdentity)
+        synchronized(compilerLock) {
+            documentsByFabricGeneration.remove(generation)
+            failuresByFabricGeneration.remove(generation)
+        }
+    }
+
+    fun releaseFabricSurface(surface: FabricSurfaceToken) {
+        layoutCache.releaseLease(surface)
+        synchronized(compilerLock) {
+            documentsByFabricGeneration.keys.removeAll { it.surface == surface }
+            failuresByFabricGeneration.keys.removeAll { it.surface == surface }
+        }
+    }
+
+    fun releaseFabricMountMiss(generation: FabricGenerationToken) = releaseFabricGeneration(generation)
+
+    fun didReceiveMemoryWarning() {
+        layoutCache.removeAllUnmounted()
+        synchronized(compilerLock) {
+            compiled.clear()
+            compilationFailures.clear()
+            documentsByFabricGeneration.clear()
+            failuresByFabricGeneration.clear()
+            compiledRetainedBytes = 0
+        }
+    }
+
+    internal val preparedLayoutCacheCountForTesting: Int get() = layoutCache.completedCountForTesting
+    internal val layoutRetainedBytesForTesting: Long get() = layoutCache.retainedBytesForTesting
+
+    private fun preparedDocument(
+        request: ProseViewerRequest,
+        generation: FabricGenerationToken?,
+        suppliedDocument: ViewerDocument?,
+    ): ViewerDocument {
+        if (generation != null) synchronized(compilerLock) {
+            documentsByFabricGeneration.keys.removeAll { it.surface == generation.surface && it != generation }
+            failuresByFabricGeneration.keys.removeAll { it.surface == generation.surface && it != generation }
+            documentsByFabricGeneration[generation]?.let { return it }
+            failuresByFabricGeneration[generation]?.let { throw it }
+        }
+        return try {
+            val document = suppliedDocument ?: compileDocument(request)
+            if (generation != null) synchronized(compilerLock) { documentsByFabricGeneration[generation] = document }
+            document
+        } catch (error: ProseViewerError) {
+            if (generation != null) synchronized(compilerLock) { failuresByFabricGeneration[generation] = error }
+            throw error
+        }
+    }
+
+    private fun cachedErrorArtifact(
+        request: ProseViewerRequest,
+        widthPx: Int,
+        densityBits: Long,
+        error: ProseViewerError,
+        fabricSurface: FabricSurfaceToken?,
+    ): PreparedProseLayout {
+        val key = ProseLayoutKey(
+            semanticKey = "error:${request.compiledCacheKey}",
+            widthPx = widthPx,
+            themeDigest = request.themeDigest,
+            fontRevision = request.nativeFontRevision xor request.fontEnvironmentRevision,
+            densityBits = densityBits,
+            attachmentRevision = request.attachmentRevision,
+            generationIdentity = request.generationIdentity,
+        )
+        return layoutCache.value(key, fabricSurface) { PreparedProseLayout.error(key, widthPx, error) }
+    }
+
+    private fun invalidWidthArtifact(request: ProseViewerRequest): PreparedProseLayout {
+        val key = ProseLayoutKey(
+            semanticKey = "error:${request.compiledCacheKey}",
+            widthPx = 0,
+            themeDigest = request.themeDigest,
+            fontRevision = request.nativeFontRevision xor request.fontEnvironmentRevision,
+            densityBits = 0,
+            attachmentRevision = request.attachmentRevision,
+            generationIdentity = request.generationIdentity,
+        )
+        return PreparedProseLayout.error(key, 0, ProseViewerError.invalidWidth())
+    }
+
+    private fun layoutKey(document: ViewerDocument, request: ProseViewerRequest, widthPx: Int, densityBits: Long) =
+        ProseLayoutKey(
+            semanticKey = document.semanticKey,
+            widthPx = widthPx,
+            themeDigest = request.themeDigest,
+            fontRevision = request.nativeFontRevision xor request.fontEnvironmentRevision,
+            densityBits = densityBits,
+            attachmentRevision = request.attachmentRevision,
+            generationIdentity = request.generationIdentity,
+        )
+
+    private fun trimCompiledLocked() {
+        while (compiledRetainedBytes > compiledByteBudget && compiled.isNotEmpty()) {
+            val oldest = compiled.entries.first()
+            compiled.remove(oldest.key)
+            compiledRetainedBytes -= oldest.value.retainedBytes
+        }
+    }
+
+    private fun Compilation.documentOrThrow(): ViewerDocument = when (this) {
+        is Compilation.Document -> value
+        is Compilation.Failure -> throw error
+    }
+
+    private fun isValidMeasurement(widthPx: Int, density: Float): Boolean =
+        widthPx > 0 && density.isFinite() && density > 0f
+
+    companion object {
+        val shared = PreparedProseLayoutRegistry()
+    }
+}

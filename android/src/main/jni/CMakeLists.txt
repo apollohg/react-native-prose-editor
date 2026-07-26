@@ -32,6 +32,10 @@ target_include_directories(
   ${LIB_ANDROID_GENERATED_COMPONENTS_DIR}
 )
 
+# Keep the hand-written Android Fabric measurement adapter in the existing
+# codegen target so autolinking still supplies the generated provider and
+# descriptor work from Task 2.
+
 target_link_libraries(
   ${LIB_TARGET_NAME}
   fbjni

@@ -1,0 +1,253 @@
+package com.apollohg.editor.viewer
+
+import android.content.Context
+import com.apollohg.editor.ProseViewerConfiguration
+import com.apollohg.editor.ProseViewerError
+import com.apollohg.editor.ProseViewerSource
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.ReactContext
+import com.facebook.react.module.annotations.ReactModule
+import com.facebook.react.uimanager.BaseViewManager
+import com.facebook.react.uimanager.LayoutShadowNode
+import com.facebook.react.uimanager.ThemedReactContext
+import com.facebook.react.uimanager.UIManagerHelper
+import com.facebook.react.uimanager.ViewManagerDelegate
+import com.facebook.react.viewmanagers.PreparedProseViewerManagerDelegate
+import com.facebook.react.viewmanagers.PreparedProseViewerManagerInterface
+import com.facebook.yoga.YogaMeasureMode
+import com.facebook.yoga.YogaMeasureOutput
+import java.util.WeakHashMap
+import kotlin.math.roundToInt
+
+/** Fabric ViewManager; Yoga measurement creates the artifact and mounting only acquires it. */
+@ReactModule(name = PreparedProseViewerManager.REACT_CLASS)
+internal class PreparedProseViewerManager :
+    BaseViewManager<PreparedProseDrawingView, LayoutShadowNode>(),
+    PreparedProseViewerManagerInterface<PreparedProseDrawingView> {
+    private val delegate: ViewManagerDelegate<PreparedProseDrawingView> =
+        PreparedProseViewerManagerDelegate(this)
+    private val states = WeakHashMap<PreparedProseDrawingView, ViewState>()
+
+    override fun getName(): String = REACT_CLASS
+
+    override fun getDelegate(): ViewManagerDelegate<PreparedProseDrawingView> = delegate
+
+    override fun createViewInstance(context: ThemedReactContext): PreparedProseDrawingView =
+        PreparedProseDrawingView(context).also { view ->
+            states[view] = ViewState()
+            view.onUsableMetricsChanged = { installCachedLayout(view) }
+        }
+
+    override fun createShadowNodeInstance(): LayoutShadowNode = LayoutShadowNode()
+
+    override fun getShadowNodeClass(): Class<LayoutShadowNode> = LayoutShadowNode::class.java
+
+    override fun updateExtraData(root: PreparedProseDrawingView, extraData: Any?) = Unit
+
+    override fun onDropViewInstance(view: PreparedProseDrawingView) {
+        states.remove(view)?.generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
+        view.onUsableMetricsChanged = null
+        view.install(null)
+        super.onDropViewInstance(view)
+    }
+
+    override fun onSurfaceStopped(surfaceId: Int) {
+        val released = states.values.mapNotNull { state ->
+            state.generation?.takeIf { it.surface.surfaceId == surfaceId }
+        }
+        released.forEach(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
+        super.onSurfaceStopped(surfaceId)
+    }
+
+    override fun setSourceKind(view: PreparedProseDrawingView, value: String?) =
+        update(view) { sourceKind = value ?: "json" }
+
+    override fun setSource(view: PreparedProseDrawingView, value: String?) =
+        update(view) { source = value.orEmpty() }
+
+    override fun setConfigJson(view: PreparedProseDrawingView, value: String?) =
+        update(view) { configJson = value ?: "{}" }
+
+    override fun setThemeJson(view: PreparedProseDrawingView, value: String?) =
+        update(view) { themeJson = value }
+
+    override fun setImagePolicyJson(view: PreparedProseDrawingView, value: String?) =
+        update(view) { imagePolicyJson = value }
+
+    override fun setImagesEnabled(view: PreparedProseDrawingView, value: Boolean) =
+        update(view) { imagesEnabled = value }
+
+    override fun setCollapsesWhenEmpty(view: PreparedProseDrawingView, value: Boolean) =
+        update(view) { collapsesWhenEmpty = value }
+
+    override fun setEnableLinkTaps(view: PreparedProseDrawingView, value: Boolean) = Unit
+
+    override fun setFontEnvironmentRevision(view: PreparedProseDrawingView, value: Int) =
+        update(view) { fontEnvironmentRevision = value.coerceAtLeast(0).toLong() }
+
+    override fun measure(
+        context: Context,
+        localData: ReadableMap?,
+        props: ReadableMap?,
+        state: ReadableMap?,
+        width: Float,
+        widthMode: YogaMeasureMode,
+        height: Float,
+        heightMode: YogaMeasureMode,
+        attachmentsPositions: FloatArray?,
+    ): Long {
+        val request = requestFrom(props, state)
+        val density = context.resources.displayMetrics.density
+        val widthPx = widthToPixels(width, density)
+        val surface = localData?.let(::surfaceToken)
+        val artifact = if (
+            (widthMode != YogaMeasureMode.EXACTLY && widthMode != YogaMeasureMode.AT_MOST) ||
+            widthPx == null
+        ) {
+            PreparedProseLayoutRegistry.shared.measure(request, 0, density, surface)
+        } else {
+            PreparedProseLayoutRegistry.shared.measure(request, widthPx, density, surface)
+        }
+        val measuredWidth = artifact.widthPx / density
+        val intrinsicHeight = artifact.heightPx / density
+        val measuredHeight = when (heightMode) {
+            YogaMeasureMode.EXACTLY -> height
+            YogaMeasureMode.AT_MOST -> minOf(intrinsicHeight, height)
+            else -> intrinsicHeight
+        }
+        return YogaMeasureOutput.make(measuredWidth, measuredHeight)
+    }
+
+    private fun update(view: PreparedProseDrawingView, mutation: ViewState.() -> Unit) {
+        val state = states.getOrPut(view, ::ViewState)
+        val previous = state.generation
+        state.mutation()
+        val request = state.request()
+        val surface = FabricSurfaceToken(UIManagerHelper.getSurfaceId(view), view.id)
+        val next = FabricGenerationToken(surface, request.generationIdentity)
+        if (previous != null && previous != next) {
+            PreparedProseLayoutRegistry.shared.releaseFabricGeneration(previous)
+            view.install(null)
+        }
+        state.generation = next
+        if (previous != next) state.reportedGenerationIdentity = null
+        installCachedLayout(view)
+    }
+
+    private fun installCachedLayout(view: PreparedProseDrawingView) {
+        val state = states[view] ?: return
+        val request = state.request()
+        val surfaceId = UIManagerHelper.getSurfaceId(view)
+        if (surfaceId < 0 || view.id <= 0 || view.width <= 0) return
+        val density = view.resources.displayMetrics.density
+        val widthPx = widthToPixels(view.width / density, density) ?: return
+        val surface = FabricSurfaceToken(surfaceId, view.id)
+        val generation = FabricGenerationToken(surface, request.generationIdentity)
+        if (state.generation != generation) {
+            state.generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
+            state.generation = generation
+        }
+        val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(surface, request, widthPx, density)
+        if (artifact == null) {
+            PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation)
+            return
+        }
+        view.install(artifact)
+        artifact.error?.let { dispatchError(view, request, it) }
+    }
+
+    private fun dispatchError(
+        view: PreparedProseDrawingView,
+        request: ProseViewerRequest,
+        error: ProseViewerError,
+    ) {
+        val state = states[view] ?: return
+        if (state.reportedGenerationIdentity == request.generationIdentity) return
+        state.reportedGenerationIdentity = request.generationIdentity
+        val context = UIManagerHelper.getReactContext(view)
+        context.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java).receiveEvent(
+            view.id,
+            "topError",
+            Arguments.createMap().apply {
+                putString("domain", error.domain)
+                putString("code", error.code.value)
+                putString("message", error.message)
+                putBoolean("fatal", true)
+            },
+        )
+    }
+
+    private fun requestFrom(props: ReadableMap?, state: ReadableMap?): ProseViewerRequest {
+        val sourceKind = props?.stringOrNull("sourceKind") ?: "json"
+        val source = if (sourceKind == "html") {
+            ProseViewerSource.Html(props?.stringOrNull("source").orEmpty())
+        } else {
+            ProseViewerSource.Json(props?.stringOrNull("source").orEmpty())
+        }
+        return ProseViewerRequest(
+            source = source,
+            configuration = ProseViewerConfiguration(
+                configJson = props?.stringOrNull("configJson") ?: "{}",
+                themeJson = props?.stringOrNull("themeJson"),
+                imagePolicyJson = props?.stringOrNull("imagePolicyJson"),
+                imagesEnabled = props?.booleanOrDefault("imagesEnabled", true) ?: true,
+                collapsesWhenEmpty = props?.booleanOrDefault("collapsesWhenEmpty", true) ?: true,
+            ),
+            attachmentRevision = state?.longOrZero("attachmentRevision") ?: 0,
+            nativeFontRevision = state?.longOrZero("nativeFontRevision") ?: 0,
+            fontEnvironmentRevision = props?.longOrZero("fontEnvironmentRevision") ?: 0,
+        )
+    }
+
+    private fun surfaceToken(data: ReadableMap): FabricSurfaceToken? {
+        val surfaceId = data.longOrZero("surfaceId").toInt()
+        val componentTag = data.longOrZero("componentTag").toInt()
+        return if (surfaceId > 0 && componentTag > 0) FabricSurfaceToken(surfaceId, componentTag) else null
+    }
+
+    private fun widthToPixels(widthDip: Float, density: Float): Int? {
+        if (!widthDip.isFinite() || widthDip <= 0f || !density.isFinite() || density <= 0f) return null
+        val pixels = widthDip.toDouble() * density.toDouble()
+        if (!pixels.isFinite() || pixels <= 0 || pixels > Int.MAX_VALUE.toDouble()) return null
+        return pixels.roundToInt().takeIf { it > 0 }
+    }
+
+    private fun ReadableMap.stringOrNull(key: String): String? =
+        if (hasKey(key) && !isNull(key)) getString(key) else null
+
+    private fun ReadableMap.booleanOrDefault(key: String, default: Boolean): Boolean =
+        if (hasKey(key) && !isNull(key)) getBoolean(key) else default
+
+    private fun ReadableMap.longOrZero(key: String): Long =
+        if (!hasKey(key) || isNull(key)) 0 else getDouble(key).toLong().coerceAtLeast(0)
+
+    private data class ViewState(
+        var sourceKind: String = "json",
+        var source: String = "",
+        var configJson: String = "{}",
+        var themeJson: String? = null,
+        var imagePolicyJson: String? = null,
+        var imagesEnabled: Boolean = true,
+        var collapsesWhenEmpty: Boolean = true,
+        var fontEnvironmentRevision: Long = 0,
+        var generation: FabricGenerationToken? = null,
+        var reportedGenerationIdentity: String? = null,
+    ) {
+        fun request() = ProseViewerRequest(
+            source = if (sourceKind == "html") ProseViewerSource.Html(source) else ProseViewerSource.Json(source),
+            configuration = ProseViewerConfiguration(
+                configJson,
+                themeJson,
+                imagePolicyJson,
+                imagesEnabled,
+                collapsesWhenEmpty,
+            ),
+            fontEnvironmentRevision = fontEnvironmentRevision,
+        )
+    }
+
+    companion object {
+        const val REACT_CLASS = "PreparedProseViewer"
+    }
+}

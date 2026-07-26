@@ -15,14 +15,74 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
+import com.apollohg.editor.viewer.PreparedProseDrawingView
+import com.apollohg.editor.viewer.PreparedProseLayout
+import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
+import com.apollohg.editor.viewer.ProseViewerRequest
+import com.apollohg.editor.viewer.ViewerDocument
 import kotlin.math.abs
 import kotlin.math.ceil
 import org.json.JSONArray
+
+sealed interface ProseViewerSource {
+    val value: String
+    val kind: String
+
+    data class Json(override val value: String) : ProseViewerSource {
+        override val kind: String = "json"
+    }
+
+    data class Html(override val value: String) : ProseViewerSource {
+        override val kind: String = "html"
+    }
+}
+
+data class ProseViewerConfiguration(
+    val configJson: String,
+    val themeJson: String? = null,
+    val imagePolicyJson: String? = null,
+    val imagesEnabled: Boolean = true,
+    val collapsesWhenEmpty: Boolean = false,
+)
+
+@JvmInline
+value class ProseViewerErrorCode(val value: String) {
+    companion object {
+        val INVALID_WIDTH = ProseViewerErrorCode("INVALID_WIDTH")
+        val LAYOUT_FAILED = ProseViewerErrorCode("LAYOUT_FAILED")
+    }
+}
+
+data class ProseViewerError(
+    val domain: String,
+    val code: ProseViewerErrorCode,
+    override val message: String,
+) : RuntimeException(message) {
+    companion object {
+        fun compiler(domain: String, code: String, message: String) =
+            ProseViewerError(domain, ProseViewerErrorCode(code), message)
+
+        fun invalidWidth() = ProseViewerError(
+            "viewer.host",
+            ProseViewerErrorCode.INVALID_WIDTH,
+            "A finite positive width is required for prose measurement.",
+        )
+
+        fun layout(message: String) =
+            ProseViewerError("viewer.layout", ProseViewerErrorCode.LAYOUT_FAILED, message)
+    }
+}
 
 /** Interaction callbacks for an embedded Android prose viewer. */
 interface ProseViewerInteractionListener {
     fun onLinkTap(view: ProseViewerView, href: String, text: String)
     fun onMentionTap(view: ProseViewerView, docPos: Int, label: String)
+    fun onViewerError(view: ProseViewerView, error: ProseViewerError) = Unit
+}
+
+abstract class ProseViewerInteractionListenerAdapter : ProseViewerInteractionListener {
+    override fun onLinkTap(view: ProseViewerView, href: String, text: String) = Unit
+    override fun onMentionTap(view: ProseViewerView, docPos: Int, label: String) = Unit
 }
 
 private sealed interface ProseViewerTapTarget {
@@ -72,7 +132,19 @@ class ProseViewerView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : ViewGroup(context, attrs, defStyleAttr) {
+    internal constructor(context: Context, registry: PreparedProseLayoutRegistry) : this(context) {
+        layoutRegistry = registry
+    }
+
     var interactionListener: ProseViewerInteractionListener? = null
+
+    private var layoutRegistry = PreparedProseLayoutRegistry.shared
+    private val preparedDrawingView = PreparedProseDrawingView(context)
+    private var preparedRequest: ProseViewerRequest? = null
+    private var retainedDocument: ViewerDocument? = null
+    private var preparedArtifact: PreparedProseLayout? = null
+    private var directError: ProseViewerError? = null
+    private var reportedGenerationIdentity: String? = null
 
     private val proseView = EditorEditText(context)
     private var lastRenderJson = "[]"
@@ -106,6 +178,8 @@ class ProseViewerView @JvmOverloads constructor(
         }
     internal var onLinkTapForTesting: (() -> Unit)? = null
     internal var onMentionTapForTesting: (() -> Unit)? = null
+    internal val preparedLayoutForTesting: PreparedProseLayout?
+        get() = preparedArtifact
 
     init {
         proseView.setBaseStyle(
@@ -129,6 +203,12 @@ class ProseViewerView @JvmOverloads constructor(
         proseView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         proseView.setOnTouchListener { _, event -> handleProseTouch(event) }
 
+        preparedDrawingView.visibility = View.GONE
+        addView(
+            preparedDrawingView,
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        )
+
         addView(
             proseView,
             LayoutParams(
@@ -139,9 +219,36 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     /**
+     * Starts an immutable direct-content generation. Compilation is retained through the first
+     * finite measurement even when the registry evicts its unmounted cache entry.
+     */
+    fun apply(source: ProseViewerSource, configuration: ProseViewerConfiguration): Boolean {
+        val next = ProseViewerRequest(source, configuration)
+        if (preparedRequest == next) return directError == null
+        preparedRequest = next
+        retainedDocument = null
+        preparedArtifact = null
+        directError = null
+        reportedGenerationIdentity = null
+        preparedDrawingView.install(null)
+        preparedDrawingView.visibility = View.VISIBLE
+        proseView.visibility = View.GONE
+        return try {
+            retainedDocument = layoutRegistry.compileDocument(next)
+            requestLayout()
+            true
+        } catch (error: ProseViewerError) {
+            directError = error
+            requestLayout()
+            false
+        }
+    }
+
+    /**
      * Applies render-ops and theme JSON. Invalid render input clears the view.
      */
     fun apply(renderJson: String, themeJson: String): Boolean {
+        clearDirectGeneration()
         val accepted = isRenderOpsArray(renderJson)
         val normalizedRenderJson = if (accepted) renderJson else "[]"
         if (normalizedRenderJson == lastRenderJson && themeJson == lastThemeJson) {
@@ -175,6 +282,7 @@ class ProseViewerView @JvmOverloads constructor(
      * The interaction listener is retained so holders may assign it once.
      */
     fun prepareForReuse() {
+        clearDirectGeneration()
         clearVirtualAccessibilityFocus()
         pendingTapGesture = null
         lastRenderJson = "[]"
@@ -208,6 +316,29 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        preparedRequest?.let { request ->
+            val widthMode = MeasureSpec.getMode(widthMeasureSpec)
+            val availableWidth = (MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight)
+            val artifact = layoutRegistry.measure(
+                request = request,
+                widthPx = if (widthMode == MeasureSpec.UNSPECIFIED) 0 else availableWidth,
+                density = resources.displayMetrics.density,
+                compiledDocument = retainedDocument,
+            )
+            preparedArtifact = artifact
+            preparedDrawingView.install(artifact)
+            reportDirectErrorIfNeeded(request, artifact.error ?: directError)
+            val desiredWidth = artifact.widthPx + paddingLeft + paddingRight
+            val intrinsicHeight = artifact.heightPx + paddingTop + paddingBottom
+            val measuredWidth = resolveSize(desiredWidth, widthMeasureSpec)
+            val measuredHeight = when (MeasureSpec.getMode(heightMeasureSpec)) {
+                MeasureSpec.EXACTLY -> MeasureSpec.getSize(heightMeasureSpec)
+                MeasureSpec.AT_MOST -> intrinsicHeight.coerceAtMost(MeasureSpec.getSize(heightMeasureSpec))
+                else -> intrinsicHeight
+            }
+            setMeasuredDimension(measuredWidth, measuredHeight)
+            return
+        }
         if (isCollapsedEmptyContent) {
             setMeasuredDimension(resolveSize(0, widthMeasureSpec), 0)
             emitContentHeightIfNeeded()
@@ -242,6 +373,15 @@ class ProseViewerView @JvmOverloads constructor(
         right: Int,
         bottom: Int
     ) {
+        if (preparedRequest != null) {
+            preparedDrawingView.layout(
+                paddingLeft,
+                paddingTop,
+                (right - left - paddingRight).coerceAtLeast(paddingLeft),
+                (bottom - top - paddingBottom).coerceAtLeast(paddingTop),
+            )
+            return
+        }
         if (isCollapsedEmptyContent) {
             proseView.layout(paddingLeft, paddingTop, right - left - paddingRight, paddingTop)
             emitContentHeightIfNeeded()
@@ -260,9 +400,30 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        if (preparedRequest != null) {
+            preparedArtifact = null
+            preparedDrawingView.install(null)
+        }
         pendingTapGesture = null
         clearVirtualAccessibilityFocus()
         super.onDetachedFromWindow()
+    }
+
+    private fun reportDirectErrorIfNeeded(request: ProseViewerRequest, error: ProseViewerError?) {
+        if (error == null || reportedGenerationIdentity == request.generationIdentity) return
+        reportedGenerationIdentity = request.generationIdentity
+        interactionListener?.onViewerError(this, error)
+    }
+
+    private fun clearDirectGeneration() {
+        preparedRequest = null
+        retainedDocument = null
+        preparedArtifact = null
+        directError = null
+        reportedGenerationIdentity = null
+        preparedDrawingView.install(null)
+        preparedDrawingView.visibility = View.GONE
+        proseView.visibility = View.VISIBLE
     }
 
     private fun renderCurrentContent() {
