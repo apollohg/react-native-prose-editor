@@ -25,6 +25,7 @@ add_library(
 target_include_directories(
   ${LIB_TARGET_NAME}
   PUBLIC
+  .
   ${LIB_COMMON_DIR}
   ${LIB_ANDROID_GENERATED_JNI_DIR}
   ${LIB_ANDROID_GENERATED_COMPONENTS_DIR}
