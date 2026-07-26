@@ -2,6 +2,7 @@ package com.apollohg.editor
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
@@ -21,6 +22,10 @@ import com.apollohg.editor.viewer.PreparedProseLayout
 import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
 import com.apollohg.editor.viewer.ProseViewerRequest
 import com.apollohg.editor.viewer.ViewerDocument
+import com.apollohg.editor.viewer.ViewerAttachmentRevisionState
+import com.apollohg.editor.viewer.ViewerFontEnvironment
+import com.apollohg.editor.viewer.ViewerImageAttachment
+import com.apollohg.editor.viewer.ViewerImagePipeline
 import kotlin.math.abs
 import kotlin.math.ceil
 import org.json.JSONArray
@@ -148,6 +153,9 @@ class ProseViewerView @JvmOverloads constructor(
     private var preparedArtifact: PreparedProseLayout? = null
     private var directError: ProseViewerError? = null
     private var reportedGenerationIdentity: String? = null
+    private val attachmentRevisions = ViewerAttachmentRevisionState()
+    private val fontEnvironment = ViewerFontEnvironment()
+    private val viewerImagePipeline = ViewerImagePipeline()
 
     private val proseView = EditorEditText(context)
     private var lastRenderJson = "[]"
@@ -215,6 +223,16 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.publishesAccessibilitySubtree = false
         preparedDrawingView.linkInteractionsEnabled = linkTapsEnabled
         preparedDrawingView.onInteractionActivated = { activatePreparedInteraction(it) }
+        viewerImagePipeline.onPixels = { attachment, bitmap ->
+            val current = preparedRequest
+            if (current != null && viewerImagePipeline.acceptsCompletion(current.generationIdentity)) {
+                preparedDrawingView.imagePixels = preparedDrawingView.imagePixels + (attachment.id to bitmap)
+            }
+        }
+        viewerImagePipeline.onIntrinsicMetadata = { attachment, width, height ->
+            applyIntrinsicImageMetadata(attachment, width, height)
+        }
+        fontEnvironment.onInvalidated = { revision -> applyFontEnvironmentRevision(revision) }
         addView(
             preparedDrawingView,
             LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
@@ -234,11 +252,18 @@ class ProseViewerView @JvmOverloads constructor(
      * finite measurement even when the registry evicts its unmounted cache entry.
      */
     fun apply(source: ProseViewerSource, configuration: ProseViewerConfiguration): Boolean {
-        val next = ProseViewerRequest(source, configuration)
+        val next = ProseViewerRequest(
+            source,
+            configuration,
+            fontEnvironmentRevision = fontEnvironment.revision,
+            attachmentRevision = attachmentRevisions.revision,
+        )
         if (preparedRequest == next) return directError == null
         preparedRequest = next
         retainedDocument = null
         preparedArtifact = null
+        viewerImagePipeline.cancel()
+        preparedDrawingView.imagePixels = emptyMap()
         directError = null
         reportedGenerationIdentity = null
         clearVirtualAccessibilityFocus()
@@ -342,6 +367,7 @@ class ProseViewerView @JvmOverloads constructor(
             val artifactChanged = preparedArtifact !== artifact
             preparedArtifact = artifact
             preparedDrawingView.install(artifact)
+            beginVisibleImageRequests(artifact)
             if (artifactChanged || preparedAccessibilityGeneration != artifact.key.generationIdentity) {
                 clearVirtualAccessibilityFocus()
                 preparedAccessibilityGeneration = artifact.key.generationIdentity
@@ -400,6 +426,7 @@ class ProseViewerView @JvmOverloads constructor(
                 (right - left - paddingRight).coerceAtLeast(paddingLeft),
                 (bottom - top - paddingBottom).coerceAtLeast(paddingTop),
             )
+            requestVisibleImageAttachments()
             return
         }
         if (isCollapsedEmptyContent) {
@@ -425,6 +452,14 @@ class ProseViewerView @JvmOverloads constructor(
         super.onDetachedFromWindow()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        fontEnvironment.onConfigurationChanged(newConfig)
+    }
+
+    /** Explicit hook for React Native font loaders. */
+    fun invalidateFontEnvironment() = fontEnvironment.invalidateRegisteredFonts()
+
     /**
      * Removes a directly owned prepared subtree. Virtual focus must clear
      * before the artifact disappears and before its subtree notification.
@@ -434,6 +469,8 @@ class ProseViewerView @JvmOverloads constructor(
         if (preparedRequest != null) {
             preparedArtifact = null
             preparedDrawingView.install(null)
+            viewerImagePipeline.cancel()
+            preparedDrawingView.imagePixels = emptyMap()
             preparedAccessibilityGeneration = null
             notifyAccessibilitySubtreeChanged()
         }
@@ -450,6 +487,8 @@ class ProseViewerView @JvmOverloads constructor(
         preparedRequest = null
         retainedDocument = null
         preparedArtifact = null
+        viewerImagePipeline.cancel()
+        preparedDrawingView.imagePixels = emptyMap()
         directError = null
         reportedGenerationIdentity = null
         // apply(renderJson, themeJson) publishes the replacement subtree.
@@ -463,6 +502,39 @@ class ProseViewerView @JvmOverloads constructor(
         updateCollapsedEmptyState()
         proseView.applyRenderJSON(lastRenderJson)
         proseView.visibility = if (isCollapsedEmptyContent) View.GONE else View.VISIBLE
+        requestLayout()
+    }
+
+    private fun beginVisibleImageRequests(artifact: PreparedProseLayout) {
+        val request = preparedRequest ?: return
+        viewerImagePipeline.begin(
+            request.generationIdentity,
+            request.configuration.imagesEnabled,
+            ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson),
+        )
+        requestVisibleImageAttachments()
+    }
+
+    private fun requestVisibleImageAttachments() {
+        val artifact = preparedArtifact ?: return
+        viewerImagePipeline.updateVisibleRect(
+            Rect(0, 0, preparedDrawingView.width.coerceAtLeast(1), preparedDrawingView.height.coerceAtLeast(1)),
+            artifact.imageAttachments,
+        )
+    }
+
+    private fun applyIntrinsicImageMetadata(attachment: ViewerImageAttachment, width: Int, height: Int) {
+        val request = preparedRequest ?: return
+        if (!viewerImagePipeline.acceptsCompletion(request.generationIdentity)) return
+        if (!attachmentRevisions.recordIntrinsicSize(attachment.id, width, height, attachment.declaredSize)) return
+        preparedRequest = request.copy(attachmentRevision = attachmentRevisions.revision)
+        requestLayout()
+    }
+
+    private fun applyFontEnvironmentRevision(revision: Long) {
+        val request = preparedRequest ?: return
+        if (revision <= request.fontEnvironmentRevision) return
+        preparedRequest = request.copy(fontEnvironmentRevision = revision)
         requestLayout()
     }
 

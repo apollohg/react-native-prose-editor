@@ -4,6 +4,7 @@
 #import <React/RCTComponent.h>
 
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerComponentDescriptor.h>
+#include <react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.h>
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h>
 #include <react/renderer/components/ReactNativeProseEditorSpec/EventEmitters.h>
 #include <react/renderer/components/ReactNativeProseEditorSpec/Props.h>
@@ -13,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -45,11 +47,12 @@ bool HasEquivalentGenerationProps(
       left.fontEnvironmentRevision == right.fontEnvironmentRevision;
 }
 
-uint64_t Revision(const PreparedProseViewerState *state, bool attachment) {
-  if (state == nullptr) {
+uint64_t Revision(const PreparedProseViewerShadowNode::ConcreteState::Shared &state, bool attachment) {
+  if (!state) {
     return 0;
   }
-  return attachment ? state->attachmentRevision : state->nativeFontRevision;
+  const auto &data = state->getData();
+  return attachment ? data.attachmentRevision : data.nativeFontRevision;
 }
 
 uint64_t ScaleBits(CGFloat scale) {
@@ -118,7 +121,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 @implementation PREPPreparedProseViewerComponentView {
   PREPPreparedProseDrawingView *_drawingView;
   std::shared_ptr<const PreparedProseViewerProps> _viewerProps;
-  std::shared_ptr<const PreparedProseViewerState> _viewerState;
+  PreparedProseViewerShadowNode::ConcreteState::Shared _viewerState;
   LayoutMetrics _layoutMetrics;
   BOOL _hasReceivedUsableLayoutMetrics;
   NSString *_reportedErrorGeneration;
@@ -127,6 +130,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   int64_t _ownedSurfaceId;
   int64_t _ownedComponentTag;
   BOOL _hasOwnedSurface;
+  id _imageMetadataObserver;
+  id _contentSizeObserver;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -143,8 +148,29 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     _drawingView.isAccessibilityElement = NO;
     self.isAccessibilityElement = NO;
     [self addSubview:_drawingView];
+    __weak PREPPreparedProseViewerComponentView *weakSelf = self;
+    _imageMetadataObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:PREPPreparedProseDrawingView.imageMetadataDidResolve
+                    object:_drawingView
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *note) {
+                  [weakSelf handleImageMetadata:note];
+                }];
+    _contentSizeObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIContentSizeCategoryDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *note) {
+                  [weakSelf invalidateNativeFontEnvironment];
+                }];
   }
   return self;
+}
+
+- (void)dealloc
+{
+  if (_imageMetadataObserver) [[NSNotificationCenter defaultCenter] removeObserver:_imageMetadataObserver];
+  if (_contentSizeObserver) [[NSNotificationCenter defaultCenter] removeObserver:_contentSizeObserver];
 }
 
 - (BOOL)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
@@ -195,9 +221,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &)oldState
 {
   [super updateState:state oldState:oldState];
-  const auto nextState = std::static_pointer_cast<const PreparedProseViewerState>(state);
-  if (!_viewerState || Revision(_viewerState.get(), true) != Revision(nextState.get(), true) ||
-      Revision(_viewerState.get(), false) != Revision(nextState.get(), false)) {
+  const auto nextState = std::static_pointer_cast<const PreparedProseViewerShadowNode::ConcreteState>(state);
+  if (!_viewerState || Revision(_viewerState, true) != Revision(nextState, true) ||
+      Revision(_viewerState, false) != Revision(nextState, false)) {
     [self beginNewGeneration];
   }
   _viewerState = nextState;
@@ -243,6 +269,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   [super prepareForRecycle];
   _viewerProps.reset();
   _viewerState.reset();
+  [_drawingView cancelConfiguredImages];
   [_drawingView installWithLayout:nil];
   _hasReceivedUsableLayoutMetrics = NO;
   _reportedErrorGeneration = nil;
@@ -253,6 +280,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (void)beginNewGeneration
 {
   [self releaseFabricOwnership];
+  [_drawingView cancelConfiguredImages];
   // Keep the last complete artifact visible while a new generation has no
   // representable layout metrics. The install gate clears it only
   // after independently validating the replacement measurement.
@@ -307,8 +335,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                      imagePolicyJSON:OptionalStringFromStdString(props.imagePolicyJson)
                       imagesEnabled:props.imagesEnabled
                 collapsesWhenEmpty:props.collapsesWhenEmpty
-                 attachmentRevision:Revision(_viewerState.get(), true)
-                 nativeFontRevision:Revision(_viewerState.get(), false)
+                 attachmentRevision:Revision(_viewerState, true)
+                 nativeFontRevision:Revision(_viewerState, false)
             fontEnvironmentRevision:FontEnvironmentRevision(props)];
   const auto measurementIdentityString = MeasurementIdentity(generation, width, scale);
   if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
@@ -348,8 +376,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                        imagePolicyJSON:OptionalStringFromStdString(props.imagePolicyJson)
                         imagesEnabled:props.imagesEnabled
                   collapsesWhenEmpty:props.collapsesWhenEmpty
-                   attachmentRevision:Revision(_viewerState.get(), true)
-                   nativeFontRevision:Revision(_viewerState.get(), false)
+                   attachmentRevision:Revision(_viewerState, true)
+                   nativeFontRevision:Revision(_viewerState, false)
               fontEnvironmentRevision:FontEnvironmentRevision(props)
                           widthPoints:width
                                  scale:scale];
@@ -364,6 +392,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     _ownedGeneration = nil;
     return;
   }
+  [_drawingView configureImagesWithGeneration:generation
+                                imagesEnabled:props.imagesEnabled
+                                  policyJSON:OptionalStringFromStdString(props.imagePolicyJson)];
   _installedMeasurementIdentity = measurementIdentityString;
   if (!_drawingView.errorCode) {
     return;
@@ -381,6 +412,31 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
         .fatal = true,
     });
   }
+}
+
+- (void)handleImageMetadata:(NSNotification *)note
+{
+  NSString *generation = note.userInfo[@"generation"];
+  if (!generation || !_viewerState || ![_ownedGeneration isEqualToString:generation]) return;
+  _viewerState->updateState(
+      [](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
+          -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
+        auto nextData = oldData;
+        nextData.attachmentRevision += 1;
+        return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
+      });
+}
+
+- (void)invalidateNativeFontEnvironment
+{
+  if (!_viewerState) return;
+  _viewerState->updateState(
+      [](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
+          -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
+        auto nextData = oldData;
+        nextData.nativeFontRevision += 1;
+        return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
+      });
 }
 
 @end

@@ -4,6 +4,7 @@ import android.content.Context
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
 import com.apollohg.editor.ProseViewerSource
+import com.apollohg.editor.ImageLoadingPolicy
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.module.annotations.ReactModule
@@ -36,9 +37,24 @@ internal class PreparedProseViewerManager :
 
     override fun createViewInstance(context: ThemedReactContext): PreparedProseDrawingView =
         PreparedProseDrawingView(context).also { view ->
-            states[view] = ViewState()
+            val state = ViewState()
+            states[view] = state
             view.onUsableMetricsChanged = { installCachedLayout(view) }
+            view.onVisibleRectChanged = { visible -> state.requestVisibleImages(view, visible) }
+            view.onFontConfigurationChanged = { configuration -> state.fontEnvironment.onConfigurationChanged(configuration) }
             view.onInteractionActivated = { interaction -> dispatchInteraction(view, interaction) }
+            state.fontEnvironment.onInvalidated = { revision -> state.publishFontRevision(revision) }
+            state.imagePipeline.onPixels = { attachment, bitmap ->
+                val request = state.requestOrNull()
+                if (request != null && state.imagePipeline.acceptsCompletion(request.generationIdentity)) {
+                    view.imagePixels = view.imagePixels + (attachment.id to bitmap)
+                }
+            }
+            state.imagePipeline.onIntrinsicMetadata = { attachment, width, height ->
+                if (state.attachmentRevisions.recordIntrinsicSize(attachment.id, width, height, attachment.declaredSize)) {
+                    state.publishAttachmentRevision()
+                }
+            }
         }
 
     override fun createShadowNodeInstance(): LayoutShadowNode = LayoutShadowNode()
@@ -53,6 +69,8 @@ internal class PreparedProseViewerManager :
             state.release()
         }
         view.onUsableMetricsChanged = null
+        view.onVisibleRectChanged = null
+        view.onFontConfigurationChanged = null
         view.onInteractionActivated = null
         view.install(null)
         super.onDropViewInstance(view)
@@ -175,6 +193,7 @@ internal class PreparedProseViewerManager :
             return
         }
         state.installMountedReplacement(view, artifact)
+        state.beginImages(view, artifact, request)
         artifact.error?.let { dispatchError(view, request, it) }
     }
 
@@ -326,11 +345,49 @@ internal class PreparedProseViewerManager :
             revisions = nextRevisions
         }
 
+        val attachmentRevisions = ViewerAttachmentRevisionState()
+        val fontEnvironment = ViewerFontEnvironment()
+        val imagePipeline = ViewerImagePipeline()
+        private var visibleRect: android.graphics.Rect = android.graphics.Rect()
+
+        fun beginImages(view: PreparedProseDrawingView, artifact: PreparedProseLayout, request: ProseViewerRequest) {
+            imagePipeline.begin(request.generationIdentity, request.configuration.imagesEnabled, ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson))
+            imagePipeline.updateVisibleRect(visibleRect.takeIf { !it.isEmpty } ?: android.graphics.Rect(0, 0, view.width, view.height), artifact.imageAttachments)
+        }
+
+        fun requestVisibleImages(view: PreparedProseDrawingView, visible: android.graphics.Rect) {
+            visibleRect = android.graphics.Rect(visible)
+            val artifact = view.preparedLayout ?: return
+            imagePipeline.updateVisibleRect(visibleRect, artifact.imageAttachments)
+        }
+
+        fun publishAttachmentRevision() {
+            val current = revisions ?: return
+            publishRevisions(FabricStateRevisions(current.attachmentRevision + 1, current.nativeFontRevision))
+        }
+
+        fun publishFontRevision(revision: Long) {
+            val current = revisions ?: return
+            if (revision <= 0) return
+            publishRevisions(FabricStateRevisions(current.attachmentRevision, current.nativeFontRevision + 1))
+        }
+
+        private fun publishRevisions(next: FabricStateRevisions) {
+            val current = revisions
+            if (current == next) return
+            revisions = next
+            stateWrapper?.updateState(Arguments.createMap().apply {
+                putDouble("attachmentRevision", next.attachmentRevision.toDouble())
+                putDouble("nativeFontRevision", next.nativeFontRevision.toDouble())
+            })
+        }
+
         fun releaseGeneration(
             view: PreparedProseDrawingView,
         ) {
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
+            imagePipeline.cancel()
             replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
             view.install(null)
         }
@@ -340,6 +397,7 @@ internal class PreparedProseViewerManager :
             if (previous.generationIdentity == request.generationIdentity) return
             PreparedProseLayoutRegistry.shared.releaseFabricGeneration(previous)
             generation = null
+            imagePipeline.cancel()
             replacementAccessibilityTransaction.clearReplacing(view)
         }
 
@@ -366,6 +424,7 @@ internal class PreparedProseViewerManager :
         fun release() {
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
+            imagePipeline.cancel()
             stateWrapper?.destroyState()
             stateWrapper = null
             revisions = null

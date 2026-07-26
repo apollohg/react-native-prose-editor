@@ -104,6 +104,7 @@ enum PreparedProseFragmentKind: String, Hashable {
     case rule
     case atom
     case strike
+    case image
 }
 
 /// A fully prepared paint operation. Core Text lines, colours, metrics, and
@@ -216,6 +217,7 @@ public final class PreparedProseLayout: NSObject {
     let blocks: [PreparedProseBlock]
     let interactions: [PreparedProseInteraction]
     let accessibilityNodes: [PreparedProseAccessibilityNode]
+    let imageAttachments: [ViewerImageAttachment]
     let retainedBytes: Int
     let error: ProseViewerError?
 
@@ -225,6 +227,7 @@ public final class PreparedProseLayout: NSObject {
         blocks: [PreparedProseBlock],
         interactions: [PreparedProseInteraction] = [],
         accessibilityNodes: [PreparedProseAccessibilityNode] = [],
+        imageAttachments: [ViewerImageAttachment] = [],
         retainedBytes: Int,
         error: ProseViewerError? = nil
     ) {
@@ -233,6 +236,7 @@ public final class PreparedProseLayout: NSObject {
         self.blocks = blocks
         self.interactions = interactions
         self.accessibilityNodes = accessibilityNodes
+        self.imageAttachments = imageAttachments
         self.retainedBytes = retainedBytes
         self.error = error
         super.init()

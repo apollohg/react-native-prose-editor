@@ -46,6 +46,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import com.apollohg.editor.viewer.NativeImagePipeline
 import java.util.concurrent.atomic.AtomicLong
 
 object LayoutConstants {
@@ -1506,7 +1507,7 @@ internal class BlockImageSpan(
     private val policy = (hostView as? EditorEditText)?.imageLoadingPolicy
         ?: ImageLoadingPolicy.DEFAULT
     private val generation = (hostView as? EditorEditText)?.currentImageLoadGeneration()
-    private val preparedSource = RenderImageLoader.prepare(source, policy)
+    private val preparedSource = NativeImagePipeline.prepare(source, policy)
 
     @Volatile
     private var bitmap: Bitmap? = null
@@ -1515,7 +1516,7 @@ internal class BlockImageSpan(
 
     init {
         if (bitmap == null && preparedSource != null) {
-            val handle = RenderImageLoader.load(preparedSource) { loaded ->
+            val handle = NativeImagePipeline.load(preparedSource) { loaded ->
                 val currentHost = hostRef.get()
                 if (
                     currentHost is EditorEditText &&

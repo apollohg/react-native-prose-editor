@@ -248,14 +248,19 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     /** Test seam: drawing must never increment this prepared-layout counter. */
     internal var staticLayoutsBuilt: Int = 0
         private set
+    private var semanticGeneration = ""
+    private var fontRevision = 0L
 
     override fun prepare(document: ViewerDocument, key: ProseLayoutKey, theme: PreparedProseTheme, widthPx: Int, density: Float, collapsesWhenEmpty: Boolean): PreparedProseLayout {
+        semanticGeneration = key.generationIdentity
+        fontRevision = key.nativeFontRevision + key.fontEnvironmentRevision
         if (widthPx <= 0 || !density.isFinite() || density <= 0f) return PreparedProseLayout.error(key, 0, ProseViewerError.invalidWidth())
         if (document.isEmpty && collapsesWhenEmpty) return PreparedProseLayout(key, widthPx, 0, emptyList(), retainedBytes = document.retainedBytes)
         val contentWidth = max(1, widthPx - theme.insetLeftPx - theme.insetRightPx)
         var cursorY = theme.insetTopPx
         var retained = document.retainedBytes + theme.retainedBytes
         val interactions = mutableListOf<PreparedProseInteraction>()
+        val imageAttachments = mutableListOf<ViewerImageAttachment>()
         val markers = mutableMapOf<Int, PreparedMarker>()
         document.blocks.forEach { block ->
             listItemAncestors(block).forEach { ancestor ->
@@ -269,6 +274,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             cursorY = prepared.nextY
             retained += prepared.block.retainedBytes + prepared.extraBytes
             interactions += prepared.interactions
+            prepared.attachment?.let(imageAttachments::add)
             prepared.block
         }
         val height = max(0, cursorY + theme.insetBottomPx)
@@ -282,10 +288,10 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             )
         }
         retained += interactions.sumOf { it.retainedBytes } + nodes.sumOf { it.retainedBytes }
-        return PreparedProseLayout(key, widthPx, height, blocks, interactions, nodes, retained)
+        return PreparedProseLayout(key, widthPx, height, blocks, interactions, nodes, imageAttachments, retained)
     }
 
-    private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val nextY: Int, val extraBytes: Long)
+    private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val attachment: ViewerImageAttachment? = null, val nextY: Int, val extraBytes: Long)
 
     private fun prepareBlock(block: ViewerBlock, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int): BlockResult {
         val paint = theme.paintFor(block)
@@ -302,6 +308,17 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val codeInset = if (block.nodeType == "codeBlock") theme.codePaddingHorizontalPx else 0
         val textX = theme.insetLeftPx + listInset + quoteInset + codeInset
         val itemSpacing = if (ancestors.isEmpty()) paint.spacingAfterPx else ancestors.count { it.isFinalRenderableLeaf } * theme.listItemSpacingPx
+        if (block.nodeType == "image") {
+            val source = ViewerImageAttachment.sourceAndDeclaredSize(block)
+            if (source != null) {
+                val imageWidth = max(1, contentWidth - listInset - quoteInset)
+                val resolved = source.third ?: ViewerImageIntrinsicStore.size(source.first)
+                val imageHeight = resolved?.let { imageWidth * it.second / max(1, it.first) } ?: max(44, minOf(240, (imageWidth * .56f).toInt()))
+                val bounds = Rect(textX, cursorY, textX + imageWidth, cursorY + imageHeight)
+                val attachment = ViewerImageAttachment(source.first, source.second, bounds, source.third)
+                return BlockResult(PreparedProseBlock(listOf(PreparedProseFragment(PreparedProseFragmentKind.IMAGE, bounds, color = 0xFFF2F2F7.toInt())), bounds), emptyList(), attachment, bounds.bottom + itemSpacing, 192)
+            }
+        }
         fun markerAnchor(ancestor: ViewerListItemAncestor): Int {
             var inset = baseListInset
             ancestorMarkers.forEach { (candidate, _) ->
@@ -404,7 +421,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private fun finishBlock(fragments: List<PreparedProseFragment>, interactions: List<PreparedProseInteraction>, seed: Rect, end: Int, spacing: Int, extraBytes: Long = 0): BlockResult {
         val bounds = fragments.fold(seed) { acc, fragment -> Rect(acc).apply { union(fragment.bounds) } }
-        return BlockResult(PreparedProseBlock(fragments.toList(), bounds), interactions, max(end, bounds.bottom) + spacing, extraBytes)
+        return BlockResult(PreparedProseBlock(fragments.toList(), bounds), interactions, null, max(end, bounds.bottom) + spacing, extraBytes)
     }
 
     private fun selectionRectsForLine(
@@ -528,6 +545,12 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         // mark traits into one immutable metric span before StaticLayout sees it.
         var resolved = link?.let { base.withStyle(it.asTextStyle(), theme.density) } ?: base
         if (family != null || size != null) {
+            family?.let { requested ->
+                val resolved = Typeface.create(requested, Typeface.NORMAL)
+                if (resolved.familyName() != requested) {
+                    ViewerFontEnvironment.warnOnceForMissingFamily(requested, semanticGeneration, fontRevision)
+                }
+            }
             resolved = resolved.withStyle(EditorTextStyle(fontFamily = family, fontSize = size), theme.density)
         }
         if (monospace) resolved = resolved.withStyle(EditorTextStyle(fontFamily = "monospace"), theme.density)

@@ -33,6 +33,9 @@
 		A3B6C71D4E5F60718293A4BF /* PreparedProseLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4C0 /* PreparedProseLayoutTests.swift */; };
 		A3B6C71D4E5F60718293A4C5 /* PreparedProseRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4C6 /* PreparedProseRenderingTests.swift */; };
 		A3B6C71D4E5F60718293A4D1 /* PreparedProseAccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4D2 /* PreparedProseAccessibilityTests.swift */; };
+		B9D001010000000000000011 /* PreparedProseRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000001 /* PreparedProseRevisionTests.swift */; };
+		B9D001010000000000000012 /* ViewerImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000002 /* ViewerImagePipeline.swift */; };
+		B9D001010000000000000013 /* ViewerFontEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000003 /* ViewerFontEnvironment.swift */; };
 		A3B6C71D4E5F60718293A4C1 /* ViewerDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4C2 /* ViewerDocument.swift */; };
 		76A5F03FB7D4C124E29F13F1 /* NativeCollaborationSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DB0694C3EBB885F034F0B30 /* NativeCollaborationSocket.swift */; };
 		9A956ACF25320EA8F4016A05 /* RenderBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */; };
@@ -76,6 +79,9 @@
 		A3B6C71D4E5F60718293A4C0 /* PreparedProseLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayoutTests.swift; sourceTree = "<group>"; };
 		A3B6C71D4E5F60718293A4C6 /* PreparedProseRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRenderingTests.swift; sourceTree = "<group>"; };
 		A3B6C71D4E5F60718293A4D2 /* PreparedProseAccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseAccessibilityTests.swift; sourceTree = "<group>"; };
+		B9D001010000000000000001 /* PreparedProseRevisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRevisionTests.swift; sourceTree = "<group>"; };
+		B9D001010000000000000002 /* ViewerImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerImagePipeline.swift; sourceTree = "<group>"; };
+		B9D001010000000000000003 /* ViewerFontEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerFontEnvironment.swift; sourceTree = "<group>"; };
 		A3B6C71D4E5F60718293A4C2 /* ViewerDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerDocument.swift; sourceTree = "<group>"; };
 		B91D20B361A5426DA59B6C43 /* ProseViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProseViewerView.swift; sourceTree = "<group>"; };
 		C7C0A1F121B840B291735896 /* ProseViewerViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProseViewerViewTests.swift; sourceTree = "<group>"; };
@@ -193,6 +199,7 @@
 				A3B6C71D4E5F60718293A4C0 /* PreparedProseLayoutTests.swift */,
 				A3B6C71D4E5F60718293A4C6 /* PreparedProseRenderingTests.swift */,
 				A3B6C71D4E5F60718293A4D2 /* PreparedProseAccessibilityTests.swift */,
+				B9D001010000000000000001 /* PreparedProseRevisionTests.swift */,
 				C7C0A1F121B840B291735896 /* ProseViewerViewTests.swift */,
 				A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */,
 				C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */,
@@ -208,6 +215,8 @@
 				A3B6C71D4E5F60718293A4BA /* PreparedProseLayout.swift */,
 				A3B6C71D4E5F60718293A4BC /* PreparedProseLayoutCache.swift */,
 				A3B6C71D4E5F60718293A4BE /* PreparedProseLayoutRegistry.swift */,
+				B9D001010000000000000002 /* ViewerImagePipeline.swift */,
+				B9D001010000000000000003 /* ViewerFontEnvironment.swift */,
 				A3B6C71D4E5F60718293A4C2 /* ViewerDocument.swift */,
 			);
 			path = Viewer;
@@ -504,6 +513,9 @@
 				A3B6C71D4E5F60718293A4BF /* PreparedProseLayoutTests.swift in Sources */,
 				A3B6C71D4E5F60718293A4C5 /* PreparedProseRenderingTests.swift in Sources */,
 				A3B6C71D4E5F60718293A4D1 /* PreparedProseAccessibilityTests.swift in Sources */,
+				B9D001010000000000000011 /* PreparedProseRevisionTests.swift in Sources */,
+				B9D001010000000000000012 /* ViewerImagePipeline.swift in Sources */,
+				B9D001010000000000000013 /* ViewerFontEnvironment.swift in Sources */,
 				A3B6C71D4E5F60718293A4C1 /* ViewerDocument.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

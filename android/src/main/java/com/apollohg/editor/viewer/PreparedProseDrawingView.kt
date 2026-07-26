@@ -1,6 +1,7 @@
 package com.apollohg.editor.viewer
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
@@ -19,7 +20,11 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     var preparedLayout: PreparedProseLayout? = null
         private set
     var onUsableMetricsChanged: (() -> Unit)? = null
+    var onVisibleRectChanged: ((Rect) -> Unit)? = null
+    var onFontConfigurationChanged: ((Configuration) -> Unit)? = null
     var onInteractionActivated: ((PreparedProseInteraction) -> Boolean)? = null
+    var imagePixels: Map<String, android.graphics.Bitmap> = emptyMap()
+        set(value) { field = value; invalidate() }
     /** False when a public host owns this view's virtual subtree and notifications. */
     var publishesAccessibilitySubtree: Boolean = true
     var linkInteractionsEnabled: Boolean = true
@@ -53,6 +58,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val artifact = preparedLayout ?: return
+        onVisibleRectChanged?.invoke(Rect(canvas.clipBounds))
         val visible = mutableListOf<PreparedProseFragment>()
         artifact.forEachBlockIntersecting(canvas.clipBounds) { visible += it.fragments }
         // Phases stay global across blocks: later code backgrounds cannot cover
@@ -63,7 +69,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     }
 
     private fun drawBackground(canvas: Canvas, fragment: PreparedProseFragment) {
-        if (fragment.kind != PreparedProseFragmentKind.BACKGROUND && fragment.kind != PreparedProseFragmentKind.ATOM) return
+        if (fragment.kind != PreparedProseFragmentKind.BACKGROUND && fragment.kind != PreparedProseFragmentKind.ATOM && fragment.kind != PreparedProseFragmentKind.IMAGE) return
         paint.style = Paint.Style.FILL
         paint.color = fragment.color ?: return
         canvas.drawRoundRect(RectF(fragment.bounds), fragment.cornerRadius, fragment.cornerRadius, paint)
@@ -108,6 +114,11 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                 paint.color = fragment.color ?: return
                 canvas.drawRect(fragment.bounds, paint)
             }
+            PreparedProseFragmentKind.IMAGE -> {
+                val attachment = preparedLayout?.imageAttachments?.firstOrNull { it.bounds == fragment.bounds } ?: return
+                val bitmap = imagePixels[attachment.id] ?: return
+                canvas.drawBitmap(bitmap, null, fragment.bounds, paint)
+            }
             else -> Unit
         }
     }
@@ -143,6 +154,11 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         if (width > 0) onUsableMetricsChanged?.invoke()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        onFontConfigurationChanged?.invoke(newConfig)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

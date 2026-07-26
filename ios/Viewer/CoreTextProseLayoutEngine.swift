@@ -234,12 +234,14 @@ private struct PreparedListMarker {
 
 /// Performs the width-dependent, immutable Core Text preparation step.
 final class CoreTextProseLayoutEngine {
+    private var semanticGeneration = ""
     func prepare(
         document: ViewerDocument,
         key: ProseLayoutKey,
         widthPoints: CGFloat,
         displayScale: CGFloat
     ) throws -> PreparedProseLayout {
+        semanticGeneration = key.generationIdentity
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: displayScale) else {
             return .error(key: key, width: 0, error: .hostContract(message: "A finite positive width is required for prose measurement."))
         }
@@ -252,6 +254,7 @@ final class CoreTextProseLayoutEngine {
         var cursorY = theme.contentInsets.top
         var blocks: [PreparedProseBlock] = []
         var interactions: [PreparedProseInteraction] = []
+        var imageAttachments: [ViewerImageAttachment] = []
         var retainedBytes = document.retainedBytes
         var listMarkersByIdentity: [Int: PreparedListMarker] = [:]
         for block in document.blocks {
@@ -273,6 +276,7 @@ final class CoreTextProseLayoutEngine {
             )
             blocks.append(prepared.block)
             interactions.append(contentsOf: prepared.interactions)
+            if let attachment = prepared.attachment { imageAttachments.append(attachment) }
             cursorY = prepared.nextY
             retainedBytes += prepared.retainedBytes
         }
@@ -299,6 +303,7 @@ final class CoreTextProseLayoutEngine {
             blocks: blocks,
             interactions: interactions,
             accessibilityNodes: accessibilityNodes,
+            imageAttachments: imageAttachments,
             retainedBytes: retainedBytes
         )
     }
@@ -310,7 +315,7 @@ final class CoreTextProseLayoutEngine {
         width: CGFloat,
         cursorY: CGFloat,
         displayScale: CGFloat
-    ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], nextY: CGFloat, retainedBytes: Int) {
+    ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], attachment: ViewerImageAttachment?, nextY: CGFloat, retainedBytes: Int) {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
         let paint = theme.paint(for: block)
@@ -333,6 +338,18 @@ final class CoreTextProseLayoutEngine {
         let itemSpacing = block.listContext == nil
             ? paint.spacingAfter
             : (block.listItemBoundary?.isFinalRenderableLeaf ?? true ? theme.listItemSpacing : 0)
+        if block.nodeType == "image", let image = ViewerImageAttachment.sourceAndDeclaredSize(in: block) {
+            let imageWidth = max(1, contentWidth - listInset - quoteInset)
+            let provisionalHeight = max(44, min(240, imageWidth * 0.56))
+            let declared = image.declaredSize
+            let resolvedSize = declared ?? ViewerImageIntrinsicStore.size(for: image.id)
+            let height = resolvedSize.map { imageWidth * $0.height / max(1, $0.width) } ?? provisionalHeight
+            let bounds = CGRect(x: textX, y: cursorY, width: imageWidth, height: height)
+            let attachment = ViewerImageAttachment(id: image.id, source: image.source, bounds: bounds, declaredSize: declared)
+            let fragments = [PreparedProseFragment(kind: .image, bounds: bounds, color: UIColor.systemGray5.cgColor)]
+            let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
+            return (prepared, [], attachment, bounds.maxY + itemSpacing, prepared.estimatedRetainedBytes + 192)
+        }
         if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
             let markerTopInset = marker?.ascent ?? 0
             let ruleX = contentX + listInset + quoteInset
@@ -357,7 +374,7 @@ final class CoreTextProseLayoutEngine {
             )
             return (
                 prepared,
-                [],
+                [], nil,
                 max(totalEnd, bounds.maxY) + itemSpacing,
                 prepared.estimatedRetainedBytes
             )
@@ -496,7 +513,7 @@ final class CoreTextProseLayoutEngine {
         }
         return (
             prepared,
-            interactions,
+            interactions, nil,
             max(totalEnd, bounds.maxY) + itemSpacing,
             256 + attributed.retainedBytes + prepared.estimatedRetainedBytes
         )
@@ -621,7 +638,13 @@ final class CoreTextProseLayoutEngine {
         }
         var font = linkTheme?.resolvedFont(fallback: paint.font) ?? paint.font
         let inheritedTraits = font.fontDescriptor.symbolicTraits
-        if let fontFamily, let resolved = UIFont(name: fontFamily, size: fontSize ?? font.pointSize) { font = resolved }
+        if let fontFamily {
+            if let resolved = UIFont(name: fontFamily, size: fontSize ?? font.pointSize) {
+                font = resolved
+            } else if ViewerFontEnvironment.shared.shouldWarnForMissingFamily(fontFamily, semanticGeneration: semanticGeneration) {
+                NSLog("PreparedProseViewer: requested font family %@ is unavailable; using system fallback", fontFamily)
+            }
+        }
         if let fontSize { font = font.withSize(fontSize) }
         var markTraits: UIFontDescriptor.SymbolicTraits = []
         if wantsBold { markTraits.insert(.traitBold) }

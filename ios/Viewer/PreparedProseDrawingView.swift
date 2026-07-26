@@ -9,6 +9,12 @@ import UIKit
 /// A rendering-only view: it consumes already prepared Core Text lines.
 @objc(PREPPreparedProseDrawingView)
 public final class PreparedProseDrawingView: UIView {
+    var imagePixels: [String: UIImage] = [:] { didSet { setNeedsDisplay() } }
+    @objc public static let imageMetadataDidResolve = Notification.Name("com.apollohg.editor.viewer.imageMetadataDidResolve")
+    private lazy var imagePipeline = ViewerImagePipeline(policy: .default)
+    private let imageRevisions = ViewerAttachmentRevisionState()
+    private var imageGeneration = ""
+    private var imageConfiguration: (enabled: Bool, policy: ImageLoadingPolicy) = (false, .default)
     var layout: PreparedProseLayout? {
         didSet {
             guard oldValue !== layout else { return }
@@ -18,6 +24,31 @@ public final class PreparedProseDrawingView: UIView {
     }
 
     @objc public func install(layout: PreparedProseLayout?) { self.layout = layout }
+
+    @objc(configureImagesWithGeneration:imagesEnabled:policyJSON:)
+    public func configureImages(generation: String, imagesEnabled: Bool, policyJSON: String?) {
+        imageGeneration = generation
+        imageConfiguration = (imagesEnabled, ImageLoadingPolicy.from(json: policyJSON))
+        imagePipeline.onPixels = { [weak self] attachment, image in self?.imagePixels[attachment.id] = image }
+        imagePipeline.onIntrinsicMetadata = { [weak self] attachment, size in
+            guard let self,
+                  self.imagePipeline.acceptsCompletion(generation: generation),
+                  self.imageRevisions.recordIntrinsicSize(size, for: attachment.id, declaredSize: attachment.declaredSize)
+            else { return }
+            NotificationCenter.default.post(
+                name: Self.imageMetadataDidResolve,
+                object: self,
+                userInfo: ["generation": generation, "revision": self.imageRevisions.revision]
+            )
+        }
+        beginConfiguredImages()
+    }
+
+    @objc public func cancelConfiguredImages() {
+        imageGeneration = ""
+        imagePipeline.cancel()
+        imagePixels = [:]
+    }
 
     @objc var errorDomain: String? { layout?.error?.domain }
     @objc var errorCode: String? { layout?.error?.code }
@@ -129,6 +160,7 @@ public final class PreparedProseDrawingView: UIView {
 
     public override func draw(_ rect: CGRect) {
         guard let layout, let context = UIGraphicsGetCurrentContext(), !layout.blocks.isEmpty else { return }
+        imagePipeline.updateVisibleRect(rect, attachments: layout.imageAttachments)
         let blocks = layout.blocks
         var lower = 0
         var upper = blocks.count
@@ -155,6 +187,16 @@ public final class PreparedProseDrawingView: UIView {
         context.restoreGState()
     }
 
+    private func beginConfiguredImages() {
+        guard let layout else { return }
+        imagePipeline.begin(
+            generation: imageGeneration,
+            imagesEnabled: imageConfiguration.enabled,
+            policy: imageConfiguration.policy
+        )
+        imagePipeline.updateVisibleRect(bounds, attachments: layout.imageAttachments)
+    }
+
     private func drawingRect(for fragment: PreparedProseFragment) -> CGRect {
         CGRect(
             x: fragment.bounds.minX,
@@ -165,7 +207,7 @@ public final class PreparedProseDrawingView: UIView {
     }
 
     private func drawBackground(_ fragment: PreparedProseFragment, in context: CGContext) {
-        guard fragment.kind == .background || fragment.kind == .atom else { return }
+        guard fragment.kind == .background || fragment.kind == .atom || fragment.kind == .image else { return }
         let rect = drawingRect(for: fragment)
         context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
         context.fill(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
@@ -208,6 +250,10 @@ public final class PreparedProseDrawingView: UIView {
             guard let line = fragment.line else { return }
             context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
             CTLineDraw(line, context)
+        case .image:
+            guard let attachment = layout.imageAttachments.first(where: { $0.bounds == fragment.bounds }),
+                  let image = imagePixels[attachment.id] else { return }
+            image.draw(in: drawingRect(for: fragment))
         case .marker:
             if let line = fragment.line {
                 context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)

@@ -1631,7 +1631,7 @@ final class RenderBridge {
         let baseFont = UIFont.systemFont(ofSize: baseFontSize)
         let textColor = theme?.text?.color ?? UIColor.label
 
-        let attributedString = RenderImageLoadOwner.withoutLoading {
+        let attributedString = NativeImagePipeline.withoutLoading {
             renderElements(
                 fromJSON: renderJSON,
                 baseFont: baseFont,

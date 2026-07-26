@@ -8,7 +8,8 @@ internal data class ProseLayoutKey(
     val semanticKey: String,
     val widthPx: Int,
     val themeDigest: String,
-    val fontRevision: Long,
+    val nativeFontRevision: Long,
+    val fontEnvironmentRevision: Long,
     val densityBits: Long,
     val attachmentRevision: Long,
     val generationIdentity: String,
@@ -19,7 +20,7 @@ internal data class FabricGenerationToken(val surface: FabricSurfaceToken, val g
 internal data class ProseMountKey(val generationIdentity: String, val widthPx: Int, val densityBits: Long)
 
 /** Paint-only operations which Android spans cannot represent accurately. */
-internal enum class PreparedProseFragmentKind { TEXT, MARKER, BACKGROUND, BORDER, RULE, ATOM, STRIKE }
+internal enum class PreparedProseFragmentKind { TEXT, MARKER, BACKGROUND, BORDER, RULE, ATOM, STRIKE, IMAGE }
 
 internal data class PreparedProseFragment(
     val kind: PreparedProseFragmentKind,
@@ -83,6 +84,7 @@ internal data class PreparedProseLayout(
     val blocks: List<PreparedProseBlock>,
     val interactions: List<PreparedProseInteraction> = emptyList(),
     val accessibilityNodes: List<PreparedProseAccessibilityNode> = emptyList(),
+    val imageAttachments: List<ViewerImageAttachment> = emptyList(),
     val retainedBytes: Long,
     val error: ProseViewerError? = null,
 ) {
