@@ -20,6 +20,7 @@ public final class ProseViewerView: UIView {
     private var request: ProseViewerRequest?
     private var compiledDocument: ViewerDocument?
     private var ownedLayout: PreparedProseLayout?
+    private lazy var preparedInstrumentationOwner = "direct-\(ObjectIdentifier(self))"
     private var pendingError: ProseViewerError?
     private var errorWasReported = false
     private let attachmentRevisions = ViewerAttachmentRevisionState()
@@ -119,6 +120,10 @@ public final class ProseViewerView: UIView {
 
     private func installPreparedLayout(_ layout: PreparedProseLayout?) {
         ownedLayout = layout
+        if let layout {
+            layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, layout: layout)
+        } else {
+        }
         PreparedProseInstrumentation.retained(.sidecars, scope: "direct-\(ObjectIdentifier(self))", bytes: attachmentRevisions.retainedPublicationBytesForTesting)
         drawingView.install(layout: layout)
     }
@@ -206,6 +211,7 @@ public final class ProseViewerView: UIView {
     public override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else {
+            layoutRegistry.releaseDirectMounted(preparedInstrumentationOwner)
             viewerImagePipeline.cancel()
             // Request cancellation is not a semantic replacement. Preserve
             // publication bits and revision for a later remount.

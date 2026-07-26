@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 private struct ApplyUpdateTraceStats {
     let name: String
@@ -353,8 +354,10 @@ final class NativePerformanceTests: XCTestCase {
         let corpus = try PreparedProseBenchmarkCorpus.load()
         let harness = PreparedProseCollectionHarness(corpus: corpus, imagesEnabled: true)
         PreparedProseInstrumentation.beginBenchmark()
-        harness.traverse(corpus.coldTraversal)
-        harness.traverse(corpus.warmTraversal)
+        harness.traverse(corpus.coldTraversal, phase: .cold)
+        harness.traverse(corpus.warmTraversal, phase: .warm)
+        harness.traverse(corpus.coldTraversal, phase: .imagesDisabled, imagesEnabled: false)
+        harness.resetCache()
         try PreparedProsePerformanceGates.assertPasses(
             exportJSON: PreparedProseInstrumentation.exportJSON(),
             expectedDocuments: corpus.documents.count
@@ -375,8 +378,10 @@ private struct PreparedProseBenchmarkCorpus: Decodable {
     let warmTraversal: [String]
 
     static func load() throws -> Self {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let data = try Data(contentsOf: root.appendingPathComponent("scripts/tests/viewer-performance-corpus.json"))
+        guard let url = Bundle(for: NativePerformanceTests.self).url(
+            forResource: "viewer-performance-corpus", withExtension: "json"
+        ) else { throw NSError(domain: "PreparedProseBenchmarkCorpus", code: 1, userInfo: [NSLocalizedDescriptionKey: "Bundled viewer performance corpus is missing."]) }
+        let data = try Data(contentsOf: url)
         let corpus = try JSONDecoder().decode(Self.self, from: data)
         XCTAssertEqual(corpus.documents.count, 1_000)
         XCTAssertEqual(Set(corpus.documents.map(\.id)).count, 1_000)
@@ -405,42 +410,80 @@ private enum JSONValue: Codable {
     }
 }
 
-private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDataSource {
+private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
     private let corpus: PreparedProseBenchmarkCorpus
-    private let imagesEnabled: Bool
+    private let defaultImagesEnabled: Bool
     private let byID: [String: PreparedProseBenchmarkCorpus.Entry]
     private let collectionView: UICollectionView
+    private let window: UIWindow
+    private var orderedEntries: [PreparedProseBenchmarkCorpus.Entry] = []
+    private var activeImagesEnabled = true
+    private var displayLink: CADisplayLink?
 
     init(corpus: PreparedProseBenchmarkCorpus, imagesEnabled: Bool) {
-        self.corpus = corpus; self.imagesEnabled = imagesEnabled
+        self.corpus = corpus; self.defaultImagesEnabled = imagesEnabled
         byID = Dictionary(uniqueKeysWithValues: corpus.documents.map { ($0.id, $0) })
-        collectionView = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), collectionViewLayout: UICollectionViewFlowLayout())
-        super.init(); collectionView.dataSource = self; collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "prepared")
+        let layout = UICollectionViewFlowLayout(); layout.estimatedItemSize = .zero; layout.minimumLineSpacing = 8
+        collectionView = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), collectionViewLayout: layout)
+        window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        super.init()
+        collectionView.dataSource = self; collectionView.delegate = self
+        collectionView.register(PreparedProseCollectionCell.self, forCellWithReuseIdentifier: "prepared")
+        let host = UIViewController(); host.view = collectionView; window.rootViewController = host; window.isHidden = false
     }
-    func traverse(_ ids: [String]) {
-        for id in ids {
-            guard let entry = byID[id], let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(id)"); return }
-            let viewer = ProseViewerView(); _ = viewer.apply(source: .json(source), configuration: .init(imagesEnabled: imagesEnabled)); _ = viewer.sizeThatFits(CGSize(width: 390, height: .greatestFiniteMagnitude))
+    deinit { displayLink?.invalidate(); window.isHidden = true }
+    func resetCache() { PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning() }
+    func traverse(_ ids: [String], phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Bool? = nil) {
+        activeImagesEnabled = imagesEnabled ?? defaultImagesEnabled
+        orderedEntries = ids.compactMap { byID[$0] }
+        XCTAssertEqual(orderedEntries.count, ids.count)
+        PreparedProseInstrumentation.beginTraversal(phase)
+        let link = CADisplayLink(target: self, selector: #selector(displayLinkTick(_:))); displayLink = link; link.add(to: .main, forMode: .common)
+        collectionView.setContentOffset(.zero, animated: false); collectionView.reloadData(); collectionView.layoutIfNeeded()
+        for index in orderedEntries.indices {
+            collectionView.scrollToItem(at: IndexPath(item: index, section: 0), at: .centeredVertically, animated: false)
+            collectionView.layoutIfNeeded()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.001))
         }
+        link.invalidate(); displayLink = nil; PreparedProseInstrumentation.endTraversal()
     }
-    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { corpus.documents.count }
-    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell { collectionView.dequeueReusableCell(withReuseIdentifier: "prepared", for: indexPath) }
+    @objc private func displayLinkTick(_ link: CADisplayLink) { PreparedProseInstrumentation.displayLinkDidTick(link) }
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { orderedEntries.count }
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "prepared", for: indexPath) as! PreparedProseCollectionCell
+        let entry = orderedEntries[indexPath.item]
+        guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(entry.id)"); return cell }
+        cell.configure(source: source, imagesEnabled: activeImagesEnabled); return cell
+    }
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize { CGSize(width: collectionView.bounds.width, height: 180) }
+}
+
+private final class PreparedProseCollectionCell: UICollectionViewCell {
+    private let viewer = ProseViewerView()
+    override init(frame: CGRect) { super.init(frame: frame); contentView.addSubview(viewer) }
+    required init?(coder: NSCoder) { fatalError("PreparedProseCollectionCell is programmatic") }
+    override func layoutSubviews() { super.layoutSubviews(); viewer.frame = contentView.bounds; viewer.setNeedsLayout(); viewer.layoutIfNeeded() }
+    override func prepareForReuse() { super.prepareForReuse(); viewer.prepareForReuse() }
+    func configure(source: String, imagesEnabled: Bool) { _ = viewer.apply(source: .json(source), configuration: .init(imagesEnabled: imagesEnabled)); viewer.setNeedsLayout() }
 }
 
 private enum PreparedProsePerformanceGates {
-    private struct Export: Decodable { let compileNanos: [UInt64]; let layoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let frameNanos: [UInt64]; let duplicatePublications: Int; let retainedBytes: [String: Int] }
+    private struct Export: Decodable { let percentileDefinition: String; let compileNanos: [UInt64]; let layoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let coldFrameNanos: [UInt64]; let warmFrameNanos: [UInt64]; let imagesDisabledFrameNanos: [UInt64]; let warmViewerFrameNanos: [UInt64]; let duplicatePublications: Int; let retainedBytes: [String: Int] }
     static func assertPasses(exportJSON: String, expectedDocuments: Int) throws {
         let export = try JSONDecoder().decode(Export.self, from: Data(exportJSON.utf8))
         XCTAssertGreaterThanOrEqual(export.compileNanos.count, expectedDocuments)
         XCTAssertLessThan(percentile(zip(export.compileNanos, export.layoutNanos).map { $0 + $1 }, 0.95), 4_000_000)
         XCTAssertLessThan(percentile(export.cacheLookupNanos, 0.99), 100_000)
         XCTAssertLessThan(percentile(export.drawNanos, 0.95), 1_000_000)
-        XCTAssertGreaterThanOrEqual(Double(export.frameNanos.filter { $0 <= 16_670_000 }.count) / Double(max(1, export.frameNanos.count)), 0.99)
-        XCTAssertLessThanOrEqual(export.frameNanos.max() ?? 0, 33_300_000)
-        XCTAssertLessThanOrEqual(export.retainedBytes["layout"] ?? 0, 32 * 1024 * 1024)
+        XCTAssertEqual(export.percentileDefinition, "nearest-rank: sorted[ceil(p*n)-1]")
+        for frames in [export.coldFrameNanos, export.warmFrameNanos, export.imagesDisabledFrameNanos] where !frames.isEmpty {
+            XCTAssertGreaterThanOrEqual(Double(frames.filter { $0 <= 16_670_000 }.count) / Double(frames.count), 0.99)
+        }
+        XCTAssertLessThanOrEqual(export.warmViewerFrameNanos.max() ?? 0, 33_300_000)
+        XCTAssertLessThanOrEqual(export.retainedBytes["unmountedLayout"] ?? 0, 32 * 1024 * 1024)
         XCTAssertEqual(export.duplicatePublications, 0)
     }
-    private static func percentile(_ values: [UInt64], _ percentile: Double) -> UInt64 { guard !values.isEmpty else { return .max }; return values.sorted()[Int((Double(values.count - 1) * percentile).rounded(.up))] }
+    private static func percentile(_ values: [UInt64], _ percentile: Double) -> UInt64 { guard !values.isEmpty else { return .max }; return values.sorted()[max(0, Int((Double(values.count) * percentile).rounded(.up)) - 1)] }
 }
 
 private enum NativePerformanceFixtureFactory {

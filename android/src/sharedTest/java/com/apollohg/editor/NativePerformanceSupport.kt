@@ -3,7 +3,11 @@ package com.apollohg.editor
 import android.graphics.Color
 import android.content.Context
 import android.view.ViewGroup
+import android.view.Choreographer
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.apollohg.editor.viewer.PreparedProseInstrumentation
+import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
 import java.util.Locale
 import kotlin.math.sqrt
 import org.json.JSONArray
@@ -56,32 +60,59 @@ internal object PreparedProsePerformanceGates {
         val layout = export.getJSONArray("layoutNanos").longs()
         val lookup = export.getJSONArray("cacheLookupNanos").longs()
         val draw = export.getJSONArray("drawNanos").longs()
-        val frames = export.getJSONArray("frameNanos").longs()
+        val coldFrames = export.getJSONArray("coldFrameNanos").longs()
+        val warmFrames = export.getJSONArray("warmFrameNanos").longs()
+        val imagesDisabledFrames = export.getJSONArray("imagesDisabledFrameNanos").longs()
+        val warmViewerFrames = export.getJSONArray("warmViewerFrameNanos").longs()
         check(compile.size >= expectedDocuments) { "expected compile samples for every corpus document" }
         check(percentile(compile.zip(layout).map { it.first + it.second }, .95) < 4 * NS_PER_MS)
         check(percentile(lookup, .99) < 100_000L)
         check(percentile(draw, .95) < NS_PER_MS)
-        check(frames.count { it <= 16_670_000L }.toDouble() / maxOf(1, frames.size) >= .99)
-        check((frames.maxOrNull() ?: 0L) <= 33_300_000L)
-        check(export.getJSONObject("retainedBytes").optLong("layout") <= 32L * 1024L * 1024L)
+        check(export.getString("percentileDefinition") == "nearest-rank: sorted[ceil(p*n)-1]")
+        listOf(coldFrames, warmFrames, imagesDisabledFrames).filter { it.isNotEmpty() }.forEach { frames ->
+            check(frames.count { it <= 16_670_000L }.toDouble() / frames.size >= .99)
+        }
+        check((warmViewerFrames.maxOrNull() ?: 0L) <= 33_300_000L)
+        check(export.getJSONObject("retainedBytes").optLong("unmounted_layout") <= 32L * 1024L * 1024L)
         check(export.optInt("duplicatePublications") == 0)
     }
     private fun JSONArray.longs() = List(length()) { getLong(it) }
-    private fun percentile(values: List<Long>, percentile: Double): Long = values.sorted()[((values.size - 1) * percentile).toInt().coerceAtLeast(0)]
+    /** Nearest rank shared with iOS: sorted[ceil(p * n) - 1]. */
+    private fun percentile(values: List<Long>, percentile: Double): Long = values.sorted()[(kotlin.math.ceil(values.size * percentile).toInt() - 1).coerceAtLeast(0)]
 }
 
-/** RecyclerView counterpart to the example FlatList; callers supply corpus order. */
+/** Actual RecyclerView traversal: holders host the shipped ProseViewerView. */
 internal class PreparedProseRecyclerHarness(context: Context) : RecyclerView(context) {
     data class Entry(val id: String, val contentJson: String)
     private val benchmarkAdapter = object : RecyclerView.Adapter<Holder>() {
         var entries: List<Entry> = emptyList()
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(android.widget.TextView(parent.context))
-        override fun onBindViewHolder(holder: Holder, position: Int) { holder.itemView.contentDescription = entries[position].id }
+        var imagesEnabled = true
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(ProseViewerView(parent.context))
+        override fun onBindViewHolder(holder: Holder, position: Int) { holder.bind(entries[position], imagesEnabled) }
+        override fun onViewRecycled(holder: Holder) { holder.viewer.prepareForReuse(); super.onViewRecycled(holder) }
         override fun getItemCount() = entries.size
     }
-    init { this.adapter = benchmarkAdapter }
-    fun traverse(order: List<Entry>, imagesEnabled: Boolean, bind: (Entry, Boolean) -> Unit) { benchmarkAdapter.entries = order; benchmarkAdapter.notifyDataSetChanged(); order.forEach { bind(it, imagesEnabled) } }
-    private class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
+    private val frameCallback = object : Choreographer.FrameCallback { override fun doFrame(frameTimeNanos: Long) { PreparedProseInstrumentation.onDisplayFrame(frameTimeNanos); if (measuring) Choreographer.getInstance().postFrameCallback(this) } }
+    private var measuring = false
+    init { layoutManager = LinearLayoutManager(context); adapter = benchmarkAdapter; layoutParams = ViewGroup.LayoutParams(390, 844) }
+    fun traverse(order: List<Entry>, phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Boolean) {
+        PreparedProseInstrumentation.beginTraversal(phase); benchmarkAdapter.entries = order; benchmarkAdapter.imagesEnabled = imagesEnabled; benchmarkAdapter.notifyDataSetChanged()
+        measuring = true; Choreographer.getInstance().postFrameCallback(frameCallback)
+        measure(MeasureSpec.makeMeasureSpec(390, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(844, MeasureSpec.EXACTLY)); layout(0, 0, 390, 844)
+        order.indices.forEach { position ->
+            scrollToPosition(position)
+            // The attached device window performs the actual draw; this only
+            // advances RecyclerView's real layout/recycling/visibility state.
+            measure(MeasureSpec.makeMeasureSpec(390, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(844, MeasureSpec.EXACTLY))
+            layout(0, 0, 390, 844)
+            postInvalidateOnAnimation()
+        }
+        measuring = false; Choreographer.getInstance().removeFrameCallback(frameCallback); PreparedProseInstrumentation.endTraversal()
+    }
+    fun resetCache() { PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning() }
+    private class Holder(val viewer: ProseViewerView) : RecyclerView.ViewHolder(viewer) {
+        fun bind(entry: Entry, imagesEnabled: Boolean) { viewer.contentDescription = entry.id; viewer.apply(ProseViewerSource.Json(entry.contentJson), ProseViewerConfiguration(configJson = "{}", imagesEnabled = imagesEnabled)) }
+    }
 }
 
 internal data class ApplyUpdateTraceStats(

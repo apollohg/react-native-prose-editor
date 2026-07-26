@@ -9,15 +9,17 @@ import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
+import com.apollohg.editor.viewer.PreparedProseInstrumentation
+import java.io.BufferedReader
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -29,21 +31,34 @@ class NativeDevicePerformanceTest {
     private val baseFontSize = 16f
     private val textColor = Color.BLACK
 
-    /**
-     * Pixel 7 Task 14 gate. The device runner drives the deterministic
-     * RecyclerView corpus harness, then passes its native counter export as an
-     * instrumentation argument so this test cannot silently relax a budget.
-     */
+    /** Pixel 7 Task 14 gate; no caller-supplied counter JSON is accepted. */
     @Test
     fun performance_preparedProseCorpusGates_pixel7() {
-        assumeTrue(
-            "runs only in the prepared viewer device lane",
-            instrumentation.arguments.getString("preparedProseBenchmark") == "1",
-        )
-        val export = requireNotNull(instrumentation.arguments.getString("preparedProseCounters")) {
-            "Task 14 must provide counters exported by the RecyclerView corpus harness."
+        val corpus = JSONObject(context.assets.open("viewer-performance-corpus.json").bufferedReader().use(BufferedReader::readText))
+        val byId = buildMap {
+            val documents = corpus.getJSONArray("documents")
+            for (index in 0 until documents.length()) {
+                val entry = documents.getJSONObject(index)
+                put(entry.getString("id"), PreparedProseRecyclerHarness.Entry(entry.getString("id"), entry.getJSONObject("contentJSON").toString()))
+            }
         }
-        PreparedProsePerformanceGates.assertPasses(export, expectedDocuments = 1_000)
+        fun ordered(name: String) = corpus.getJSONArray(name).let { ids -> List(ids.length()) { byId.getValue(ids.getString(it)) } }
+        ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val harness = PreparedProseRecyclerHarness(activity)
+                // Attach to a real device window before traversal so RecyclerView
+                // layout, recycling, visibility/culling, draw, and Choreographer
+                // callbacks are attributed to the same mounted viewer surface.
+                activity.setContentView(harness)
+                PreparedProseInstrumentation.beginBenchmark()
+                harness.traverse(ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.COLD, imagesEnabled = true)
+                harness.traverse(ordered("warmTraversal"), PreparedProseInstrumentation.TraversalPhase.WARM, imagesEnabled = true)
+                harness.traverse(ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.IMAGES_DISABLED, imagesEnabled = false)
+                harness.resetCache()
+            }
+            instrumentation.waitForIdleSync()
+        }
+        PreparedProsePerformanceGates.assertPasses(PreparedProseInstrumentation.exportJson(), expectedDocuments = 1_000)
     }
 
     @Test

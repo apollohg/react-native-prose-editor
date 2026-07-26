@@ -20,6 +20,19 @@ version = packageJson.version
 
 android {
     namespace = "com.apollohg.editor"
+    buildFeatures {
+        // The performance collector uses this explicit build-type constant;
+        // no implicit/generated DEBUG field is relied on by release drawing.
+        buildConfig = true
+    }
+    buildTypes {
+        debug {
+            buildConfigField "boolean", "PREPARED_PROSE_INSTRUMENTATION", "true"
+        }
+        release {
+            buildConfigField "boolean", "PREPARED_PROSE_INSTRUMENTATION", "false"
+        }
+    }
     testOptions {
         unitTests.includeAndroidResources = true
         unitTests.all { test ->
@@ -59,11 +72,15 @@ android {
             java.srcDirs += [
                 "${project.projectDir}/src/sharedTest/java"
             ]
+            assets.srcDirs += [
+                "${project.projectDir}/../scripts/tests"
+            ]
         }
     }
 }
 
 dependencies {
+    implementation "androidx.recyclerview:recyclerview:1.3.2"
     implementation "com.facebook.react:react-android"
     implementation "androidx.appcompat:appcompat:1.7.0"
     implementation "com.google.android.material:material:1.12.0"

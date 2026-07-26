@@ -186,6 +186,9 @@ internal class PreparedProseLayoutRegistry(
 
     fun releaseFabricMountMiss(generation: FabricGenerationToken) = releaseFabricGeneration(generation)
 
+    fun registerDirectMounted(owner: String, layout: PreparedProseLayout) = layoutCache.registerDirectMount(owner, layout)
+    fun releaseDirectMounted(owner: String) = layoutCache.releaseDirectMount(owner)
+
     fun didReceiveMemoryWarning() {
         PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.MEMORY_PRESSURE)
         layoutCache.removeAllUnmounted()

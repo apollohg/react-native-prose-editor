@@ -437,6 +437,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
         releaseFabricGeneration(generation)
     }
 
+    func registerDirectMounted(_ owner: String, layout: PreparedProseLayout) {
+        layoutCache.registerDirectMount(owner, layout: layout)
+    }
+
+    func releaseDirectMounted(_ owner: String) {
+        layoutCache.releaseDirectMount(owner)
+    }
+
     @objc(releaseFabricSurfaceId:componentTag:)
     public func releaseFabricSurface(surfaceId: Int64, componentTag: Int64) {
         releaseFabricSurface(FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag))

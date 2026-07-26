@@ -149,6 +149,7 @@ class ProseViewerView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : ViewGroup(context, attrs, defStyleAttr) {
+    private val preparedInstrumentationOwner = "direct-${System.identityHashCode(this)}"
     internal constructor(context: Context, registry: PreparedProseLayoutRegistry) : this(context) {
         layoutRegistry = registry
     }
@@ -400,6 +401,7 @@ class ProseViewerView @JvmOverloads constructor(
             )
             val artifactChanged = preparedArtifact !== artifact
             preparedArtifact = artifact
+            layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, artifact)
             preparedDrawingView.install(artifact)
             if (artifactChanged || preparedAccessibilityGeneration != artifact.key.generationIdentity) {
                 clearVirtualAccessibilityFocus()
@@ -538,6 +540,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedRequest = null
         retainedDocument = null
         preparedArtifact = null
+        layoutRegistry.releaseDirectMounted(preparedInstrumentationOwner)
         viewerImagePipeline.cancel()
         attachmentRevisions.reset()
         preparedDrawingView.imagePixels = emptyMap()

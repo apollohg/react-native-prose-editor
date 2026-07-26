@@ -68,6 +68,9 @@ targets:
       # physical devices, where the repository host path is unavailable.
       - path: ../scripts/tests/security-contract-fixtures.json
         buildPhase: resources
+      # Device benchmarks load the checked-in literal through Bundle APIs.
+      - path: ../scripts/tests/viewer-performance-corpus.json
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: NativeEditorTests

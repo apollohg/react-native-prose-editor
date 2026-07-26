@@ -15,6 +15,7 @@ final class PreparedProseLayoutCache {
     private var leases: [FabricLeaseKey: PreparedProseLayout] = [:]
     private var leaseKeyBySurface: [FabricSurfaceToken: FabricLeaseKey] = [:]
     private var leaseAccessOrder: [FabricLeaseKey] = []
+    private var directMounted: [String: PreparedProseLayout] = [:]
     private var mountIndex: [ProseMountKey: ProseLayoutKey] = [:]
 #if DEBUG
     /// A live generation must publish an artifact once for its complete
@@ -23,17 +24,9 @@ final class PreparedProseLayoutCache {
     private var publishedKeys: Set<ProseLayoutKey> = []
 #endif
     private let byteBudget: Int
-    private let entryBudget: Int
-    private let leaseBudget: Int
 
-    init(
-        byteBudget: Int = 32 * 1024 * 1024,
-        entryBudget: Int = 512,
-        leaseBudget: Int = 32
-    ) {
+    init(byteBudget: Int = 32 * 1024 * 1024) {
         self.byteBudget = byteBudget
-        self.entryBudget = entryBudget
-        self.leaseBudget = leaseBudget
     }
 
     func value(
@@ -75,9 +68,11 @@ final class PreparedProseLayoutCache {
                 preconditionFailure("Prepared prose layout published twice for a live semantic/width/revision key.")
             }
 #endif
-            completed[key] = layout
-            mountIndex[mountKey(for: key)] = key
-            touch(key)
+            if layout.retainedBytes <= byteBudget {
+                completed[key] = layout
+                mountIndex[mountKey(for: key)] = key
+                touch(key)
+            }
             if let fabricSurface {
                 leaseLocked(layout, for: key, surface: fabricSurface)
             } else {
@@ -110,9 +105,7 @@ final class PreparedProseLayoutCache {
            leaseKey.layout.generationIdentity == generationIdentity,
            leaseKey.layout.widthPixels == widthPixels,
            leaseKey.layout.displayScaleBits == Double(displayScale).bitPattern,
-           let layout = leases.removeValue(forKey: leaseKey) {
-            leaseKeyBySurface.removeValue(forKey: surface)
-            leaseAccessOrder.removeAll { $0 == leaseKey }
+           let layout = leases[leaseKey] {
             return layout
         }
         guard let key = mountIndex[mountKey], let layout = completed[key] else { return nil }
@@ -128,18 +121,23 @@ final class PreparedProseLayoutCache {
         condition.unlock()
     }
 
+    func registerDirectMount(_ owner: String, layout: PreparedProseLayout) {
+        condition.lock(); directMounted[owner] = layout; publishOwnerBytesLocked(); condition.unlock()
+    }
+
+    func releaseDirectMount(_ owner: String) {
+        condition.lock(); directMounted.removeValue(forKey: owner); retireUnownedPublicationKeysLocked(); publishOwnerBytesLocked(); condition.unlock()
+    }
+
     func removeAllUnmounted() {
         condition.lock()
         completed.removeAll()
         accessOrder.removeAll()
-        leases.removeAll()
-        leaseKeyBySurface.removeAll()
-        leaseAccessOrder.removeAll()
         mountIndex.removeAll()
-#if DEBUG
-        publishedKeys.removeAll()
-#endif
-        PreparedProseInstrumentation.retained(.layout, scope: "unmounted-cache", bytes: 0)
+        // Fabric/direct mounted owners survive pressure. Registry clears
+        // compiled documents only after this unmounted cache step.
+        retireUnownedPublicationKeysLocked()
+        publishOwnerBytesLocked()
         condition.unlock()
     }
 
@@ -200,7 +198,7 @@ final class PreparedProseLayoutCache {
         let mountKey = mountKey(for: key)
         if mountIndex[mountKey] == key { mountIndex.removeValue(forKey: mountKey) }
 #if DEBUG
-        if !leases.values.contains(where: { $0.key == key }) { publishedKeys.remove(key) }
+        retireUnownedPublicationKeysLocked()
 #endif
     }
 
@@ -213,10 +211,6 @@ final class PreparedProseLayoutCache {
     }
 
     private func enforceBudgetLocked(preferredLease: FabricLeaseKey? = nil) {
-        while completed.count > entryBudget, let oldest = accessOrder.first {
-            removeCompletedLocked(oldest)
-        }
-
         // Leases are handoffs to a mounted owner, not unmounted cache entries.
         // The cache budget therefore evicts only completed LRU artifacts; a
         // mounted artifact is never evicted by pressure or entry churn.
@@ -227,7 +221,8 @@ final class PreparedProseLayoutCache {
             }
             break
         }
-        PreparedProseInstrumentation.retained(.layout, scope: "unmounted-cache", bytes: completedRetainedBytesLocked())
+        retireUnownedPublicationKeysLocked()
+        publishOwnerBytesLocked()
     }
 
     /// Cache and lease references commonly point at the same immutable layout.
@@ -236,12 +231,37 @@ final class PreparedProseLayoutCache {
         var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
         for layout in completed.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
         for layout in leases.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
+        for layout in directMounted.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
         return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
     }
 
     private func completedRetainedBytesLocked() -> Int {
         var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
-        for layout in completed.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
+        let mountedKeys = Set(leases.values.map(\.key)).union(directMounted.values.map(\.key))
+        for layout in completed.values where !mountedKeys.contains(layout.key) {
+            uniqueLayouts[ObjectIdentifier(layout)] = layout
+        }
         return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
+    }
+
+    private func retireUnownedPublicationKeysLocked() {
+#if DEBUG
+        let live = Set(completed.keys).union(leases.values.map(\.key)).union(directMounted.values.map(\.key))
+        publishedKeys.formIntersection(live)
+#endif
+    }
+
+    private func publishOwnerBytesLocked() {
+        PreparedProseInstrumentation.retained(.unmountedLayout, scope: "cache", bytes: completedRetainedBytesLocked())
+        PreparedProseInstrumentation.retained(.fabricLeaseHandoff, scope: "leases", bytes: uniqueBytes(leases.values))
+        PreparedProseInstrumentation.retained(.directMounted, scope: "views", bytes: uniqueBytes(directMounted.values))
+    }
+
+    private func uniqueBytes(_ layouts: Dictionary<FabricLeaseKey, PreparedProseLayout>.Values) -> Int {
+        Dictionary(uniqueKeysWithValues: layouts.map { (ObjectIdentifier($0), $0) }).values.reduce(0) { $0 + $1.retainedBytes }
+    }
+
+    private func uniqueBytes(_ layouts: Dictionary<String, PreparedProseLayout>.Values) -> Int {
+        Dictionary(uniqueKeysWithValues: layouts.map { (ObjectIdentifier($0), $0) }).values.reduce(0) { $0 + $1.retainedBytes }
     }
 }
