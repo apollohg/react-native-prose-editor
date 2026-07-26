@@ -62,8 +62,11 @@ final class PreparedProseLayoutCache {
             completed[key] = layout
             mountIndex[mountKey(for: key)] = key
             touch(key)
-            if let fabricSurface { leaseLocked(layout, for: key, surface: fabricSurface) }
-            enforceBudgetLocked()
+            if let fabricSurface {
+                leaseLocked(layout, for: key, surface: fabricSurface)
+            } else {
+                enforceBudgetLocked()
+            }
         }
         preparation.result = result
         inFlight.removeValue(forKey: key)
