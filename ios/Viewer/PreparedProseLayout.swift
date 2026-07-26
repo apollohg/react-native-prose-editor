@@ -180,8 +180,35 @@ final class PreparedProseBlock {
     }
 }
 
-struct PreparedProseInteraction: Hashable {}
-struct PreparedProseAccessibilityNode: Hashable {}
+/// Immutable hit payload. Rectangles are in artifact coordinates, ordered by
+/// visual line, and never require Core Text work after publication.
+struct PreparedProseInteraction: Hashable {
+    enum Kind: Hashable { case link, mention }
+
+    let kind: Kind
+    let rects: [CGRect]
+    let href: String?
+    let visibleText: String
+    let docPos: UInt32?
+    let label: String
+
+    var estimatedRetainedBytes: Int {
+        144 + rects.count * 64 + (href?.utf8.count ?? 0) * 2 + visibleText.utf8.count * 2 + label.utf8.count * 2
+    }
+}
+
+/// A lightweight virtual-node descriptor. UIKit elements are deliberately
+/// created only when VoiceOver asks the container for an index.
+struct PreparedProseAccessibilityNode: Hashable {
+    enum Role: Hashable { case link, mention }
+
+    let interactionIndex: Int
+    let role: Role
+    let label: String
+    let bounds: CGRect
+
+    var estimatedRetainedBytes: Int { 96 + label.utf8.count * 2 }
+}
 
 public final class PreparedProseLayout: NSObject {
     let key: ProseLayoutKey

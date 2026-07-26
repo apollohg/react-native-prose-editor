@@ -38,6 +38,7 @@ internal class PreparedProseViewerManager :
         PreparedProseDrawingView(context).also { view ->
             states[view] = ViewState()
             view.onUsableMetricsChanged = { installCachedLayout(view) }
+            view.onInteractionActivated = { interaction -> dispatchInteraction(view, interaction) }
         }
 
     override fun createShadowNodeInstance(): LayoutShadowNode = LayoutShadowNode()
@@ -49,6 +50,7 @@ internal class PreparedProseViewerManager :
     override fun onDropViewInstance(view: PreparedProseDrawingView) {
         states.remove(view)?.release()
         view.onUsableMetricsChanged = null
+        view.onInteractionActivated = null
         view.install(null)
         super.onDropViewInstance(view)
     }
@@ -96,7 +98,8 @@ internal class PreparedProseViewerManager :
     override fun setCollapsesWhenEmpty(view: PreparedProseDrawingView, value: Boolean) =
         update(view) { collapsesWhenEmpty = value }
 
-    override fun setEnableLinkTaps(view: PreparedProseDrawingView, value: Boolean) = Unit
+    override fun setEnableLinkTaps(view: PreparedProseDrawingView, value: Boolean) =
+        update(view) { linkTapsEnabled = value }.also { view.linkInteractionsEnabled = value }
 
     override fun setFontEnvironmentRevision(view: PreparedProseDrawingView, value: Int) =
         update(view) { fontEnvironmentRevision = value.coerceAtLeast(0).toLong() }
@@ -182,6 +185,23 @@ internal class PreparedProseViewerManager :
         )
     }
 
+    private fun dispatchInteraction(view: PreparedProseDrawingView, interaction: PreparedProseInteraction) {
+        val context = UIManagerHelper.getReactContext(view)
+        context.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java).receiveEvent(
+            view.id,
+            if (interaction.kind == PreparedProseInteraction.Kind.LINK) "topPressLink" else "topPressMention",
+            Arguments.createMap().apply {
+                if (interaction.kind == PreparedProseInteraction.Kind.LINK) {
+                    putString("href", interaction.href)
+                    putString("text", interaction.visibleText)
+                } else {
+                    putDouble("docPos", (interaction.docPos ?: 0L).toDouble())
+                    putString("label", interaction.label)
+                }
+            },
+        )
+    }
+
     private fun requestFrom(props: ReadableMap?, state: ReadableMap?): ProseViewerRequest? {
         val revisions = state?.fabricRevisionsOrNull() ?: return null
         return requestFrom(props, revisions)
@@ -263,6 +283,7 @@ internal class PreparedProseViewerManager :
         var imagesEnabled: Boolean = true,
         var collapsesWhenEmpty: Boolean = true,
         var fontEnvironmentRevision: Long = 0,
+        var linkTapsEnabled: Boolean = true,
         var revisions: FabricStateRevisions? = null,
         var stateWrapper: StateWrapper? = null,
         var generation: FabricGenerationToken? = null,

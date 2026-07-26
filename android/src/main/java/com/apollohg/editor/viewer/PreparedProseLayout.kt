@@ -52,8 +52,28 @@ internal data class PreparedProseBlock(
     val retainedBytes: Long get() = 160L + fragments.sumOf { it.retainedBytes }
 }
 
-internal data class PreparedProseInteraction(val unused: Unit = Unit)
-internal data class PreparedProseAccessibilityNode(val unused: Unit = Unit)
+internal data class PreparedProseInteraction(
+    val kind: Kind,
+    val rects: List<Rect>,
+    val href: String? = null,
+    val visibleText: String,
+    /** Kept as Long so the complete unsigned Rust u32 domain is lossless. */
+    val docPos: Long? = null,
+    val label: String,
+) {
+    enum class Kind { LINK, MENTION }
+    val retainedBytes: Long get() = 144L + rects.size * 32L + (href?.length ?: 0) * 2L + visibleText.length * 2L + label.length * 2L
+}
+
+internal data class PreparedProseAccessibilityNode(
+    val interactionIndex: Int,
+    val role: Role,
+    val label: String,
+    val bounds: Rect,
+) {
+    enum class Role { LINK, MENTION }
+    val retainedBytes: Long get() = 96L + label.length * 2L
+}
 
 /** A fully prepared artifact. StaticLayout construction is complete before publication. */
 internal data class PreparedProseLayout(

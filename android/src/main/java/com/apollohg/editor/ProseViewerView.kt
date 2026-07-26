@@ -16,6 +16,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import com.apollohg.editor.viewer.PreparedProseDrawingView
+import com.apollohg.editor.viewer.PreparedProseInteraction
 import com.apollohg.editor.viewer.PreparedProseLayout
 import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
 import com.apollohg.editor.viewer.ProseViewerRequest
@@ -76,13 +77,13 @@ data class ProseViewerError(
 /** Interaction callbacks for an embedded Android prose viewer. */
 interface ProseViewerInteractionListener {
     fun onLinkTap(view: ProseViewerView, href: String, text: String)
-    fun onMentionTap(view: ProseViewerView, docPos: Int, label: String)
+    fun onMentionTap(view: ProseViewerView, docPos: Long, label: String)
     fun onViewerError(view: ProseViewerView, error: ProseViewerError) = Unit
 }
 
 abstract class ProseViewerInteractionListenerAdapter : ProseViewerInteractionListener {
     override fun onLinkTap(view: ProseViewerView, href: String, text: String) = Unit
-    override fun onMentionTap(view: ProseViewerView, docPos: Int, label: String) = Unit
+    override fun onMentionTap(view: ProseViewerView, docPos: Long, label: String) = Unit
 }
 
 private sealed interface ProseViewerTapTarget {
@@ -121,6 +122,7 @@ private data class PendingProseViewerTap(
     val downY: Float
 )
 
+
 /**
  * Display-only prose viewer for Android View hosts.
  *
@@ -154,6 +156,7 @@ class ProseViewerView @JvmOverloads constructor(
     private var touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private var pendingTapGesture: PendingProseViewerTap? = null
     private var accessibilityFocusedVirtualId = View.NO_ID
+    private var preparedAccessibilityGeneration: String? = null
 
     internal var onContentHeightChange: ((Int) -> Unit)? = null
     internal var opensLinksAutomatically = false
@@ -204,6 +207,7 @@ class ProseViewerView @JvmOverloads constructor(
         proseView.setOnTouchListener { _, event -> handleProseTouch(event) }
 
         preparedDrawingView.visibility = View.GONE
+        preparedDrawingView.onInteractionActivated = { activatePreparedInteraction(it) }
         addView(
             preparedDrawingView,
             LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
@@ -327,6 +331,11 @@ class ProseViewerView @JvmOverloads constructor(
             )
             preparedArtifact = artifact
             preparedDrawingView.install(artifact)
+            if (preparedAccessibilityGeneration != artifact.key.generationIdentity) {
+                clearVirtualAccessibilityFocus()
+                preparedAccessibilityGeneration = artifact.key.generationIdentity
+                notifyAccessibilitySubtreeChanged()
+            }
             reportDirectErrorIfNeeded(request, artifact.error ?: directError)
             val desiredWidth = artifact.widthPx + paddingLeft + paddingRight
             val intrinsicHeight = artifact.heightPx + paddingTop + paddingBottom
@@ -423,6 +432,7 @@ class ProseViewerView @JvmOverloads constructor(
         reportedGenerationIdentity = null
         preparedDrawingView.install(null)
         preparedDrawingView.visibility = View.GONE
+        preparedAccessibilityGeneration = null
         proseView.visibility = View.VISIBLE
     }
 
@@ -544,6 +554,21 @@ class ProseViewerView @JvmOverloads constructor(
         }
     }
 
+    private fun activatePreparedInteraction(interaction: PreparedProseInteraction): Boolean = when (interaction.kind) {
+        PreparedProseInteraction.Kind.LINK -> {
+            val href = interaction.href ?: return false
+            if (!linkTapsEnabled) false else if (opensLinksAutomatically) openLink(href) else {
+                onLinkTapForTesting?.invoke() ?: interactionListener?.onLinkTap(this, href, interaction.visibleText)
+                true
+            }
+        }
+        PreparedProseInteraction.Kind.MENTION -> {
+            val docPos = interaction.docPos ?: return false
+            onMentionTapForTesting?.invoke() ?: interactionListener?.onMentionTap(this, docPos, interaction.label)
+            true
+        }
+    }
+
     private fun movedBeyondTouchSlop(
         event: MotionEvent,
         gesture: PendingProseViewerTap
@@ -558,7 +583,7 @@ class ProseViewerView @JvmOverloads constructor(
         return when (val target = hit.target) {
             is EditorEditText.AccessibleAnnotationTarget.Mention ->
                 ProseViewerTapTarget.Mention(
-                    target.docPos,
+                    target.docPos.toLong(),
                     target.label,
                     hit.annotation,
                     hit.start,
@@ -606,8 +631,9 @@ class ProseViewerView @JvmOverloads constructor(
     override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
         super.onInitializeAccessibilityNodeInfo(info)
         info.className = android.widget.TextView::class.java.name
-        info.text = renderedTextForTesting
-        accessibleAnnotations().indices.forEach { index ->
+        info.text = if (preparedRequest != null) preparedAccessibleNodes().joinToString(" ") { it.label } else renderedTextForTesting
+        val count = if (preparedRequest != null) preparedAccessibleNodes().size else accessibleAnnotations().size
+        repeat(count) { index ->
             info.addChild(this, index + FIRST_VIRTUAL_ANNOTATION_ID)
         }
     }
@@ -622,6 +648,7 @@ class ProseViewerView @JvmOverloads constructor(
                     onInitializeAccessibilityNodeInfo(it)
                 }
             }
+            if (preparedRequest != null) return preparedAccessibilityNodeInfo(virtualViewId)
             val annotation = accessibleAnnotations()
                 .getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return null
             val bounds = Rect(annotation.bounds).apply {
@@ -661,6 +688,7 @@ class ProseViewerView @JvmOverloads constructor(
             action: Int,
             arguments: Bundle?
         ): Boolean {
+            if (preparedRequest != null) return performPreparedAccessibilityAction(virtualViewId, action)
             val annotation = accessibleAnnotations()
                 .getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return false
             return when (action) {
@@ -675,11 +703,53 @@ class ProseViewerView @JvmOverloads constructor(
         }
     }
 
+    private fun preparedAccessibleNodes() = preparedArtifact?.accessibilityNodes.orEmpty().filter {
+        linkTapsEnabled || it.role != com.apollohg.editor.viewer.PreparedProseAccessibilityNode.Role.LINK
+    }
+
+    private fun preparedAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? {
+        val node = preparedAccessibleNodes().getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return null
+        val parentBounds = Rect(node.bounds).apply { offset(preparedDrawingView.left, preparedDrawingView.top) }
+        val screenBounds = Rect(parentBounds)
+        val location = IntArray(2)
+        getLocationOnScreen(location)
+        screenBounds.offset(location[0], location[1])
+        return AccessibilityNodeInfo.obtain().apply {
+            packageName = context.packageName
+            className = android.widget.Button::class.java.name
+            setSource(this@ProseViewerView, virtualViewId)
+            setParent(this@ProseViewerView)
+            text = node.label
+            contentDescription = node.label
+            isClickable = true
+            isFocusable = true
+            isScreenReaderFocusable = true
+            isAccessibilityFocused = virtualViewId == accessibilityFocusedVirtualId
+            setBoundsInParent(parentBounds)
+            setBoundsInScreen(screenBounds)
+            addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK)
+            addAction(if (isAccessibilityFocused) AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS else AccessibilityNodeInfo.AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS)
+            AccessibilityNodeInfoCompat.wrap(this).roleDescription = if (node.role == com.apollohg.editor.viewer.PreparedProseAccessibilityNode.Role.LINK) "link" else "mention"
+        }
+    }
+
+    private fun performPreparedAccessibilityAction(virtualViewId: Int, action: Int): Boolean {
+        val node = preparedAccessibleNodes().getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return false
+        return when (action) {
+            AccessibilityNodeInfo.ACTION_CLICK -> preparedArtifact?.interactions?.getOrNull(node.interactionIndex)?.let(::activatePreparedInteraction) ?: false
+            AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> requestVirtualAccessibilityFocus(virtualViewId)
+            AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> clearVirtualAccessibilityFocus(virtualViewId)
+            else -> false
+        }
+    }
+
     private fun requestVirtualAccessibilityFocus(virtualViewId: Int): Boolean {
-        if (
-            accessibleAnnotations()
-                .getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) == null
-        ) {
+        val exists = if (preparedRequest != null) {
+            preparedAccessibleNodes().getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) != null
+        } else {
+            accessibleAnnotations().getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) != null
+        }
+        if (!exists) {
             return false
         }
         if (accessibilityFocusedVirtualId == virtualViewId) return false

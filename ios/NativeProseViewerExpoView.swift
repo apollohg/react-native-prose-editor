@@ -132,9 +132,9 @@ extension NativeProseViewerExpoView: ProseViewerInteractionDelegate {
 
     func proseViewer(
         _ view: ProseViewerView,
-        didTapMention docPos: Int,
+        didTapMention docPos: UInt32,
         label: String
     ) {
-        onPressMention(["docPos": docPos, "label": label])
+        onPressMention(["docPos": Int(docPos), "label": label])
     }
 }

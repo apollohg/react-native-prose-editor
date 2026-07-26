@@ -130,7 +130,7 @@ class NativeProseViewerExpoView(
         onPressLink(mapOf("href" to href, "text" to text))
     }
 
-    override fun onMentionTap(view: ProseViewerView, docPos: Int, label: String) {
+    override fun onMentionTap(view: ProseViewerView, docPos: Long, label: String) {
         onPressMention(mapOf("docPos" to docPos, "label" to label))
     }
 

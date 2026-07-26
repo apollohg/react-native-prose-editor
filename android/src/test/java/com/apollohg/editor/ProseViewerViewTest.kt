@@ -105,7 +105,7 @@ class ProseViewerViewTest {
                 null
             )
         )
-        assertEquals(listOf(31 to "@Alice"), listener.mentions)
+        assertEquals(listOf(31L to "@Alice"), listener.mentions)
     }
 
     private fun paragraphRenderJson(text: String): String =
@@ -119,7 +119,7 @@ class ProseViewerViewTest {
 
     private class RecordingListener : ProseViewerInteractionListener {
         val links = mutableListOf<Pair<String, String>>()
-        val mentions = mutableListOf<Pair<Int, String>>()
+        val mentions = mutableListOf<Pair<Long, String>>()
 
         override fun onLinkTap(view: ProseViewerView, href: String, text: String) {
             links += href to text
@@ -127,7 +127,7 @@ class ProseViewerViewTest {
 
         override fun onMentionTap(
             view: ProseViewerView,
-            docPos: Int,
+            docPos: Long,
             label: String
         ) {
             mentions += docPos to label

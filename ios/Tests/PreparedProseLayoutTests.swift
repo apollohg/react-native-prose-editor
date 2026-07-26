@@ -823,7 +823,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         var errors: [ProseViewerError] = []
 
         func proseViewer(_ view: ProseViewerView, didTapLink href: String, text: String) {}
-        func proseViewer(_ view: ProseViewerView, didTapMention docPos: Int, label: String) {}
+        func proseViewer(_ view: ProseViewerView, didTapMention docPos: UInt32, label: String) {}
         func proseViewer(_ view: ProseViewerView, didFail error: ProseViewerError) {
             errors.append(error)
         }

@@ -42,6 +42,7 @@ bool HasEquivalentProps(
       left.imagePolicyJson == right.imagePolicyJson &&
       left.imagesEnabled == right.imagesEnabled &&
       left.collapsesWhenEmpty == right.collapsesWhenEmpty &&
+      left.enableLinkTaps == right.enableLinkTaps &&
       left.fontEnvironmentRevision == right.fontEnvironmentRevision;
 }
 
@@ -112,6 +113,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 
 } // namespace
 
+@interface PREPPreparedProseViewerComponentView () <PreparedProseDrawingViewInteractionDelegate>
+@end
+
 @implementation PREPPreparedProseViewerComponentView {
   PREPPreparedProseDrawingView *_drawingView;
   std::shared_ptr<const PreparedProseViewerProps> _viewerProps;
@@ -135,10 +139,37 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 {
   if (self = [super initWithFrame:frame]) {
     _drawingView = [PREPPreparedProseDrawingView new];
+    _drawingView.interactionDelegate = self;
     _drawingView.backgroundColor = UIColor.clearColor;
     [self addSubview:_drawingView];
   }
   return self;
+}
+
+- (void)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
+                 didActivateLink:(NSString *)href
+                            text:(NSString *)text
+{
+  const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
+  if (eventEmitter) {
+    eventEmitter->onPressLink({
+        .href = std::string(href.UTF8String ?: ""),
+        .text = std::string(text.UTF8String ?: ""),
+    });
+  }
+}
+
+- (void)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
+              didActivateMention:(uint32_t)docPos
+                            label:(NSString *)label
+{
+  const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
+  if (eventEmitter) {
+    eventEmitter->onPressMention({
+        .docPos = static_cast<int>(docPos),
+        .label = std::string(label.UTF8String ?: ""),
+    });
+  }
 }
 
 - (void)updateProps:(const Props::Shared &)props oldProps:(const Props::Shared &)oldProps
@@ -149,6 +180,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     [self beginNewGeneration];
   }
   _viewerProps = nextProps;
+  _drawingView.linkInteractionsEnabled = nextProps->enableLinkTaps;
   if (_hasReceivedUsableLayoutMetrics) {
     [self installMeasuredArtifactIfAttached];
   }

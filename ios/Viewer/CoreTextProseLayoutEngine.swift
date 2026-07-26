@@ -170,6 +170,7 @@ private struct PreparedAtomAppearance {
 private struct PreparedAtomSpec {
     let range: NSRange
     let nodeType: String
+    let docPos: UInt32
     let label: String
     let metrics: PreparedAtomMetrics
     let line: CTLine
@@ -179,7 +180,19 @@ private struct PreparedAtomSpec {
 private struct PreparedAttributedBlock {
     let string: NSAttributedString
     let atoms: [PreparedAtomSpec]
+    let semanticRanges: [PreparedSemanticRange]
     let retainedBytes: Int
+}
+
+private enum PreparedSemanticRange {
+    case link(range: NSRange, href: String, text: String)
+    case mention(range: NSRange, docPos: UInt32, label: String)
+
+    var range: NSRange {
+        switch self {
+        case let .link(range, _, _), let .mention(range, _, _): range
+        }
+    }
 }
 
 private struct PreparedListMarker {
@@ -210,6 +223,7 @@ final class CoreTextProseLayoutEngine {
         let theme = document.preparedTheme ?? PreparedProseTheme.resolve(themeJSON: nil)
         var cursorY = theme.contentInsets.top
         var blocks: [PreparedProseBlock] = []
+        var interactions: [PreparedProseInteraction] = []
         var retainedBytes = document.retainedBytes
         var listMarkersByIdentity: [Int: PreparedListMarker] = [:]
         for block in document.blocks {
@@ -230,15 +244,33 @@ final class CoreTextProseLayoutEngine {
                 displayScale: displayScale
             )
             blocks.append(prepared.block)
+            interactions.append(contentsOf: prepared.interactions)
             cursorY = prepared.nextY
             retainedBytes += prepared.retainedBytes
         }
         cursorY += theme.contentInsets.bottom
         let pixelHeight = ceil(cursorY * displayScale)
+        interactions.sort { lhs, rhs in
+            let left = lhs.rects.first ?? .zero
+            let right = rhs.rects.first ?? .zero
+            return left.minY == right.minY ? left.minX < right.minX : left.minY < right.minY
+        }
+        let accessibilityNodes = interactions.enumerated().map { index, interaction in
+            PreparedProseAccessibilityNode(
+                interactionIndex: index,
+                role: interaction.kind == .link ? .link : .mention,
+                label: interaction.kind == .link ? interaction.visibleText : interaction.label,
+                bounds: interaction.rects.dropFirst().reduce(interaction.rects.first ?? .zero) { $0.union($1) }
+            )
+        }
+        retainedBytes += interactions.reduce(0) { $0 + $1.estimatedRetainedBytes }
+            + accessibilityNodes.reduce(0) { $0 + $1.estimatedRetainedBytes }
         return PreparedProseLayout(
             key: key,
             size: CGSize(width: canonicalWidth, height: pixelHeight / displayScale),
             blocks: blocks,
+            interactions: interactions,
+            accessibilityNodes: accessibilityNodes,
             retainedBytes: retainedBytes
         )
     }
@@ -250,7 +282,7 @@ final class CoreTextProseLayoutEngine {
         width: CGFloat,
         cursorY: CGFloat,
         displayScale: CGFloat
-    ) -> (block: PreparedProseBlock, nextY: CGFloat, retainedBytes: Int) {
+    ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], nextY: CGFloat, retainedBytes: Int) {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
         let paint = theme.paint(for: block)
@@ -297,6 +329,7 @@ final class CoreTextProseLayoutEngine {
             )
             return (
                 prepared,
+                [],
                 max(totalEnd, bounds.maxY) + itemSpacing,
                 prepared.estimatedRetainedBytes
             )
@@ -307,6 +340,7 @@ final class CoreTextProseLayoutEngine {
         let typesetter = CTTypesetterCreateWithAttributedString(attributed.string)
         var location = 0
         var fragments: [PreparedProseFragment] = []
+        var interactionRects: [[CGRect]] = Array(repeating: [], count: attributed.semanticRanges.count)
         let markerTopInset = marker.map { max(0, $0.ascent - paint.font.ascender) } ?? 0
         var textTop = cursorY + (block.nodeType == "codeBlock" ? theme.codePaddingVertical : 0) + markerTopInset
         let textStart = textTop
@@ -323,14 +357,28 @@ final class CoreTextProseLayoutEngine {
             let lineHeight = max(naturalHeight, paint.lineHeight ?? 0)
             let baseline = textTop + (lineHeight - naturalHeight) / 2 + ascent
             let lineBounds = CGRect(x: textX, y: textTop, width: min(availableWidth, max(0, lineWidth)), height: lineHeight)
+            let lineRange = NSRange(location: location, length: count)
             fragments.append(.init(kind: .text, line: line, origin: CGPoint(x: textX, y: baseline), bounds: lineBounds))
             fragments.append(contentsOf: strikeFragments(
                 for: line,
                 lineOrigin: CGPoint(x: textX, y: baseline),
                 displayScale: displayScale
             ))
+            for (index, semantic) in attributed.semanticRanges.enumerated() {
+                let overlap = NSIntersectionRange(semantic.range, lineRange)
+                guard overlap.length > 0 else { continue }
+                let start = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location, nil))
+                let end = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location + overlap.length, nil))
+                let rect = CGRect(x: textX + min(start, end), y: lineBounds.minY, width: max(1 / displayScale, abs(end - start)), height: lineBounds.height)
+                if let prior = interactionRects[index].last,
+                   prior.minY == rect.minY,
+                   prior.maxX >= rect.minX - (1 / displayScale) {
+                    interactionRects[index][interactionRects[index].count - 1] = prior.union(rect)
+                } else {
+                    interactionRects[index].append(rect)
+                }
+            }
             if firstLineBaseline == nil { firstLineBaseline = baseline }
-            let lineRange = NSRange(location: location, length: count)
             for atom in attributed.atoms where NSIntersectionRange(atom.range, lineRange).length > 0 {
                 let offset = CGFloat(CTLineGetOffsetForStringIndex(line, atom.range.location, nil))
                 let atomBounds = CGRect(
@@ -387,8 +435,18 @@ final class CoreTextProseLayoutEngine {
         let seedBounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: max(0, totalEnd - cursorY))
         let bounds = fragments.reduce(seedBounds) { $0.union($1.bounds) }
         let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
+        let interactions = zip(attributed.semanticRanges, interactionRects).compactMap { semantic, rects -> PreparedProseInteraction? in
+            guard !rects.isEmpty else { return nil }
+            switch semantic {
+            case let .link(_, href, text):
+                return PreparedProseInteraction(kind: .link, rects: rects, href: href, visibleText: text, docPos: nil, label: text)
+            case let .mention(_, docPos, label):
+                return PreparedProseInteraction(kind: .mention, rects: rects, href: nil, visibleText: label, docPos: docPos, label: label)
+            }
+        }
         return (
             prepared,
+            interactions,
             max(totalEnd, bounds.maxY) + itemSpacing,
             256 + attributed.retainedBytes + prepared.estimatedRetainedBytes
         )
@@ -401,11 +459,22 @@ final class CoreTextProseLayoutEngine {
     ) -> PreparedAttributedBlock {
         let result = NSMutableAttributedString()
         var atoms: [PreparedAtomSpec] = []
+        var semanticRanges: [PreparedSemanticRange] = []
         for inline in inlines {
             switch inline {
             case let .text(text: text, marks: marks):
+                let start = result.length
                 result.append(NSAttributedString(string: text, attributes: attributes(for: marks, paint: paint, theme: theme)))
-            case let .atom(nodeType: nodeType, docPos: _, attrsJSON: attrsJSON, label: label):
+                if let href = href(in: marks), !text.isEmpty {
+                    let range = NSRange(location: start, length: (text as NSString).length)
+                    if case let .link(previous, previousHref, previousText)? = semanticRanges.last,
+                       previousHref == href, previous.upperBound == range.location {
+                        semanticRanges[semanticRanges.count - 1] = .link(range: NSRange(location: previous.location, length: previous.length + range.length), href: href, text: previousText + text)
+                    } else {
+                        semanticRanges.append(.link(range: range, href: href, text: text))
+                    }
+                }
+            case let .atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJSON, label: label):
                 if nodeType == "hardBreak" || nodeType == "hard_break" {
                     result.append(NSAttributedString(string: "\n", attributes: baseAttributes(paint)))
                     continue
@@ -433,12 +502,16 @@ final class CoreTextProseLayoutEngine {
                     PreparedAtomSpec(
                         range: range,
                         nodeType: nodeType,
+                        docPos: docPos,
                         label: displayLabel,
                         metrics: metrics,
                         line: labelLine,
                         appearance: appearance
                     )
                 )
+                if nodeType == "mention" {
+                    semanticRanges.append(.mention(range: range, docPos: docPos, label: displayLabel))
+                }
             }
         }
         // NSMutableAttributedString retains UTF-16 storage, attribute runs,
@@ -449,7 +522,14 @@ final class CoreTextProseLayoutEngine {
         let atomBytes = atoms.reduce(0) { partial, atom in
             partial + 256 + atom.label.utf8.count.rendererSaturatingMultiply(2)
         }
-        return PreparedAttributedBlock(string: result, atoms: atoms, retainedBytes: 256 + stringBytes + attributeBytes + atomBytes)
+        return PreparedAttributedBlock(string: result, atoms: atoms, semanticRanges: semanticRanges, retainedBytes: 256 + stringBytes + attributeBytes + atomBytes)
+    }
+
+    private func href(in marks: [FfiViewerMark]) -> String? {
+        for mark in marks where mark.markType == "link" {
+            if let href = jsonDictionary(mark.attrsJson)["href"] as? String, !href.isEmpty { return href }
+        }
+        return nil
     }
 
     private func attributes(for marks: [FfiViewerMark], paint: PreparedTextPaint, theme: PreparedProseTheme) -> [NSAttributedString.Key: Any] {

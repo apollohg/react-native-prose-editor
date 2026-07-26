@@ -127,7 +127,7 @@ final class ProseViewerViewTests: XCTestCase {
         viewer.handleTapForTesting(at: point)
 
         XCTAssertEqual(delegate.mentions.count, 1)
-        XCTAssertEqual(delegate.mentions.first?.docPos, 7)
+        XCTAssertEqual(delegate.mentions.first?.docPos, UInt32(7))
         XCTAssertEqual(delegate.mentions.first?.label, "@Alice")
     }
 
@@ -169,7 +169,7 @@ final class ProseViewerViewTests: XCTestCase {
 
     private final class RecordingDelegate: ProseViewerInteractionDelegate {
         var links: [(href: String, text: String)] = []
-        var mentions: [(docPos: Int, label: String)] = []
+        var mentions: [(docPos: UInt32, label: String)] = []
 
         func proseViewer(
             _ view: ProseViewerView,
@@ -181,7 +181,7 @@ final class ProseViewerViewTests: XCTestCase {
 
         func proseViewer(
             _ view: ProseViewerView,
-            didTapMention docPos: Int,
+            didTapMention docPos: UInt32,
             label: String
         ) {
             mentions.append((docPos, label))

@@ -220,6 +220,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val contentWidth = max(1, widthPx - theme.insetLeftPx - theme.insetRightPx)
         var cursorY = theme.insetTopPx
         var retained = document.retainedBytes + theme.retainedBytes
+        val interactions = mutableListOf<PreparedProseInteraction>()
         val markers = mutableMapOf<Int, PreparedMarker>()
         document.blocks.forEach { block ->
             listItemAncestors(block).forEach { ancestor ->
@@ -232,13 +233,24 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             val prepared = prepareBlock(block, markers, theme, contentWidth, cursorY)
             cursorY = prepared.nextY
             retained += prepared.block.retainedBytes + prepared.extraBytes
+            interactions += prepared.interactions
             prepared.block
         }
         val height = max(0, cursorY + theme.insetBottomPx)
-        return PreparedProseLayout(key, widthPx, height, blocks, retainedBytes = retained)
+        interactions.sortWith(compareBy<PreparedProseInteraction> { it.rects.firstOrNull()?.top ?: Int.MAX_VALUE }.thenBy { it.rects.firstOrNull()?.left ?: Int.MAX_VALUE })
+        val nodes = interactions.mapIndexed { index, interaction ->
+            PreparedProseAccessibilityNode(
+                index,
+                if (interaction.kind == PreparedProseInteraction.Kind.LINK) PreparedProseAccessibilityNode.Role.LINK else PreparedProseAccessibilityNode.Role.MENTION,
+                if (interaction.kind == PreparedProseInteraction.Kind.LINK) interaction.visibleText else interaction.label,
+                interaction.rects.fold(Rect()) { bounds, rect -> if (bounds.isEmpty) Rect(rect) else Rect(bounds).apply { union(rect) } },
+            )
+        }
+        retained += interactions.sumOf { it.retainedBytes } + nodes.sumOf { it.retainedBytes }
+        return PreparedProseLayout(key, widthPx, height, blocks, interactions, nodes, retained)
     }
 
-    private data class BlockResult(val block: PreparedProseBlock, val nextY: Int, val extraBytes: Long)
+    private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val nextY: Int, val extraBytes: Long)
 
     private fun prepareBlock(block: ViewerBlock, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int): BlockResult {
         val paint = theme.paintFor(block)
@@ -274,7 +286,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             firstMarkers.forEach { (ancestor, marker) ->
                 fragments += markerFragment(marker, markerAnchor(ancestor), max(cursorY + marker.baselinePx, ruleTop + theme.ruleThicknessPx), ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
             }
-            return finishBlock(fragments, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, end), end, itemSpacing)
+            return finishBlock(fragments, emptyList(), Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, end), end, itemSpacing)
         }
 
         val availableWidth = max(1, contentWidth - listInset - quoteInset - codeInset * 2)
@@ -288,8 +300,25 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val textHeight = max(1, layout.height)
         val totalEnd = textTop + textHeight + if (block.nodeType == "codeBlock") theme.codePaddingVerticalPx else 0
         val fragments = mutableListOf<PreparedProseFragment>()
+        val interactionRects = MutableList(attributed.semanticRanges.size) { mutableListOf<Rect>() }
         if (block.nodeType == "codeBlock") fragments += PreparedProseFragment(PreparedProseFragmentKind.BACKGROUND, Rect(theme.insetLeftPx + listInset + quoteInset, cursorY, theme.insetLeftPx + contentWidth - listInset - quoteInset, totalEnd), color = theme.codeBackground, cornerRadius = theme.codeRadiusPx)
         fragments += PreparedProseFragment(PreparedProseFragmentKind.TEXT, Rect(textX, textTop, textX + availableWidth, textTop + textHeight), layout, textX, textTop)
+        attributed.semanticRanges.forEachIndexed { index, semantic ->
+            val firstLine = layout.getLineForOffset(semantic.start)
+            val lastLine = layout.getLineForOffset((semantic.end - 1).coerceAtLeast(semantic.start))
+            for (line in firstLine..lastLine) {
+                val lineStart = layout.getLineStart(line)
+                val lineEnd = layout.getLineEnd(line)
+                val start = maxOf(semantic.start, lineStart)
+                val end = minOf(semantic.end, lineEnd)
+                if (start >= end) continue
+                val x1 = layout.getPrimaryHorizontal(start)
+                val x2 = layout.getPrimaryHorizontal(end)
+                val rect = Rect(textX + min(x1, x2).toInt(), textTop + layout.getLineTop(line), textX + max(x1, x2).toInt().coerceAtLeast(textX + min(x1, x2).toInt() + 1), textTop + layout.getLineBottom(line))
+                val prior = interactionRects[index].lastOrNull()
+                if (prior != null && prior.top == rect.top && prior.right >= rect.left - 1) prior.union(rect) else interactionRects[index] += rect
+            }
+        }
         attributed.atoms.forEach { atom ->
             val line = layout.getLineForOffset(atom.start)
             // Replacement spans consume a visual slot that can run right-to-left.
@@ -308,7 +337,13 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         firstMarkers.forEach { (ancestor, marker) ->
             fragments += markerFragment(marker, markerAnchor(ancestor), textTop + firstBaseline, ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
         }
-        return finishBlock(fragments, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, totalEnd), totalEnd, itemSpacing, attributed.retainedBytes)
+        val interactions = attributed.semanticRanges.zip(interactionRects).mapNotNull { (semantic, rects) ->
+            if (rects.isEmpty()) null else when (semantic) {
+                is PreparedSemanticRange.Link -> PreparedProseInteraction(PreparedProseInteraction.Kind.LINK, rects, semantic.href, semantic.text, null, semantic.text)
+                is PreparedSemanticRange.Mention -> PreparedProseInteraction(PreparedProseInteraction.Kind.MENTION, rects, null, semantic.label, semantic.docPos, semantic.label)
+            }
+        }
+        return finishBlock(fragments, interactions, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, totalEnd), totalEnd, itemSpacing, attributed.retainedBytes)
     }
 
     private fun listItemAncestors(block: ViewerBlock): List<ViewerListItemAncestor> =
@@ -326,17 +361,22 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             )
         }
 
-    private fun finishBlock(fragments: List<PreparedProseFragment>, seed: Rect, end: Int, spacing: Int, extraBytes: Long = 0): BlockResult {
+    private fun finishBlock(fragments: List<PreparedProseFragment>, interactions: List<PreparedProseInteraction>, seed: Rect, end: Int, spacing: Int, extraBytes: Long = 0): BlockResult {
         val bounds = fragments.fold(seed) { acc, fragment -> Rect(acc).apply { union(fragment.bounds) } }
-        return BlockResult(PreparedProseBlock(fragments.toList(), bounds), max(end, bounds.bottom) + spacing, extraBytes)
+        return BlockResult(PreparedProseBlock(fragments.toList(), bounds), interactions, max(end, bounds.bottom) + spacing, extraBytes)
     }
 
-    private data class AttributedBlock(val text: SpannableString, val atoms: List<PreparedAtomSpec>, val retainedBytes: Long)
+    private data class AttributedBlock(val text: SpannableString, val atoms: List<PreparedAtomSpec>, val semanticRanges: List<PreparedSemanticRange>, val retainedBytes: Long)
+    private sealed interface PreparedSemanticRange { val start: Int; val end: Int
+        data class Link(override val start: Int, override val end: Int, val href: String, val text: String) : PreparedSemanticRange
+        data class Mention(override val start: Int, override val end: Int, val docPos: Long, val label: String) : PreparedSemanticRange
+    }
 
     private fun attributed(inlines: List<ViewerInline>, base: PreparedTextPaint, theme: PreparedProseTheme): AttributedBlock {
         val source = StringBuilder()
         val spans = mutableListOf<(SpannableString) -> Unit>()
         val atoms = mutableListOf<PreparedAtomSpec>()
+        val semanticRanges = mutableListOf<PreparedSemanticRange>()
         inlines.forEach { inline -> when (inline) {
             is ViewerInline.Text -> {
                 val start = source.length
@@ -344,6 +384,12 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 val end = source.length
                 val markSpans = markSpans(inline.marks, base, theme)
                 spans += { value -> markSpans.forEach { value.setSpan(it, start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) } }
+                href(inline.marks)?.let { href ->
+                    val previous = semanticRanges.lastOrNull() as? PreparedSemanticRange.Link
+                    if (previous != null && previous.href == href && previous.end == start) {
+                        semanticRanges[semanticRanges.lastIndex] = previous.copy(end = end, text = previous.text + inline.text)
+                    } else semanticRanges += PreparedSemanticRange.Link(start, end, href, inline.text)
+                }
             }
             is ViewerInline.Atom -> {
                 if (inline.nodeType == "hardBreak" || inline.nodeType == "hard_break") source.append('\n') else {
@@ -365,13 +411,17 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                     source.append('\uFFFC')
                     atoms += PreparedAtomSpec(start, inline.nodeType, label, appearance, width, height, labelLayout, labelLayout.getLineBaseline(0))
                     spans += { value -> value.setSpan(AtomMetricSpan(width, ascent, metricDescent), start, start + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
+                    if (inline.nodeType == "mention") semanticRanges += PreparedSemanticRange.Mention(start, start + 1, inline.docPos, label)
                 }
             }
         } }
         val text = SpannableString(if (source.isEmpty()) "\u200B" else source.toString())
         spans.forEach { it(text) }
-        return AttributedBlock(text, atoms, 256L + text.length * 52L + atoms.sumOf { 256L + it.label.length * 2L })
+        return AttributedBlock(text, atoms, semanticRanges, 256L + text.length * 52L + atoms.sumOf { 256L + it.label.length * 2L })
     }
+
+    private fun href(marks: List<uniffi.editor_core.FfiViewerMark>): String? = marks.firstOrNull { it.markType == "link" }
+        ?.let { runCatching { org.json.JSONObject(it.attrsJson).optString("href") }.getOrNull()?.takeIf(String::isNotEmpty) }
 
     private fun markSpans(marks: List<uniffi.editor_core.FfiViewerMark>, base: PreparedTextPaint, theme: PreparedProseTheme): List<Any> {
         var explicitColor: Int? = null
