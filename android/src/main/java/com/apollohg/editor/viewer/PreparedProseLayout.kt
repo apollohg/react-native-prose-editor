@@ -49,6 +49,26 @@ internal data class PreparedProseLayout(
     val retainedBytes: Long,
     val error: ProseViewerError? = null,
 ) {
+    /** Visits only blocks intersecting [clip], preserving the strict draw boundaries. */
+    inline fun forEachBlockIntersecting(clip: Rect, action: (PreparedProseBlock) -> Unit) {
+        var lower = 0
+        var upper = blocks.size
+        while (lower < upper) {
+            val middle = (lower + upper) ushr 1
+            if (blocks[middle].bottomPx > clip.top) {
+                upper = middle
+            } else {
+                lower = middle + 1
+            }
+        }
+        while (lower < blocks.size) {
+            val block = blocks[lower]
+            if (block.topPx >= clip.bottom) return
+            action(block)
+            lower += 1
+        }
+    }
+
     companion object {
         fun error(key: ProseLayoutKey, widthPx: Int, error: ProseViewerError) =
             PreparedProseLayout(

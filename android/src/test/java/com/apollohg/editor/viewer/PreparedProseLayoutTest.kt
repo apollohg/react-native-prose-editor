@@ -2,6 +2,9 @@ package com.apollohg.editor.viewer
 
 import android.graphics.Canvas
 import android.graphics.Bitmap
+import android.graphics.Rect
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.view.View
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
@@ -206,6 +209,30 @@ class PreparedProseLayoutTest {
         assertFalse(reporter.shouldReport("first"))
         assertTrue(reporter.shouldReport("replacement"))
         assertFalse(reporter.shouldReport("replacement"))
+    }
+
+    @Test
+    fun `culling skips a large offscreen prefix and visits each visible block once`() {
+        val blockLayout = StaticLayout.Builder
+            .obtain("x", TextPaint().apply { textSize = 14f }, 10)
+            .build()
+        val artifact = PreparedProseLayout(
+            key = ProseLayoutKey("culling", 10, "", 0, 0, 0, "culling"),
+            widthPx = 10,
+            heightPx = 10_000,
+            blocks = List(1_000) { index ->
+                PreparedProseBlock(blockLayout, index * 10, index * 10 + 10)
+            },
+            retainedBytes = 0,
+        )
+        val visited = mutableListOf<Int>()
+
+        artifact.forEachBlockIntersecting(Rect(0, 9_000, 10, 9_030)) { block ->
+            visited += block.topPx
+        }
+
+        assertEquals(listOf(9_000, 9_010, 9_020), visited)
+        assertEquals(visited.size, visited.distinct().size)
     }
 
     private fun testRegistry(engine: AndroidProseLayoutEngine): PreparedProseLayoutRegistry =

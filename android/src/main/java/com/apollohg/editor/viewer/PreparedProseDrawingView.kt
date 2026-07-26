@@ -24,8 +24,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(
         super.onDraw(canvas)
         val artifact = preparedLayout ?: return
         val clip = canvas.clipBounds
-        artifact.blocks.forEach { block ->
-            if (!block.intersects(clip)) return@forEach
+        artifact.forEachBlockIntersecting(clip) { block ->
             val save = canvas.save()
             canvas.translate(0f, block.topPx.toFloat())
             block.layout.draw(canvas)
