@@ -221,7 +221,16 @@ class PreparedProseLayoutTest {
             widthPx = 10,
             heightPx = 10_000,
             blocks = List(1_000) { index ->
-                PreparedProseBlock(blockLayout, index * 10, index * 10 + 10)
+                PreparedProseBlock(
+                    fragments = listOf(
+                        PreparedProseFragment(
+                            PreparedProseFragmentKind.TEXT,
+                            Rect(0, index * 10, 10, index * 10 + 10),
+                            layout = blockLayout,
+                        )
+                    ),
+                    bounds = Rect(0, index * 10, 10, index * 10 + 10),
+                )
             },
             retainedBytes = 0,
         )
@@ -240,7 +249,16 @@ class PreparedProseLayoutTest {
 
     private fun testDocument(request: ProseViewerRequest): ViewerDocument = ViewerDocument(
         semanticKey = request.compiledCacheKey,
-        paragraphs = listOf(request.source.value),
+        blocks = listOf(
+            ViewerBlock(
+                nodeType = "paragraph",
+                depth = 0,
+                inBlockquote = false,
+                listContext = null,
+                listItemBoundary = null,
+                inlines = listOf(ViewerInline.Text(request.source.value, emptyList())),
+            )
+        ),
         isEmpty = request.source.value.isEmpty(),
         retainedBytes = request.source.value.length.toLong(),
     )

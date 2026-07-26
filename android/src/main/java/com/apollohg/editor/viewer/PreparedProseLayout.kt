@@ -15,30 +15,47 @@ internal data class ProseLayoutKey(
 )
 
 internal data class FabricSurfaceToken(val surfaceId: Int, val componentTag: Int)
+internal data class FabricGenerationToken(val surface: FabricSurfaceToken, val generationIdentity: String)
+internal data class ProseMountKey(val generationIdentity: String, val widthPx: Int, val densityBits: Long)
 
-internal data class FabricGenerationToken(
-    val surface: FabricSurfaceToken,
-    val generationIdentity: String,
-)
+/** Paint-only operations which Android spans cannot represent accurately. */
+internal enum class PreparedProseFragmentKind { TEXT, MARKER, BACKGROUND, BORDER, RULE, ATOM, STRIKE }
 
-internal data class ProseMountKey(
-    val generationIdentity: String,
-    val widthPx: Int,
-    val densityBits: Long,
-)
-
-internal data class PreparedProseBlock(
-    val layout: StaticLayout,
-    val topPx: Int,
-    val bottomPx: Int,
+internal data class PreparedProseFragment(
+    val kind: PreparedProseFragmentKind,
+    val bounds: Rect,
+    val layout: StaticLayout? = null,
+    val layoutX: Int = bounds.left,
+    val layoutY: Int = bounds.top,
+    val labelLayout: StaticLayout? = null,
+    val labelX: Int = bounds.left,
+    val labelY: Int = bounds.top,
+    val color: Int? = null,
+    val borderColor: Int? = null,
+    val cornerRadius: Float = 0f,
+    val strokeWidth: Float = 0f,
+    val label: String? = null,
+    val checked: Boolean = false,
 ) {
+    val retainedBytes: Long
+        get() = 160L + (layout?.text?.length ?: 0).toLong() * 4 + (labelLayout?.text?.length ?: 0).toLong() * 4 + (label?.length ?: 0).toLong() * 2
+}
+
+/** A vertically sorted immutable culling unit. */
+internal data class PreparedProseBlock(
+    val fragments: List<PreparedProseFragment>,
+    val bounds: Rect,
+) {
+    val topPx: Int get() = bounds.top
+    val bottomPx: Int get() = bounds.bottom
     fun intersects(clip: Rect): Boolean = bottomPx > clip.top && topPx < clip.bottom
+    val retainedBytes: Long get() = 160L + fragments.sumOf { it.retainedBytes }
 }
 
 internal data class PreparedProseInteraction(val unused: Unit = Unit)
 internal data class PreparedProseAccessibilityNode(val unused: Unit = Unit)
 
-/** A fully prepared, immutable Android artifact. */
+/** A fully prepared artifact. StaticLayout construction is complete before publication. */
 internal data class PreparedProseLayout(
     val key: ProseLayoutKey,
     val widthPx: Int,
@@ -49,17 +66,14 @@ internal data class PreparedProseLayout(
     val retainedBytes: Long,
     val error: ProseViewerError? = null,
 ) {
-    /** Visits only blocks intersecting [clip], preserving the strict draw boundaries. */
+    val fragmentKinds: Set<PreparedProseFragmentKind> get() = blocks.flatMapTo(linkedSetOf()) { block -> block.fragments.map { it.kind } }
+
     inline fun forEachBlockIntersecting(clip: Rect, action: (PreparedProseBlock) -> Unit) {
         var lower = 0
         var upper = blocks.size
         while (lower < upper) {
             val middle = (lower + upper) ushr 1
-            if (blocks[middle].bottomPx > clip.top) {
-                upper = middle
-            } else {
-                lower = middle + 1
-            }
+            if (blocks[middle].bottomPx > clip.top) upper = middle else lower = middle + 1
         }
         while (lower < blocks.size) {
             val block = blocks[lower]
@@ -69,15 +83,11 @@ internal data class PreparedProseLayout(
         }
     }
 
+    inline fun forEachFragmentIntersecting(clip: Rect, action: (PreparedProseFragment) -> Unit) =
+        forEachBlockIntersecting(clip) { block -> block.fragments.filterTo(mutableListOf()) { it.bounds.intersects(clip) }.forEach(action) }
+
     companion object {
         fun error(key: ProseLayoutKey, widthPx: Int, error: ProseViewerError) =
-            PreparedProseLayout(
-                key = key,
-                widthPx = widthPx,
-                heightPx = 0,
-                blocks = emptyList(),
-                retainedBytes = 0,
-                error = error,
-            )
+            PreparedProseLayout(key, widthPx, 0, emptyList(), retainedBytes = 0, error = error)
     }
 }

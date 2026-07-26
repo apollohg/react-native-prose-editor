@@ -20,11 +20,15 @@ internal class PreparedProseLayoutRegistry(
     private val compilerLock = Any()
     private val compiled = LinkedHashMap<String, ViewerDocument>(16, 0.75f, true)
     private val compilationFailures = LinkedHashMap<String, ProseViewerError>(16, 0.75f, true)
+    /** Resolved once per generation and bounded independently of layout entries. */
+    private val themes = LinkedHashMap<String, PreparedProseTheme>(16, 0.75f, true)
     private val compilationInFlight = ConcurrentHashMap<String, CompletableFuture<Compilation>>()
     private val documentsByFabricGeneration = mutableMapOf<FabricGenerationToken, ViewerDocument>()
     private val failuresByFabricGeneration = mutableMapOf<FabricGenerationToken, ProseViewerError>()
     private val layoutCache = PreparedProseLayoutCache(byteBudget = byteBudget)
     private var compiledRetainedBytes = 0L
+    private var themeRetainedBytes = 0L
+    private val themeByteBudget = 512L * 1024L
 
     @Volatile internal var layoutPreparationCount = 0
         private set
@@ -87,7 +91,7 @@ internal class PreparedProseLayoutRegistry(
         val densityBits = density.toRawBits().toLong()
         val generation = fabricSurface?.let { FabricGenerationToken(it, request.generationIdentity) }
         return try {
-            val document = preparedDocument(request, generation, compiledDocument)
+            val document = preparedDocument(request, generation, compiledDocument, density)
             val key = layoutKey(document, request, widthPx, densityBits)
             layoutCache.value(key, fabricSurface) {
                 layoutPreparationCount += 1
@@ -163,9 +167,11 @@ internal class PreparedProseLayoutRegistry(
         synchronized(compilerLock) {
             compiled.clear()
             compilationFailures.clear()
+            themes.clear()
             documentsByFabricGeneration.clear()
             failuresByFabricGeneration.clear()
             compiledRetainedBytes = 0
+            themeRetainedBytes = 0
         }
     }
 
@@ -180,6 +186,7 @@ internal class PreparedProseLayoutRegistry(
         request: ProseViewerRequest,
         generation: FabricGenerationToken?,
         suppliedDocument: ViewerDocument?,
+        density: Float,
     ): ViewerDocument {
         if (generation != null) synchronized(compilerLock) {
             documentsByFabricGeneration.keys.removeAll { it.surface == generation.surface && it != generation }
@@ -188,7 +195,8 @@ internal class PreparedProseLayoutRegistry(
             failuresByFabricGeneration[generation]?.let { throw it }
         }
         return try {
-            val document = suppliedDocument ?: compileDocument(request)
+            val compiledDocument = suppliedDocument ?: compileDocument(request)
+            val document = compiledDocument.withPreparedTheme(resolveTheme(request, density))
             if (generation != null) synchronized(compilerLock) { documentsByFabricGeneration[generation] = document }
             document
         } catch (error: ProseViewerError) {
@@ -247,6 +255,21 @@ internal class PreparedProseLayoutRegistry(
             compiledRetainedBytes -= oldest.value.retainedBytes
         }
     }
+
+    private fun resolveTheme(request: ProseViewerRequest, density: Float): PreparedProseTheme = synchronized(compilerLock) {
+        val key = "${request.generationIdentity}:${density.toRawBits()}"
+        themes[key]?.let { return@synchronized it }
+        val resolved = PreparedProseTheme.resolve(request.configuration.themeJson, density)
+        themes[key] = resolved
+        themeRetainedBytes += resolved.retainedBytes
+        while (themeRetainedBytes > themeByteBudget && themes.isNotEmpty()) {
+            val oldest = themes.entries.first()
+            themes.remove(oldest.key)
+            themeRetainedBytes -= oldest.value.retainedBytes
+        }
+        resolved
+    }
+
 
     private fun Compilation.documentOrThrow(): ViewerDocument = when (this) {
         is Compilation.Document -> value
