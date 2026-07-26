@@ -4,7 +4,6 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 use crate::boundary::serialize_json_value_stack_safe;
-use crate::editor_state::document_is_empty;
 use crate::render::{ListContext, RenderElement, RenderMark};
 use crate::schema::schema_fingerprint;
 
@@ -37,8 +36,7 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
             request.mention_prefix.as_deref(),
         );
         let retained_bytes = retained_bytes(&semantic_key, &elements);
-        let is_empty = elements.is_empty()
-            || document_is_empty(&resolved.document, &resolved.schema);
+        let is_empty = semantic_elements_are_empty(&elements, &resolved.schema);
 
         Ok::<_, crate::session::SessionError>(Arc::new(ViewerCompiledDocument {
             semantic_key,
@@ -55,13 +53,34 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
 }
 
 fn is_image_atom(element: &RenderElement) -> bool {
-    matches!(element,
-        RenderElement::VoidInline { node_type, .. }
-            | RenderElement::VoidBlock { node_type, .. }
-            | RenderElement::OpaqueInlineAtom { node_type, .. }
-            | RenderElement::OpaqueBlockAtom { node_type, .. }
-            if node_type == "image"
-    )
+    let (node_type, attrs) = match element {
+        RenderElement::VoidInline {
+            node_type, attrs, ..
+        }
+        | RenderElement::VoidBlock {
+            node_type, attrs, ..
+        }
+        | RenderElement::OpaqueInlineAtom {
+            node_type, attrs, ..
+        }
+        | RenderElement::OpaqueBlockAtom {
+            node_type, attrs, ..
+        } => (node_type.as_str(), attrs),
+        RenderElement::TextRun { .. }
+        | RenderElement::BlockStart { .. }
+        | RenderElement::BlockEnd => return false,
+    };
+
+    node_type == "image"
+        || matches!(node_type, "__opaque_json" | "__opaque")
+            && (attrs
+                .get("original_type")
+                .and_then(serde_json::Value::as_str)
+                == Some("image")
+                || attrs
+                    .get("html_tag")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("img"))
 }
 
 fn viewer_element(element: RenderElement, mention_prefix: Option<&str>) -> FfiViewerElement {
@@ -103,6 +122,7 @@ fn viewer_element(element: RenderElement, mention_prefix: Option<&str>) -> FfiVi
             doc_pos,
             label,
             attrs,
+            mention_theme: _,
         } => FfiViewerElement::InlineAtom {
             label: prefixed_mention_label(&node_type, label, mention_prefix),
             node_type,
@@ -130,6 +150,22 @@ fn viewer_element(element: RenderElement, mention_prefix: Option<&str>) -> FfiVi
             list_context_json: list_context.as_ref().map(canonical_list_context_json),
         },
         RenderElement::BlockEnd => FfiViewerElement::BlockEnd,
+    }
+}
+
+fn semantic_elements_are_empty(
+    elements: &[FfiViewerElement],
+    schema: &crate::schema::Schema,
+) -> bool {
+    match elements {
+        [] => true,
+        [
+            FfiViewerElement::BlockStart { node_type, .. },
+            FfiViewerElement::BlockEnd,
+        ] => schema
+            .preferred_text_block()
+            .is_some_and(|preferred| preferred.name == *node_type),
+        _ => false,
     }
 }
 

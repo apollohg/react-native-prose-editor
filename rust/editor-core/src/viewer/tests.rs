@@ -31,6 +31,21 @@ fn mention_config() -> String {
     .to_string()
 }
 
+fn no_image_schema_config() -> String {
+    serde_json::json!({
+        "schema": {
+            "nodes": [
+                {"name": "doc", "content": "block*", "role": "doc"},
+                {"name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock"},
+                {"name": "text", "group": "inline", "role": "text"}
+            ],
+            "marks": []
+        },
+        "initialization": {"type": "localEmpty"}
+    })
+    .to_string()
+}
+
 fn compile_json(document: serde_json::Value) -> super::FfiViewerCompileResult {
     viewer_compile(FfiViewerCompileRequest {
         source_kind: FfiViewerSourceKind::Json,
@@ -151,6 +166,70 @@ fn disabled_image_only_content_is_semantically_empty() {
     assert_eq!(hidden_image.elements(), empty_document.elements());
     assert_eq!(hidden_image.semantic_key(), empty_document.semantic_key());
     assert_eq!(hidden_image.is_empty(), empty_document.is_empty());
+}
+
+#[test]
+fn disabled_images_preserve_empty_paragraph_semantics() {
+    let empty_paragraph = serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "paragraph"}]
+    });
+    let empty_paragraph_and_image = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {"type": "paragraph"},
+            {"type": "image", "attrs": {"src": "https://example.test/a.png"}}
+        ]
+    });
+
+    let paragraph = compile_json_with(empty_paragraph, local_config(), false)
+        .value
+        .expect("empty paragraph compiles");
+    let paragraph_and_hidden_image =
+        compile_json_with(empty_paragraph_and_image, local_config(), false)
+            .value
+            .expect("empty paragraph and hidden image compile");
+
+    assert!(paragraph.is_empty());
+    assert_eq!(paragraph_and_hidden_image.elements(), paragraph.elements());
+    assert_eq!(
+        paragraph_and_hidden_image.semantic_key(),
+        paragraph.semantic_key()
+    );
+    assert_eq!(paragraph_and_hidden_image.is_empty(), paragraph.is_empty());
+}
+
+#[test]
+fn disabled_images_omit_opaque_json_images_from_custom_schemas() {
+    let result = compile_json_with(
+        serde_json::json!({
+            "type": "doc",
+            "content": [{"type": "image", "attrs": {"src": "https://example.test/a.png"}}]
+        }),
+        no_image_schema_config(),
+        false,
+    );
+
+    let compiled = result.value.expect("opaque JSON image compiles");
+    assert!(result.error.is_none());
+    assert!(compiled.elements().is_empty());
+    assert!(compiled.is_empty());
+}
+
+#[test]
+fn disabled_images_omit_opaque_html_images_from_custom_schemas() {
+    let result = viewer_compile(FfiViewerCompileRequest {
+        source_kind: FfiViewerSourceKind::Html,
+        source: r#"<img src="https://example.test/a.png">"#.into(),
+        config_json: no_image_schema_config(),
+        images_enabled: false,
+        mention_prefix: None,
+    });
+
+    let compiled = result.value.expect("opaque HTML image compiles");
+    assert!(result.error.is_none());
+    assert!(compiled.elements().is_empty());
+    assert!(compiled.is_empty());
 }
 
 #[test]

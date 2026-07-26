@@ -869,26 +869,23 @@ fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<Str
         parse_create_json(envelope.initialization.get()).map_err(ffi_error)?;
     let (config, room_bound) =
         build_config(envelope, initialization_probe, snapshot_state).map_err(ffi_error)?;
-    let local_source = match &config.initialization {
+    let schema = match &config.initialization {
         EditorInitialization::Local {
             initial_content: InitialContent::Empty,
-        } => Some((
-            FfiViewerSourceKind::Json,
-            r#"{"type":"doc","content":[]}"#.to_string(),
-        )),
-        EditorInitialization::Local {
-            initial_content: InitialContent::Json(source),
-        } => Some((FfiViewerSourceKind::Json, source.clone())),
-        EditorInitialization::Local {
-            initial_content: InitialContent::Html(source),
-        } => Some((FfiViewerSourceKind::Html, source.clone())),
-        EditorInitialization::Room { .. } => None,
-    };
-    let schema = match local_source {
-        Some((source_kind, source)) => resolve_local_document(config_json, source_kind, &source)
+        } => resolve_local_empty_document(config_json)
             .map(|resolved| resolved.schema)
             .map_err(ffi_error)?,
-        None => resolve_configured_create_schema(&config).map_err(ffi_error)?,
+        EditorInitialization::Local {
+            initial_content: InitialContent::Json(source),
+        } => resolve_local_document(config_json, FfiViewerSourceKind::Json, source)
+            .map(|resolved| resolved.schema)
+            .map_err(ffi_error)?,
+        EditorInitialization::Local {
+            initial_content: InitialContent::Html(source),
+        } => resolve_local_document(config_json, FfiViewerSourceKind::Html, source)
+            .map(|resolved| resolved.schema)
+            .map_err(ffi_error)?,
+        EditorInitialization::Room { .. } => resolve_configured_create_schema(&config).map_err(ffi_error)?,
     };
     let id = DocumentApiFacade::create_with_schema(config, schema.clone()).map_err(ffi_error)?;
     if room_bound {
@@ -971,19 +968,7 @@ pub(crate) fn resolve_local_document(
     source_kind: FfiViewerSourceKind,
     source: &str,
 ) -> Result<ResolvedLocalDocument, SessionError> {
-    admit_create_wire_bytes(config_json.len())?;
-    admit_create_retained_envelope(config_json)?;
-    let envelope: CreateEnvelope<'_> = parse_create_json(config_json)?;
-    let initialization_probe: InitializationProbe =
-        parse_create_json(envelope.initialization.get())?;
-    let (config, room_bound) = build_config(envelope, initialization_probe, None)?;
-    if room_bound {
-        return Err(config_invalid(
-            None,
-            "viewer compilation requires a local initialization configuration",
-        ));
-    }
-    let schema = resolve_configured_create_schema(&config)?;
+    let (config, schema) = resolve_local_config(config_json)?;
     let input_kind = match source_kind {
         FfiViewerSourceKind::Json => InputKind::DocumentJson,
         FfiViewerSourceKind::Html => InputKind::Html,
@@ -1044,6 +1029,46 @@ pub(crate) fn resolve_local_document(
         schema,
         resource_limits: config.resource_limits,
     })
+}
+
+fn resolve_local_empty_document(config_json: &str) -> Result<ResolvedLocalDocument, SessionError> {
+    let (config, schema) = resolve_local_config(config_json)?;
+    let document = schema
+        .default_document()
+        .map_err(|error| SessionError::new(ErrorDomain::Document, "DOCUMENT_INVALID", error))?;
+    let document = crate::yrs_engine::admit_local_import_document(
+        document,
+        &schema,
+        &config.resource_limits,
+        &config.editing_limits,
+        None,
+    )
+    .map_err(SessionError::from)?;
+
+    Ok(ResolvedLocalDocument {
+        document,
+        schema,
+        resource_limits: config.resource_limits,
+    })
+}
+
+fn resolve_local_config(
+    config_json: &str,
+) -> Result<(EditorSessionConfig, crate::schema::Schema), SessionError> {
+    admit_create_wire_bytes(config_json.len())?;
+    admit_create_retained_envelope(config_json)?;
+    let envelope: CreateEnvelope<'_> = parse_create_json(config_json)?;
+    let initialization_probe: InitializationProbe =
+        parse_create_json(envelope.initialization.get())?;
+    let (config, room_bound) = build_config(envelope, initialization_probe, None)?;
+    if room_bound {
+        return Err(config_invalid(
+            None,
+            "viewer compilation requires a local initialization configuration",
+        ));
+    }
+    let schema = resolve_configured_create_schema(&config)?;
+    Ok((config, schema))
 }
 
 fn viewer_json_parse_error(error: crate::serialize::JsonParseError) -> SessionError {

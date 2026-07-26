@@ -446,6 +446,31 @@ fn create_resolves_limits_before_materializing_initialization_payload() {
 }
 
 #[test]
+fn local_empty_uses_the_schema_default_document_for_validated_admission() {
+    let schema = json!({
+        "nodes": [
+            {"name": "doc", "content": "paragraph+", "role": "doc"},
+            {"name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock"},
+            {"name": "text", "group": "inline", "role": "text"}
+        ],
+        "marks": []
+    });
+    let editor_id = create_editor(json!({
+        "schema": schema,
+        "initialization": {"type": "localEmpty"}
+    }));
+
+    let document = super::editor::editor_v2_get_document_json(editor_id.clone())
+        .value
+        .expect("default document JSON");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&document).unwrap(),
+        json!({"type": "doc", "content": [{"type": "paragraph"}]})
+    );
+    assert_eq!(super::editor::editor_v2_destroy(editor_id).value, Some(true));
+}
+
+#[test]
 fn create_pre_serde_retained_envelope_admission_is_exact() {
     const LIMIT: usize = 64 * 1024;
     let prefix = r#"{"initialization":{"type":"localEmpty"},"policy":{"inputFilter":""#;
