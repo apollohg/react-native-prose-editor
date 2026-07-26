@@ -2742,6 +2742,94 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
+    /// A typed word whose autocorrection has not been accepted yet — no space
+    /// pressed — leaves the keyboard holding a correction that neither the
+    /// engine nor the text storage has seen. Tapping the list button wraps the
+    /// line first, and UIKit only then applies the correction, addressing the
+    /// word through the range it was already holding.
+    ///
+    /// Wrapping does not change the view's text, so that range still covers
+    /// the word. It does insert the list and listItem openings ahead of it, so
+    /// every scalar offset inside the line has moved by two. The correction
+    /// must land on the word and leave the caret after it.
+    func testListToggleAppliesAPendingAutocorrectWithoutMovingTheCaret() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: "<p></p>")
+        flushMainQueue()
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        for character in "Ahysyc" {
+            view.textView.insertText(String(character))
+        }
+        flushMainQueue()
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Ahysyc</p>")
+        assertCollapsedEditorSelection(in: editorId, scalarOffset: 6)
+
+        view.textView.performToolbarToggleList("bulletList", isActive: false)
+        flushMainQueue()
+
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: editorId),
+            "<ul><li><p>Ahysyc</p></li></ul>",
+            "precondition: the line is wrapped before the correction arrives"
+        )
+        // Wrapping inserts the list and listItem openings ahead of the text, so
+        // the end of the six-scalar line moves from scalar 6 to scalar 8.
+        assertCollapsedEditorSelection(in: editorId, scalarOffset: 8)
+
+        // The keyboard now applies the correction it was holding. It rewrites
+        // its own text storage without routing through `replace(_:withText:)`,
+        // which is why the device log shows the corrected word appearing with
+        // no interception of its own.
+        //
+        // The replacement is an NSAttributedString carrying no attributes,
+        // which is what the keyboard supplies. That matters: the
+        // `replaceCharacters(in:with: String)` overload would inherit the
+        // replaced run's attributes and keep `listMarkerContext` on the text,
+        // leaving the utf16→scalar conversion still aware of the list. The
+        // keyboard's replacement strips it, which is what makes the rebuilt
+        // conversion table lose the list and listItem openings.
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 6),
+            with: NSAttributedString(string: "Abyss")
+        )
+        setCollapsedSelection(in: view.textView, utf16Offset: 5)
+
+        // Deliberately no flush here. On device nothing observes the rewrite
+        // until the next keystroke drains it, which is why the log shows the
+        // insert's interception nested at depth 2 inside the drain's own.
+        // Draining it separately first is what hid this.
+        XCTAssertEqual(view.textView.textStorage.string, "Abyss")
+
+        view.textView.insertText(" ")
+        flushMainQueue()
+
+        XCTAssertEqual(
+            view.textView.textStorage.string,
+            "Abyss ",
+            "the space must land after the word, not inside it"
+        )
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<ul><li><p>Abyss </p></li></ul>")
+        // The caret is the reported symptom: it must end after the space, not
+        // back inside the corrected word.
+        assertSelectedUtf16Range(
+            in: view.textView,
+            NSRange(location: 6, length: 0)
+        )
+        assertCollapsedEditorSelection(in: editorId, scalarOffset: 8)
+        XCTAssertEqual(view.textView.reconciliationCount, 0)
+    }
+
     func testNativeMutationUsesUIKitSelectionAlreadyMovedBeforeCapture() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

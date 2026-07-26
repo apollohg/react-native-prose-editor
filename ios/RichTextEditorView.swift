@@ -931,6 +931,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private struct NativeTextMutation {
         let from: UInt32
         let to: UInt32
+        /// The replaced span as UTF-16 in the authorized storage. Kept so a
+        /// caret can be converted against that storage patched with this
+        /// replacement, which is the only ruler that still carries the
+        /// document's structural attributes.
+        let authorizedReplacementUtf16Range: NSRange
         let replacementText: String
         let resultingText: String
         let authorizedText: String
@@ -1711,6 +1716,45 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         let start = PositionBridge.utf16OffsetToScalar(range.location, in: self)
         let end = PositionBridge.utf16OffsetToScalar(NSMaxRange(range), in: self)
         return (from: min(start, end), to: max(start, end))
+    }
+
+    private func scalarRange(
+        forUtf16Range range: NSRange,
+        in storage: NSAttributedString
+    ) -> (from: UInt32, to: UInt32) {
+        let start = PositionBridge.utf16OffsetToScalar(range.location, in: storage)
+        let end = PositionBridge.utf16OffsetToScalar(NSMaxRange(range), in: storage)
+        return (from: min(start, end), to: max(start, end))
+    }
+
+    /// The last Rust-authorized storage with one native replacement applied.
+    ///
+    /// A caret inside a natively mutated document cannot be converted against
+    /// the live text view. A keyboard correction replaces the word with an
+    /// unattributed string, which strips the structural attributes the
+    /// utf16→scalar conversion reads to count a list's block openings, so the
+    /// live view maps the caret as though the line were never wrapped. The
+    /// authorized storage still carries those attributes; patching its text
+    /// with the same replacement gives a ruler that matches the new text
+    /// while keeping the structure. Falls back to the unpatched storage when
+    /// the range no longer addresses it.
+    private func authorizedStorageApplying(
+        _ replacementText: String,
+        inUtf16Range range: NSRange
+    ) -> NSAttributedString {
+        guard range.location >= 0,
+              range.length >= 0,
+              NSMaxRange(range) <= lastAuthorizedAttributedTextStorage.length
+        else {
+            return lastAuthorizedAttributedTextStorage
+        }
+        let patched = NSMutableAttributedString(
+            attributedString: lastAuthorizedAttributedTextStorage
+        )
+        // The string overload inherits the replaced run's attributes, which is
+        // exactly what keeps the structure the keyboard's replacement dropped.
+        patched.replaceCharacters(in: range, with: replacementText)
+        return patched
     }
 
     private func scheduleDeferredImageSelection(for range: NSRange) {
@@ -2853,14 +2897,20 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     private func selectionSummary() -> String {
         guard let range = selectedTextRange else { return "none" }
+        // The UTF-16 offsets are what UIKit actually holds; every scalar below
+        // is derived through the conversion table. Logging both is what tells
+        // a caret that moved apart from a table that changed under a caret
+        // that did not.
+        let anchorUtf16 = offset(from: beginningOfDocument, to: range.start)
+        let headUtf16 = offset(from: beginningOfDocument, to: range.end)
         let anchorScalar = PositionBridge.textViewToScalar(range.start, in: self)
         let headScalar = PositionBridge.textViewToScalar(range.end, in: self)
         guard editorId != 0 else {
-            return "scalar=\(anchorScalar)-\(headScalar)"
+            return "utf16=\(anchorUtf16)-\(headUtf16) scalar=\(anchorScalar)-\(headScalar)"
         }
         let docAnchor = EditorV2Shadow.scalarToDoc(id: editorId, scalar: anchorScalar)
         let docHead = EditorV2Shadow.scalarToDoc(id: editorId, scalar: headScalar)
-        return "scalar=\(anchorScalar)-\(headScalar) doc=\(docAnchor)-\(docHead)"
+        return "utf16=\(anchorUtf16)-\(headUtf16) scalar=\(anchorScalar)-\(headScalar) doc=\(docAnchor)-\(docHead)"
     }
 
     private func selectionSummary(from selection: [String: Any]) -> String {
@@ -3603,12 +3653,25 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             currentEndUtf16: currentEnd,
             currentTextUtf16Length: current.length
         )
-        let selectedScalarRange = targetSelectionUtf16Range.map(scalarRange(forUtf16Range:))
+        let authorizedReplacementUtf16Range = NSRange(
+            location: prefix,
+            length: authorizedEnd - prefix
+        )
+        let selectedScalarRange = targetSelectionUtf16Range.map { range in
+            scalarRange(
+                forUtf16Range: range,
+                in: authorizedStorageApplying(
+                    replacementText,
+                    inUtf16Range: authorizedReplacementUtf16Range
+                )
+            )
+        }
         let capturedAfterBlur = canAdoptNativeTextMutationAfterBlur()
 
         return NativeTextMutation(
             from: PositionBridge.utf16OffsetToScalar(prefix, in: lastAuthorizedAttributedTextStorage),
             to: PositionBridge.utf16OffsetToScalar(authorizedEnd, in: lastAuthorizedAttributedTextStorage),
+            authorizedReplacementUtf16Range: authorizedReplacementUtf16Range,
             replacementText: replacementText,
             resultingText: currentText,
             authorizedText: authorizedText,
@@ -3655,12 +3718,23 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                     || didCurrentRangeMoveAfterCapture
                     || mutation.rawSelectionUtf16Range == nil
             )
+        // Same ruler as the capture path: the live view has lost the
+        // structural attributes wherever the keyboard replaced a run, so a
+        // caret converted against it maps as though the block were never
+        // wrapped.
+        let selectionConversionStorage = authorizedStorageApplying(
+            mutation.replacementText,
+            inUtf16Range: mutation.authorizedReplacementUtf16Range
+        )
         let selectedScalarRange = shouldUseCurrentSelection
-            ? currentSelectionUtf16Range.map(scalarRange(forUtf16Range:))
+            ? currentSelectionUtf16Range.map {
+                scalarRange(forUtf16Range: $0, in: selectionConversionStorage)
+            }
             : nil
         return NativeTextMutation(
             from: mutation.from,
             to: mutation.to,
+            authorizedReplacementUtf16Range: mutation.authorizedReplacementUtf16Range,
             replacementText: mutation.replacementText,
             resultingText: mutation.resultingText,
             authorizedText: mutation.authorizedText,
@@ -4186,9 +4260,17 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         // user having moved the caret. Matching the UIKit range the nudge
         // produced keeps the engine's position authoritative; anything else
         // still falls through as genuinely stale.
+        //
+        // This is confined to that block. A matching UTF-16 range is NOT
+        // evidence that a cached scalar is still current: wrapping a line in
+        // a list shifts every scalar in it by the list and listItem openings
+        // while leaving every UTF-16 offset untouched, so a stale pre-wrap
+        // caret would match here and be handed back — placing the next typed
+        // character inside the word instead of after it.
         if let logicalSelectionScalarRange,
            let logicalSelectionUtf16Range,
-           logicalSelectionUtf16Range == selectedRange
+           logicalSelectionUtf16Range == selectedRange,
+           isLoneEmptyPlaceholderBlock
         {
             return logicalSelectionScalarRange
         }
@@ -5752,13 +5834,19 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
     }
 
+    /// Whether the document is the lone empty block whose caret the
+    /// autocapitalization nudge parks ahead of the placeholder. That block
+    /// holds exactly one caret position, which is what makes a cached scalar
+    /// safe to trust there even though the UIKit offset disagrees with it.
+    var isLoneEmptyPlaceholderBlock: Bool {
+        textStorage.length == 1
+            && textStorage.string.unicodeScalars.elementsEqual([Self.emptyBlockPlaceholderScalar])
+    }
+
     private func autocapitalizationFriendlyEmptyBlockPosition(
         for position: UITextPosition
     ) -> UITextPosition? {
-        guard textStorage.length == 1 else { return nil }
-        guard textStorage.string.unicodeScalars.elementsEqual([Self.emptyBlockPlaceholderScalar]) else {
-            return nil
-        }
+        guard isLoneEmptyPlaceholderBlock else { return nil }
 
         let utf16Offset = offset(from: beginningOfDocument, to: position)
         guard utf16Offset == textStorage.length else { return nil }
