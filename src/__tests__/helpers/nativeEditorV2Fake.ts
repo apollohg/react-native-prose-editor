@@ -50,6 +50,24 @@ const V2_FAKE_MALFORMED_AWARENESS_MESSAGE =
 
 const EMPTY_DOC: DocumentJSON = { type: 'doc', content: [{ type: 'paragraph' }] };
 
+/**
+ * Mirrors the core's `document_is_empty`: a lone, contentless block of the
+ * schema's preferred text block. The fake has to agree with the core here —
+ * a fake that omits a field the core emits is a fake that cannot catch the
+ * frozen render-update shape drifting.
+ */
+function fakeDocumentIsEmpty(doc: DocumentJSON): boolean {
+    const content = doc.content;
+    if (content == null || content.length === 0) return true;
+    if (content.length > 1) return false;
+    const block = content[0];
+    if (block == null) return true;
+    const blockContent = block.content;
+    if (blockContent != null && blockContent.length > 0) return false;
+    if (typeof block.text === 'string' && block.text.length > 0) return false;
+    return block.type === 'paragraph';
+}
+
 type FakeTransportState =
     | 'Detached'
     | 'Disconnected'
@@ -2111,6 +2129,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         documentVersion: String(session.documentRevision),
                         stateRevision: String(session.stateRevision),
                         scalarLength: scalarMap.scalarLength,
+                        documentIsEmpty: fakeDocumentIsEmpty(session.doc),
                     };
                     if (mirrorAnchor != null && mirrorHead != null) {
                         update.selection = {

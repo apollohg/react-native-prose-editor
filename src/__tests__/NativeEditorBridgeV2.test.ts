@@ -63,6 +63,7 @@ const MOCK_ATOMIC_RENDER_SNAPSHOT = {
     documentVersion: HUGE_U64_DECIMAL,
     stateRevision: '3',
     scalarLength: 11,
+    documentIsEmpty: false,
 };
 
 const MOCK_SNAPSHOT_METADATA = {
@@ -942,8 +943,21 @@ describe('NativeEditorBridge v2', () => {
         delete missingStateRevision.stateRevision;
         const missingSelection = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
         delete missingSelection.selection;
+        // The core emits documentIsEmpty on every render update. A payload
+        // without it is a core that disagrees with this boundary, which is
+        // exactly the drift that reached the device.
+        const missingDocumentIsEmpty = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<
+            string,
+            unknown
+        >;
+        delete missingDocumentIsEmpty.documentIsEmpty;
         it.each<[string, Record<string, unknown>]>([
             ['missing stateRevision', missingStateRevision],
+            ['missing documentIsEmpty', missingDocumentIsEmpty],
+            [
+                'non-boolean documentIsEmpty',
+                { ...MOCK_ATOMIC_RENDER_SNAPSHOT, documentIsEmpty: 'false' },
+            ],
             ['numeric documentVersion', { ...MOCK_ATOMIC_RENDER_SNAPSHOT, documentVersion: 4 }],
             [
                 'out-of-range scalarLength',

@@ -146,6 +146,8 @@ interface NativeEditorV2AtomicRenderSnapshotShape {
     documentVersion: string;
     stateRevision: string;
     scalarLength: number;
+    /** The core's own answer for whether the document holds no content. */
+    documentIsEmpty: boolean;
 }
 
 /** A recursively immutable view of the value frozen by renderUpdate(). */
@@ -813,6 +815,7 @@ export function normalizeNativeEditorV2RenderUpdateValue(
             'documentVersion',
             'stateRevision',
             'scalarLength',
+            'documentIsEmpty',
         ])
     ) {
         return null;
@@ -825,6 +828,7 @@ export function normalizeNativeEditorV2RenderUpdateValue(
     const documentVersion = normalizeRevisionField(parsed, 'documentVersion');
     const stateRevision = normalizeRevisionField(parsed, 'stateRevision');
     const scalarLength = nativeEditorV2U32(parsed.scalarLength);
+    const documentIsEmpty = parsed.documentIsEmpty;
     if (
         renderBlocks == null ||
         renderPatch === undefined ||
@@ -833,7 +837,8 @@ export function normalizeNativeEditorV2RenderUpdateValue(
         historyState == null ||
         documentVersion == null ||
         stateRevision == null ||
-        scalarLength == null
+        scalarLength == null ||
+        typeof documentIsEmpty !== 'boolean'
     ) {
         return null;
     }
@@ -846,6 +851,7 @@ export function normalizeNativeEditorV2RenderUpdateValue(
         documentVersion,
         stateRevision,
         scalarLength,
+        documentIsEmpty,
     });
 }
 

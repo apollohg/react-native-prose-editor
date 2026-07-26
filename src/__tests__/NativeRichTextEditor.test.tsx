@@ -1595,6 +1595,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             documentVersion: '42',
             stateRevision: '7',
             scalarLength: 5,
+            documentIsEmpty: false,
         }) as ReturnType<typeof handle.bridge.renderUpdate>;
         const snapshotJson = JSON.stringify(snapshot);
         const renderUpdate = jest.spyOn(handle.bridge, 'renderUpdate').mockReturnValue(snapshot);
