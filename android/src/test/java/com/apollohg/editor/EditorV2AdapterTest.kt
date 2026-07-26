@@ -259,6 +259,25 @@ class EditorV2AdapterTest {
     }
 
     @Test
+    fun `refresh reports a failed engine render update`() {
+        // A render update that fails used to return null in silence, so no
+        // caller — the paired view or the stateless render probe — could name
+        // the cause.
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        val errors = mutableListOf<EditorV2Error>()
+        adapter.onAutonomousError = { errors.add(it) }
+
+        // Destroy the session behind the adapter's back: the next render
+        // update reaches a handle the backend no longer knows.
+        backend.destroy(adapter.editorId)
+
+        assertNull(adapter.refreshFromRustState(mirrorSelection = null))
+        assertEquals(1, errors.size)
+        assertEquals("lifecycle", errors.single().domain)
+    }
+
+    @Test
     fun `awareness publication failure does not roll back committed typing`() {
         val adapter = makeRoomAdapter { _, _ -> }
         val errors = mutableListOf<EditorV2Error>()

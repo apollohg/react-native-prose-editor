@@ -2,6 +2,8 @@ package com.apollohg.editor
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.editor_core.*
@@ -603,25 +605,51 @@ internal fun renderElementsJsonFromUpdate(updateJson: String): String {
     return elements.toString()
 }
 
-private fun renderDocumentProbe(configJson: String, apply: (EditorV2Adapter) -> String?): String {
-    val adapter = when (val created = UniffiEditorV2Backend.create(configJson, snapshotState = null)) {
+/**
+ * The backend is a parameter, as it is for [EditorV2Adapter.attach], so the
+ * probe's error-propagation contract is testable against a fake; production
+ * routing always takes the default.
+ */
+internal fun renderDocumentProbe(
+    configJson: String,
+    backend: EditorV2Backend = UniffiEditorV2Backend,
+    apply: (EditorV2Adapter) -> String?,
+): String {
+    val adapter = when (val created = backend.create(configJson, snapshotState = null)) {
         is EditorV2CallResult.Err -> return probeErrorJson(created.error)
         is EditorV2CallResult.Ok -> {
             val editorId = runCatching { JSONObject(created.value).getString("editorId") }.getOrNull()
                 ?: return probeContractErrorJson("v2 render probe create carries no editor id")
-            val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, editorId, roomBound = false)
+            val adapter = EditorV2Adapter.attach(backend, editorId, roomBound = false)
             if (adapter == null) {
-                UniffiEditorV2Backend.destroy(editorId)
+                backend.destroy(editorId)
                 return probeContractErrorJson("v2 render probe could not bind its created editor")
             }
             adapter
         }
     }
+    // The probe owns no view, so nothing claims the adapter's autonomous error
+    // channel and a failing apply would drop the engine's own
+    // domain/code/message on the floor — leaving JS with a generic contract
+    // error that names no cause. Claim the channel for the probe's lifetime so
+    // the first real error is what reaches the caller.
+    val probeErrorToken = nextProbeErrorToken.incrementAndGet()
+    val capturedError = AtomicReference<EditorV2Error?>(null)
+    adapter.bindAutonomousErrorOwner(
+        probeErrorToken,
+        callback = { error -> capturedError.compareAndSet(null, error) },
+        onReleased = {},
+    )
     try {
         val updateJson = apply(adapter)
-            ?: return probeContractErrorJson("v2 render probe could not apply content")
+            ?: return capturedError.get()?.let { probeErrorJson(it) }
+                ?: probeContractErrorJson("v2 render probe could not apply content")
         return renderElementsJsonFromUpdate(updateJson)
     } finally {
+        adapter.clearAutonomousErrorOwner(probeErrorToken)
         adapter.destroy()
     }
 }
+
+/** Owner tokens for the stateless render probes' error-channel claims. */
+private val nextProbeErrorToken = AtomicLong(0)

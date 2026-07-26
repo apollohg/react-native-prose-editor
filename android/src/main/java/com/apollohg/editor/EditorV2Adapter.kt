@@ -470,7 +470,12 @@ internal class EditorV2Adapter private constructor(
             )
         ) {
             is EditorV2CallResult.Err -> {
-                debugNotes.add("renderUpdate ${result.error.domain}/${result.error.code}")
+                // A render update that fails or violates the frozen shape is a
+                // boundary failure like any other. Returning null without
+                // reporting it leaves every caller — the paired view and the
+                // stateless render probe alike — holding a bare null with no
+                // cause to surface, so the engine's own error is what travels.
+                emit(result.error)
                 return null
             }
             is EditorV2CallResult.Ok -> result.value
@@ -478,7 +483,7 @@ internal class EditorV2Adapter private constructor(
         renderUpdateCallCountForTesting += 1
         val snapshot = parseAtomicRenderSnapshot(derived)
         return if (snapshot == null) {
-            debugNotes.add("renderUpdate parse failed")
+            emit(contractError("v2 render update violates the frozen shape"))
             null
         } else {
             // Preserve an IME-owned caret only after authoritative active and

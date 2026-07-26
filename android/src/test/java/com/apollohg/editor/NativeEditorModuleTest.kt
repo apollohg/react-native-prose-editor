@@ -906,6 +906,45 @@ class NativeEditorModuleTest {
         assertTrue(parsed.getJSONObject("error").getString("message").isNotEmpty())
     }
 
+    @Test
+    fun `render probe reports why a null document could not be applied`() {
+        // A nullable document field reaching the viewer as `null` serializes to
+        // the literal "null", which is not an object the adapter can send. The
+        // probe owns no view, so without claiming the adapter's error channel
+        // the real rejection would be dropped for a generic contract error.
+        val backend = FakeEditorV2Backend()
+
+        val parsed = JSONObject(
+            renderDocumentProbe(
+                """{"initialization":{"type":"localEmpty"}}""",
+                backend,
+            ) { adapter -> adapter.setContentJson("null") }
+        )
+
+        val error = parsed.getJSONObject("error")
+        assertEquals("boundary", error.getString("domain"))
+        assertEquals(
+            "setContentJson document is not valid JSON",
+            error.getString("message"),
+        )
+    }
+
+    @Test
+    fun `render probe returns rendered content when apply succeeds`() {
+        val backend = FakeEditorV2Backend()
+
+        val rendered = renderDocumentProbe(
+            """{"initialization":{"type":"localEmpty"}}""",
+            backend,
+        ) { adapter -> adapter.setContentHtml("<p>Hello</p>") }
+
+        val elements = JSONArray(rendered)
+        assertTrue(
+            "a successful probe returns render elements, not an error envelope",
+            elements.length() > 0
+        )
+    }
+
     private data class TestExpoContext(
         val context: Context,
         val appContext: AppContext,
