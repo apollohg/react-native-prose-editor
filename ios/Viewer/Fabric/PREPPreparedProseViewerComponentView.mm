@@ -349,10 +349,16 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 
 - (void)releaseAllFabricOwnership
 {
-  // Recycling must use the same persisted canonical key as replacement,
-  // detachment, and mount-miss cleanup. Surface-wide release could otherwise
-  // remove a generation the recycled view never owned.
-  [self releaseFabricOwnership];
+  // Recycling is terminal for this component token: clear its measurement
+  // sidecar as well as its lease/compiler pin. A normal semantic replacement
+  // uses releaseFabricOwnership instead, preserving the token until Yoga has
+  // accepted the next semantic generation.
+  if (!_hasOwnedSurface) return;
+  [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      releaseFabricSurfaceId:_ownedSurfaceId
+                 componentTag:_ownedComponentTag];
+  _hasOwnedSurface = NO;
+  _ownedGeneration = nil;
 }
 
 - (void)installMeasuredArtifactIfAttached
