@@ -142,6 +142,16 @@ struct ViewerListContext: Hashable {
     let checked: Bool
 }
 
+/// Identifies the nearest list item that owns a renderable leaf. The identity
+/// is assigned while consuming the deterministic compiler sequence, so leaves
+/// from one item share geometry even when their paint differs.
+struct ViewerListItemBoundary: Hashable {
+    let identity: Int
+    let nestingDepth: UInt16
+    let isFirstRenderableLeaf: Bool
+    let isFinalRenderableLeaf: Bool
+}
+
 enum ViewerInline: Hashable {
     case text(text: String, marks: [FfiViewerMark])
     case atom(nodeType: String, docPos: UInt32, attrsJSON: String, label: String)
@@ -154,7 +164,19 @@ struct ViewerBlock: Hashable {
     let depth: UInt16
     let inBlockquote: Bool
     let listContext: ViewerListContext?
+    let listItemBoundary: ViewerListItemBoundary?
     let inlines: [ViewerInline]
+
+    func withListItemBoundary(_ boundary: ViewerListItemBoundary) -> ViewerBlock {
+        ViewerBlock(
+            nodeType: nodeType,
+            depth: depth,
+            inBlockquote: inBlockquote,
+            listContext: listContext,
+            listItemBoundary: boundary,
+            inlines: inlines
+        )
+    }
 }
 
 /// Width-independent native projection of the Rust compiled document. The
@@ -187,6 +209,7 @@ struct ViewerDocument {
                 depth: 0,
                 inBlockquote: false,
                 listContext: nil,
+                listItemBoundary: nil,
                 inlines: [.text(text: $0.text, marks: [])]
             )
         }
@@ -219,19 +242,32 @@ struct ViewerDocument {
             let nodeType: String
             let depth: UInt16
             let listContext: ViewerListContext?
+            let listItemIdentity: Int?
             var inlines: [ViewerInline]
         }
 
         var stack: [Builder] = []
         var rendered: [ViewerBlock] = []
+        var renderableLeavesByListItem: [Int: [Int]] = [:]
+        var listItemDepthByIdentity: [Int: UInt16] = [:]
+        var nextListItemIdentity = 0
         for element in compiled.elements() {
             switch element {
             case let .blockStart(nodeType: nodeType, depth: depth, listContextJson: listContextJSON):
+                let listItemIdentity: Int?
+                if nodeType == "listItem" {
+                    listItemIdentity = nextListItemIdentity
+                    listItemDepthByIdentity[nextListItemIdentity] = depth
+                    nextListItemIdentity += 1
+                } else {
+                    listItemIdentity = nil
+                }
                 stack.append(
                     Builder(
                         nodeType: nodeType,
                         depth: depth,
                         listContext: Self.listContext(from: listContextJSON),
+                        listItemIdentity: listItemIdentity,
                         inlines: []
                     )
                 )
@@ -245,19 +281,25 @@ struct ViewerDocument {
                 )
             case let .blockAtom(nodeType: nodeType, docPos: docPos, attrsJson: attrsJson, label: label):
                 let listContext = stack.reversed().compactMap(\.listContext).first
+                let listItemIdentity = stack.reversed().compactMap(\.listItemIdentity).first
                 rendered.append(
                     ViewerBlock(
                         nodeType: nodeType,
                         depth: stack.last?.depth ?? 0,
                         inBlockquote: stack.contains { $0.nodeType == "blockquote" },
                         listContext: listContext,
+                        listItemBoundary: nil,
                         inlines: [.atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJson, label: label)]
                     )
                 )
+                if let listItemIdentity {
+                    renderableLeavesByListItem[listItemIdentity, default: []].append(rendered.count - 1)
+                }
             case .blockEnd:
                 guard let builder = stack.popLast(), !builder.inlines.isEmpty else { continue }
                 let ancestors = stack + [builder]
                 let listContext = ancestors.reversed().compactMap(\.listContext).first
+                let listItemIdentity = ancestors.reversed().compactMap(\.listItemIdentity).first
                 let inBlockquote = ancestors.contains { $0.nodeType == "blockquote" }
                 rendered.append(
                     ViewerBlock(
@@ -265,13 +307,30 @@ struct ViewerDocument {
                         depth: builder.depth,
                         inBlockquote: inBlockquote,
                         listContext: listContext,
+                        listItemBoundary: nil,
                         inlines: builder.inlines
+                    )
+                )
+                if let listItemIdentity {
+                    renderableLeavesByListItem[listItemIdentity, default: []].append(rendered.count - 1)
+                }
+            }
+        }
+        for (identity, leaves) in renderableLeavesByListItem {
+            guard let first = leaves.first, let final = leaves.last else { continue }
+            for leaf in leaves {
+                rendered[leaf] = rendered[leaf].withListItemBoundary(
+                    ViewerListItemBoundary(
+                        identity: identity,
+                        nestingDepth: listItemDepthByIdentity[identity] ?? 0,
+                        isFirstRenderableLeaf: leaf == first,
+                        isFinalRenderableLeaf: leaf == final
                     )
                 )
             }
         }
         blocks = rendered.isEmpty && !isEmpty
-            ? [ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false, listContext: nil, inlines: [.text(text: "", marks: [])])]
+            ? [ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false, listContext: nil, listItemBoundary: nil, inlines: [.text(text: "", marks: [])])]
             : rendered
     }
 

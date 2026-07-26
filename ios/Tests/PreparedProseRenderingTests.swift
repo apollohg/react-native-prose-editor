@@ -12,6 +12,66 @@ final class PreparedProseRenderingTests: XCTestCase {
         }
     }
 
+    func testEveryCompilerFixtureHasDeterministicContainedGeometry() throws {
+        for fixture in Fixture.compilerFixtures {
+            try withCompiledDocument(source: fixture.source, configJSON: fixture.configJSON) { document in
+                let first = try prepare(document, themeJSON: Fixture.themeJSON)
+                let second = try prepare(document, themeJSON: Fixture.themeJSON)
+
+                XCTAssertEqual(first.size.height, second.size.height, fixture.name)
+                XCTAssertTrue(fixture.expectedKinds.isSubset(of: Set(first.blocks.flatMap(\.fragments).map(\.kind))), fixture.name)
+                XCTAssertTrue(fixture.assertDocument(document), fixture.name)
+                assertGeometryContained(first, fixture: fixture.name)
+                assertGeometryContained(second, fixture: fixture.name)
+            }
+        }
+    }
+
+    func testCompilerBackedMultiBlockAndNestedListItemsHaveIndependentBoundaries() throws {
+        try withCompiledDocument(source: Fixture.multiBlockList.source, configJSON: Fixture.multiBlockList.configJSON) { document in
+            let itemLeaves = Dictionary(grouping: document.blocks.compactMap { block in
+                block.listItemBoundary.map { ($0.identity, block) }
+            }, by: \.0)
+            XCTAssertEqual(itemLeaves.count, 3, "outer two items and nested item must remain distinct")
+            for (_, leaves) in itemLeaves {
+                XCTAssertEqual(leaves.filter { $0.1.listItemBoundary!.isFirstRenderableLeaf }.count, 1)
+                XCTAssertEqual(leaves.filter { $0.1.listItemBoundary!.isFinalRenderableLeaf }.count, 1)
+            }
+
+            let layout = try prepare(document, themeJSON: Fixture.themeJSON)
+            let layoutByItem = Dictionary(grouping: zip(document.blocks, layout.blocks).compactMap { pair in
+                let (block, prepared) = pair
+                block.listItemBoundary.map { ($0.identity, (block, prepared)) }
+            }, by: \.0)
+            for (_, leaves) in layoutByItem {
+                let textOrigins = leaves.compactMap { $0.1.fragments.first(where: { $0.kind == .text })?.bounds.minX }
+                XCTAssertEqual(Set(textOrigins).count, 1, "all leaves in one item reserve the same marker gutter")
+                XCTAssertEqual(leaves.flatMap { $0.1.fragments }.filter { $0.kind == .marker }.count, 1)
+            }
+
+            let outerOrdered = layoutByItem.values.first { leaves in
+                leaves.contains { $0.0.listContext?.ordered == true && $0.0.listContext?.index == 7 }
+            }
+            let nestedOrdered = layoutByItem.values.first { leaves in
+                leaves.contains { $0.0.listContext?.ordered == true && $0.0.listContext?.index == 12 }
+            }
+            XCTAssertEqual(outerOrdered?.flatMap { $0.1.fragments }.first(where: { $0.kind == .marker })?.label, "7.")
+            XCTAssertEqual(nestedOrdered?.flatMap { $0.1.fragments }.first(where: { $0.kind == .marker })?.label, "12.")
+            let emptyOrdered = layoutByItem.values.first { leaves in
+                leaves.contains { $0.0.listContext?.ordered == true && $0.0.listContext?.index == 8 }
+            }
+            XCTAssertEqual(emptyOrdered?.flatMap { $0.1.fragments }.first(where: { $0.kind == .marker })?.label, "8.")
+            XCTAssertTrue(document.blocks.filter { $0.listContext != nil }.allSatisfy(\.inBlockquote))
+
+            let outerLeaves = outerOrdered!.sorted { $0.1.bounds.minY < $1.1.bounds.minY }
+            XCTAssertEqual(outerLeaves.count, 3, "paragraph, code, and opaque block must share one outer item")
+            XCTAssertEqual(outerLeaves[0].1.bounds.maxY, outerLeaves[1].1.bounds.minY, accuracy: 0.001)
+            XCTAssertEqual(outerLeaves[1].1.bounds.maxY, outerLeaves[2].1.bounds.minY, accuracy: 0.001)
+            let nestedFirstY = nestedOrdered!.map(\.1.bounds.minY).min()!
+            XCTAssertEqual(nestedFirstY - outerLeaves[2].1.bounds.maxY, 4, accuracy: 0.001)
+        }
+    }
+
     func testCompilerBackedFixturesExposeEveryMarkAndAttributeToCoreText() throws {
         try withCompiledDocument(source: Fixture.markSource, configJSON: Fixture.customConfig) { document in
             let layout = try prepare(document, themeJSON: Fixture.themeJSON)
@@ -83,6 +143,18 @@ final class PreparedProseRenderingTests: XCTestCase {
     private func preparedKinds(for document: ViewerDocument) -> Set<PreparedProseFragmentKind> {
         let layout = try! prepare(document, themeJSON: Fixture.themeJSON)
         return Set(layout.blocks.flatMap(\.fragments).map(\.kind))
+    }
+
+    private func assertGeometryContained(_ layout: PreparedProseLayout, fixture: String) {
+        let artifact = CGRect(origin: .zero, size: layout.size)
+        for block in layout.blocks {
+            XCTAssertTrue(artifact.contains(block.bounds), "block escapes artifact: \(fixture)")
+            for fragment in block.fragments {
+                let tolerance = max(0.5, fragment.strokeWidth / 2 + 0.5)
+                XCTAssertTrue(block.bounds.insetBy(dx: -tolerance, dy: -tolerance).contains(fragment.bounds), "fragment escapes block: \(fixture)")
+                XCTAssertTrue(artifact.insetBy(dx: -tolerance, dy: -tolerance).contains(fragment.bounds), "fragment escapes artifact: \(fixture)")
+            }
+        }
     }
 
     /// Dropping both the result field and the local optional before returning
@@ -157,7 +229,7 @@ private struct Fixture {
 
     static let themeJSON = #"{"mentions":{"textColor":"#102030","backgroundColor":"#DDEEFF","borderColor":"#445566","borderWidth":2,"borderRadius":7},"links":{"color":"#007AFF"}}"#
     static let localConfig = #"{"initialization":{"type":"localEmpty"}}"#
-    static let customConfig = #"{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"#
+    static let customConfig = #"{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"opaqueBlock","content":"","group":"block","role":"block","isVoid":true,"allowUndeclaredAttrs":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"#
 
     static let structuralFixtures: [Fixture] = [
         Fixture(
@@ -194,4 +266,24 @@ private struct Fixture {
 
     static let markSource = FixtureSource.json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"Courier","fontSize":19}}]}]}]}"#)
     static let edgeSource = FixtureSource.json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"codeBlock","content":[{"type":"text","text":"nested code"}]},{"type":"orderedList","attrs":{"start":9999},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"marker"}]}]}]}]}]}"#)
+    static let markFixture = Fixture(name: "every mark", source: markSource, configJSON: customConfig, expectedKinds: [.text], assertDocument: { _ in true })
+    static let edgeFixture = Fixture(name: "nested code blockquote edge", source: edgeSource, configJSON: customConfig, expectedKinds: [.text, .marker, .border, .background], assertDocument: { _ in true })
+    static let multiBlockList = Fixture(
+        name: "multi-block and nested ordered list boundaries",
+        source: .json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":7},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"codeBlock","content":[{"type":"text","text":"second"}]},{"type":"opaqueBlock","attrs":{"label":"third"}},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph"}]}]}]}]}"#),
+        configJSON: customConfig,
+        expectedKinds: [.text, .marker, .border, .background, .atom],
+        assertDocument: { document in
+            document.blocks.contains { $0.inBlockquote && $0.listContext?.index == 7 }
+                && document.blocks.contains { $0.listContext?.index == 12 }
+        }
+    )
+    static let unicodeFixture = Fixture(
+        name: "unicode emoji bidi hard break and opaque atoms",
+        source: .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"\u05e9\u05dc\u05d5\u05dd \ud83d\ude80"},{"type":"hardBreak"},{"type":"opaque","attrs":{"label":"inline"}},{"type":"text","text":" cafe\u0301"}]},{"type":"opaqueBlock","attrs":{"label":"block"}}]}"#),
+        configJSON: customConfig,
+        expectedKinds: [.text, .atom],
+        assertDocument: { document in document.blocks.contains { $0.nodeType == "opaqueBlock" } }
+    )
+    static let compilerFixtures = structuralFixtures + [markFixture, edgeFixture, multiBlockList, unicodeFixture]
 }

@@ -208,8 +208,17 @@ final class CoreTextProseLayoutEngine {
         var cursorY = theme.contentInsets.top
         var blocks: [PreparedProseBlock] = []
         var retainedBytes = document.retainedBytes
+        var listMarkersByIdentity: [Int: PreparedListMarker] = [:]
         for block in document.blocks {
-            let prepared = prepareBlock(block, theme: theme, width: canonicalWidth, cursorY: cursorY)
+            guard let boundary = block.listItemBoundary,
+                  let context = block.listContext,
+                  listMarkersByIdentity[boundary.identity] == nil
+            else { continue }
+            listMarkersByIdentity[boundary.identity] = makeListMarker(context, paint: theme.paint(for: block), theme: theme)
+        }
+        for block in document.blocks {
+            let listMarker = block.listItemBoundary.flatMap { listMarkersByIdentity[$0.identity] }
+            let prepared = prepareBlock(block, listMarker: listMarker, theme: theme, width: canonicalWidth, cursorY: cursorY)
             blocks.append(prepared.block)
             cursorY = prepared.nextY
             retainedBytes += prepared.retainedBytes
@@ -226,40 +235,62 @@ final class CoreTextProseLayoutEngine {
 
     private func prepareBlock(
         _ block: ViewerBlock,
+        listMarker: PreparedListMarker?,
         theme: PreparedProseTheme,
         width: CGFloat,
         cursorY: CGFloat
     ) -> (block: PreparedProseBlock, nextY: CGFloat, retainedBytes: Int) {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
-        if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
-            let y = cursorY + theme.ruleMargin
-            let rule = CGRect(x: contentX, y: y, width: contentWidth, height: theme.ruleThickness)
-            let bounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: theme.ruleMargin * 2 + theme.ruleThickness)
-            let prepared = PreparedProseBlock(
-                fragments: [.init(kind: .rule, bounds: rule, color: theme.ruleColor.cgColor, strokeWidth: theme.ruleThickness)],
-                bounds: bounds
-            )
-            return (
-                prepared,
-                bounds.maxY,
-                prepared.estimatedRetainedBytes
-            )
-        }
-
         let paint = theme.paint(for: block)
-        let marker = block.listContext.map { makeListMarker($0, paint: paint, theme: theme) }
-        let listDepth = block.listContext == nil ? 0 : max(0, Int(block.depth) - 1)
+        let measuredListMarker = listMarker ?? block.listContext.map { makeListMarker($0, paint: paint, theme: theme) }
+        let marker = block.listItemBoundary.map { $0.isFirstRenderableLeaf ? measuredListMarker : nil } ?? measuredListMarker
+        let listDepth = block.listContext == nil
+            ? 0
+            : (block.listItemBoundary.map { Int($0.nestingDepth) } ?? max(0, Int(block.depth) - 1))
         // The marker gutter is an independently measured column. In particular,
         // baseIndentMultiplier == 0 must not permit text to overlap a scaled
-        // ordered marker or task box.
+        // ordered marker or task box. `measuredListMarker` stays item-scoped,
+        // which keeps paragraph/code/atom descendants aligned.
         let listBaseIndent = block.listContext == nil ? 0 : max(0, theme.listIndent * theme.listBaseIndentMultiplier)
         let nestedListIndent = block.listContext == nil ? 0 : max(0, theme.listIndent * CGFloat(listDepth))
-        let markerGutter = marker.map { max(6, $0.width + 6) } ?? 0
+        let markerGutter = measuredListMarker.map { max(6, $0.width + 6) } ?? 0
         let listInset = listBaseIndent + nestedListIndent + markerGutter
         let quoteInset = block.inBlockquote ? theme.quoteBorderWidth + theme.quoteMarkerGap + theme.quoteIndent : 0
         let codeInset = block.nodeType == "codeBlock" ? theme.codePaddingHorizontal : 0
         let textX = contentX + listInset + quoteInset + codeInset
+        let itemSpacing = block.listContext == nil
+            ? paint.spacingAfter
+            : (block.listItemBoundary?.isFinalRenderableLeaf ?? true ? theme.listItemSpacing : 0)
+        if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
+            let markerTopInset = marker?.ascent ?? 0
+            let ruleX = contentX + listInset + quoteInset
+            let ruleWidth = max(1, contentWidth - listInset - quoteInset)
+            let y = cursorY + theme.ruleMargin + markerTopInset
+            let rule = CGRect(x: ruleX, y: y, width: ruleWidth, height: theme.ruleThickness)
+            var fragments: [PreparedProseFragment] = [.init(kind: .rule, bounds: rule, color: theme.ruleColor.cgColor, strokeWidth: theme.ruleThickness)]
+            let totalEnd = y + theme.ruleThickness + theme.ruleMargin
+            if block.inBlockquote {
+                fragments.append(.init(kind: .border, bounds: CGRect(x: contentX, y: cursorY, width: theme.quoteBorderWidth, height: totalEnd - cursorY), color: theme.quoteBorderColor.cgColor, strokeWidth: theme.quoteBorderWidth))
+            }
+            if let marker {
+                let markerX = textX - markerGutter + (markerGutter - marker.width)
+                let markerBounds = CGRect(x: markerX, y: y - marker.ascent, width: marker.width, height: marker.ascent + marker.descent)
+                fragments.append(.init(kind: .marker, line: marker.line, origin: CGPoint(x: markerX, y: y), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
+            }
+            let seedBounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: totalEnd - cursorY)
+            let bounds = fragments.reduce(seedBounds) { $0.union($1.bounds) }
+            let prepared = PreparedProseBlock(
+                fragments: fragments,
+                bounds: bounds
+            )
+            return (
+                prepared,
+                max(totalEnd, bounds.maxY) + itemSpacing,
+                prepared.estimatedRetainedBytes
+            )
+        }
+
         let availableWidth = max(1, contentWidth - listInset - quoteInset - codeInset * 2)
         let attributed = makeAttributedString(block.inlines, paint: paint, theme: theme)
         let typesetter = CTTypesetterCreateWithAttributedString(attributed.string)
@@ -337,13 +368,12 @@ final class CoreTextProseLayoutEngine {
             )
             fragments.append(.init(kind: .marker, line: marker.line, origin: CGPoint(x: markerX, y: baseline), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
         }
-        let spacing = block.listContext == nil ? paint.spacingAfter : theme.listItemSpacing
         let seedBounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: max(0, totalEnd - cursorY))
         let bounds = fragments.reduce(seedBounds) { $0.union($1.bounds) }
         let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
         return (
             prepared,
-            max(totalEnd, bounds.maxY) + spacing,
+            max(totalEnd, bounds.maxY) + itemSpacing,
             256 + attributed.retainedBytes + prepared.estimatedRetainedBytes
         )
     }
