@@ -202,6 +202,16 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
             }
         }
         val fallback = if (rendered.isEmpty() && !compiled.isEmpty()) listOf(ViewerBlock("paragraph", 0, false, null, null, emptyList())) else rendered
+        val admittedAttachmentCount = fallback.count { block ->
+            block.nodeType == "image" && ViewerImageAttachment.sourceAndDeclaredSize(block) != null
+        }
+        if (admittedAttachmentCount > ViewerImageAttachment.MAXIMUM_ADMITTED_ATTACHMENTS) {
+            throw ProseViewerError.compiler(
+                "viewer",
+                "ATTACHMENT_LIMIT_EXCEEDED",
+                "The document exceeds the maximum admitted image attachment count.",
+            )
+        }
         return ViewerDocument(semanticKey, fallback, compiled.isEmpty(), compiled.retainedBytesDecimal().toLongOrNull() ?: 0)
     } finally {
         result.destroy()

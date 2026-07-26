@@ -262,9 +262,15 @@ class ProseViewerView @JvmOverloads constructor(
      * finite measurement even when the registry evicts its unmounted cache entry.
      */
     fun apply(source: ProseViewerSource, configuration: ProseViewerConfiguration): Boolean {
+        fontEnvironment.activate()
         val currentFontRevision = fontEnvironment.revision
         preparedRequest?.let { current ->
             if (current.source == source && current.configuration == configuration && current.fontEnvironmentRevision == currentFontRevision) {
+                return directError == null
+            }
+            if (current.source == source && current.configuration == configuration) {
+                preparedRequest = current.copy(fontEnvironmentRevision = currentFontRevision)
+                requestLayout()
                 return directError == null
             }
         }
@@ -338,6 +344,7 @@ class ProseViewerView @JvmOverloads constructor(
      * The interaction listener is retained so holders may assign it once.
      */
     fun prepareForReuse() {
+        fontEnvironment.deactivate()
         clearDirectGeneration()
         clearVirtualAccessibilityFocus()
         pendingTapGesture = null
@@ -465,12 +472,14 @@ class ProseViewerView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         preparePreparedHostForWindowDetachment()
+        fontEnvironment.deactivate()
         pendingTapGesture = null
         super.onDetachedFromWindow()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        if (preparedRequest != null) fontEnvironment.activate(deliverPending = true)
         requestVisibleImageAttachments()
     }
 
@@ -492,8 +501,8 @@ class ProseViewerView @JvmOverloads constructor(
             preparedArtifact = null
             preparedDrawingView.install(null)
             viewerImagePipeline.cancel()
-            attachmentRevisions.reset()
-            preparedRequest = preparedRequest?.copy(attachmentRevision = 0)
+            // Cancellation/detachment does not create a new semantic source;
+            // retain publication bits and revision for a later remount.
             preparedDrawingView.imagePixels = emptyMap()
             preparedAccessibilityGeneration = null
             notifyAccessibilitySubtreeChanged()
@@ -539,6 +548,7 @@ class ProseViewerView @JvmOverloads constructor(
 
     private fun configureImageGeneration(artifact: PreparedProseLayout) {
         val request = preparedRequest ?: return
+        attachmentRevisions.admit(artifact.imageAttachments.size)
         viewerImagePipeline.begin(
             request.generationIdentity,
             request.configuration.imagesEnabled,
@@ -565,7 +575,7 @@ class ProseViewerView @JvmOverloads constructor(
     private fun applyIntrinsicImageMetadata(attachment: ViewerImageAttachment, width: Int, height: Int) {
         val request = preparedRequest ?: return
         if (!viewerImagePipeline.acceptsCompletion(request.generationIdentity)) return
-        if (!attachmentRevisions.recordIntrinsicSize(attachment.id, width, height, attachment.declaredSize)) return
+        if (!attachmentRevisions.recordIntrinsicSize(attachment.id, attachment.ordinal, width, height, attachment.declaredSize)) return
         preparedRequest = request.copy(attachmentRevision = attachmentRevisions.revision)
         reportedResourceFailures.clear()
         requestLayout()

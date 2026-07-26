@@ -7,6 +7,12 @@ typealias NativeImagePipeline = RenderImageLoadOwner
 /// Immutable geometry produced by preparation. Pixels are deliberately kept
 /// outside `PreparedProseLayout`, so image completion cannot mutate layout.
 struct ViewerImageAttachment: Hashable {
+    /// Compiler/admission ceiling. Publication storage is a compact bitset,
+    /// but preparation still caps adversarial attachment artifacts.
+    static let maximumAdmittedAttachments = 8_192
+    /// Ordinal within the immutable prepared artifact. This is the compact
+    /// publication-state address; `id` remains source-qualified cache identity.
+    let ordinal: Int = -1
     let id: String
     let source: String
     let bounds: CGRect
@@ -53,12 +59,15 @@ final class ViewerImageIntrinsicStore {
 
     func size(for id: String) -> CGSize? {
         lock.lock()
-        defer { lock.unlock() }
-        guard var entry = values[id] else { return nil }
-        access &+= 1
-        entry.access = access
-        values[id] = entry
-        return entry.size
+        if var entry = values[id] {
+            access &+= 1
+            entry.access = access
+            values[id] = entry
+            lock.unlock()
+            return entry.size
+        }
+        lock.unlock()
+        return ViewerAttachmentRevisionState.authoritativeSize(for: id)
     }
 
     func store(_ size: CGSize, for id: String) {
@@ -77,35 +86,107 @@ final class ViewerImageIntrinsicStore {
     }
 }
 
-/// Per-surface publication state. It never owns image geometry: the bounded
-/// global LRU does that. This small set only prevents duplicate reflow events
-/// while one semantic generation is mounted, and must be reset on replacement
-/// or detachment so LRU eviction cannot suppress a later generation.
+/// Per-surface publication state. It retains compact ordinal metadata plus a
+/// bitset, so the global LRU is only an optimization. It resets only for a
+/// semantic replacement or recycle/teardown, never request cancellation.
 final class ViewerAttachmentRevisionState {
-    static let publicationLimit = 256
+    private final class WeakState {
+        weak var value: ViewerAttachmentRevisionState?
+        init(_ value: ViewerAttachmentRevisionState) { self.value = value }
+    }
+    private static let activeStateLock = NSLock()
+    private static var activeStates: [WeakState] = []
     private let lock = NSLock()
-    private var publishedAttachmentIDs = Set<String>()
+    private var publishedBits: [UInt8] = []
+    private var intrinsicSizes: [CGSize] = []
+    private var sourceQualifiedIDs: [String?] = []
+    private var admittedAttachmentCount = 0
     private(set) var revision: UInt64 = 0
 
-    var retainedPublicationCountForTesting: Int { lock.withLock { publishedAttachmentIDs.count } }
-
-    func reset() {
+    /// This is the exact compact state retained by the host: one bit per
+    /// already-admitted immutable attachment, never one heap entry per ID.
+    var retainedPublicationBytesForTesting: Int {
         lock.withLock {
-            publishedAttachmentIDs.removeAll(keepingCapacity: false)
-            revision = 0
+            publishedBits.count
+                + intrinsicSizes.count * MemoryLayout<CGSize>.stride
+                + sourceQualifiedIDs.count * MemoryLayout<String?>.stride
         }
     }
 
+    func admit(attachmentCount: Int) {
+        let count = max(0, attachmentCount)
+        lock.withLock {
+            guard admittedAttachmentCount != count else { return }
+            admittedAttachmentCount = count
+            publishedBits = Array(repeating: 0, count: (count + 7) / 8)
+            intrinsicSizes = Array(repeating: .zero, count: count)
+            sourceQualifiedIDs = Array(repeating: nil, count: count)
+        }
+        if count > 0 { Self.register(self) }
+    }
+
+    func reset() {
+        lock.withLock {
+            publishedBits.removeAll(keepingCapacity: false)
+            intrinsicSizes.removeAll(keepingCapacity: false)
+            sourceQualifiedIDs.removeAll(keepingCapacity: false)
+            admittedAttachmentCount = 0
+            revision = 0
+        }
+        Self.unregister(self)
+    }
+
     @discardableResult
-    func recordIntrinsicSize(_ size: CGSize, for id: String, declaredSize: CGSize?) -> Bool {
+    func recordIntrinsicSize(_ size: CGSize, for id: String, ordinal: Int, declaredSize: CGSize?) -> Bool {
         guard declaredSize == nil, size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return false }
         lock.lock(); defer { lock.unlock() }
-        guard !publishedAttachmentIDs.contains(id), publishedAttachmentIDs.count < Self.publicationLimit else { return false }
-        publishedAttachmentIDs.insert(id)
+        guard ordinal >= 0, ordinal < admittedAttachmentCount else { return false }
+        let byteIndex = ordinal / 8
+        let mask = UInt8(1 << (ordinal % 8))
+        guard publishedBits[byteIndex] & mask == 0 else { return false }
+        publishedBits[byteIndex] |= mask
+        intrinsicSizes[ordinal] = size
+        sourceQualifiedIDs[ordinal] = id
         ViewerImageIntrinsicStore.shared.store(size, for: id)
         revision &+= 1
         return true
     }
+
+    func intrinsicSize(for ordinal: Int) -> CGSize? {
+        lock.withLock {
+            guard ordinal >= 0, ordinal < admittedAttachmentCount else { return nil }
+            let mask = UInt8(1 << (ordinal % 8))
+            return publishedBits[ordinal / 8] & mask == 0 ? nil : intrinsicSizes[ordinal]
+        }
+    }
+
+    private func intrinsicSize(forSourceQualifiedID id: String) -> CGSize? {
+        lock.withLock {
+            guard let ordinal = sourceQualifiedIDs.firstIndex(where: { $0 == id }) else { return nil }
+            let mask = UInt8(1 << (ordinal % 8))
+            return publishedBits[ordinal / 8] & mask == 0 ? nil : intrinsicSizes[ordinal]
+        }
+    }
+
+    static func authoritativeSize(for id: String) -> CGSize? {
+        activeStateLock.withLock {
+            activeStates.removeAll { $0.value == nil }
+            return activeStates.compactMap { $0.value?.intrinsicSize(forSourceQualifiedID: id) }.first
+        }
+    }
+
+    private static func register(_ state: ViewerAttachmentRevisionState) {
+        activeStateLock.withLock {
+            activeStates.removeAll { $0.value == nil }
+            if !activeStates.contains(where: { $0.value === state }) { activeStates.append(WeakState(state)) }
+        }
+    }
+
+    private static func unregister(_ state: ViewerAttachmentRevisionState) {
+        activeStateLock.withLock { activeStates.removeAll { $0.value == nil || $0.value === state } }
+    }
+
+    deinit { Self.unregister(self) }
 }
 
 /// Bounded/cancellable viewer facade over the editor's existing native image
@@ -175,7 +256,7 @@ final class ViewerImagePipeline {
               visibleRect.size.width.isFinite, visibleRect.size.height.isFinite,
               !visibleRect.isNull, !visibleRect.isEmpty else { return }
         let expanded = visibleRect.insetBy(dx: -Self.prefetchMargin, dy: -Self.prefetchMargin)
-        let eligible = attachments.filter { !$0.source.isEmpty && $0.bounds.intersects(expanded) }
+        let eligible = attachments.filter { $0.ordinal >= 0 && !$0.source.isEmpty && $0.bounds.intersects(expanded) }
         let start: (String, [ViewerImageAttachment])? = lock.withLock {
             guard enabled, !generation.isEmpty else { return nil }
             let next = eligible.filter { requested.insert($0.id).inserted }

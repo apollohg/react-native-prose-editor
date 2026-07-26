@@ -272,6 +272,7 @@ final class CoreTextProseLayoutEngine {
             let listMarker = block.listItemBoundary.flatMap { listMarkersByIdentity[$0.identity] }
             let prepared = prepareBlock(
                 block,
+                attachmentOrdinal: imageAttachments.count,
                 listMarker: listMarker,
                 theme: theme,
                 width: canonicalWidth,
@@ -301,6 +302,9 @@ final class CoreTextProseLayoutEngine {
         }
         retainedBytes += interactions.reduce(0) { $0 + $1.estimatedRetainedBytes }
             + accessibilityNodes.reduce(0) { $0 + $1.estimatedRetainedBytes }
+        // A mounted host owns one compact publication bit per immutable image
+        // attachment. Reserve that bounded proportional cost with the artifact.
+        retainedBytes += (imageAttachments.count + 7) / 8
         return PreparedProseLayout(
             key: key,
             size: CGSize(width: canonicalWidth, height: pixelHeight / displayScale),
@@ -314,6 +318,7 @@ final class CoreTextProseLayoutEngine {
 
     private func prepareBlock(
         _ block: ViewerBlock,
+        attachmentOrdinal: Int,
         listMarker: PreparedListMarker?,
         theme: PreparedProseTheme,
         width: CGFloat,
@@ -349,7 +354,7 @@ final class CoreTextProseLayoutEngine {
             let resolvedSize = declared ?? ViewerImageIntrinsicStore.shared.size(for: image.id)
             let height = resolvedSize.map { imageWidth * $0.height / max(1, $0.width) } ?? provisionalHeight
             let bounds = CGRect(x: textX, y: cursorY, width: imageWidth, height: height)
-            let attachment = ViewerImageAttachment(id: image.id, source: image.source, bounds: bounds, declaredSize: declared)
+            let attachment = ViewerImageAttachment(ordinal: attachmentOrdinal, id: image.id, source: image.source, bounds: bounds, declaredSize: declared)
             let fragments = [PreparedProseFragment(kind: .image, bounds: bounds, color: UIColor.systemGray5.cgColor)]
             let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
             return (prepared, [], attachment, bounds.maxY + itemSpacing, prepared.estimatedRetainedBytes + 192)

@@ -47,6 +47,15 @@ bool HasEquivalentGenerationProps(
       left.fontEnvironmentRevision == right.fontEnvironmentRevision;
 }
 
+// Attachment publication belongs to the immutable source/configuration, not
+// to Fabric's derived attachment/font revisions or a layout-only replacement.
+bool HasEquivalentAttachmentPublicationProps(
+    const PreparedProseViewerProps &left,
+    const PreparedProseViewerProps &right) {
+  return left.sourceKind == right.sourceKind && left.source == right.source &&
+      left.configJson == right.configJson && left.imagesEnabled == right.imagesEnabled;
+}
+
 uint64_t Revision(const PreparedProseViewerShadowNode::ConcreteState::Shared &state, bool attachment) {
   if (!state) {
     return 0;
@@ -225,8 +234,11 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // does not alter the prepared render generation or its Fabric lease.
   const BOOL generationChanged =
       !_viewerProps || !HasEquivalentGenerationProps(*_viewerProps, *nextProps);
-  if (generationChanged) {
+  if (!_viewerProps ||
+      !HasEquivalentAttachmentPublicationProps(*_viewerProps, *nextProps)) {
     [_drawingView resetIntrinsicImagePublication];
+  }
+  if (generationChanged) {
     [self beginNewGeneration];
   }
   _viewerProps = nextProps;
@@ -292,6 +304,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   _viewerProps.reset();
   _viewerState.reset();
   [_drawingView cancelConfiguredImages];
+  [_drawingView resetIntrinsicImagePublication];
   [_drawingView installWithLayout:nil];
   _hasReceivedUsableLayoutMetrics = NO;
   _reportedErrorGeneration = nil;

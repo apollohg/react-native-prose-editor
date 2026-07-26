@@ -51,7 +51,7 @@ internal class PreparedProseViewerManager :
                 }
             }
             state.imagePipeline.onIntrinsicMetadata = { attachment, width, height ->
-                if (state.attachmentRevisions.recordIntrinsicSize(attachment.id, width, height, attachment.declaredSize)) {
+                if (state.attachmentRevisions.recordIntrinsicSize(attachment.id, attachment.ordinal, width, height, attachment.declaredSize)) {
                     state.publishAttachmentRevision()
                 }
             }
@@ -371,21 +371,18 @@ internal class PreparedProseViewerManager :
             val sourceKind: String,
             val source: String,
             val configJson: String,
-            val themeJson: String?,
-            val imagePolicyJson: String?,
             val imagesEnabled: Boolean,
-            val collapsesWhenEmpty: Boolean,
-            val fontEnvironmentRevision: Long,
         )
 
         fun semanticIdentity() = IntrinsicPublicationIdentity(
-            sourceKind, source, configJson, themeJson, imagePolicyJson,
-            imagesEnabled, collapsesWhenEmpty, fontEnvironmentRevision,
+            sourceKind, source, configJson, imagesEnabled,
         )
 
         fun resetIntrinsicPublication() = attachmentRevisions.reset()
 
         fun beginImages(view: PreparedProseDrawingView, artifact: PreparedProseLayout, request: ProseViewerRequest) {
+            attachmentRevisions.admit(artifact.imageAttachments.size)
+            fontEnvironment.activate()
             imagePipeline.begin(request.generationIdentity, request.configuration.imagesEnabled, ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson))
         }
 
@@ -422,6 +419,7 @@ internal class PreparedProseViewerManager :
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
             imagePipeline.cancel()
+            fontEnvironment.deactivate()
             replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
             view.install(null)
         }
@@ -459,6 +457,7 @@ internal class PreparedProseViewerManager :
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
             imagePipeline.cancel()
+            fontEnvironment.deactivate()
             attachmentRevisions.reset()
             stateWrapper?.destroyState()
             stateWrapper = null

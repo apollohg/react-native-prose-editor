@@ -275,7 +275,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             }
         }
         val blocks = document.blocks.map { block ->
-            val prepared = prepareBlock(block, markers, theme, contentWidth, cursorY)
+            val prepared = prepareBlock(block, imageAttachments.size, markers, theme, contentWidth, cursorY)
             cursorY = prepared.nextY
             retained += prepared.block.retainedBytes + prepared.extraBytes
             interactions += prepared.interactions
@@ -293,12 +293,15 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             )
         }
         retained += interactions.sumOf { it.retainedBytes } + nodes.sumOf { it.retainedBytes }
+        // One mounted host retains one compact publication bit per immutable
+        // attachment; include the bounded proportional reservation in layout cost.
+        retained += ((imageAttachments.size + 7) / 8).toLong()
         return PreparedProseLayout(key, widthPx, height, blocks, interactions, nodes, imageAttachments, retained)
     }
 
     private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val attachment: ViewerImageAttachment? = null, val nextY: Int, val extraBytes: Long)
 
-    private fun prepareBlock(block: ViewerBlock, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int): BlockResult {
+    private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int): BlockResult {
         val paint = theme.paintFor(block)
         val ancestors = listItemAncestors(block)
         val ancestorMarkers = ancestors.mapNotNull { ancestor -> measuredMarkers[ancestor.identity]?.let { ancestor to it } }
@@ -320,7 +323,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 val resolved = source.third ?: ViewerImageIntrinsicStore.shared.size(source.first)
                 val imageHeight = resolved?.let { imageWidth * it.second / max(1, it.first) } ?: max(44, minOf(240, (imageWidth * .56f).toInt()))
                 val bounds = Rect(textX, cursorY, textX + imageWidth, cursorY + imageHeight)
-                val attachment = ViewerImageAttachment(source.first, source.second, bounds, source.third)
+                val attachment = ViewerImageAttachment(source.first, source.second, bounds, source.third, attachmentOrdinal)
                 return BlockResult(PreparedProseBlock(listOf(PreparedProseFragment(PreparedProseFragmentKind.IMAGE, bounds, color = 0xFFF2F2F7.toInt())), bounds), emptyList(), attachment, bounds.bottom + itemSpacing, 192)
             }
         }

@@ -339,6 +339,18 @@ struct ViewerDocument {
                 )
             }
         }
+        let admittedAttachmentCount = rendered.reduce(into: 0) { count, block in
+            if block.nodeType == "image", ViewerImageAttachment.sourceAndDeclaredSize(in: block) != nil {
+                count += 1
+            }
+        }
+        guard admittedAttachmentCount <= ViewerImageAttachment.maximumAdmittedAttachments else {
+            throw ProseViewerError.compiler(
+                domain: "viewer",
+                code: "ATTACHMENT_LIMIT_EXCEEDED",
+                message: "The document exceeds the maximum admitted image attachment count."
+            )
+        }
         blocks = rendered.isEmpty && !isEmpty
             ? [ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false, listContext: nil, listItemBoundary: nil, inlines: [.text(text: "", marks: [])])]
             : rendered

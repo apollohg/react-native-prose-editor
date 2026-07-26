@@ -28,38 +28,51 @@ final class PreparedProseRevisionTests: XCTestCase {
 
     func testKnownImagePixelsInvalidateWithoutAttachmentRevision() {
         let state = ViewerAttachmentRevisionState()
-        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "known", declaredSize: CGSize(width: 40, height: 20)))
+        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "known", ordinal: 0, declaredSize: CGSize(width: 40, height: 20)))
         XCTAssertEqual(state.revision, 0)
     }
 
     func testUnknownImageIntrinsicSizeAdvancesRevisionOnlyOnce() {
         let state = ViewerAttachmentRevisionState()
-        XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "unknown", declaredSize: nil))
-        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 80, height: 40), for: "unknown", declaredSize: nil))
+        state.admit(attachmentCount: 1)
+        XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "unknown", ordinal: 0, declaredSize: nil))
+        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 80, height: 40), for: "unknown", ordinal: 0, declaredSize: nil))
         XCTAssertEqual(state.revision, 1)
     }
 
-    func testIntrinsicPublicationResetsAfterMetadataLRUEvictionForReuse() {
+    func testIntrinsicMetadataDoesNotReopenAcrossAttachmentRevisionReinstall() {
+        let state = ViewerAttachmentRevisionState()
+        state.admit(attachmentCount: 1)
+        XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
+        // Fabric installs the replacement artifact after its state revision.
+        // That is not a new semantic source and must preserve publication.
+        state.admit(attachmentCount: 1)
+        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
+        XCTAssertEqual(state.revision, 1)
+    }
+
+    func testAllAdmittedUnknownAttachmentsBeyond256PublishOnceWithCompactBitset() {
+        let state = ViewerAttachmentRevisionState()
+        let count = 513
+        state.admit(attachmentCount: count)
+        for index in 0..<count {
+            XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 1, height: 1), for: "\(index):https://example.test/image", ordinal: index, declaredSize: nil))
+        }
+        XCTAssertEqual(state.revision, UInt64(count))
+        XCTAssertEqual(state.retainedPublicationBytesForTesting, (count + 7) / 8 + count * (MemoryLayout<CGSize>.stride + MemoryLayout<String?>.stride))
+        XCTAssertEqual(state.intrinsicSize(for: count - 1), CGSize(width: 1, height: 1))
+        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 2, height: 2), for: "0:https://example.test/image", ordinal: 0, declaredSize: nil))
+    }
+
+    func testGlobalMetadataLRUEvictionDoesNotRepublishTheSameSemanticGeneration() {
         let state = ViewerAttachmentRevisionState()
         let evictedMetadata = ViewerImageIntrinsicStore(entryLimit: 1)
-        XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", declaredSize: nil))
+        state.admit(attachmentCount: 1)
+        XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
         evictedMetadata.store(CGSize(width: 40, height: 20), for: "7:https://example.test/a")
         evictedMetadata.store(CGSize(width: 20, height: 40), for: "8:https://example.test/b")
         XCTAssertNil(evictedMetadata.size(for: "7:https://example.test/a"))
-
-        state.reset()
-        XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", declaredSize: nil))
-        XCTAssertEqual(state.revision, 1)
-    }
-
-    func testIntrinsicPublicationStateIsBoundedWithoutEvictingPublishedIDs() {
-        let state = ViewerAttachmentRevisionState()
-        for index in 0..<ViewerAttachmentRevisionState.publicationLimit {
-            XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 1, height: 1), for: "\(index):https://example.test/image", declaredSize: nil))
-        }
-        XCTAssertEqual(state.retainedPublicationCountForTesting, ViewerAttachmentRevisionState.publicationLimit)
-        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 1, height: 1), for: "overflow:https://example.test/image", declaredSize: nil))
-        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 2, height: 2), for: "0:https://example.test/image", declaredSize: nil))
+        XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
     }
 
     func testBoundedIntrinsicMetadataEvictsOldestEntryDeterministically() {

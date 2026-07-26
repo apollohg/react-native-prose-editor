@@ -33,32 +33,43 @@ class PreparedProseRevisionTest {
 
     @Test fun unknownMetadataAdvancesAttachmentRevisionOnce() {
         val revisions = ViewerAttachmentRevisionState()
-        assertTrue(revisions.recordIntrinsicSize("i", 10, 20, null))
-        assertFalse(revisions.recordIntrinsicSize("i", 20, 40, null))
+        revisions.admit(1)
+        assertTrue(revisions.recordIntrinsicSize("i", 0, 10, 20, null))
+        assertFalse(revisions.recordIntrinsicSize("i", 0, 20, 40, null))
         assertEquals(1, revisions.revision)
     }
 
-    @Test fun intrinsicPublicationResetsAfterMetadataLRUEvictionForReuse() {
+    @Test fun intrinsicMetadataDoesNotReopenAcrossFabricReinstall() {
         val state = ViewerAttachmentRevisionState()
-        val evictedMetadata = ViewerImageIntrinsicStore(entryLimit = 1)
-        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 10, 20, null))
-        evictedMetadata.store("7:https://example.test/a", 10 to 20)
-        evictedMetadata.store("8:https://example.test/b", 20 to 10)
-        assertEquals(null, evictedMetadata.size("7:https://example.test/a"))
-
-        state.reset()
-        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 10, 20, null))
+        state.admit(1)
+        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
+        state.admit(1)
+        assertFalse(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
         assertEquals(1, state.revision)
     }
 
-    @Test fun intrinsicPublicationStateIsBoundedWithoutEvictingPublishedIds() {
+    @Test fun allAdmittedUnknownAttachmentsBeyond256PublishOnceWithCompactBitset() {
         val state = ViewerAttachmentRevisionState()
-        repeat(ViewerAttachmentRevisionState.PUBLICATION_LIMIT) { index ->
-            assertTrue(state.recordIntrinsicSize("$index:https://example.test/image", 1, 1, null))
+        val count = 513
+        state.admit(count)
+        repeat(count) { index ->
+            assertTrue(state.recordIntrinsicSize("$index:https://example.test/image", index, 1, 1, null))
         }
-        assertEquals(ViewerAttachmentRevisionState.PUBLICATION_LIMIT, state.retainedPublicationCountForTesting)
-        assertFalse(state.recordIntrinsicSize("overflow:https://example.test/image", 1, 1, null))
-        assertFalse(state.recordIntrinsicSize("0:https://example.test/image", 2, 2, null))
+        assertEquals(count.toLong(), state.revision)
+        assertEquals((count + 7) / 8 + count * (Int.SIZE_BYTES * 2 + Long.SIZE_BYTES), state.retainedPublicationBytesForTesting)
+        assertEquals(1 to 1, state.intrinsicSize(count - 1))
+        assertFalse(state.recordIntrinsicSize("0:https://example.test/image", 0, 2, 2, null))
+    }
+
+    @Test fun globalMetadataLRUEvictionDoesNotRepublishTheSameSemanticGeneration() {
+        val state = ViewerAttachmentRevisionState()
+        val evictedMetadata = ViewerImageIntrinsicStore(entryLimit = 1)
+        state.admit(1)
+        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
+        evictedMetadata.store("7:https://example.test/a", 10 to 20)
+        evictedMetadata.store("8:https://example.test/b", 20 to 10)
+        assertEquals(null, evictedMetadata.size("7:https://example.test/a"))
+        assertFalse(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
     }
 
     @Test fun boundedIntrinsicMetadataEvictsOldestEntryDeterministically() {
@@ -105,6 +116,28 @@ class PreparedProseRevisionTest {
         assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("viewer-missing-font", "semantic", "revision"))
         assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("viewer-missing-font", "semantic", "revision"))
         assertFalse(ViewerFontEnvironment.resolveFamily("unproven-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+        ViewerFontEnvironment.resetFamilyRegistryForTesting()
+    }
+
+    @Test fun familyRegistrationInvalidatesMountedDirectAndFabricObserversOnceAndTeardownRemovesObserver() {
+        ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        val direct = ViewerFontEnvironment()
+        val fabric = ViewerFontEnvironment()
+        val directRevisions = mutableListOf<Long>()
+        val fabricRevisions = mutableListOf<Long>()
+        direct.onInvalidated = directRevisions::add
+        fabric.onInvalidated = fabricRevisions::add
+        direct.activate()
+        fabric.activate()
+        ViewerFontEnvironment.registerAvailableFamily("observer-font", Typeface.DEFAULT)
+        ViewerFontEnvironment.registerAvailableFamily("observer-font", Typeface.DEFAULT)
+        assertEquals(listOf(1L), directRevisions)
+        assertEquals(listOf(1L), fabricRevisions)
+        direct.deactivate()
+        ViewerFontEnvironment.markFamilyUnavailable("observer-font")
+        assertEquals(listOf(1L), directRevisions)
+        assertEquals(listOf(1L, 2L), fabricRevisions)
+        fabric.deactivate()
         ViewerFontEnvironment.resetFamilyRegistryForTesting()
     }
 

@@ -118,8 +118,18 @@ public final class ProseViewerView: UIView {
         let fontRevision = fontEnvironment.revision
         if let request,
            request.source == source,
-           request.configuration == configuration,
-           request.fontEnvironmentRevision == fontRevision {
+           request.configuration == configuration {
+            guard request.fontEnvironmentRevision != fontRevision else { return pendingError == nil }
+            self.request = ProseViewerRequest(
+                source: request.source,
+                configuration: request.configuration,
+                nativeFontRevision: request.nativeFontRevision,
+                nativeFontScale: fontEnvironment.fontScale(for: fontRevision),
+                fontEnvironmentRevision: fontRevision,
+                attachmentRevision: request.attachmentRevision
+            )
+            invalidateIntrinsicContentSize()
+            setNeedsLayout()
             return pendingError == nil
         }
         let nextRequest = ProseViewerRequest(
@@ -186,17 +196,8 @@ public final class ProseViewerView: UIView {
         super.didMoveToWindow()
         guard window != nil else {
             viewerImagePipeline.cancel()
-            attachmentRevisions.reset()
-            if let request {
-                self.request = ProseViewerRequest(
-                    source: request.source,
-                    configuration: request.configuration,
-                    nativeFontRevision: request.nativeFontRevision,
-                    nativeFontScale: request.nativeFontScale,
-                    fontEnvironmentRevision: request.fontEnvironmentRevision,
-                    attachmentRevision: 0
-                )
-            }
+            // Request cancellation is not a semantic replacement. Preserve
+            // publication bits and revision for a later remount.
             drawingView.imagePixels = [:]
             return
         }
@@ -288,6 +289,7 @@ public final class ProseViewerView: UIView {
 
     private func configureImageGeneration(for layout: PreparedProseLayout) {
         guard let request else { return }
+        attachmentRevisions.admit(attachmentCount: layout.imageAttachments.count)
         viewerImagePipeline.begin(
             generation: request.generationIdentity,
             imagesEnabled: request.configuration.imagesEnabled,
@@ -311,7 +313,7 @@ public final class ProseViewerView: UIView {
     private func applyIntrinsicImageMetadata(_ attachment: ViewerImageAttachment, size: CGSize) {
         guard let request,
               viewerImagePipeline.acceptsCompletion(generation: request.generationIdentity),
-              attachmentRevisions.recordIntrinsicSize(size, for: attachment.id, declaredSize: attachment.declaredSize)
+              attachmentRevisions.recordIntrinsicSize(size, for: attachment.id, ordinal: attachment.ordinal, declaredSize: attachment.declaredSize)
         else { return }
         self.request = ProseViewerRequest(
             source: request.source,

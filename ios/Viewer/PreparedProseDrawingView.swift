@@ -34,7 +34,7 @@ public final class PreparedProseDrawingView: UIView {
         imagePipeline.onIntrinsicMetadata = { [weak self] attachment, size in
             guard let self,
                   self.imagePipeline.acceptsCompletion(generation: generation),
-                  self.imageRevisions.recordIntrinsicSize(size, for: attachment.id, declaredSize: attachment.declaredSize)
+                  self.imageRevisions.recordIntrinsicSize(size, for: attachment.id, ordinal: attachment.ordinal, declaredSize: attachment.declaredSize)
             else { return }
             NotificationCenter.default.post(
                 name: Self.imageMetadataDidResolve,
@@ -55,6 +55,7 @@ public final class PreparedProseDrawingView: UIView {
             imagesEnabled: imageConfiguration.enabled,
             policy: imageConfiguration.policy
         )
+        imageRevisions.admit(attachmentCount: layout?.imageAttachments.count ?? 0)
     }
 
     @objc public func updateConfiguredImagesForVisibleWindow() {
@@ -69,7 +70,6 @@ public final class PreparedProseDrawingView: UIView {
     @objc public func cancelConfiguredImages() {
         imageGeneration = ""
         imagePipeline.cancel()
-        imageRevisions.reset()
         imagePixels = [:]
     }
 
