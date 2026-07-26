@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
+import React, { useCallback, useMemo } from 'react';
+import type { NativeSyntheticEvent, ViewProps } from 'react-native';
+
 import {
     serializeEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
@@ -9,57 +10,19 @@ import {
     type EditorResourceLimits,
     type ResolvedEditorResourceLimits,
 } from './ResourceLimits';
-import { parseNativeBoundaryError } from './NativeEditorBoundaryError';
-import {
-    type NativeSyntheticEvent,
-    PixelRatio,
-    Platform,
-    type StyleProp,
-    type ViewStyle,
-} from 'react-native';
-
-import { withMentionsSchema } from './addons';
 import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
-import type { DocumentJSON, RenderElement } from './NativeEditorBridge';
+import type { DocumentJSON } from './NativeEditorBridge';
+import { withMentionsSchema } from './addons';
+import NativePreparedProseViewer from './specs/NativePreparedProseViewer';
 import {
-    getHeightCache,
-    setHeightCache,
-    computeRenderJsonHash,
-    computeLayoutContextKey,
-} from './heightCache';
-import {
-    normalizeDocumentJson,
-    resolveDocumentDescriptor,
-    tiptapSchema,
-    type ResolvedDocumentSchema,
-    type SchemaDefinition,
-} from './schemas';
+    serializePreparedProseViewerConfiguration,
+    type PreparedProseViewerConfiguration,
+} from './ViewerConfiguration';
+import { tiptapSchema, type SchemaDefinition } from './schemas';
 
-interface NativeProseViewerModule {
-    renderDocumentJson(configJson: string, json: string): string;
-    renderDocumentHtml(configJson: string, html: string): string;
-    measureContentHeight(renderJson: string, themeJson: string | undefined, width: number): number;
-}
-
-interface NativeProseViewerViewProps {
-    style?: StyleProp<ViewStyle>;
-    renderJson: string;
-    themeJson?: string;
-    imageLoadingPolicyJson?: string;
-    collapsesWhenEmpty?: boolean;
-    enableLinkTaps?: boolean;
-    interceptLinkTaps?: boolean;
-    onContentHeightChange?: (
-        event: NativeSyntheticEvent<NativeProseViewerContentHeightEvent>
-    ) => void;
-    onPressLink?: (event: NativeSyntheticEvent<NativeProseViewerLinkPressNativeEvent>) => void;
-    onPressMention?: (
-        event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>
-    ) => void;
-}
-
-interface NativeProseViewerContentHeightEvent {
-    contentHeight: number;
+interface NativeProseViewerLinkPressNativeEvent {
+    href: string;
+    text: string;
 }
 
 interface NativeProseViewerMentionPressNativeEvent {
@@ -67,62 +30,51 @@ interface NativeProseViewerMentionPressNativeEvent {
     label: string;
 }
 
-interface NativeProseViewerLinkPressNativeEvent {
-    href: string;
-    text: string;
+export interface NativeProseViewerErrorEvent {
+    domain: string;
+    code: string;
+    message: string;
+    fatal: boolean;
 }
 
-export interface NativeProseViewerMentionRenderContext {
+export interface NativeProseViewerMentionPressEvent {
     docPos: number;
     label: string;
-    attrs: Record<string, unknown>;
 }
-
-export interface NativeProseViewerMentionPressEvent extends NativeProseViewerMentionRenderContext {}
 
 export interface NativeProseViewerLinkPressEvent {
     href: string;
     text: string;
 }
 
-type NativeProseViewerContent = DocumentJSON | string;
-export type NativeProseViewerMentionPrefix =
-    | string
-    | ((mention: NativeProseViewerMentionRenderContext) => string | null | undefined);
-
-export interface NativeProseViewerMentionsAddonConfig {
+export interface NativeProseViewerMentionsConfig {
     trigger?: string;
-    prefix?: NativeProseViewerMentionPrefix;
+    prefix?: string;
     theme?: EditorMentionTheme;
-    resolveTheme?: (
-        mention: NativeProseViewerMentionRenderContext
-    ) => EditorMentionTheme | null | undefined;
     onPress?: (event: NativeProseViewerMentionPressEvent) => void;
 }
 
 export interface NativeProseViewerAddons {
-    mentions?: NativeProseViewerMentionsAddonConfig;
+    mentions?: NativeProseViewerMentionsConfig;
 }
 
-interface NativeProseViewerBaseProps {
-    contentRevision?: string;
-    contentJSONRevision?: string;
+export interface NativeProseViewerBaseProps extends ViewProps {
     schema?: SchemaDefinition;
     theme?: EditorTheme;
-    style?: StyleProp<ViewStyle>;
     allowBase64Images?: boolean;
     imageLoadingPolicy?: EditorImageLoadingPolicy;
     resourceLimits?: EditorResourceLimits;
     collapseTrailingEmptyParagraphs?: boolean;
     enableLinkTaps?: boolean;
+    renderImages?: boolean;
+    fontEnvironmentRevision?: number;
     addons?: NativeProseViewerAddons;
     onPressLink?: (event: NativeProseViewerLinkPressEvent) => void;
-    contentId?: string;
-    containerWidth?: number;
+    onError?: (error: NativeProseViewerErrorEvent) => void;
 }
 
 interface NativeProseViewerJsonProps extends NativeProseViewerBaseProps {
-    contentJSON: NativeProseViewerContent;
+    contentJSON: DocumentJSON | string;
     contentHTML?: never;
 }
 
@@ -133,672 +85,130 @@ interface NativeProseViewerHtmlProps extends NativeProseViewerBaseProps {
 
 export type NativeProseViewerProps = NativeProseViewerJsonProps | NativeProseViewerHtmlProps;
 
-const NativeProseViewerView = requireNativeViewManager(
-    'NativeEditor',
-    'NativeProseViewer'
-) as React.ComponentType<NativeProseViewerViewProps>;
-
-let nativeProseViewerModule: NativeProseViewerModule | null = null;
-
-function getNativeProseViewerModule(): NativeProseViewerModule {
-    if (!nativeProseViewerModule) {
-        nativeProseViewerModule = requireNativeModule<NativeProseViewerModule>('NativeEditor');
-    }
-    return nativeProseViewerModule;
-}
-
 const serializedJsonCache = new WeakMap<object, string>();
-const EMPTY_TEXT_BLOCK_PLACEHOLDER = '\u200B';
 
-function stringifyCachedJson(value: unknown): string {
-    if (value != null && typeof value === 'object') {
-        const cached = serializedJsonCache.get(value);
-        if (cached != null) {
-            return cached;
-        }
-        const serialized = JSON.stringify(value);
-        serializedJsonCache.set(value, serialized);
-        return serialized;
+function stringifyCachedJson(value: DocumentJSON): string {
+    const cached = serializedJsonCache.get(value);
+    if (cached != null) {
+        return cached;
     }
-    return JSON.stringify(value);
+
+    const serialized = JSON.stringify(value);
+    serializedJsonCache.set(value, serialized);
+    return serialized;
 }
 
-function looksLikeRenderElementsJson(json: string): boolean {
-    for (let index = 0; index < json.length; index += 1) {
-        const char = json[index];
-        if (char === ' ' || char === '\n' || char === '\r' || char === '\t') {
-            continue;
-        }
-        return char === '[';
-    }
-    return false;
-}
-
-function unicodeScalarLength(text: string): number {
-    let length = 0;
-    for (const _char of text) {
-        length += 1;
-    }
-    return length;
-}
-
-function normalizeMentionAttrs(node: unknown): Record<string, unknown> {
-    if (node == null || typeof node !== 'object') {
-        return {};
-    }
-    const attrs = (node as Record<string, unknown>).attrs;
-    if (attrs == null || typeof attrs !== 'object' || Array.isArray(attrs)) {
-        return {};
-    }
-    return attrs as Record<string, unknown>;
-}
-
-function baseMentionLabelFromAttrs(attrs: Record<string, unknown>): string {
-    const label = attrs.label;
-    return typeof label === 'string' && label.length > 0 ? label : 'mention';
-}
-
-function resolveConfiguredMentionPrefix(
-    prefix: NativeProseViewerMentionPrefix | undefined,
-    mention: NativeProseViewerMentionRenderContext
-): string | undefined {
-    const rawPrefix = typeof prefix === 'function' ? prefix(mention) : prefix;
-    return typeof rawPrefix === 'string' && rawPrefix.length > 0 ? rawPrefix : undefined;
-}
-
-function mentionTriggerFromAttrs(attrs: Record<string, unknown>): string | undefined {
-    const trigger = attrs.mentionSuggestionChar;
-    return typeof trigger === 'string' && trigger.length > 0 ? trigger : undefined;
-}
-
-function applyMentionPrefix(label: string, prefix: string | undefined): string {
-    if (!prefix || label.startsWith(prefix)) {
-        return label;
-    }
-    return `${prefix}${label}`;
-}
-
-function resolveMentionRenderedLabel(
-    mentionContext: NativeProseViewerMentionRenderContext,
-    prefix: NativeProseViewerMentionPrefix | undefined,
-    trigger: string | undefined
-): string {
-    if (prefix !== undefined) {
-        return applyMentionPrefix(
-            mentionContext.label,
-            resolveConfiguredMentionPrefix(prefix, mentionContext)
-        );
-    }
-
-    return applyMentionPrefix(
-        mentionContext.label,
-        trigger ?? mentionTriggerFromAttrs(mentionContext.attrs)
-    );
-}
-
-interface ResolvedMentionPayload extends NativeProseViewerMentionRenderContext {
-    renderedLabel: string;
-    mentionTheme?: EditorMentionTheme;
-}
-
-function collectMentionPayloadsByDocPos(
-    document: DocumentJSON,
-    mentionsAddon: NativeProseViewerMentionsAddonConfig | undefined,
-    documentNodeName: string
-): Map<number, ResolvedMentionPayload> {
-    const mentions = new Map<number, ResolvedMentionPayload>();
-    const effectiveMentionPrefix = mentionsAddon?.prefix;
-    const effectiveResolveMentionTheme = mentionsAddon?.resolveTheme;
-    const defaultMentionTheme = mentionsAddon?.theme;
-    const trigger = mentionsAddon?.trigger?.trim() || undefined;
-
-    const visit = (node: unknown, pos: number, isRoot = false): number => {
-        if (node == null || typeof node !== 'object') {
-            return pos;
-        }
-
-        const nodeRecord = node as Record<string, unknown>;
-        const nodeType = typeof nodeRecord.type === 'string' ? nodeRecord.type : '';
-        const content = Array.isArray(nodeRecord.content) ? nodeRecord.content : [];
-
-        if (nodeType === 'text') {
-            const text = typeof nodeRecord.text === 'string' ? nodeRecord.text : '';
-            return pos + unicodeScalarLength(text);
-        }
-
-        if (nodeType === 'mention') {
-            const attrs = normalizeMentionAttrs(nodeRecord);
-            const label = baseMentionLabelFromAttrs(attrs);
-            const mentionContext = { docPos: pos, label, attrs };
-            const renderedLabel = resolveMentionRenderedLabel(
-                mentionContext,
-                effectiveMentionPrefix,
-                trigger
-            );
-            const resolvedMentionTheme =
-                effectiveResolveMentionTheme?.(mentionContext) ?? undefined;
-            const mentionTheme =
-                defaultMentionTheme || resolvedMentionTheme
-                    ? {
-                          ...(defaultMentionTheme ?? {}),
-                          ...(resolvedMentionTheme ?? {}),
-                      }
-                    : undefined;
-            mentions.set(pos, {
-                ...mentionContext,
-                renderedLabel,
-                mentionTheme,
-            });
-        }
-
-        if (isRoot && nodeType === documentNodeName) {
-            let nextPos = pos;
-            for (const child of content) {
-                nextPos = visit(child, nextPos);
-            }
-            return nextPos;
-        }
-
-        if (content.length === 0) {
-            return pos + 1;
-        }
-
-        let nextPos = pos + 1;
-        for (const child of content) {
-            nextPos = visit(child, nextPos);
-        }
-        return nextPos + 1;
-    };
-
-    visit(document, 0, true);
-    return mentions;
-}
-
-function applyResolvedMentionRendering(
-    renderJson: string,
-    mentionPayloadsByDocPos: Map<number, ResolvedMentionPayload>
-): string {
-    if (mentionPayloadsByDocPos.size === 0) {
-        return renderJson;
-    }
-
-    let parsedElements: unknown;
-    try {
-        parsedElements = JSON.parse(renderJson);
-    } catch {
-        return renderJson;
-    }
-    if (!Array.isArray(parsedElements)) {
-        return renderJson;
-    }
-
-    let didChange = false;
-    const nextElements = parsedElements.map((element) => {
-        if (element == null || typeof element !== 'object' || Array.isArray(element)) {
-            return element;
-        }
-
-        const renderElement = element as RenderElement;
-        if (
-            renderElement.type !== 'opaqueInlineAtom' ||
-            renderElement.nodeType !== 'mention' ||
-            typeof renderElement.docPos !== 'number'
-        ) {
-            return element;
-        }
-
-        const mention = mentionPayloadsByDocPos.get(renderElement.docPos);
-        if (!mention) {
-            return element;
-        }
-
-        let nextElement = renderElement;
-        if (renderElement.label !== mention.renderedLabel) {
-            nextElement = { ...nextElement, label: mention.renderedLabel };
-            didChange = true;
-        }
-
-        if (mention.mentionTheme && Object.keys(mention.mentionTheme).length > 0) {
-            nextElement = nextElement === renderElement ? { ...nextElement } : nextElement;
-            nextElement.mentionTheme = mention.mentionTheme;
-            didChange = true;
-        }
-
-        return nextElement;
-    });
-
-    return didChange ? JSON.stringify(nextElements) : renderJson;
-}
-
-function isTopLevelSingleElementBlock(element: RenderElement): boolean {
-    return element.type === 'voidBlock' || element.type === 'opaqueBlockAtom';
-}
-
-function isEmptyParagraphPlaceholderText(text: string): boolean {
-    if (text.length === 0) {
-        return false;
-    }
-    return Array.from(text).every((char) => char === EMPTY_TEXT_BLOCK_PLACEHOLDER);
-}
-
-function isCollapsibleEmptyParagraphText(text: string): boolean {
-    return Array.from(text).every((char) => char === EMPTY_TEXT_BLOCK_PLACEHOLDER);
-}
-
-function renderElementsJsonContainsOnlyEmptyParagraphs(renderJson: string): boolean {
-    let parsedElements: unknown;
-    try {
-        parsedElements = JSON.parse(renderJson);
-    } catch {
-        return false;
-    }
-    if (!Array.isArray(parsedElements)) {
-        return false;
-    }
-    if (parsedElements.length === 0) {
-        return true;
-    }
-
-    let hasParagraph = false;
-    let paragraphIsOpen = false;
-
-    for (const element of parsedElements) {
-        if (element == null || typeof element !== 'object' || Array.isArray(element)) {
-            return false;
-        }
-
-        const renderElement = element as RenderElement;
-        switch (renderElement.type) {
-            case 'blockStart':
-                if (
-                    paragraphIsOpen ||
-                    renderElement.nodeType !== 'paragraph' ||
-                    renderElement.depth !== 0
-                ) {
-                    return false;
-                }
-                paragraphIsOpen = true;
-                hasParagraph = true;
-                break;
-            case 'textRun':
-                if (
-                    !paragraphIsOpen ||
-                    typeof renderElement.text !== 'string' ||
-                    !isCollapsibleEmptyParagraphText(renderElement.text)
-                ) {
-                    return false;
-                }
-                break;
-            case 'blockEnd':
-                if (!paragraphIsOpen) {
-                    return false;
-                }
-                paragraphIsOpen = false;
-                break;
-            default:
-                return false;
-        }
-    }
-
-    return hasParagraph && !paragraphIsOpen;
-}
-
-function isTrailingEmptyParagraphRange(
-    elements: RenderElement[],
-    start: number,
-    endExclusive: number
-): boolean {
-    const startElement = elements[start];
-    const endElement = elements[endExclusive - 1];
-    if (
-        startElement?.type !== 'blockStart' ||
-        startElement.nodeType !== 'paragraph' ||
-        startElement.depth !== 0 ||
-        endElement?.type !== 'blockEnd'
-    ) {
-        return false;
-    }
-
-    const innerElements = elements.slice(start + 1, endExclusive - 1);
-    return (
-        innerElements.length > 0 &&
-        innerElements.every(
-            (element) =>
-                element.type === 'textRun' &&
-                typeof element.text === 'string' &&
-                isEmptyParagraphPlaceholderText(element.text)
-        )
-    );
-}
-
-function collapseTrailingEmptyParagraphRenderElements(renderJson: string): string {
-    let parsedElements: unknown;
-    try {
-        parsedElements = JSON.parse(renderJson);
-    } catch {
-        return renderJson;
-    }
-    if (!Array.isArray(parsedElements)) {
-        return renderJson;
-    }
-
-    const elements = parsedElements as RenderElement[];
-    const topLevelRanges: Array<{ start: number; endExclusive: number }> = [];
-
-    for (let index = 0; index < elements.length; index += 1) {
-        const element = elements[index];
-        if (!element || typeof element !== 'object' || Array.isArray(element)) {
-            continue;
-        }
-
-        if (element.type === 'blockStart' && element.depth === 0) {
-            let nestingDepth = 1;
-            let cursor = index + 1;
-            while (cursor < elements.length && nestingDepth > 0) {
-                const current = elements[cursor];
-                if (current?.type === 'blockStart') {
-                    nestingDepth += 1;
-                } else if (current?.type === 'blockEnd') {
-                    nestingDepth -= 1;
-                }
-                cursor += 1;
-            }
-            if (nestingDepth !== 0) {
-                return renderJson;
-            }
-            topLevelRanges.push({ start: index, endExclusive: cursor });
-            index = cursor - 1;
-            continue;
-        }
-
-        if (isTopLevelSingleElementBlock(element)) {
-            topLevelRanges.push({ start: index, endExclusive: index + 1 });
-        }
-    }
-
-    if (topLevelRanges.length <= 1) {
-        return renderJson;
-    }
-
-    let trimStart: number | null = null;
-    for (let rangeIndex = topLevelRanges.length - 1; rangeIndex >= 1; rangeIndex -= 1) {
-        const range = topLevelRanges[rangeIndex];
-        if (!isTrailingEmptyParagraphRange(elements, range.start, range.endExclusive)) {
-            break;
-        }
-        trimStart = range.start;
-    }
-
-    if (trimStart == null) {
-        return renderJson;
-    }
-
-    return JSON.stringify(elements.slice(0, trimStart));
-}
-
-function serializeDocumentInput(
-    document: NativeProseViewerContent,
-    descriptor: ResolvedDocumentSchema
-): {
-    normalizedDocument: DocumentJSON | null;
-    serializedContentJson: string;
-} {
-    if (typeof document === 'string') {
-        try {
-            const parsed = JSON.parse(document) as DocumentJSON;
-            const normalizedDocument = normalizeDocumentJson(parsed, descriptor);
-            return {
-                normalizedDocument,
-                serializedContentJson: stringifyCachedJson(normalizedDocument),
-            };
-        } catch {
-            return {
-                normalizedDocument: null,
-                serializedContentJson: document,
-            };
-        }
-    }
-
-    const normalizedDocument = normalizeDocumentJson(document, descriptor);
+function resolveViewerConfiguration(
+    schema: SchemaDefinition | undefined,
+    allowBase64Images: boolean,
+    resourceLimits: ResolvedEditorResourceLimits | undefined,
+    mentions: NativeProseViewerMentionsConfig | undefined
+): PreparedProseViewerConfiguration {
     return {
-        normalizedDocument,
-        serializedContentJson: stringifyCachedJson(normalizedDocument),
+        initialization: { type: 'localEmpty' },
+        schema: withMentionsSchema(schema ?? tiptapSchema),
+        ...(allowBase64Images ? { policy: { allowBase64Images: true } } : {}),
+        ...(resourceLimits ? { limits: { resource: resourceLimits } } : {}),
+        ...(mentions?.trigger || mentions?.prefix
+            ? {
+                  mentions: {
+                      ...(mentions.trigger ? { trigger: mentions.trigger } : {}),
+                      ...(mentions.prefix ? { prefix: mentions.prefix } : {}),
+                  },
+              }
+            : {}),
     };
 }
 
-function extractRenderError(json: string): Error | null {
-    try {
-        const parsed = JSON.parse(json) as unknown;
-        if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            return null;
-        }
-        const boundaryError = parseNativeBoundaryError(parsed);
-        if (boundaryError) return boundaryError;
-        const error = (parsed as Record<string, unknown>).error;
-        return typeof error === 'string' ? new Error(error) : null;
-    } catch {
-        return null;
-    }
-}
-
-export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
+export function NativeProseViewer(props: NativeProseViewerProps) {
     const {
-        contentRevision,
-        contentJSONRevision,
+        contentJSON,
+        contentHTML,
         schema,
         theme,
-        style,
         allowBase64Images = false,
         imageLoadingPolicy,
         resourceLimits,
         collapseTrailingEmptyParagraphs = true,
         enableLinkTaps = true,
+        renderImages = true,
+        fontEnvironmentRevision = 0,
         addons,
         onPressLink,
-        contentId,
-        containerWidth,
+        onError,
+        ...viewProps
     } = props;
-    const mentionPressHandler = addons?.mentions?.onPress;
-    const contentJSON = 'contentJSON' in props ? props.contentJSON : undefined;
-    const contentHTML = 'contentHTML' in props ? props.contentHTML : undefined;
-    const resolvedContentRevision = contentRevision ?? contentJSONRevision;
-    const resourceLimitsKey = useMemo(
-        () =>
-            resourceLimits == null
-                ? undefined
-                : JSON.stringify(resolveEditorResourceLimits(resourceLimits)),
+    const mentions = addons?.mentions;
+    const resolvedResourceLimits = useMemo(
+        () => (resourceLimits ? resolveEditorResourceLimits(resourceLimits) : undefined),
         [resourceLimits]
     );
-    const resolvedResourceLimits = useMemo(
+    const configJson = useMemo(
         () =>
-            resourceLimitsKey == null
-                ? resolveEditorResourceLimits()
-                : (JSON.parse(resourceLimitsKey) as ResolvedEditorResourceLimits),
-        [resourceLimitsKey]
-    );
-    const hasResourceLimits = resourceLimits != null;
-    const documentDescriptor = useMemo(
-        () =>
-            resolveDocumentDescriptor(
-                withMentionsSchema(schema ?? tiptapSchema),
-                resolvedResourceLimits
+            serializePreparedProseViewerConfiguration(
+                resolveViewerConfiguration(
+                    schema,
+                    allowBase64Images,
+                    resolvedResourceLimits,
+                    mentions
+                )
             ),
-        [resolvedResourceLimits, schema]
+        [allowBase64Images, mentions, resolvedResourceLimits, schema]
     );
-    const { normalizedDocument, serializedContentJson } = useMemo(() => {
-        // `null` is absent content, not a document: a nullable field from an
-        // API reaches the prop as `null` (a cast is enough to pass the type),
-        // and serializing it would hand the engine the literal `null`, which
-        // it rejects as a malformed document. `contentHTML ?? ''` below gives
-        // the sibling prop the same empty-content reading.
-        if (contentJSON == null) {
-            return {
-                normalizedDocument: null,
-                serializedContentJson: null,
-            };
-        }
-        return serializeDocumentInput(contentJSON, documentDescriptor);
-    }, [contentJSON, resolvedContentRevision, documentDescriptor]);
-    const themeJson = useMemo(() => serializeEditorTheme(theme), [theme]);
-    const imageLoadingPolicyJson = useMemo(
+    const themeJson = useMemo(
+        () =>
+            serializeEditorTheme(
+                mentions?.theme
+                    ? { ...theme, mentions: { ...theme?.mentions, ...mentions.theme } }
+                    : theme
+            ),
+        [mentions?.theme, theme]
+    );
+    const imagePolicyJson = useMemo(
         () => serializeEditorImageLoadingPolicy(imageLoadingPolicy),
         [imageLoadingPolicy]
     );
-    const mentionPayloadsByDocPos = useMemo(
-        () =>
-            normalizedDocument == null
-                ? new Map<number, ResolvedMentionPayload>()
-                : collectMentionPayloadsByDocPos(
-                      normalizedDocument,
-                      addons?.mentions,
-                      documentDescriptor.documentNodeName
-                  ),
-        [addons?.mentions, documentDescriptor.documentNodeName, normalizedDocument]
-    );
-    const renderJson = useMemo(() => {
-        const configJson = JSON.stringify({
-            initialization: { type: 'localEmpty' },
-            schema: documentDescriptor.schema,
-            ...(allowBase64Images ? { policy: { allowBase64Images: true } } : {}),
-            ...(hasResourceLimits ? { limits: { resource: resolvedResourceLimits } } : {}),
-        });
-        const nextRenderJson =
-            serializedContentJson != null
-                ? getNativeProseViewerModule().renderDocumentJson(configJson, serializedContentJson)
-                : getNativeProseViewerModule().renderDocumentHtml(configJson, contentHTML ?? '');
-        const renderError = extractRenderError(nextRenderJson);
-        if (renderError != null) {
-            console.error(`NativeProseViewer: ${renderError.message}`);
-            return '[]';
+    const sourceKind = contentJSON === undefined ? 'html' : 'json';
+    const source = useMemo(() => {
+        if (contentJSON === undefined) {
+            return contentHTML ?? '';
         }
-        if (looksLikeRenderElementsJson(nextRenderJson)) {
-            const collapsedRenderJson = collapseTrailingEmptyParagraphs
-                ? collapseTrailingEmptyParagraphRenderElements(nextRenderJson)
-                : nextRenderJson;
-            return applyResolvedMentionRendering(collapsedRenderJson, mentionPayloadsByDocPos);
-        }
-        console.error('NativeProseViewer: native renderDocumentJson returned an invalid payload.');
-        return '[]';
-    }, [
-        allowBase64Images,
-        collapseTrailingEmptyParagraphs,
-        contentHTML,
-        documentDescriptor,
-        hasResourceLimits,
-        mentionPayloadsByDocPos,
-        resolvedResourceLimits,
-        serializedContentJson,
-    ]);
-    const renderJsonIsCollapsedEmpty = useMemo(
-        () =>
-            collapseTrailingEmptyParagraphs &&
-            renderElementsJsonContainsOnlyEmptyParagraphs(renderJson),
-        [collapseTrailingEmptyParagraphs, renderJson]
-    );
-    const [contentHeight, setContentHeight] = useState<number | null>(null);
-
-    useEffect(() => {
-        setContentHeight(null);
-    }, [contentId]);
-
-    const renderJsonHash = useMemo(() => computeRenderJsonHash(renderJson), [renderJson]);
-
-    const layoutContextKey = useMemo(
-        () => (containerWidth != null ? computeLayoutContextKey(themeJson, containerWidth) : null),
-        [themeJson, containerWidth]
-    );
-
-    const preMeasuredHeight = useMemo(() => {
-        if (!contentId || layoutContextKey == null || containerWidth == null) {
-            return null;
-        }
-
-        const cached = getHeightCache(contentId, layoutContextKey, renderJsonHash);
-        if (cached != null) return cached;
-
-        const measured = getNativeProseViewerModule().measureContentHeight(
-            renderJson,
-            themeJson,
-            containerWidth
-        );
-        if (measured > 0) {
-            setHeightCache(contentId, layoutContextKey, renderJsonHash, measured);
-        }
-        return measured > 0 ? measured : null;
-    }, [contentId, containerWidth, renderJson, themeJson, layoutContextKey, renderJsonHash]);
-
-    const handleContentHeightChange = useCallback(
-        (event: NativeSyntheticEvent<NativeProseViewerContentHeightEvent>) => {
-            const density = Platform.OS === 'android' ? PixelRatio.get() : 1;
-            const nextHeight = Math.ceil(event.nativeEvent.contentHeight / density);
-            if (nextHeight < 0) return;
-            if (nextHeight === 0 && !renderJsonIsCollapsedEmpty) return;
-            if (nextHeight === 0) {
-                setContentHeight((currentHeight) => (currentHeight === 0 ? currentHeight : 0));
-                return;
-            }
-            setContentHeight((currentHeight) =>
-                currentHeight === nextHeight ? currentHeight : nextHeight
-            );
-            if (contentId && layoutContextKey != null) {
-                setHeightCache(contentId, layoutContextKey, renderJsonHash, nextHeight);
-            }
-        },
-        [renderJsonIsCollapsedEmpty, contentId, layoutContextKey, renderJsonHash]
-    );
-
-    const handlePressMention = useCallback(
-        (event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>) => {
-            if (!mentionPressHandler) return;
-
-            const { docPos, label } = event.nativeEvent;
-            const resolvedMention = mentionPayloadsByDocPos.get(docPos);
-            mentionPressHandler({
-                docPos,
-                label: resolvedMention?.renderedLabel ?? label,
-                attrs: resolvedMention?.attrs ?? {},
-            });
-        },
-        [mentionPayloadsByDocPos, mentionPressHandler]
-    );
+        return typeof contentJSON === 'string' ? contentJSON : stringifyCachedJson(contentJSON);
+    }, [contentHTML, contentJSON]);
     const handlePressLink = useCallback(
         (event: NativeSyntheticEvent<NativeProseViewerLinkPressNativeEvent>) => {
-            if (!onPressLink) return;
-
-            onPressLink({
-                href: event.nativeEvent.href,
-                text: event.nativeEvent.text,
-            });
+            onPressLink?.(event.nativeEvent);
         },
         [onPressLink]
     );
-
-    const nativeStyle = useMemo(() => {
-        let measuredStyle: ViewStyle | null = null;
-        if (renderJsonIsCollapsedEmpty) {
-            measuredStyle = { height: 0, minHeight: 0 };
-        } else if (contentHeight != null && contentHeight > 0) {
-            measuredStyle = { minHeight: contentHeight };
-        } else if (preMeasuredHeight != null && preMeasuredHeight > 0) {
-            measuredStyle = { minHeight: preMeasuredHeight };
-        }
-        return [{ minHeight: renderJsonIsCollapsedEmpty ? 0 : 1 }, style, measuredStyle];
-    }, [contentHeight, preMeasuredHeight, renderJsonIsCollapsedEmpty, style]);
+    const handlePressMention = useCallback(
+        (event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>) => {
+            mentions?.onPress?.(event.nativeEvent);
+        },
+        [mentions]
+    );
+    const handleError = useCallback(
+        (event: NativeSyntheticEvent<NativeProseViewerErrorEvent>) => {
+            onError?.(event.nativeEvent);
+        },
+        [onError]
+    );
 
     return (
-        <NativeProseViewerView
-            style={nativeStyle}
-            renderJson={renderJson}
+        <NativePreparedProseViewer
+            {...viewProps}
+            sourceKind={sourceKind}
+            source={source}
+            configJson={configJson}
             themeJson={themeJson}
-            imageLoadingPolicyJson={imageLoadingPolicyJson}
+            imagePolicyJson={imagePolicyJson}
+            imagesEnabled={renderImages}
             collapsesWhenEmpty={collapseTrailingEmptyParagraphs}
             enableLinkTaps={enableLinkTaps}
-            interceptLinkTaps={typeof onPressLink === 'function'}
-            onContentHeightChange={handleContentHeightChange}
-            onPressLink={typeof onPressLink === 'function' ? handlePressLink : undefined}
-            onPressMention={
-                typeof mentionPressHandler === 'function' ? handlePressMention : undefined
-            }
+            fontEnvironmentRevision={fontEnvironmentRevision}
+            onPressLink={onPressLink ? handlePressLink : undefined}
+            onPressMention={mentions?.onPress ? handlePressMention : undefined}
+            onError={onError ? handleError : undefined}
         />
     );
 }

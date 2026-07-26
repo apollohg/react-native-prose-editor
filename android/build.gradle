@@ -7,6 +7,13 @@ plugins {
 
 def packageJson = new JsonSlurper().parse(file('../package.json'))
 
+def newArchEnabled = project.findProperty('newArchEnabled')?.toString() == 'true'
+if (!newArchEnabled) {
+    throw new GradleException(
+        'ReactNativeProseEditor requires the React Native New Architecture. Set newArchEnabled=true.'
+    )
+}
+
 group = 'com.apollohg'
 version = packageJson.version
 

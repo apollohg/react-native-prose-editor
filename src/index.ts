@@ -17,11 +17,11 @@ export {
     NativeProseViewer,
     type NativeProseViewerProps,
     type NativeProseViewerAddons,
-    type NativeProseViewerMentionsAddonConfig,
-    type NativeProseViewerMentionPrefix,
+    type NativeProseViewerBaseProps,
+    type NativeProseViewerMentionsConfig,
     type NativeProseViewerLinkPressEvent,
-    type NativeProseViewerMentionRenderContext,
     type NativeProseViewerMentionPressEvent,
+    type NativeProseViewerErrorEvent,
 } from './NativeProseViewer';
 
 export {

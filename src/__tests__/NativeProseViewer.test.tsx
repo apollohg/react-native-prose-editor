@@ -1,1092 +1,173 @@
-const mockRenderDocumentJson = jest.fn();
-const mockMeasureContentHeight = jest.fn();
-
 const mockNativeModule = {
-    renderDocumentJson: mockRenderDocumentJson,
-    renderDocumentHtml: jest.fn(),
-    measureContentHeight: mockMeasureContentHeight,
+    renderDocumentJson: jest.fn(),
+    measureContentHeight: jest.fn(),
 };
 
-jest.mock('expo-modules-core', () => {
+jest.mock('expo-modules-core', () => ({
+    requireNativeModule: () => mockNativeModule,
+}));
+
+jest.mock('../specs/NativePreparedProseViewer', () => {
     const React = require('react');
     const { View } = require('react-native');
 
-    const MockViewerView = React.forwardRef(
-        (props: Record<string, unknown>, _ref: React.Ref<unknown>) => (
-            <View testID='native-prose-viewer' {...props} />
-        )
-    );
-
-    return {
-        requireNativeModule: () => mockNativeModule,
-        requireNativeViewManager: (moduleName: string, viewName?: string) => {
-            if (moduleName === 'NativeEditor' && viewName === 'NativeProseViewer') {
-                return MockViewerView;
-            }
-            throw new Error(
-                `Unexpected native view manager request: ${moduleName} ${viewName ?? ''}`.trim()
-            );
-        },
-    };
+    return React.forwardRef((props: Record<string, unknown>, _ref: React.Ref<unknown>) => (
+        <View testID='prepared-prose-viewer' {...props} />
+    ));
 });
 
 import React from 'react';
 import { fireEvent, render } from '@testing-library/react-native';
-import { PixelRatio, Platform } from 'react-native';
 
-import type { DocumentJSON } from '../NativeEditorBridge';
 import { NativeProseViewer } from '../NativeProseViewer';
-import { clearHeightCache } from '../heightCache';
-import * as schemas from '../schemas';
 
 describe('NativeProseViewer', () => {
-    let consoleErrorSpy: jest.SpyInstance;
-
     beforeEach(() => {
-        consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        jest.clearAllMocks();
     });
 
-    beforeEach(() => {
-        clearHeightCache();
-        mockMeasureContentHeight.mockReset();
-        mockRenderDocumentJson.mockReset();
-        mockRenderDocumentJson.mockReturnValue(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: 'Hello ', marks: [] },
-                {
-                    type: 'opaqueInlineAtom',
-                    nodeType: 'mention',
-                    label: '@alice',
-                    docPos: 7,
-                },
-                { type: 'blockEnd' },
-            ])
-        );
-        mockNativeModule.renderDocumentHtml.mockReset();
-        mockNativeModule.renderDocumentHtml.mockReturnValue(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: 'Hello from HTML', marks: [] },
-                { type: 'blockEnd' },
-            ])
-        );
-    });
-
-    afterEach(() => {
-        consoleErrorSpy.mockRestore();
-    });
-
-    it('renders native view with render JSON from the native module', () => {
-        const contentJSON = {
+    it('passes JSON directly to the Fabric component with serialized configuration', () => {
+        const document = {
             type: 'doc',
-            content: [
-                {
-                    type: 'paragraph',
-                    content: [
-                        { type: 'text', text: 'Hello ' },
-                        { type: 'mention', attrs: { id: 'user-1', label: '@alice' } },
-                    ],
-                },
-            ],
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Hello' }] }],
         };
 
-        const { getByTestId } = render(<NativeProseViewer contentJSON={contentJSON} />);
-
-        const nativeView = getByTestId('native-prose-viewer');
-        expect(mockRenderDocumentJson).toHaveBeenCalledTimes(1);
-        expect(mockRenderDocumentJson.mock.calls[0]?.[1]).toBe(JSON.stringify(contentJSON));
-        expect(nativeView.props.renderJson).toContain('"nodeType":"mention"');
-    });
-
-    it('normalizes empty viewer JSON through the custom document descriptor', () => {
-        const articleSchema = {
-            nodes: [
-                { name: 'article', content: 'title+', role: 'doc' },
-                { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
-                { name: 'text', content: '', group: 'inline', role: 'text' },
-            ],
-            marks: [],
-        };
-
-        render(
+        const { getByTestId } = render(
             <NativeProseViewer
-                schema={articleSchema}
-                contentJSON={{ type: 'article', content: [] }}
+                contentJSON={document}
+                theme={{ text: { color: '#112233' } }}
+                resourceLimits={{ maxSchemaNodes: 500 }}
+                imageLoadingPolicy={{ maxPendingRequests: 8 }}
+                renderImages={false}
             />
         );
 
-        expect(mockRenderDocumentJson).toHaveBeenCalledWith(
-            expect.any(String),
-            JSON.stringify({ type: 'article', content: [{ type: 'title' }] })
-        );
-    });
-
-    it('accepts serialized document JSON strings', () => {
-        const contentJSON = JSON.stringify({
-            type: 'doc',
-            content: [
-                {
-                    type: 'paragraph',
-                    content: [{ type: 'text', text: 'Hello from string input' }],
-                },
-            ],
+        const nativeProps = getByTestId('prepared-prose-viewer').props;
+        expect(nativeProps).toMatchObject({
+            sourceKind: 'json',
+            source: JSON.stringify(document),
+            configJson: expect.any(String),
+            themeJson: JSON.stringify({ text: { color: '#112233' } }),
+            imagePolicyJson: expect.any(String),
+            imagesEnabled: false,
+            collapsesWhenEmpty: true,
+            enableLinkTaps: true,
+            fontEnvironmentRevision: 0,
         });
-
-        render(<NativeProseViewer contentJSON={contentJSON} />);
-
-        expect(mockRenderDocumentJson.mock.calls[0]?.[1]).toBe(contentJSON);
+        expect(JSON.parse(nativeProps.configJson)).toMatchObject({
+            initialization: { type: 'localEmpty' },
+            limits: { resource: { maxSchemaNodes: 500 } },
+        });
+        expect(mockNativeModule.renderDocumentJson).not.toHaveBeenCalled();
+        expect(mockNativeModule.measureContentHeight).not.toHaveBeenCalled();
     });
 
-    it('uses the Tiptap normalization fallback for an invalid schema', () => {
-        render(
+    it('passes HTML directly to the Fabric component', () => {
+        const { getByTestId } = render(
+            <NativeProseViewer contentHTML='<p>Hello from HTML</p>' />
+        );
+
+        expect(getByTestId('prepared-prose-viewer').props).toMatchObject({
+            sourceKind: 'html',
+            source: '<p>Hello from HTML</p>',
+            imagesEnabled: true,
+        });
+    });
+
+    it('reuses serialization for an immutable JSON document', () => {
+        const document = Object.freeze({
+            type: 'doc',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Cached' }] }],
+        });
+        const stringifySpy = jest.spyOn(JSON, 'stringify');
+        const { rerender } = render(<NativeProseViewer contentJSON={document} />);
+
+        stringifySpy.mockClear();
+        rerender(<NativeProseViewer contentJSON={document} />);
+
+        expect(stringifySpy).not.toHaveBeenCalledWith(document);
+        stringifySpy.mockRestore();
+    });
+
+    it('serializes declarative mention configuration and theme', () => {
+        const { getByTestId } = render(
             <NativeProseViewer
                 contentJSON={{ type: 'doc', content: [] }}
-                schema={{ nodes: [], marks: [] }}
-            />
-        );
-
-        expect(mockRenderDocumentJson.mock.calls[0]?.[1]).toBe(
-            JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] })
-        );
-    });
-
-    it('treats a null contentJSON as absent content instead of sending "null" to native', () => {
-        // A nullable document field reaches the prop as `null` (a cast is
-        // enough to satisfy the type). Serializing it would hand the engine
-        // the literal `null`, which it rejects as a malformed document.
-        const { getByTestId } = render(
-            <NativeProseViewer contentJSON={null as unknown as DocumentJSON} />
-        );
-
-        expect(mockRenderDocumentJson).not.toHaveBeenCalled();
-        expect(mockNativeModule.renderDocumentHtml).toHaveBeenCalledTimes(1);
-        expect(mockNativeModule.renderDocumentHtml.mock.calls[0]?.[1]).toBe('');
-        expect(getByTestId('native-prose-viewer')).toBeTruthy();
-        expect(consoleErrorSpy).not.toHaveBeenCalled();
-    });
-
-    it('renders native view from HTML input', () => {
-        const contentHTML = '<p>Hello from HTML</p>';
-
-        const { getByTestId } = render(<NativeProseViewer contentHTML={contentHTML} />);
-
-        const nativeView = getByTestId('native-prose-viewer');
-        expect(mockNativeModule.renderDocumentHtml).toHaveBeenCalledTimes(1);
-        expect(mockNativeModule.renderDocumentHtml.mock.calls[0]?.[1]).toBe(contentHTML);
-        expect(mockRenderDocumentJson).not.toHaveBeenCalled();
-        expect(nativeView.props.renderJson).toContain('Hello from HTML');
-    });
-
-    it('normalizes and passes a configurable image loading policy to native', () => {
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentHTML='<p>Hello</p>'
-                imageLoadingPolicy={{
-                    readTimeoutMs: 3000,
-                    maxPendingRequests: 8,
-                }}
-            />
-        );
-
-        expect(JSON.parse(getByTestId('native-prose-viewer').props.imageLoadingPolicyJson)).toEqual(
-            {
-                maxSourceBytes: 10485760,
-                connectTimeoutMs: 10000,
-                readTimeoutMs: 3000,
-                requestTimeoutMs: 60000,
-                maxConcurrentRequests: 2,
-                maxPendingRequests: 8,
-                maxDecodeDimensionPx: 2048,
-            }
-        );
-    });
-
-    it('passes resolved resource limits into the native render config', () => {
-        render(
-            <NativeProseViewer
-                contentJSON={{ type: 'doc' }}
-                resourceLimits={{ maxSchemaNodes: 500 }}
-            />
-        );
-
-        const config = JSON.parse(mockRenderDocumentJson.mock.calls[0]?.[0] as string);
-        expect(config.limits.resource).toMatchObject({
-            maxInputBytes: 20 * 1024 * 1024,
-            maxSchemaNodes: 500,
-            maxEncodedStateBytes: 50 * 1024 * 1024,
-        });
-        expect(config.resourceLimits).toBeUndefined();
-    });
-
-    it('does not rescan or rerender for semantically equal inline resource limits', () => {
-        const descriptorSpy = jest.spyOn(schemas, 'resolveDocumentDescriptor');
-        const contentJSON = { type: 'doc', content: [{ type: 'paragraph' }] };
-        const { rerender } = render(
-            <NativeProseViewer
-                contentJSON={contentJSON}
-                resourceLimits={{ maxSchemaNodes: 500 }}
-            />
-        );
-
-        rerender(
-            <NativeProseViewer
-                contentJSON={contentJSON}
-                resourceLimits={{ maxSchemaNodes: 500 }}
-            />
-        );
-
-        expect(mockRenderDocumentJson).toHaveBeenCalledTimes(1);
-        expect(descriptorSpy).toHaveBeenCalledTimes(1);
-        descriptorSpy.mockRestore();
-    });
-
-    it('includes mention schema support in the native render config', () => {
-        render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-            />
-        );
-
-        const config = JSON.parse(mockRenderDocumentJson.mock.calls[0]?.[0] as string) as {
-            schema: {
-                nodes: Array<{ name: string }>;
-            };
-        };
-        expect(config.schema.nodes.some((node) => node.name === 'mention')).toBe(true);
-    });
-
-    it('resolves mention attrs by doc position before firing the addon press handler', () => {
-        const onPress = jest.fn();
-        const contentJSON = {
-            type: 'doc',
-            content: [
-                {
-                    type: 'paragraph',
-                    content: [
-                        { type: 'text', text: '😀 ' },
-                        {
-                            type: 'mention',
-                            attrs: { id: 'user-1', label: '@alice', kind: 'user' },
-                        },
-                    ],
-                },
-            ],
-        };
-
-        const { getByTestId } = render(
-            <NativeProseViewer contentJSON={contentJSON} addons={{ mentions: { onPress } }} />
-        );
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onPressMention', {
-            nativeEvent: { docPos: 3, label: '@alice' },
-        });
-
-        expect(onPress).toHaveBeenCalledWith({
-            docPos: 3,
-            label: '@alice',
-            attrs: { id: 'user-1', label: '@alice', kind: 'user' },
-        });
-    });
-
-    it('uses the custom document root when resolving mention positions', () => {
-        const onPress = jest.fn();
-        const schema = {
-            nodes: [
-                { name: 'article', content: 'title+', role: 'doc' },
-                { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
-                { name: 'text', content: '', group: 'inline', role: 'text' },
-            ],
-            marks: [],
-        };
-        const { getByTestId } = render(
-            <NativeProseViewer
-                schema={schema}
-                contentJSON={{
-                    type: 'article',
-                    content: [
-                        {
-                            type: 'title',
-                            content: [{ type: 'mention', attrs: { id: '1', label: '@a' } }],
-                        },
-                    ],
-                }}
-                addons={{ mentions: { onPress } }}
-            />
-        );
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onPressMention', {
-            nativeEvent: { docPos: 1, label: '@a' },
-        });
-        expect(onPress).toHaveBeenCalledWith({
-            docPos: 1,
-            label: '@a',
-            attrs: { id: '1', label: '@a' },
-        });
-    });
-
-    it('applies mention prefixes and per-mention theme overrides before rendering', () => {
-        const onPress = jest.fn();
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: 'Hello ', marks: [] },
-                {
-                    type: 'opaqueInlineAtom',
-                    nodeType: 'mention',
-                    label: 'alice',
-                    docPos: 7,
-                },
-                { type: 'blockEnd' },
-            ])
-        );
-        const contentJSON = {
-            type: 'doc',
-            content: [
-                {
-                    type: 'paragraph',
-                    content: [
-                        { type: 'text', text: 'Hello ' },
-                        {
-                            type: 'mention',
-                            attrs: { id: 'vip-1', label: 'alice', kind: 'user' },
-                        },
-                    ],
-                },
-            ],
-        };
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={contentJSON}
-                addons={{
-                    mentions: {
-                        prefix: ({ attrs }) => (attrs.kind === 'user' ? '@' : undefined),
-                        resolveTheme: ({ attrs }) =>
-                            attrs.id === 'vip-1'
-                                ? {
-                                      textColor: '#445566',
-                                      backgroundColor: '#ddeeff',
-                                  }
-                                : undefined,
-                        onPress,
-                    },
-                }}
-            />
-        );
-
-        const nativeView = getByTestId('native-prose-viewer');
-        const renderElements = JSON.parse(nativeView.props.renderJson) as Array<{
-            type: string;
-            nodeType?: string;
-            label?: string;
-            mentionTheme?: Record<string, unknown>;
-        }>;
-        const renderedMention = renderElements.find(
-            (element) => element.type === 'opaqueInlineAtom' && element.nodeType === 'mention'
-        );
-
-        expect(renderedMention).toMatchObject({
-            label: '@alice',
-            mentionTheme: {
-                textColor: '#445566',
-                backgroundColor: '#ddeeff',
-            },
-        });
-
-        fireEvent(nativeView, 'onPressMention', {
-            nativeEvent: { docPos: 7, label: 'alice' },
-        });
-
-        expect(onPress).toHaveBeenCalledWith({
-            docPos: 7,
-            label: '@alice',
-            attrs: { id: 'vip-1', label: 'alice', kind: 'user' },
-        });
-    });
-
-    it('applies mention addon config before rendering', () => {
-        const onPress = jest.fn();
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: 'Hello ', marks: [] },
-                {
-                    type: 'opaqueInlineAtom',
-                    nodeType: 'mention',
-                    label: 'alice',
-                    docPos: 7,
-                },
-                { type: 'blockEnd' },
-            ])
-        );
-        const contentJSON = {
-            type: 'doc',
-            content: [
-                {
-                    type: 'paragraph',
-                    content: [
-                        { type: 'text', text: 'Hello ' },
-                        {
-                            type: 'mention',
-                            attrs: { id: 'vip-1', label: 'alice', kind: 'user' },
-                        },
-                    ],
-                },
-            ],
-        };
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={contentJSON}
                 addons={{
                     mentions: {
                         trigger: '@',
-                        theme: {
-                            textColor: '#112233',
-                            backgroundColor: '#ddeeff',
-                        },
-                        resolveTheme: ({ attrs }) =>
-                            attrs.id === 'vip-1' ? { fontWeight: 'bold' } : undefined,
-                        onPress,
+                        prefix: '@',
+                        theme: { textColor: '#112233', backgroundColor: '#ddeeff' },
                     },
                 }}
             />
         );
 
-        const nativeView = getByTestId('native-prose-viewer');
-        const renderElements = JSON.parse(nativeView.props.renderJson) as Array<{
-            type: string;
-            nodeType?: string;
-            label?: string;
-            mentionTheme?: Record<string, unknown>;
-        }>;
-        const renderedMention = renderElements.find(
-            (element) => element.type === 'opaqueInlineAtom' && element.nodeType === 'mention'
-        );
-
-        expect(renderedMention).toMatchObject({
-            label: '@alice',
-            mentionTheme: {
-                textColor: '#112233',
-                backgroundColor: '#ddeeff',
-                fontWeight: 'bold',
-            },
+        const nativeProps = getByTestId('prepared-prose-viewer').props;
+        expect(JSON.parse(nativeProps.configJson)).toMatchObject({
+            mentions: { trigger: '@', prefix: '@' },
         });
-
-        fireEvent(nativeView, 'onPressMention', {
-            nativeEvent: { docPos: 7, label: 'alice' },
-        });
-
-        expect(onPress).toHaveBeenCalledWith({
-            docPos: 7,
-            label: '@alice',
-            attrs: { id: 'vip-1', label: 'alice', kind: 'user' },
+        expect(JSON.parse(nativeProps.themeJson)).toMatchObject({
+            mentions: { textColor: '#112233', backgroundColor: '#ddeeff' },
         });
     });
 
-    it('routes native mention taps through the mentions addon press handler', () => {
-        const onPress = jest.fn();
-        const contentJSON = {
-            type: 'doc',
-            content: [
-                {
-                    type: 'paragraph',
-                    content: [
-                        { type: 'text', text: 'Hello ' },
-                        {
-                            type: 'mention',
-                            attrs: { id: 'user-1', label: 'alice', mentionSuggestionChar: '@' },
-                        },
-                    ],
-                },
-            ],
-        };
-
-        const { getByTestId } = render(
-            <NativeProseViewer contentJSON={contentJSON} addons={{ mentions: { onPress } }} />
-        );
-
-        const nativeView = getByTestId('native-prose-viewer');
-        expect(nativeView.props.onPressMention).toBeTruthy();
-
-        fireEvent(nativeView, 'onPressMention', {
-            nativeEvent: { docPos: 7, label: 'alice' },
-        });
-
-        expect(onPress).toHaveBeenCalledWith({
-            docPos: 7,
-            label: '@alice',
-            attrs: { id: 'user-1', label: 'alice', mentionSuggestionChar: '@' },
-        });
-    });
-
-    it('uses mentionSuggestionChar when viewer addons do not define a mention prefix', () => {
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: 'Hello ', marks: [] },
-                {
-                    type: 'opaqueInlineAtom',
-                    nodeType: 'mention',
-                    label: '@alice',
-                    docPos: 7,
-                },
-                { type: 'blockEnd' },
-            ])
-        );
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [
-                        {
-                            type: 'paragraph',
-                            content: [
-                                { type: 'text', text: 'Hello ' },
-                                {
-                                    type: 'mention',
-                                    attrs: {
-                                        id: 'user-1',
-                                        label: 'alice',
-                                        mentionSuggestionChar: '@',
-                                    },
-                                },
-                            ],
-                        },
-                    ],
-                }}
-            />
-        );
-
-        const renderElements = JSON.parse(
-            getByTestId('native-prose-viewer').props.renderJson
-        ) as Array<{ type: string; nodeType?: string; label?: string }>;
-        const renderedMention = renderElements.find(
-            (element) => element.type === 'opaqueInlineAtom' && element.nodeType === 'mention'
-        );
-
-        expect(renderedMention?.label).toBe('@alice');
-    });
-
-    it('enables native link taps by default', () => {
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-            />
-        );
-
-        expect(getByTestId('native-prose-viewer').props.enableLinkTaps).toBe(true);
-        expect(getByTestId('native-prose-viewer').props.interceptLinkTaps).toBe(false);
-    });
-
-    it('routes native link taps through onPressLink when provided', () => {
+    it('routes native link, mention, and error events through public callbacks', () => {
         const onPressLink = jest.fn();
-
+        const onMentionPress = jest.fn();
+        const onError = jest.fn();
         const { getByTestId } = render(
             <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
+                contentJSON={{ type: 'doc', content: [] }}
                 onPressLink={onPressLink}
+                addons={{ mentions: { onPress: onMentionPress } }}
+                onError={onError}
             />
         );
 
-        const nativeView = getByTestId('native-prose-viewer');
-        expect(nativeView.props.enableLinkTaps).toBe(true);
-        expect(nativeView.props.interceptLinkTaps).toBe(true);
-
+        const nativeView = getByTestId('prepared-prose-viewer');
         fireEvent(nativeView, 'onPressLink', {
             nativeEvent: { href: 'https://example.com', text: 'Example' },
         });
-
-        expect(onPressLink).toHaveBeenCalledWith({
-            href: 'https://example.com',
-            text: 'Example',
+        fireEvent(nativeView, 'onPressMention', {
+            nativeEvent: { docPos: 7, label: '@alice' },
         });
-    });
-
-    it('collapses trailing empty paragraphs by default', () => {
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: 'Hello', marks: [] },
-                { type: 'blockEnd' },
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: '\u200B', marks: [] },
-                { type: 'blockEnd' },
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: '\u200B', marks: [] },
-                { type: 'blockEnd' },
-            ])
-        );
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-            />
-        );
-
-        expect(JSON.parse(getByTestId('native-prose-viewer').props.renderJson)).toEqual([
-            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-            { type: 'textRun', text: 'Hello', marks: [] },
-            { type: 'blockEnd' },
-        ]);
-        expect(getByTestId('native-prose-viewer').props.collapsesWhenEmpty).toBe(true);
-    });
-
-    it('preserves trailing empty paragraphs when collapseTrailingEmptyParagraphs is false', () => {
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: 'Hello', marks: [] },
-                { type: 'blockEnd' },
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: '\u200B', marks: [] },
-                { type: 'blockEnd' },
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: '\u200B', marks: [] },
-                { type: 'blockEnd' },
-            ])
-        );
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-                collapseTrailingEmptyParagraphs={false}
-            />
-        );
-
-        expect(JSON.parse(getByTestId('native-prose-viewer').props.renderJson)).toEqual([
-            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-            { type: 'textRun', text: 'Hello', marks: [] },
-            { type: 'blockEnd' },
-            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-            { type: 'textRun', text: '\u200B', marks: [] },
-            { type: 'blockEnd' },
-            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-            { type: 'textRun', text: '\u200B', marks: [] },
-            { type: 'blockEnd' },
-        ]);
-        expect(getByTestId('native-prose-viewer').props.collapsesWhenEmpty).toBe(false);
-    });
-
-    it('collapses all-empty paragraph documents to zero height by default', () => {
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: '\u200B', marks: [] },
-                { type: 'blockEnd' },
-            ])
-        );
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-            />
-        );
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 0 },
-            undefined,
-            { height: 0, minHeight: 0 },
-        ]);
-    });
-
-    it('keeps all-empty paragraph height measurable when collapseTrailingEmptyParagraphs is false', () => {
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: '\u200B', marks: [] },
-                { type: 'blockEnd' },
-            ])
-        );
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-                collapseTrailingEmptyParagraphs={false}
-            />
-        );
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 1 },
-            undefined,
-            null,
-        ]);
-    });
-
-    it('accepts zero-height native measurements for collapsed empty documents', () => {
-        mockRenderDocumentJson.mockReturnValueOnce(
-            JSON.stringify([
-                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
-                { type: 'textRun', text: '\u200B', marks: [] },
-                { type: 'blockEnd' },
-            ])
-        );
-
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-            />
-        );
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-            nativeEvent: { contentHeight: 0 },
-        });
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 0 },
-            undefined,
-            { height: 0, minHeight: 0 },
-        ]);
-    });
-
-    it('applies measured content height as a minimum height', () => {
-        const { getByTestId } = render(
-            <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
-            />
-        );
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-            nativeEvent: { contentHeight: 84 },
-        });
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 1 },
-            undefined,
-            { minHeight: 84 },
-        ]);
-    });
-
-    it('converts Android pixel heights to density-independent points', () => {
-        const originalPlatform = Platform.OS;
-        Object.defineProperty(Platform, 'OS', {
-            configurable: true,
-            value: 'android',
-        });
-        const pixelRatioSpy = jest.spyOn(PixelRatio, 'get').mockReturnValue(2.625);
-
-        try {
-            const { getByTestId } = render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                />
-            );
-
-            fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-                nativeEvent: { contentHeight: 252 },
-            });
-
-            expect(getByTestId('native-prose-viewer').props.style).toEqual([
-                { minHeight: 1 },
-                undefined,
-                { minHeight: Math.ceil(252 / 2.625) },
-            ]);
-        } finally {
-            pixelRatioSpy.mockRestore();
-            Object.defineProperty(Platform, 'OS', {
-                configurable: true,
-                value: originalPlatform,
-            });
-        }
-    });
-
-    it('accepts later positive shrink measurements from native layout stabilization', () => {
-        const baseContent = {
-            type: 'doc',
-            content: [{ type: 'paragraph', content: [] }],
-        };
-        const { getByTestId, rerender } = render(
-            <NativeProseViewer contentJSON={baseContent} contentRevision='first' />
-        );
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-            nativeEvent: { contentHeight: 84 },
-        });
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 1 },
-            undefined,
-            { minHeight: 84 },
-        ]);
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+        fireEvent(nativeView, 'onError', {
             nativeEvent: {
-                contentHeight: 20,
+                domain: 'viewer',
+                code: 'DOCUMENT_INVALID',
+                message: 'Invalid document',
+                fatal: true,
             },
         });
 
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 1 },
-            undefined,
-            { minHeight: 20 },
-        ]);
-
-        rerender(<NativeProseViewer contentJSON={baseContent} contentRevision='second' />);
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-            nativeEvent: {
-                contentHeight: 52,
-            },
+        expect(onPressLink).toHaveBeenCalledWith({ href: 'https://example.com', text: 'Example' });
+        expect(onMentionPress).toHaveBeenCalledWith({ docPos: 7, label: '@alice' });
+        expect(onError).toHaveBeenCalledWith({
+            domain: 'viewer',
+            code: 'DOCUMENT_INVALID',
+            message: 'Invalid document',
+            fatal: true,
         });
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 1 },
-            undefined,
-            { minHeight: 52 },
-        ]);
     });
 
-    it('accepts contentJSONRevision as a compatibility alias for contentRevision', () => {
-        const baseContent = {
-            type: 'doc',
-            content: [{ type: 'paragraph', content: [] }],
-        };
-        const { getByTestId, rerender } = render(
-            <NativeProseViewer contentJSON={baseContent} contentJSONRevision='first' />
-        );
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-            nativeEvent: { contentHeight: 84 },
-        });
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-            nativeEvent: { contentHeight: 20 },
-        });
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 1 },
-            undefined,
-            { minHeight: 20 },
-        ]);
-
-        rerender(<NativeProseViewer contentJSON={baseContent} contentJSONRevision='second' />);
-
-        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-            nativeEvent: { contentHeight: 52 },
-        });
-
-        expect(getByTestId('native-prose-viewer').props.style).toEqual([
-            { minHeight: 1 },
-            undefined,
-            { minHeight: 52 },
-        ]);
-    });
-
-    it('logs native render errors and falls back to an empty render', () => {
-        mockRenderDocumentJson.mockReturnValue('{"error":"invalid json"}');
-
+    it('keeps normal ViewProps but has no legacy measurement or bridge props', () => {
         const { getByTestId } = render(
             <NativeProseViewer
-                contentJSON={{
-                    type: 'doc',
-                    content: [{ type: 'paragraph', content: [] }],
-                }}
+                contentJSON={{ type: 'doc', content: [] }}
+                style={{ marginTop: 12 }}
+                accessible
+                testID='public-viewer'
             />
         );
 
-        expect(consoleErrorSpy).toHaveBeenCalledWith('NativeProseViewer: invalid json');
-        expect(getByTestId('native-prose-viewer').props.renderJson).toBe('[]');
-    });
-
-    describe('height pre-measurement', () => {
-        beforeEach(() => {
-            mockMeasureContentHeight.mockReturnValue(84);
-        });
-
-        it('uses pre-measured height as initial minHeight when contentId and containerWidth provided', () => {
-            const { getByTestId } = render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                    contentId='msg-1'
-                    containerWidth={375}
-                />
-            );
-
-            expect(mockMeasureContentHeight).toHaveBeenCalledWith(
-                expect.any(String),
-                undefined,
-                375
-            );
-
-            const styles = getByTestId('native-prose-viewer').props.style;
-            expect(styles).toEqual(
-                expect.arrayContaining([expect.objectContaining({ minHeight: 84 })])
-            );
-        });
-
-        it('does not call measureContentHeight when contentId is not provided', () => {
-            render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                    containerWidth={375}
-                />
-            );
-
-            expect(mockMeasureContentHeight).not.toHaveBeenCalled();
-        });
-
-        it('does not call measureContentHeight when containerWidth is not provided', () => {
-            render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                    contentId='msg-1'
-                />
-            );
-
-            expect(mockMeasureContentHeight).not.toHaveBeenCalled();
-        });
-
-        it('uses cached height on subsequent renders without calling measureContentHeight again', () => {
-            const { unmount } = render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                    contentId='msg-1'
-                    containerWidth={375}
-                />
-            );
-
-            expect(mockMeasureContentHeight).toHaveBeenCalledTimes(1);
-            unmount();
-            mockMeasureContentHeight.mockClear();
-
-            const { getByTestId } = render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                    contentId='msg-1'
-                    containerWidth={375}
-                />
-            );
-
-            expect(mockMeasureContentHeight).not.toHaveBeenCalled();
-            const styles = getByTestId('native-prose-viewer').props.style;
-            expect(styles).toEqual(
-                expect.arrayContaining([expect.objectContaining({ minHeight: 84 })])
-            );
-        });
-
-        it('native onContentHeightChange overrides pre-measured height', () => {
-            const { getByTestId } = render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                    contentId='msg-1'
-                    containerWidth={375}
-                />
-            );
-
-            fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-                nativeEvent: { contentHeight: 92 },
-            });
-
-            const styles = getByTestId('native-prose-viewer').props.style;
-            expect(styles).toEqual([{ minHeight: 1 }, undefined, { minHeight: 92 }]);
-        });
-
-        it('falls back to minHeight 1 when no contentId or containerWidth', () => {
-            const { getByTestId } = render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                />
-            );
-
-            expect(getByTestId('native-prose-viewer').props.style).toEqual([
-                { minHeight: 1 },
-                undefined,
-                null,
-            ]);
-        });
-    });
-
-    describe('contentHeight reset on contentId change', () => {
-        it('resets contentHeight when contentId changes', () => {
-            mockMeasureContentHeight.mockReturnValue(84);
-            const { getByTestId, rerender } = render(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [] }],
-                    }}
-                    contentId='msg-1'
-                    containerWidth={375}
-                />
-            );
-
-            fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
-                nativeEvent: { contentHeight: 100 },
-            });
-
-            expect(getByTestId('native-prose-viewer').props.style).toEqual([
-                { minHeight: 1 },
-                undefined,
-                { minHeight: 100 },
-            ]);
-
-            mockMeasureContentHeight.mockReturnValue(60);
-            rerender(
-                <NativeProseViewer
-                    contentJSON={{
-                        type: 'doc',
-                        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'New' }] }],
-                    }}
-                    contentId='msg-2'
-                    containerWidth={375}
-                />
-            );
-
-            const styles = getByTestId('native-prose-viewer').props.style;
-            const measuredStyle = styles[2];
-            expect(measuredStyle?.minHeight).not.toBe(100);
-        });
+        const nativeProps = getByTestId('public-viewer').props;
+        expect(nativeProps).toMatchObject({ style: { marginTop: 12 }, accessible: true });
+        expect(nativeProps.containerWidth).toBeUndefined();
+        expect(nativeProps.contentId).toBeUndefined();
+        expect(nativeProps.renderJson).toBeUndefined();
+        expect(nativeProps.onContentHeightChange).toBeUndefined();
+        expect(mockNativeModule.renderDocumentJson).not.toHaveBeenCalled();
+        expect(mockNativeModule.measureContentHeight).not.toHaveBeenCalled();
     });
 });

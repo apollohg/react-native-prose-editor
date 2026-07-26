@@ -2,6 +2,10 @@ require 'json'
 
 package = JSON.parse(File.read(File.join(__dir__, '..', 'package.json')))
 
+unless ENV['RCT_NEW_ARCH_ENABLED'] == '1'
+  raise 'ReactNativeProseEditor requires the React Native New Architecture. Set RCT_NEW_ARCH_ENABLED=1.'
+end
+
 Pod::Spec.new do |s|
   s.name           = 'ReactNativeProseEditor'
   s.version        = package['version']
@@ -20,9 +24,11 @@ Pod::Spec.new do |s|
   s.static_framework = false
 
   s.dependency 'ExpoModulesCore'
+  install_modules_dependencies(s)
 
   # Swift source files (including generated UniFFI bindings)
-  s.source_files = '*.swift'
+  s.source_files = ['*.swift', 'common/cpp/**/*.{h,cpp}']
+  s.header_dir = 'react/renderer/components/PreparedProseViewer'
 
   # Prebuilt Rust static library as XCFramework. CocoaPods only reliably
   # picks up vendored binaries that live under the pod root, so build-ios.sh
@@ -40,5 +46,6 @@ Pod::Spec.new do |s|
     'SWIFT_COMPILATION_MODE' => 'wholemodule',
     'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/editor_coreFFI',
     'HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/editor_coreFFI',
+    'USER_HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/common/cpp',
   }
 end
