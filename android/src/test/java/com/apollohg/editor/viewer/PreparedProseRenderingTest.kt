@@ -3,6 +3,7 @@ package com.apollohg.editor.viewer
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.text.StaticLayout
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.StrikethroughSpan
@@ -237,6 +238,77 @@ class PreparedProseRenderingTest {
     }
 
     @Test
+    fun `compiler backed fixed line heights cover single final heading code list and density metrics`() {
+        val document = compileHtml(
+            "<p>single</p><p>wrapped final line needs enough words to wrap at this fixed width</p>" +
+                "<h1>heading</h1><pre><code>code</code></pre><ul><li>list leaf</li></ul>",
+        )
+        val densityOneTheme = PreparedProseTheme.resolve(
+            """{"paragraph":{"fontSize":16,"lineHeight":30},"headings":{"h1":{"lineHeight":46}},"codeBlock":{"fontSize":14,"lineHeight":26}}""",
+            1f,
+        )
+        val densityOne = prepare(document, densityOneTheme, 160)
+        val natural = prepare(
+            document,
+            PreparedProseTheme.resolve("""{"paragraph":{"fontSize":16},"codeBlock":{"fontSize":14}}""", 1f),
+            160,
+        )
+        val paragraphs = document.blocks.withIndex().filter { it.value.nodeType == "paragraph" && it.value.listContext == null }
+        val heading = document.blocks.indexOfFirst { it.nodeType == "h1" }
+        val code = document.blocks.indexOfFirst { it.nodeType == "codeBlock" }
+        val list = document.blocks.indexOfLast { it.listContext != null }
+
+        assertEquals(2, paragraphs.size)
+        val single = textLayout(densityOne, paragraphs[0].index)
+        val naturalSingle = textLayout(natural, paragraphs[0].index)
+        assertEquals(30, lineHeight(single, 0))
+        assertEquals(
+            (30 - lineHeight(naturalSingle, 0)) / 2,
+            single.getLineBaseline(0) - naturalSingle.getLineBaseline(0),
+        )
+        assertEquals(1, (single.text as android.text.Spanned).getSpans(0, single.text.length, FixedLineHeightMetricSpan::class.java).size)
+        val wrapped = textLayout(densityOne, paragraphs[1].index)
+        assertTrue("wrapped fixture must have a final line", wrapped.lineCount >= 2)
+        assertEquals(30, lineHeight(wrapped, wrapped.lineCount - 1))
+        assertEquals(46, lineHeight(textLayout(densityOne, heading), 0))
+        assertEquals(26, lineHeight(textLayout(densityOne, code), 0))
+        assertEquals(30, lineHeight(textLayout(densityOne, list), 0))
+        assertEquals(30, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
+
+        val densityTwo = prepare(
+            document,
+            PreparedProseTheme.resolve(
+                """{"paragraph":{"fontSize":16,"lineHeight":30},"headings":{"h1":{"lineHeight":46}},"codeBlock":{"fontSize":14,"lineHeight":26}}""",
+                2f,
+            ),
+            320,
+        )
+        assertEquals(60, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0))
+        assertEquals(92, lineHeight(textLayout(densityTwo, heading), 0))
+        assertEquals(52, lineHeight(textLayout(densityTwo, code), 0))
+        assertEquals(60, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
+    }
+
+    @Test
+    fun `reduced line height preserves natural extreme text and atom metrics without clipping`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"large"},{"type":"opaque","attrs":{"label":"atom"}}]}]}""",
+            Fixture.structural[2].configJson,
+        )
+        val natural = prepare(document, PreparedProseTheme.resolve("""{"paragraph":{"fontSize":64}}""", 1f), 320)
+        val reduced = prepare(document, PreparedProseTheme.resolve("""{"paragraph":{"fontSize":64,"lineHeight":16}}""", 1f), 320)
+        val naturalLayout = textLayout(natural, 0)
+        val reducedLayout = textLayout(reduced, 0)
+        val atom = reduced.blocks.single().fragments.single { it.kind == PreparedProseFragmentKind.ATOM }
+
+        assertEquals(lineHeight(naturalLayout, 0), lineHeight(reducedLayout, 0))
+        assertTrue(atom.bounds.height() >= atom.labelLayout!!.height)
+        assertTrue(reduced.blocks.single().bounds.contains(atom.bounds))
+        assertTrue(reducedLayout.text is android.text.Spanned)
+        assertEquals(1, (reducedLayout.text as android.text.Spanned).getSpans(0, reducedLayout.text.length, FixedLineHeightMetricSpan::class.java).size)
+    }
+
+    @Test
     fun `link typography resolves before mark traits and RTL strike keeps its run foreground`() {
         val themed = """{"links":{"fontFamily":"monospace","fontSize":23,"fontWeight":"700","fontStyle":"italic","color":"#13579B"}}"""
         val document = compileSource(
@@ -302,6 +374,10 @@ class PreparedProseRenderingTest {
         ProseViewerRequest(ProseViewerSource.Json(source), ProseViewerConfiguration(configJson = configJson, themeJson = Fixture.themeJson))
     )
 
+    private fun compileHtml(source: String): ViewerDocument = compileWithRust(
+        ProseViewerRequest(ProseViewerSource.Html(source), ProseViewerConfiguration(configJson = Fixture.structural[1].configJson, themeJson = Fixture.themeJson))
+    )
+
     private fun theme(density: Float = 1f): PreparedProseTheme = PreparedProseTheme.resolve(Fixture.themeJson, density)
 
     private fun prepare(document: ViewerDocument): PreparedProseLayout =
@@ -309,6 +385,9 @@ class PreparedProseRenderingTest {
 
     private fun prepare(document: ViewerDocument, theme: PreparedProseTheme): PreparedProseLayout =
         StaticLayoutAndroidProseLayoutEngine().prepare(document, key(), theme, Fixture.widthPx, theme.density, false)
+
+    private fun prepare(document: ViewerDocument, theme: PreparedProseTheme, widthPx: Int): PreparedProseLayout =
+        StaticLayoutAndroidProseLayoutEngine().prepare(document, key(), theme, widthPx, theme.density, false)
 
     private fun key() = ProseLayoutKey("fixture", Fixture.widthPx, "fixture", 0, 0, 0, "fixture")
 
@@ -343,6 +422,12 @@ class PreparedProseRenderingTest {
         assertTrue("$name right", kotlin.math.abs(expected.right - actual.right) <= tolerance)
         assertTrue("$name bottom", kotlin.math.abs(expected.bottom - actual.bottom) <= tolerance)
     }
+
+    private fun textLayout(layout: PreparedProseLayout, blockIndex: Int): StaticLayout =
+        layout.blocks[blockIndex].fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.layout!!
+
+    private fun lineHeight(layout: StaticLayout, line: Int): Int =
+        layout.getLineBottom(line) - layout.getLineTop(line)
 }
 
 private inline fun <reified T> android.text.Spanned.allSpans(): List<T> =

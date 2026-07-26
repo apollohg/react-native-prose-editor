@@ -5,11 +5,13 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.Layout
+import android.text.Spanned
 import android.text.SpannableString
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
+import android.text.style.LineHeightSpan
 import android.text.style.MetricAffectingSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.UnderlineSpan
@@ -162,6 +164,36 @@ private class AtomMetricSpan(
         return widthPx
     }
     override fun draw(canvas: android.graphics.Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) = Unit
+}
+
+/**
+ * Viewer-local fixed line metrics, deliberately independent of the legacy
+ * editable-render bridge. The metric follows Core Text parity: never shrink
+ * the shaped run/atom below its natural height, and split added leading around
+ * the baseline with the odd pixel assigned below it.
+ */
+internal class FixedLineHeightMetricSpan(
+    private val lineHeightPx: Int,
+) : LineHeightSpan {
+    override fun chooseHeight(
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        spanstartv: Int,
+        v: Int,
+        fm: Paint.FontMetricsInt,
+    ) {
+        val naturalHeight = fm.descent - fm.ascent
+        val targetHeight = max(naturalHeight, lineHeightPx)
+        val extraLeading = targetHeight - naturalHeight
+        if (naturalHeight <= 0 || extraLeading <= 0) return
+
+        val leadingAboveBaseline = extraLeading / 2
+        fm.ascent -= leadingAboveBaseline
+        fm.top = fm.ascent
+        fm.descent += extraLeading - leadingAboveBaseline
+        fm.bottom = fm.descent
+    }
 }
 
 /** Immutable before StaticLayout construction, including full link typography. */
@@ -401,12 +433,15 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     private fun staticLayout(text: CharSequence, paint: PreparedTextPaint, width: Int): StaticLayout {
         staticLayoutsBuilt += 1
         val resolved = paint.newTextPaint()
-        val natural = resolved.fontMetricsInt.descent - resolved.fontMetricsInt.ascent
-        val extra = max(0, (paint.lineHeightPx ?: natural) - natural).toFloat()
-        return StaticLayout.Builder.obtain(text, 0, text.length, resolved, width)
+        val preparedText = if (paint.lineHeightPx == null) text else SpannableString(text).apply {
+            // The full prepared range includes a single line and the final line
+            // after a hard break; builder line spacing does not provide that
+            // guarantee and would double-compensate these metrics.
+            setSpan(FixedLineHeightMetricSpan(paint.lineHeightPx), 0, length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+        }
+        return StaticLayout.Builder.obtain(preparedText, 0, preparedText.length, resolved, width)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setIncludePad(false)
-            .setLineSpacing(extra, 1f)
             .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY)
             .build()
     }
