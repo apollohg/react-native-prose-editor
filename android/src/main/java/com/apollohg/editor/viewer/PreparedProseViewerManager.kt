@@ -155,7 +155,7 @@ internal class PreparedProseViewerManager :
         val density = view.resources.displayMetrics.density
         val widthPx = widthToPixels(view.width / density, density) ?: return
         val surface = FabricSurfaceToken(surfaceId, view.id)
-        val generation = state.adopt(surface, request, view)
+        val generation = state.adopt(surface, request)
         val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(surface, request, widthPx, density)
         if (artifact == null) {
             PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation)
@@ -312,27 +312,28 @@ internal class PreparedProseViewerManager :
             revisions = nextRevisions
         }
 
-        fun releaseGeneration(view: PreparedProseDrawingView) {
+        fun releaseGeneration(
+            view: PreparedProseDrawingView,
+            announceAccessibilitySubtree: Boolean = true,
+        ) {
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
-            view.install(null)
+            view.install(null, announceAccessibilitySubtree)
         }
 
         fun releaseReplacedGeneration(request: ProseViewerRequest, view: PreparedProseDrawingView) {
             val previous = generation ?: return
             if (previous.generationIdentity == request.generationIdentity) return
-            releaseGeneration(view)
+            releaseGeneration(view, announceAccessibilitySubtree = false)
         }
 
         fun adopt(
             surface: FabricSurfaceToken,
             request: ProseViewerRequest,
-            view: PreparedProseDrawingView,
         ): FabricGenerationToken {
             val next = FabricGenerationToken(surface, request.generationIdentity)
             if (generation != null && generation != next) {
                 PreparedProseLayoutRegistry.shared.releaseFabricGeneration(generation!!)
-                view.install(null)
             }
             generation = next
             return next

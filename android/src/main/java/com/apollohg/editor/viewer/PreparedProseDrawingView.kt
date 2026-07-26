@@ -34,11 +34,19 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     private var pendingTap: PendingTap? = null
     private var focusedVirtualId = View.NO_ID
 
-    fun install(layout: PreparedProseLayout?) {
+    /**
+     * Publishes a prepared artifact. Replacement owners suppress the transient
+     * clear announcement and let the final install report the one logical
+     * subtree transition; focus-cleared events remain immediate.
+     */
+    fun install(
+        layout: PreparedProseLayout?,
+        announceAccessibilitySubtree: Boolean = true,
+    ) {
         if (preparedLayout === layout) return
         preparedLayout = layout
         clearVirtualAccessibilityFocus()
-        notifyAccessibilitySubtreeChanged()
+        if (announceAccessibilitySubtree) notifyAccessibilitySubtreeChanged()
         invalidate()
     }
 

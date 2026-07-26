@@ -243,8 +243,8 @@ class ProseViewerView @JvmOverloads constructor(
         reportedGenerationIdentity = null
         clearVirtualAccessibilityFocus()
         preparedAccessibilityGeneration = null
-        preparedDrawingView.install(null)
-        notifyAccessibilitySubtreeChanged()
+        // The replacement artifact owns the observable subtree transition.
+        preparedDrawingView.install(null, announceAccessibilitySubtree = false)
         preparedDrawingView.visibility = View.VISIBLE
         proseView.visibility = View.GONE
         return try {
@@ -423,6 +423,8 @@ class ProseViewerView @JvmOverloads constructor(
         if (preparedRequest != null) {
             preparedArtifact = null
             preparedDrawingView.install(null)
+            preparedAccessibilityGeneration = null
+            notifyAccessibilitySubtreeChanged()
         }
         pendingTapGesture = null
         clearVirtualAccessibilityFocus()
@@ -442,7 +444,8 @@ class ProseViewerView @JvmOverloads constructor(
         preparedArtifact = null
         directError = null
         reportedGenerationIdentity = null
-        preparedDrawingView.install(null)
+        // apply(renderJson, themeJson) publishes the replacement subtree.
+        preparedDrawingView.install(null, announceAccessibilitySubtree = false)
         preparedDrawingView.visibility = View.GONE
         preparedAccessibilityGeneration = null
         proseView.visibility = View.VISIBLE

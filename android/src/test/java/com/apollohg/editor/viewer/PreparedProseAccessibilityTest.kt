@@ -1,30 +1,69 @@
 package com.apollohg.editor.viewer
 
 import android.graphics.Rect
+import android.view.View
+import android.view.ViewGroup
+import android.view.accessibility.AccessibilityEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 import uniffi.editor_core.FfiViewerMark
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class PreparedProseAccessibilityTest {
     @Test
-    fun `selection fragments merge only touching pieces on one visual line`() {
+    fun `selection fragments merge edge-touching pieces on one visual line`() {
         assertEquals(
             listOf(Rect(2, 10, 18, 20)),
             mergeAdjacentSameLineSelectionFragments(
-                listOf(Rect(2, 10, 10, 20), Rect(11, 10, 18, 20))
+                listOf(Rect(2, 10, 10, 20), Rect(10, 10, 18, 20))
             )
         )
     }
 
     @Test
-    fun `selection fragments preserve real gaps and separate visual lines`() {
+    fun `selection fragments preserve one pixel gaps and separate visual lines`() {
         assertEquals(
-            listOf(Rect(2, 10, 10, 20), Rect(14, 10, 22, 20), Rect(0, 30, 8, 40)),
+            listOf(Rect(2, 10, 10, 20), Rect(11, 10, 18, 20), Rect(0, 30, 8, 40)),
             mergeAdjacentSameLineSelectionFragments(
-                listOf(Rect(14, 10, 22, 20), Rect(0, 30, 8, 40), Rect(2, 10, 10, 20))
+                listOf(Rect(11, 10, 18, 20), Rect(0, 30, 8, 40), Rect(2, 10, 10, 20))
             )
         )
+    }
+
+    @Test
+    fun `Fabric-equivalent prepared replacement announces one subtree change and preserves focus clear`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = PreparedProseDrawingView(context)
+        val parent = CapturingAccessibilityParent(context).apply { addView(view) }
+        view.install(preparedArtifact("first"))
+        assertTrue(
+            view.accessibilityNodeProvider.performAction(
+                1,
+                android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+
+        parent.clearEvents()
+        view.install(null, announceAccessibilitySubtree = false)
+        view.install(preparedArtifact("replacement"))
+
+        assertEquals(1, parent.subtreeChangeCount())
+        assertTrue(parent.eventTypes.contains(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED))
+
+        parent.clearEvents()
+        view.linkInteractionsEnabled = false
+        assertEquals(1, parent.subtreeChangeCount())
+
+        parent.clearEvents()
+        view.install(null)
+        assertEquals(1, parent.subtreeChangeCount())
     }
 
     @Test
@@ -112,4 +151,60 @@ class PreparedProseAccessibilityTest {
         attachmentRevision = 0,
         generationIdentity = "fixture",
     )
+
+    private fun preparedArtifact(generation: String): PreparedProseLayout = PreparedProseLayout(
+        key = ProseLayoutKey(
+            semanticKey = generation,
+            widthPx = 100,
+            themeDigest = "fixture",
+            fontRevision = 0,
+            densityBits = 1f.toRawBits().toLong(),
+            attachmentRevision = 0,
+            generationIdentity = generation,
+        ),
+        widthPx = 100,
+        heightPx = 20,
+        blocks = emptyList(),
+        interactions = listOf(
+            PreparedProseInteraction(
+                kind = PreparedProseInteraction.Kind.LINK,
+                rects = listOf(Rect(0, 0, 20, 20)),
+                href = "https://example.test/$generation",
+                visibleText = generation,
+                label = generation,
+            ),
+        ),
+        accessibilityNodes = listOf(
+            PreparedProseAccessibilityNode(
+                interactionIndex = 0,
+                role = PreparedProseAccessibilityNode.Role.LINK,
+                label = generation,
+                bounds = Rect(0, 0, 20, 20),
+            ),
+        ),
+        retainedBytes = 0,
+    )
+
+    private class CapturingAccessibilityParent(context: android.content.Context) : ViewGroup(context) {
+        val eventTypes = mutableListOf<Int>()
+        private val changeTypes = mutableListOf<Int>()
+
+        override fun requestSendAccessibilityEvent(child: View, event: AccessibilityEvent): Boolean {
+            eventTypes += event.eventType
+            changeTypes += event.contentChangeTypes
+            return true
+        }
+
+        fun clearEvents() {
+            eventTypes.clear()
+            changeTypes.clear()
+        }
+
+        fun subtreeChangeCount(): Int = eventTypes.indices.count { index ->
+            eventTypes[index] == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+                changeTypes[index] == AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
+        }
+
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) = Unit
+    }
 }

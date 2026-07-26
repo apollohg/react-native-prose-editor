@@ -30,9 +30,9 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * StaticLayout occasionally reports one visual selection run as touching
- * contours. Merge only contours that meet within one raster pixel on the same
- * line; wider gaps remain distinct bidi hit regions.
+ * StaticLayout can split one visual selection run into edge-touching contours.
+ * Android [Rect.right] is exclusive, so only overlapping or edge-touching
+ * contours with compatible vertical bounds belong to one hit region.
  */
 internal fun mergeAdjacentSameLineSelectionFragments(fragments: List<Rect>): List<Rect> {
     val ordered = fragments.sortedWith(compareBy<Rect> { it.top }.thenBy { it.left })
@@ -43,7 +43,7 @@ internal fun mergeAdjacentSameLineSelectionFragments(fragments: List<Rect>): Lis
             previous != null &&
             abs(previous.top - fragment.top) <= SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX &&
             abs(previous.bottom - fragment.bottom) <= SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX &&
-            fragment.left.toLong() <= previous.right.toLong() + SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX.toLong()
+            fragment.left <= previous.right
         ) {
             merged[merged.lastIndex] = Rect(
                 min(previous.left, fragment.left),

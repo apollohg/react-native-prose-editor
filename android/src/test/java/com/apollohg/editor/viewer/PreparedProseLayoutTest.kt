@@ -6,6 +6,9 @@ import android.graphics.Rect
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
+import android.view.ViewGroup
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
 import com.apollohg.editor.ProseViewerErrorCode
@@ -58,6 +61,29 @@ class PreparedProseLayoutTest {
         viewer.measure(exactWidth(480), unspecifiedHeight())
 
         assertEquals(2, engine.preparationCount)
+    }
+
+    @Test
+    fun `public direct prepared replacement announces once and clears focus`() {
+        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine()))
+        val parent = CapturingAccessibilityParent(context).apply { addView(viewer) }
+
+        assertTrue(viewer.apply(jsonSource("first generation"), configuration()))
+        viewer.measure(exactWidth(320), unspecifiedHeight())
+        assertTrue(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        parent.clearEvents()
+
+        assertTrue(viewer.apply(jsonSource("replacement generation"), configuration()))
+        viewer.measure(exactWidth(320), unspecifiedHeight())
+
+        assertEquals(1, parent.subtreeChangeCount())
+        assertTrue(parent.eventTypes.contains(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED))
     }
 
     @Test
@@ -274,6 +300,29 @@ class PreparedProseLayoutTest {
     private fun unspecifiedWidth() = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
 
     private fun unspecifiedHeight() = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+
+    private class CapturingAccessibilityParent(context: android.content.Context) : ViewGroup(context) {
+        val eventTypes = mutableListOf<Int>()
+        private val changeTypes = mutableListOf<Int>()
+
+        override fun requestSendAccessibilityEvent(child: View, event: AccessibilityEvent): Boolean {
+            eventTypes += event.eventType
+            changeTypes += event.contentChangeTypes
+            return true
+        }
+
+        fun clearEvents() {
+            eventTypes.clear()
+            changeTypes.clear()
+        }
+
+        fun subtreeChangeCount(): Int = eventTypes.indices.count { index ->
+            eventTypes[index] == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+                changeTypes[index] == AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
+        }
+
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) = Unit
+    }
 }
 
 private class CountingDocumentCompiler(
@@ -306,4 +355,42 @@ private class CountingLayoutEngine : AndroidProseLayoutEngine {
         preparationCount += 1
         return delegate.prepare(document, key, theme, widthPx, density, collapsesWhenEmpty)
     }
+}
+
+private class LinkLayoutEngine : AndroidProseLayoutEngine {
+    private val delegate = StaticLayoutAndroidProseLayoutEngine()
+
+    override fun prepare(
+        document: ViewerDocument,
+        key: ProseLayoutKey,
+        theme: PreparedProseTheme,
+        widthPx: Int,
+        density: Float,
+        collapsesWhenEmpty: Boolean,
+    ): PreparedProseLayout = delegate.prepare(
+        document,
+        key,
+        theme,
+        widthPx,
+        density,
+        collapsesWhenEmpty,
+    ).copy(
+        interactions = listOf(
+            PreparedProseInteraction(
+                kind = PreparedProseInteraction.Kind.LINK,
+                rects = listOf(Rect(0, 0, 20, 20)),
+                href = "https://example.test",
+                visibleText = "link",
+                label = "link",
+            ),
+        ),
+        accessibilityNodes = listOf(
+            PreparedProseAccessibilityNode(
+                interactionIndex = 0,
+                role = PreparedProseAccessibilityNode.Role.LINK,
+                label = "link",
+                bounds = Rect(0, 0, 20, 20),
+            ),
+        ),
+    )
 }
