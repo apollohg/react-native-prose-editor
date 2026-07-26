@@ -34,6 +34,7 @@ import React from 'react';
 import { fireEvent, render } from '@testing-library/react-native';
 import { PixelRatio, Platform } from 'react-native';
 
+import type { DocumentJSON } from '../NativeEditorBridge';
 import { NativeProseViewer } from '../NativeProseViewer';
 import { clearHeightCache } from '../heightCache';
 import * as schemas from '../schemas';
@@ -148,6 +149,21 @@ describe('NativeProseViewer', () => {
         expect(mockRenderDocumentJson.mock.calls[0]?.[1]).toBe(
             JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] })
         );
+    });
+
+    it('treats a null contentJSON as absent content instead of sending "null" to native', () => {
+        // A nullable document field reaches the prop as `null` (a cast is
+        // enough to satisfy the type). Serializing it would hand the engine
+        // the literal `null`, which it rejects as a malformed document.
+        const { getByTestId } = render(
+            <NativeProseViewer contentJSON={null as unknown as DocumentJSON} />
+        );
+
+        expect(mockRenderDocumentJson).not.toHaveBeenCalled();
+        expect(mockNativeModule.renderDocumentHtml).toHaveBeenCalledTimes(1);
+        expect(mockNativeModule.renderDocumentHtml.mock.calls[0]?.[1]).toBe('');
+        expect(getByTestId('native-prose-viewer')).toBeTruthy();
+        expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
 
     it('renders native view from HTML input', () => {

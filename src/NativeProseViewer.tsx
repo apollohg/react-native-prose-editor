@@ -626,7 +626,12 @@ export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
         [resolvedResourceLimits, schema]
     );
     const { normalizedDocument, serializedContentJson } = useMemo(() => {
-        if (contentJSON === undefined) {
+        // `null` is absent content, not a document: a nullable field from an
+        // API reaches the prop as `null` (a cast is enough to pass the type),
+        // and serializing it would hand the engine the literal `null`, which
+        // it rejects as a malformed document. `contentHTML ?? ''` below gives
+        // the sibling prop the same empty-content reading.
+        if (contentJSON == null) {
             return {
                 normalizedDocument: null,
                 serializedContentJson: null,
