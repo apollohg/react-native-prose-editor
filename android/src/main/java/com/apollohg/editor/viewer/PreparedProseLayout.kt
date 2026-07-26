@@ -108,7 +108,7 @@ internal data class PreparedProseLayout(
     }
 
     inline fun forEachFragmentIntersecting(clip: Rect, action: (PreparedProseFragment) -> Unit) =
-        forEachBlockIntersecting(clip) { block -> block.fragments.filterTo(mutableListOf()) { it.bounds.intersects(clip) }.forEach(action) }
+        forEachBlockIntersecting(clip) { block -> block.fragments.filterTo(mutableListOf()) { Rect.intersects(it.bounds, clip) }.forEach(action) }
 
     companion object {
         fun error(key: ProseLayoutKey, widthPx: Int, error: ProseViewerError) =

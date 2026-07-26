@@ -340,7 +340,7 @@ class PreparedProseRevisionTest {
     }
 
     @Test fun warningContextUsesSemanticIdentityInsteadOfLayoutReplacementIdentity() {
-        val base = ProseViewerRequest(ProseViewerSource.Json("{\"type\":\"doc\"}"), ProseViewerConfiguration())
+        val base = ProseViewerRequest(ProseViewerSource.Json("{\"type\":\"doc\"}"), ProseViewerConfiguration(configJson = "{}"))
         val replacement = base.copy(nativeFontRevision = 1, fontEnvironmentRevision = 2, attachmentRevision = 3)
         val baseKey = ProseLayoutKey(
             semanticKey = "fixture",

@@ -239,12 +239,13 @@ class ProseViewerViewTest {
         }
     }
 
+    private data class CapturedAccessibilityEvent(val type: Int, val changeTypes: Int)
+
     private inner class CapturingAccessibilityParent : ViewGroup(context) {
-        data class Event(val type: Int, val changeTypes: Int)
-        val events = mutableListOf<Event>()
+        val events = mutableListOf<CapturedAccessibilityEvent>()
 
         override fun requestSendAccessibilityEvent(child: View, event: AccessibilityEvent): Boolean {
-            events += Event(event.eventType, event.contentChangeTypes)
+            events += CapturedAccessibilityEvent(event.eventType, event.contentChangeTypes)
             return true
         }
 

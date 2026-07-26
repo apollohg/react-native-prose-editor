@@ -1,6 +1,7 @@
 package com.apollohg.editor.viewer
 
 import android.content.Context
+import android.graphics.Rect
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
 import com.apollohg.editor.ProseViewerSource
@@ -51,7 +52,7 @@ internal class PreparedProseViewerManager :
                 }
             }
             state.imagePipeline.onIntrinsicMetadata = { attachment, width, height ->
-                if (state.attachmentRevisions.recordIntrinsicSize(attachment.id, attachment.ordinal, width, height, attachment.declaredSize)) {
+                if (state.recordIntrinsicSize(attachment, width, height)) {
                     state.publishAttachmentRevision()
                 }
             }
@@ -237,7 +238,7 @@ internal class PreparedProseViewerManager :
     private fun dispatchResourceError(view: PreparedProseDrawingView, attachment: ViewerImageAttachment) {
         val state = states[view] ?: return
         val request = state.requestOrNull() ?: return
-        if (!state.attachmentRevisions.recordResourceFailure(attachment.ordinal)) return
+        if (!state.recordResourceFailure(attachment.ordinal)) return
         UIManagerHelper.getReactContext(view)
             .getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java)
             .receiveEvent(view.id, "topError", Arguments.createMap().apply {
@@ -405,6 +406,18 @@ internal class PreparedProseViewerManager :
         fun bindFabricAttachmentState(surface: FabricSurfaceToken) {
             attachmentRevisions = FabricAttachmentSidecars.state(surface) ?: attachmentRevisions
         }
+
+        fun recordIntrinsicSize(attachment: ViewerImageAttachment, width: Int, height: Int): Boolean =
+            attachmentRevisions.recordIntrinsicSize(
+                attachment.id,
+                attachment.ordinal,
+                width,
+                height,
+                attachment.declaredSize,
+            )
+
+        fun recordResourceFailure(ordinal: Int): Boolean =
+            attachmentRevisions.recordResourceFailure(ordinal)
 
         internal fun retainedSurfaceBytesForTesting(view: PreparedProseDrawingView): Long {
             val layout = view.preparedLayout?.retainedBytes ?: 0L

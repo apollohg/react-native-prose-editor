@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
@@ -131,7 +132,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                     canvas.translate(fragment.layoutX.toFloat(), fragment.layoutY.toFloat())
                     layout.draw(canvas)
                     canvas.restoreToCount(saved)
-                } ?: if (fragment.kind == PreparedProseFragmentKind.MARKER) drawTaskMarker(canvas, fragment)
+                } ?: if (fragment.kind == PreparedProseFragmentKind.MARKER) drawTaskMarker(canvas, fragment) else Unit
             }
             PreparedProseFragmentKind.ATOM -> fragment.labelLayout?.let { layout ->
                 val saved = canvas.save()
