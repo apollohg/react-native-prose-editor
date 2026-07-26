@@ -110,6 +110,66 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.preparedLayoutCacheCountForTesting, 0)
     }
 
+    func testCachedInstallationDefersInvalidMetricsWhileYogaMeasurementStillReportsThem() {
+        var preparations = 0
+        let registry = makeRegistry { document, key, width, scale in
+            preparations += 1
+            return try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let request = request()
+        let drawingView = PreparedProseDrawingView(frame: .zero)
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2)
+        XCTAssertTrue(
+            registry.installCachedLayout(
+                in: drawingView,
+                sourceKind: "json",
+                source: request.source.value as NSString,
+                configJSON: request.configuration.configJSON as NSString,
+                themeJSON: nil,
+                imagePolicyJSON: nil,
+                imagesEnabled: request.configuration.imagesEnabled,
+                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+                attachmentRevision: request.attachmentRevision,
+                nativeFontRevision: request.nativeFontRevision,
+                fontEnvironmentRevision: request.fontEnvironmentRevision,
+                widthPoints: 160,
+                scale: 2
+            )
+        )
+        guard let mountedLayout = drawingView.layout else {
+            return XCTFail("A cached artifact should install once usable metrics arrive.")
+        }
+
+        XCTAssertFalse(
+            registry.installCachedLayout(
+                in: drawingView,
+                sourceKind: "json",
+                source: request.source.value as NSString,
+                configJSON: request.configuration.configJSON as NSString,
+                themeJSON: nil,
+                imagePolicyJSON: nil,
+                imagesEnabled: request.configuration.imagesEnabled,
+                collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+                attachmentRevision: request.attachmentRevision,
+                nativeFontRevision: request.nativeFontRevision,
+                fontEnvironmentRevision: request.fontEnvironmentRevision,
+                widthPoints: .infinity,
+                scale: 0
+            )
+        )
+        XCTAssertTrue(drawingView.layout === mountedLayout)
+        XCTAssertEqual(preparations, 1)
+
+        let invalidYogaMeasurement = registry.measure(request: request, widthPoints: .infinity, scale: 0)
+        XCTAssertEqual(invalidYogaMeasurement.error?.code, "INVALID_WIDTH")
+    }
+
     func testRevisionVariantsUseDistinctPreparedArtifacts() {
         var preparations = 0
         let registry = makeRegistry { document, key, width, scale in

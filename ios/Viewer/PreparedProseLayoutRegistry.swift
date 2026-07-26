@@ -195,13 +195,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             fontEnvironmentRevision: fontEnvironmentRevision
         )
         guard widthPoints.isFinite, widthPoints > 0, scale.isFinite, scale > 0 else {
-            drawingView.install(layout: errorArtifact(
-                request: request,
-                widthPoints: widthPoints,
-                scale: scale,
-                error: .hostContract(message: "A finite positive width is required for prose measurement.")
-            ))
-            return true
+            return false
         }
         do {
             let document = try preparedDocument(request: request)

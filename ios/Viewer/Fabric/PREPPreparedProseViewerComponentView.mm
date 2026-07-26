@@ -84,6 +84,12 @@ std::string MeasurementIdentity(
       "\x1f" + std::to_string(ScaleBits(scale));
 }
 
+bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
+  const auto contentFrame = layoutMetrics.getContentFrame();
+  return std::isfinite(contentFrame.size.width) && contentFrame.size.width > 0 &&
+      std::isfinite(layoutMetrics.pointScaleFactor) && layoutMetrics.pointScaleFactor > 0;
+}
+
 } // namespace
 
 @implementation PREPPreparedProseViewerComponentView {
@@ -91,6 +97,7 @@ std::string MeasurementIdentity(
   std::shared_ptr<const PreparedProseViewerProps> _viewerProps;
   std::shared_ptr<const PreparedProseViewerState> _viewerState;
   LayoutMetrics _layoutMetrics;
+  BOOL _hasReceivedUsableLayoutMetrics;
   NSString *_reportedErrorGeneration;
   NSString *_installedMeasurementIdentity;
 }
@@ -118,7 +125,9 @@ std::string MeasurementIdentity(
     [self beginNewGeneration];
   }
   _viewerProps = nextProps;
-  [self installMeasuredArtifact];
+  if (_hasReceivedUsableLayoutMetrics) {
+    [self installMeasuredArtifact];
+  }
 }
 
 - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &)oldState
@@ -130,7 +139,9 @@ std::string MeasurementIdentity(
     [self beginNewGeneration];
   }
   _viewerState = nextState;
-  [self installMeasuredArtifact];
+  if (_hasReceivedUsableLayoutMetrics) {
+    [self installMeasuredArtifact];
+  }
 }
 
 - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
@@ -139,6 +150,10 @@ std::string MeasurementIdentity(
   [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
   _layoutMetrics = layoutMetrics;
   _drawingView.frame = RCTCGRectFromRect(layoutMetrics.getContentFrame());
+  if (!HasUsableLayoutMetrics(layoutMetrics)) {
+    return;
+  }
+  _hasReceivedUsableLayoutMetrics = YES;
   [self installMeasuredArtifact];
 }
 
@@ -148,6 +163,7 @@ std::string MeasurementIdentity(
   _viewerProps.reset();
   _viewerState.reset();
   [_drawingView installWithLayout:nil];
+  _hasReceivedUsableLayoutMetrics = NO;
   _reportedErrorGeneration = nil;
   _installedMeasurementIdentity = nil;
 }
