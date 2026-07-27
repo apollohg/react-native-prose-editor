@@ -273,11 +273,11 @@ class PreparedProseRenderingTest {
     @Test
     fun `compiler backed fixed line heights cover single final heading code list and density metrics`() {
         val document = compileHtml(
-            "<p>single</p><p>wrapped final line needs enough words to wrap at this fixed width</p>" +
+            "<p>single</p><p>wrapped final line needs enough words to wrap at this fixed width</p><p>hard<br>break</p>" +
                 "<h1>heading</h1><pre><code>code</code></pre><ul><li>list leaf</li></ul>",
         )
         val densityOneTheme = PreparedProseTheme.resolve(
-            """{"paragraph":{"fontSize":16,"lineHeight":30},"headings":{"h1":{"lineHeight":46}},"codeBlock":{"fontSize":14,"lineHeight":26}}""",
+            """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
             1f,
         )
         val densityOne = prepare(document, densityOneTheme, 160)
@@ -291,35 +291,52 @@ class PreparedProseRenderingTest {
         val code = document.blocks.indexOfFirst { it.nodeType == "codeBlock" }
         val list = document.blocks.indexOfLast { it.listContext != null }
 
-        assertEquals(2, paragraphs.size)
+        assertEquals(3, paragraphs.size)
         val single = textLayout(densityOne, paragraphs[0].index)
         val naturalSingle = textLayout(natural, paragraphs[0].index)
-        assertEqualsLazy(30, lineHeight(single, 0)) { "single paragraph ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(48, lineHeight(single, 0)) { "single paragraph ${metricProjection(document, densityOne)}" }
         assertEquals(
-            (30 - lineHeight(naturalSingle, 0)) / 2,
+            (48 - lineHeight(naturalSingle, 0)) / 2,
             single.getLineBaseline(0) - naturalSingle.getLineBaseline(0),
         )
         assertEquals(1, (single.text as android.text.Spanned).getSpans(0, single.text.length, FixedLineHeightMetricSpan::class.java).size)
         val wrapped = textLayout(densityOne, paragraphs[1].index)
         assertTrue("wrapped fixture must have a final line", wrapped.lineCount >= 2)
-        assertEqualsLazy(30, lineHeight(wrapped, wrapped.lineCount - 1)) { "wrapped paragraph ${metricProjection(document, densityOne)}" }
-        assertEqualsLazy(46, lineHeight(textLayout(densityOne, heading), 0)) { "heading ${metricProjection(document, densityOne)}" }
-        assertEqualsLazy(26, lineHeight(textLayout(densityOne, code), 0)) { "code ${metricProjection(document, densityOne)}" }
-        assertEqualsLazy(30, lineHeight(textLayout(densityOne, list), 0)) { "list text ${metricProjection(document, densityOne)}" }
-        assertEqualsLazy(30, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "list marker ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(48, lineHeight(wrapped, wrapped.lineCount - 1)) { "wrapped paragraph ${metricProjection(document, densityOne)}" }
+        val hardBreak = textLayout(densityOne, paragraphs[2].index)
+        assertTrue("hard-break fixture must have a final line", hardBreak.lineCount >= 2)
+        assertEqualsLazy(48, lineHeight(hardBreak, hardBreak.lineCount - 1)) { "hard-break final paragraph ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(64, lineHeight(textLayout(densityOne, heading), 0)) { "heading ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(48, lineHeight(textLayout(densityOne, code), 0)) { "code ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(48, lineHeight(textLayout(densityOne, list), 0)) { "list text ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(48, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "list marker ${metricProjection(document, densityOne)}" }
 
         val densityTwo = prepare(
             document,
             PreparedProseTheme.resolve(
-                """{"paragraph":{"fontSize":16,"lineHeight":30},"headings":{"h1":{"lineHeight":46}},"codeBlock":{"fontSize":14,"lineHeight":26}}""",
+                """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
                 2f,
             ),
             320,
         )
-        assertEqualsLazy(60, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0)) { "density-two paragraph ${metricProjection(document, densityTwo)}" }
-        assertEqualsLazy(92, lineHeight(textLayout(densityTwo, heading), 0)) { "density-two heading ${metricProjection(document, densityTwo)}" }
-        assertEqualsLazy(52, lineHeight(textLayout(densityTwo, code), 0)) { "density-two code ${metricProjection(document, densityTwo)}" }
-        assertEqualsLazy(60, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "density-two list marker ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(96, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0)) { "density-two paragraph ${metricProjection(document, densityTwo)}" }
+        val densityTwoHardBreak = textLayout(densityTwo, paragraphs[2].index)
+        assertTrue("density-two hard-break fixture must have a final line", densityTwoHardBreak.lineCount >= 2)
+        assertEqualsLazy(96, lineHeight(densityTwoHardBreak, densityTwoHardBreak.lineCount - 1)) { "density-two hard-break final paragraph ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(128, lineHeight(textLayout(densityTwo, heading), 0)) { "density-two heading ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(96, lineHeight(textLayout(densityTwo, code), 0)) { "density-two code ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(96, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "density-two list marker ${metricProjection(document, densityTwo)}" }
+        assertTrue(
+            natural.blocks.flatMap { it.fragments }
+                .filter { it.kind == PreparedProseFragmentKind.TEXT }
+                .all { fragment ->
+                    fragment.layout!!.let { layout ->
+                        (layout.text as android.text.Spanned)
+                            .getSpans(0, layout.text.length, FixedLineHeightMetricSpan::class.java)
+                            .isEmpty()
+                    }
+                },
+        )
     }
 
     @Test
@@ -530,7 +547,20 @@ private data class Fixture(
 
         val structural: List<Fixture> = listOf(
             Fixture("nested JSON list and blockquote inheritance", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"""), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER), documentExpectation = "a blockquote nested ordered-list block with list index 12") { it.blocks.any { block -> block.inBlockquote && block.listContext?.index == 12L } },
-            Fixture("HTML headings marks rules and hard breaks", ProseViewerSource.Html("<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6><blockquote><p><strong>bold</strong><br>quote</p></blockquote><ol start=\"3\"><li>third</li></ol><hr>"), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE), documentExpectation = "one compiler block for each heading h1 through h6") { document -> (1..6).all { document.blocks.any { it.nodeType == "h$it" } } },
+            Fixture("HTML headings marks rules and hard breaks", ProseViewerSource.Html("<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6><blockquote><p><strong>bold</strong><br>quote</p></blockquote><ol start=\"3\"><li>third</li></ol><hr>"), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE), documentExpectation = "exact h1-h6, quoted bold hard-break paragraph, ordered index-3 leaf, and rule projection") { document ->
+                val expectedTypes = listOf("h1", "h2", "h3", "h4", "h5", "h6", "paragraph", "paragraph", "horizontalRule")
+                document.blocks.map { it.nodeType } == expectedTypes &&
+                    document.blocks[6].inBlockquote &&
+                    document.blocks[6].inlines.any { inline -> inline is ViewerInline.Text && inline.text == "bold" && inline.marks.any { it.markType == "bold" } } &&
+                    document.blocks[6].inlines.any { inline -> inline is ViewerInline.Atom && inline.nodeType == "hardBreak" } &&
+                    document.blocks[6].inlines.any { inline -> inline is ViewerInline.Text && inline.text == "quote" } &&
+                    document.blocks[7].listContext?.ordered == true &&
+                    document.blocks[7].listContext?.index == 3L &&
+                    document.blocks[7].listItemBoundary?.isFirstRenderableLeaf == true &&
+                    document.blocks[7].listItemBoundary?.isFinalRenderableLeaf == true &&
+                    document.blocks[7].inlines.singleOrNull().let { inline -> inline is ViewerInline.Text && inline.text == "third" } &&
+                    document.blocks[8].nodeType == "horizontalRule"
+            },
             Fixture("custom atoms task list and snake rule", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"""), customConfig, setOf(PreparedProseFragmentKind.ATOM, PreparedProseFragmentKind.RULE), documentExpectation = "a checked task-list block") { document -> document.blocks.any { it.listContext?.kind == "task" && it.listContext.checked } }
         )
         val marks = Fixture("all marks", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"monospace","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT), documentExpectation = "any compiler document") { true }
@@ -548,16 +578,16 @@ private data class Fixture(
                     && document.blocks.first().listContext?.index == 0xFFFF_FFFFL
             },
             expectedGeometry = ExpectedGeometry(
-                heightPx = 120,
+                heightPx = 162,
                 blockBounds = listOf(
-                    Rect(0, 0, 640, 29),
-                    Rect(0, 29, 640, 66),
-                    Rect(0, 66, 640, 91),
-                    Rect(0, 95, 640, 116),
+                    Rect(0, 0, 640, 43),
+                    Rect(0, 43, 640, 94),
+                    Rect(0, 94, 640, 119),
+                    Rect(0, 123, 640, 158),
                 ),
                 fragmentBounds = listOf(
-                    ExpectedFragment(1, PreparedProseFragmentKind.BACKGROUND, 0, Rect(164, 29, 476, 66)),
-                    ExpectedFragment(2, PreparedProseFragmentKind.RULE, 0, Rect(164, 78, 476, 79)),
+                    ExpectedFragment(1, PreparedProseFragmentKind.BACKGROUND, 0, Rect(102, 43, 538, 94)),
+                    ExpectedFragment(2, PreparedProseFragmentKind.RULE, 0, Rect(102, 106, 538, 107)),
                 ),
                 tolerancePx = 1,
             ),

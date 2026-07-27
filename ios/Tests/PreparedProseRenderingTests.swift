@@ -43,7 +43,7 @@ final class PreparedProseRenderingTests: XCTestCase {
             let layout = try prepare(document, themeJSON: Fixture.themeJSON)
             let layoutEntries: [(Int, (ViewerBlock, PreparedProseBlock))] = zip(document.blocks, layout.blocks).compactMap { pair in
                 let (block, prepared) = pair
-                block.listItemBoundary.map { ($0.identity, (block, prepared)) }
+                return block.listItemBoundary.map { ($0.identity, (block, prepared)) }
             }
             let layoutByItem = Dictionary(grouping: layoutEntries, by: { $0.0 })
             for (_, leaves) in layoutByItem {

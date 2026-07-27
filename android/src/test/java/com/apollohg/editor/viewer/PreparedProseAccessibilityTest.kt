@@ -3,12 +3,9 @@ package com.apollohg.editor.viewer
 import android.graphics.Paint
 import android.graphics.Rect
 import android.text.Layout
-import android.text.SpannableString
-import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextDirectionHeuristics
-import android.text.style.ReplacementSpan
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
@@ -466,18 +463,10 @@ class PreparedProseAccessibilityTest {
         terminalRunIsRtl: Boolean,
         expectedVisualLogicalOrder: List<Int>,
     ) {
-        val width = firstLine.length * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
-        val layout = deterministicMixedSoftWrapLayout(
-            firstLine = firstLine,
-            continuation = continuation,
-            paragraphDirection = paragraphDirection,
-        )
-        val text = layout.text
-        assertTrue(layout.lineCount >= 2)
-        val lineEnd = layout.getLineEnd(0)
+        val text = firstLine + continuation
+        val lineEnd = firstLine.length
         assertEquals(firstLine.length, lineEnd)
         assertTrue(lineEnd < text.length)
-        assertEquals(lineEnd, layout.getLineStart(1))
         assertEquals(' ', text[lineEnd - 1])
         assertTrue(text[lineEnd - 1] != '\n')
         val bidiDirection = if (paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
@@ -531,22 +520,40 @@ class PreparedProseAccessibilityTest {
         // positions. The adjacent visual run supplies the terminal edge by
         // the opposite affinity, not by its physical left/right label alone.
         assertEquals(terminal.documentStart, neighborOffset)
-        val rect = fallbackSelectionRectsForLine(
-            layout = layout,
+        val width = visualRuns.size * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
+        val visualEdges = mutableMapOf<Pair<Int, FallbackVisualEdge>, Float>()
+        visualRuns.forEach { run ->
+            val left = run.visualIndex * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX.toFloat()
+            val right = left + MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
+            visualEdges[run.offsetAt(FallbackVisualEdge.LEFT) to FallbackVisualEdge.LEFT] = left
+            visualEdges[run.offsetAt(FallbackVisualEdge.RIGHT) to FallbackVisualEdge.RIGHT] = right
+        }
+        val geometry = FallbackLineGeometry(
+            text = text,
+            lineStart = 0,
+            rawLineEnd = lineEnd,
+            nextLineStart = lineEnd,
+            paragraphDirection = paragraphDirection,
+            top = 10,
+            bottom = 30,
+            width = width,
+            outerLineBoundary = { edge -> if (edge == FallbackVisualEdge.LEFT) 0f else width.toFloat() },
+            visualEdgeBoundary = { offset, edge -> requireNotNull(visualEdges[offset to edge]) },
+        )
+        val rect = fallbackSelectionRectsForGeometry(
+            geometry = geometry,
             start = terminal.documentStart,
             end = terminal.documentEnd,
-            line = 0,
-            width = width,
         ).single()
         val terminalStartEdge = if (terminal.isRtl) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT
-        val startBoundary = visualEdgeBoundary(layout, terminal.documentStart, terminalStartEdge)
-        val terminalBoundary = visualEdgeBoundary(layout, neighborOffset, neighborEdge)
+        val startBoundary = requireNotNull(visualEdges[terminal.documentStart to terminalStartEdge])
+        val terminalBoundary = requireNotNull(visualEdges[neighborOffset to neighborEdge])
         assertEquals(
             Rect(
                 kotlin.math.floor(min(startBoundary, terminalBoundary)).toInt().coerceIn(0, width),
-                layout.getLineTop(0),
+                geometry.top,
                 ceil(max(startBoundary, terminalBoundary)).toInt().coerceIn(0, width),
-                layout.getLineBottom(0),
+                geometry.bottom,
             ),
             rect,
         )
@@ -562,61 +569,6 @@ class PreparedProseAccessibilityTest {
         val level: Byte,
     )
 
-    private fun deterministicMixedSoftWrapLayout(
-        firstLine: String,
-        continuation: String,
-        paragraphDirection: Int,
-    ): StaticLayout {
-        val text = firstLine + continuation
-        val spanned = SpannableString(text)
-        text.indices
-            .forEach { index ->
-                spanned.setSpan(
-                    FixedWidthCharacterSpan(),
-                    index,
-                    index + 1,
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                )
-            }
-        return StaticLayout.Builder.obtain(
-            spanned,
-            0,
-            spanned.length,
-            TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 16f },
-            firstLine.length * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX,
-        ).setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
-            .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-            .setTextDirection(
-                if (paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
-                    TextDirectionHeuristics.RTL
-                } else {
-                    TextDirectionHeuristics.LTR
-                },
-            )
-            .build()
-    }
-
-    private class FixedWidthCharacterSpan : ReplacementSpan() {
-        override fun getSize(
-            paint: Paint,
-            text: CharSequence?,
-            start: Int,
-            end: Int,
-            fm: Paint.FontMetricsInt?,
-        ): Int = MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
-
-        override fun draw(
-            canvas: android.graphics.Canvas,
-            text: CharSequence?,
-            start: Int,
-            end: Int,
-            x: Float,
-            top: Int,
-            y: Int,
-            bottom: Int,
-            paint: Paint,
-        ) = Unit
-    }
 
     /**
      * Test-only expected order deliberately starts from Java Bidi's logical

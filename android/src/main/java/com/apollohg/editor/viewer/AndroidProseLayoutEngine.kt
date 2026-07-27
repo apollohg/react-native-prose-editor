@@ -206,44 +206,60 @@ internal fun fallbackSelectionRectForVisualRun(
 }
 
 /**
- * Derives fallback selection geometry from the complete [StaticLayout] line.
- *
- * The line's Bidi resolution must use the same paragraph direction as the
- * layout that supplied its cursor positions. Resolving only the selected
- * substring can give neutral characters and embedded runs a different level.
+ * The line-level input required by the Bidi fallback. Keeping it separate
+ * from [StaticLayout] makes the cursor-affinity algorithm deterministic while
+ * leaving layout extraction at the production adapter boundary.
  */
-internal fun fallbackSelectionRectsForLine(
-    layout: StaticLayout,
+internal data class FallbackLineGeometry(
+    val text: CharSequence,
+    val lineStart: Int,
+    val rawLineEnd: Int,
+    val nextLineStart: Int?,
+    val paragraphDirection: Int,
+    val top: Int,
+    val bottom: Int,
+    val width: Int,
+    val outerLineBoundary: (FallbackVisualEdge) -> Float,
+    val visualEdgeBoundary: (offset: Int, edge: FallbackVisualEdge) -> Float,
+)
+
+/**
+ * Derives fallback selection geometry from one already-resolved visual line.
+ *
+ * The [StaticLayout] adapter below supplies this geometry in production. The
+ * algorithm intentionally owns the soft-wrap, selection-intersection, Bidi
+ * ordering, and terminal-neighbour checks so those invariants do not depend
+ * on host text shaping.
+ */
+internal fun fallbackSelectionRectsForGeometry(
+    geometry: FallbackLineGeometry,
     start: Int,
     end: Int,
-    line: Int,
-    width: Int,
 ): List<Rect> {
-    val lineStart = layout.getLineStart(line)
-    val rawLineEnd = layout.getLineEnd(line)
+    val lineStart = geometry.lineStart
+    val rawLineEnd = geometry.rawLineEnd
     // A hard-break line includes its terminator in StaticLayout's end offset.
     // It has no drawable/cursor run, so exclude it before constructing Bidi.
     val lineEnd = if (
         rawLineEnd > lineStart &&
-        rawLineEnd <= layout.text.length &&
-        layout.text[rawLineEnd - 1] == '\n'
+        rawLineEnd <= geometry.text.length &&
+        geometry.text[rawLineEnd - 1] == '\n'
     ) rawLineEnd - 1 else rawLineEnd
     val softWrapLineEnd = rawLineEnd.takeIf {
         lineEnd == rawLineEnd &&
-            rawLineEnd < layout.text.length &&
-            line + 1 < layout.lineCount &&
-            layout.getLineStart(line + 1) == rawLineEnd
+            rawLineEnd < geometry.text.length &&
+            geometry.nextLineStart == rawLineEnd
     }
     val selectedStart = maxOf(start, lineStart).coerceAtMost(lineEnd)
     val selectedEnd = minOf(end, lineEnd).coerceAtLeast(lineStart)
     if (selectedStart >= selectedEnd || lineStart >= lineEnd) return emptyList()
 
-    val direction = if (layout.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT) {
+    val direction = if (geometry.paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
         Bidi.DIRECTION_RIGHT_TO_LEFT
     } else {
         Bidi.DIRECTION_LEFT_TO_RIGHT
     }
-    val bidi = Bidi(layout.text.subSequence(lineStart, lineEnd).toString(), direction)
+    val bidi = Bidi(geometry.text.subSequence(lineStart, lineEnd).toString(), direction)
     val logicalRuns = List(bidi.runCount) { logicalIndex ->
         FallbackLogicalBidiRun(
             logicalIndex = logicalIndex,
@@ -265,12 +281,8 @@ internal fun fallbackSelectionRectsForLine(
                 terminalRun = visualRun,
                 visualRuns = visualRuns,
                 softWrapLineEnd = softWrapLineEnd!!,
-                outerLineBoundary = { edge ->
-                    if (edge == FallbackVisualEdge.LEFT) layout.getLineLeft(line) else layout.getLineRight(line)
-                },
-                visualEdgeBoundary = { offset, edge ->
-                    fallbackHorizontalAtVisualEdge(layout, offset, edge)
-                },
+                outerLineBoundary = geometry.outerLineBoundary,
+                visualEdgeBoundary = geometry.visualEdgeBoundary,
             )
         } else {
             null
@@ -278,19 +290,58 @@ internal fun fallbackSelectionRectsForLine(
         // Do not allow an internal terminal boundary to fall through to the
         // generic whole-line shortcut: that would over-expand the rectangle.
         if (resolvesSoftWrapTerminal && terminalBoundary == null) continue
-        fallbackSelectionRectForVisualRun(
-            layout = layout,
-            runStart = intersectedStart,
-            runEnd = intersectedEnd,
-            runIsRtl = visualRun.isRtl,
-            line = line,
-            width = width,
-            softWrapLineEnd = softWrapLineEnd,
-            softWrapTerminalBoundary = terminalBoundary,
-        )?.let(fragments::add)
+        if (intersectedStart >= intersectedEnd) continue
+        fun visualBoundary(offset: Int, logicalRunStart: Boolean): Float {
+            val visualRightEdge = if (visualRun.isRtl) logicalRunStart else !logicalRunStart
+            val edge = if (visualRightEdge) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT
+            if (!logicalRunStart && offset == softWrapLineEnd) {
+                return terminalBoundary ?: geometry.outerLineBoundary(edge)
+            }
+            return geometry.visualEdgeBoundary(offset, edge)
+        }
+        val startBoundary = visualBoundary(intersectedStart, logicalRunStart = true)
+        val endBoundary = visualBoundary(intersectedEnd, logicalRunStart = false)
+        Rect(
+            kotlin.math.floor(min(startBoundary, endBoundary)).toInt().coerceIn(0, geometry.width),
+            geometry.top,
+            ceil(max(startBoundary, endBoundary)).toInt().coerceIn(0, geometry.width),
+            geometry.bottom,
+        ).takeIf { !it.isEmpty }?.let(fragments::add)
     }
     return fragments
 }
+
+/**
+ * Derives fallback selection geometry from the complete [StaticLayout] line.
+ *
+ * The line's Bidi resolution must use the same paragraph direction as the
+ * layout that supplied its cursor positions. Resolving only the selected
+ * substring can give neutral characters and embedded runs a different level.
+ */
+internal fun fallbackSelectionRectsForLine(
+    layout: StaticLayout,
+    start: Int,
+    end: Int,
+    line: Int,
+    width: Int,
+): List<Rect> = fallbackSelectionRectsForGeometry(
+    FallbackLineGeometry(
+        text = layout.text,
+        lineStart = layout.getLineStart(line),
+        rawLineEnd = layout.getLineEnd(line),
+        nextLineStart = if (line + 1 < layout.lineCount) layout.getLineStart(line + 1) else null,
+        paragraphDirection = layout.getParagraphDirection(line),
+        top = layout.getLineTop(line),
+        bottom = layout.getLineBottom(line),
+        width = width,
+        outerLineBoundary = { edge ->
+            if (edge == FallbackVisualEdge.LEFT) layout.getLineLeft(line) else layout.getLineRight(line)
+        },
+        visualEdgeBoundary = { offset, edge -> fallbackHorizontalAtVisualEdge(layout, offset, edge) },
+    ),
+    start,
+    end,
+)
 
 /** Creates immutable StaticLayout fragments without depending on a mounted View. */
 internal interface AndroidProseLayoutEngine {

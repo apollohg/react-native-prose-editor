@@ -178,6 +178,17 @@ for (const path of [
 ]) {
     assert.ok(exists(path), `Fabric implementation header must remain packaged and compiled: ${path}`);
 }
+const measurementsManagerHeader = read('common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseMeasurementsManager.h');
+assert.match(
+    measurementsManagerHeader,
+    /#include <react\/renderer\/core\/ReactPrimitives\.h>/,
+    'PreparedProseMeasurementsManager must source SurfaceId from ReactPrimitives',
+);
+assert.doesNotMatch(
+    measurementsManagerHeader,
+    /#include <react\/renderer\/core\/SurfaceId\.h>/,
+    'PreparedProseMeasurementsManager must not include the removed SurfaceId header',
+);
 for (const path of [
     'ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm',
     'ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm',
