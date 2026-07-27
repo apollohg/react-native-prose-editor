@@ -316,7 +316,7 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertTrue(inlineCode.fontDescriptor.symbolicTraits.contains(.traitBold))
         XCTAssertTrue(inlineCode.fontDescriptor.symbolicTraits.contains(.traitItalic))
         XCTAssertFalse(
-            environment.shouldWarnForMissingFamily("monospace", semanticGeneration: semanticGeneration),
+            environment.hasMissingFamilyWarning("monospace", semanticGeneration: semanticGeneration),
             "generic monospace must not enter the missing-family warning registry"
         )
 
@@ -327,8 +327,8 @@ final class PreparedProseRevisionTests: XCTestCase {
                 fallback: fallback,
                 semanticGeneration: semanticGeneration
             )
-            XCTAssertTrue(
-                environment.shouldWarnForMissingFamily(alias, semanticGeneration: semanticGeneration),
+            XCTAssertFalse(
+                environment.hasMissingFamilyWarning(alias, semanticGeneration: semanticGeneration),
                 "generic alias \(alias) must resolve without a missing-family warning"
             )
         }
@@ -380,8 +380,8 @@ final class PreparedProseRevisionTests: XCTestCase {
 
         XCTAssertEqual(first.fontName, fallback.fontName)
         XCTAssertEqual(second.fontName, fallback.fontName)
-        XCTAssertFalse(
-            environment.shouldWarnForMissingFamily(family, semanticGeneration: semanticGeneration),
+        XCTAssertTrue(
+            environment.hasMissingFamilyWarning(family, semanticGeneration: semanticGeneration),
             "two literal-name resolutions in one semantic generation must emit only one warning"
         )
     }

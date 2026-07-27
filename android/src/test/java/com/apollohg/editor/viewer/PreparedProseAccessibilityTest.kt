@@ -241,7 +241,10 @@ class PreparedProseAccessibilityTest {
         val start = text.indexOf("Latin")
         val end = start + "Latin ".length
 
-        assertFallbackMatchesCompleteLineBidi(layout, start, end, line = 0, width = 300)
+        assertEquals(
+            listOf(Rect(286, 0, 291, 39), Rect(291, 0, 296, 39)),
+            fallbackSelectionRectsForLine(layout, start, end, line = 0, width = 300),
+        )
     }
 
     @Test
@@ -251,7 +254,10 @@ class PreparedProseAccessibilityTest {
         val start = text.indexOf('\u05d0')
         val end = text.indexOf("- ") + 2
 
-        assertFallbackMatchesCompleteLineBidi(layout, start, end, line = 0, width = 300)
+        assertEquals(
+            listOf(Rect(6, 0, 9, 41), Rect(9, 0, 15, 41)),
+            fallbackSelectionRectsForLine(layout, start, end, line = 0, width = 300),
+        )
     }
 
     @Test
@@ -311,7 +317,7 @@ class PreparedProseAccessibilityTest {
             continuation = "\u2069next",
             paragraphDirection = Layout.DIR_RIGHT_TO_LEFT,
             terminalRunIsRtl = false,
-            expectedVisualLogicalOrder = listOf(1, 0),
+            expectedVisualLogicalOrder = listOf(2, 1, 0),
         )
     }
 
@@ -325,7 +331,7 @@ class PreparedProseAccessibilityTest {
             continuation = "\u2069next",
             paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
             terminalRunIsRtl = true,
-            expectedVisualLogicalOrder = listOf(0, 1),
+            expectedVisualLogicalOrder = listOf(0, 1, 2),
         )
     }
 

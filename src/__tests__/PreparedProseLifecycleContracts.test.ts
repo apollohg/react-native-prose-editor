@@ -270,6 +270,9 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(iosCache).toContain('retireUnownedPublicationKeysLocked');
         expect(iosCache).toContain('releaseLease');
         expect(iosCache).toContain('publishOwnerBytesLocked');
+        expect(iosCache).toContain('pendingLeases');
+        expect(iosCache).toContain('mountedLeases');
+        expect(iosCache).toContain('removePendingLeaseLocked(leaseKey)');
         expect(androidCache).toContain('retireUnownedPublicationsLocked');
         expect(androidCache).toContain('releaseLease');
         expect(androidCache).toContain('publishOwnersLocked');

@@ -12,9 +12,13 @@ final class PreparedProseLayoutCache {
     private var completed: [ProseLayoutKey: PreparedProseLayout] = [:]
     private var accessOrder: [ProseLayoutKey] = []
     private var inFlight: [ProseLayoutKey: Preparation] = [:]
-    private var leases: [FabricLeaseKey: PreparedProseLayout] = [:]
-    private var leaseKeyBySurface: [FabricSurfaceToken: FabricLeaseKey] = [:]
-    private var leaseAccessOrder: [FabricLeaseKey] = []
+    /// Yoga measurement hands an immutable artifact to Fabric before there is
+    /// a component view. A pending handoff is therefore distinct from a
+    /// mounted owner: mount consumes it exactly once and only the mounted
+    /// owner is non-evictable.
+    private var pendingLeases: [FabricLeaseKey: PreparedProseLayout] = [:]
+    private var pendingLeaseAccessOrder: [FabricLeaseKey] = []
+    private var mountedLeases: [FabricLeaseKey: PreparedProseLayout] = [:]
     private var directMounted: [String: PreparedProseLayout] = [:]
     private var mountIndex: [ProseMountKey: ProseLayoutKey] = [:]
 #if DEBUG
@@ -38,7 +42,7 @@ final class PreparedProseLayoutCache {
         condition.lock()
         if let layout = completed[key] {
             touch(key)
-            if let fabricSurface { leaseLocked(layout, for: key, surface: fabricSurface) }
+            if let fabricSurface { createPendingLeaseLocked(layout, for: key, surface: fabricSurface) }
             condition.unlock()
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
             return layout
@@ -47,7 +51,7 @@ final class PreparedProseLayoutCache {
             while preparation.result == nil { condition.wait() }
             let result = preparation.result!
             if case let .success(layout) = result, let fabricSurface {
-                leaseLocked(layout, for: key, surface: fabricSurface)
+                createPendingLeaseLocked(layout, for: key, surface: fabricSurface)
             }
             condition.unlock()
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true, waited: true)
@@ -74,7 +78,7 @@ final class PreparedProseLayoutCache {
                 touch(key)
             }
             if let fabricSurface {
-                leaseLocked(layout, for: key, surface: fabricSurface)
+                createPendingLeaseLocked(layout, for: key, surface: fabricSurface)
             } else {
                 enforceBudgetLocked()
             }
@@ -101,23 +105,43 @@ final class PreparedProseLayoutCache {
             widthPixels: widthPixels,
             displayScale: displayScale
         )
-        if let leaseKey = leaseKeyBySurface[surface],
-           leaseKey.layout.generationIdentity == generationIdentity,
-           leaseKey.layout.widthPixels == widthPixels,
-           leaseKey.layout.displayScaleBits == Double(displayScale).bitPattern,
-           let layout = leases[leaseKey] {
+        // UIKit-only callers use the documented zero token because they have
+        // no Fabric owner. They retain the ordinary completed-cache lookup;
+        // every real Fabric surface must consume its own pending handoff.
+        if surface.surfaceId == 0, surface.componentTag == 0,
+           let key = mountIndex[mountKey], let layout = completed[key] {
+            touch(key)
             return layout
         }
-        guard let key = mountIndex[mountKey], let layout = completed[key] else { return nil }
-        touch(key)
+        guard let leaseKey = pendingLeases.keys.first(where: {
+            $0.surface == surface &&
+                $0.layout.generationIdentity == mountKey.generationIdentity &&
+                $0.layout.widthPixels == mountKey.widthPixels &&
+                $0.layout.displayScaleBits == mountKey.displayScaleBits
+        }), let layout = pendingLeases[leaseKey] else { return nil }
+
+        // A Fabric mount can only consume the Yoga handoff once. Do not fall
+        // back to completed here: that would let a second/recycled component
+        // mount an artifact that was never measured for its own owner.
+        removePendingLeaseLocked(leaseKey)
+        mountedLeases[leaseKey] = layout
+        retireUnownedPublicationKeysLocked()
+        publishOwnerBytesLocked()
         return layout
     }
 
     func releaseLease(for surface: FabricSurfaceToken, generationIdentity: String? = nil) {
         condition.lock()
-        if generationIdentity == nil || leaseKeyBySurface[surface]?.layout.generationIdentity == generationIdentity {
-            releaseLeaseLocked(for: surface)
+        let pending = pendingLeases.keys.filter {
+            $0.surface == surface && (generationIdentity == nil || $0.layout.generationIdentity == generationIdentity)
         }
+        let mounted = mountedLeases.keys.filter {
+            $0.surface == surface && (generationIdentity == nil || $0.layout.generationIdentity == generationIdentity)
+        }
+        pending.forEach(removePendingLeaseLocked)
+        mounted.forEach { mountedLeases.removeValue(forKey: $0) }
+        retireUnownedPublicationKeysLocked()
+        publishOwnerBytesLocked()
         condition.unlock()
     }
 
@@ -156,31 +180,29 @@ final class PreparedProseLayoutCache {
     var oversizedLeaseCountForTesting: Int {
         condition.lock()
         defer { condition.unlock() }
-        return leases.values.filter { $0.retainedBytes > byteBudget }.count
+        return (Array(pendingLeases.values) + Array(mountedLeases.values))
+            .filter { $0.retainedBytes > byteBudget }
+            .count
     }
 
-    private func leaseLocked(
+    private func createPendingLeaseLocked(
         _ layout: PreparedProseLayout,
         for key: ProseLayoutKey,
         surface: FabricSurfaceToken
     ) {
-        releaseLeaseLocked(for: surface)
         let leaseKey = FabricLeaseKey(surface: surface, layout: key)
-        leases[leaseKey] = layout
-        leaseKeyBySurface[surface] = leaseKey
-        touchLease(leaseKey)
-        enforceBudgetLocked(preferredLease: leaseKey)
+        // Repeated Yoga measurements before mount refresh one pending handoff;
+        // repeated measurements after mount never manufacture a second mount.
+        guard mountedLeases[leaseKey] == nil else { return }
+        pendingLeases[leaseKey] = layout
+        touchPendingLease(leaseKey)
+        enforceBudgetLocked(preferredPendingLease: leaseKey)
         publishOwnerBytesLocked()
     }
 
-    private func releaseLeaseLocked(for surface: FabricSurfaceToken) {
-        guard let leaseKey = leaseKeyBySurface.removeValue(forKey: surface) else { return }
-        leases.removeValue(forKey: leaseKey)
-        leaseAccessOrder.removeAll { $0 == leaseKey }
-        // The final lease release may retire this publication only when no
-        // completed entry, direct owner, or other lease keeps it live.
-        retireUnownedPublicationKeysLocked()
-        publishOwnerBytesLocked()
+    private func removePendingLeaseLocked(_ key: FabricLeaseKey) {
+        pendingLeases.removeValue(forKey: key)
+        pendingLeaseAccessOrder.removeAll { $0 == key }
     }
 
     private func touch(_ key: ProseLayoutKey) {
@@ -188,9 +210,9 @@ final class PreparedProseLayoutCache {
         accessOrder.append(key)
     }
 
-    private func touchLease(_ key: FabricLeaseKey) {
-        leaseAccessOrder.removeAll { $0 == key }
-        leaseAccessOrder.append(key)
+    private func touchPendingLease(_ key: FabricLeaseKey) {
+        pendingLeaseAccessOrder.removeAll { $0 == key }
+        pendingLeaseAccessOrder.append(key)
     }
 
     private func mountKey(for layoutKey: ProseLayoutKey) -> ProseMountKey {
@@ -207,21 +229,17 @@ final class PreparedProseLayoutCache {
 #endif
     }
 
-    private func removeLeaseLocked(_ key: FabricLeaseKey) {
-        leases.removeValue(forKey: key)
-        leaseAccessOrder.removeAll { $0 == key }
-        if leaseKeyBySurface[key.surface] == key {
-            leaseKeyBySurface.removeValue(forKey: key.surface)
-        }
-    }
-
-    private func enforceBudgetLocked(preferredLease: FabricLeaseKey? = nil) {
-        // Leases are handoffs to a mounted owner, not unmounted cache entries.
-        // The cache budget therefore evicts only completed LRU artifacts; a
-        // mounted artifact is never evicted by pressure or entry churn.
-        while completedRetainedBytesLocked() > byteBudget {
+    private func enforceBudgetLocked(preferredPendingLease: FabricLeaseKey? = nil) {
+        // Pending Yoga-to-Fabric handoffs are unmounted cache owners. They
+        // share the same budget as completed entries; mounted owners never
+        // enter this calculation and survive pressure until explicit release.
+        while budgetedRetainedBytesLocked() > byteBudget {
             if let oldest = accessOrder.first {
                 removeCompletedLocked(oldest)
+                continue
+            }
+            if let oldest = pendingLeaseAccessOrder.first(where: { $0 != preferredPendingLease }) {
+                removePendingLeaseLocked(oldest)
                 continue
             }
             break
@@ -235,15 +253,30 @@ final class PreparedProseLayoutCache {
     private func retainedBytesLocked() -> Int {
         var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
         for layout in completed.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
-        for layout in leases.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
+        for layout in pendingLeases.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
+        for layout in mountedLeases.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
         for layout in directMounted.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
         return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
     }
 
     private func completedRetainedBytesLocked() -> Int {
         var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
-        let mountedKeys = Set(leases.values.map(\.key)).union(directMounted.values.map(\.key))
+        let mountedKeys = Set(pendingLeases.values.map(\.key))
+            .union(mountedLeases.values.map(\.key))
+            .union(directMounted.values.map(\.key))
         for layout in completed.values where !mountedKeys.contains(layout.key) {
+            uniqueLayouts[ObjectIdentifier(layout)] = layout
+        }
+        return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
+    }
+
+    private func budgetedRetainedBytesLocked() -> Int {
+        var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
+        let mountedKeys = Set(mountedLeases.values.map(\.key)).union(directMounted.values.map(\.key))
+        for layout in completed.values where !mountedKeys.contains(layout.key) {
+            uniqueLayouts[ObjectIdentifier(layout)] = layout
+        }
+        for layout in pendingLeases.values where !mountedKeys.contains(layout.key) {
             uniqueLayouts[ObjectIdentifier(layout)] = layout
         }
         return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
@@ -251,22 +284,46 @@ final class PreparedProseLayoutCache {
 
     private func retireUnownedPublicationKeysLocked() {
 #if DEBUG
-        let live = Set(completed.keys).union(leases.values.map(\.key)).union(directMounted.values.map(\.key))
+        let live = Set(completed.keys)
+            .union(pendingLeases.values.map(\.key))
+            .union(mountedLeases.values.map(\.key))
+            .union(directMounted.values.map(\.key))
         publishedKeys.formIntersection(live)
 #endif
     }
 
     private func publishOwnerBytesLocked() {
         PreparedProseInstrumentation.retained(.unmountedLayout, scope: "cache", bytes: completedRetainedBytesLocked())
-        PreparedProseInstrumentation.retained(.fabricLeaseHandoff, scope: "leases", bytes: uniqueBytes(leases.values))
+        PreparedProseInstrumentation.retained(
+            .fabricLeaseHandoff,
+            scope: "leases",
+            bytes: uniqueBytes(pendingLeases.values) + uniqueBytesExcluding(mountedLeases.values, layouts: pendingLeases.values)
+        )
         PreparedProseInstrumentation.retained(.directMounted, scope: "views", bytes: uniqueBytes(directMounted.values))
     }
 
     private func uniqueBytes(_ layouts: Dictionary<FabricLeaseKey, PreparedProseLayout>.Values) -> Int {
-        Dictionary(uniqueKeysWithValues: layouts.map { (ObjectIdentifier($0), $0) }).values.reduce(0) { $0 + $1.retainedBytes }
+        var identifiers = Set<ObjectIdentifier>()
+        return layouts.reduce(0) { total, layout in
+            identifiers.insert(ObjectIdentifier(layout)).inserted ? total + layout.retainedBytes : total
+        }
     }
 
     private func uniqueBytes(_ layouts: Dictionary<String, PreparedProseLayout>.Values) -> Int {
-        Dictionary(uniqueKeysWithValues: layouts.map { (ObjectIdentifier($0), $0) }).values.reduce(0) { $0 + $1.retainedBytes }
+        var identifiers = Set<ObjectIdentifier>()
+        return layouts.reduce(0) { total, layout in
+            identifiers.insert(ObjectIdentifier(layout)).inserted ? total + layout.retainedBytes : total
+        }
+    }
+
+    private func uniqueBytesExcluding(
+        _ layouts: Dictionary<FabricLeaseKey, PreparedProseLayout>.Values,
+        layouts excluded: Dictionary<FabricLeaseKey, PreparedProseLayout>.Values
+    ) -> Int {
+        var identifiers = Set<ObjectIdentifier>()
+        for layout in excluded { identifiers.insert(ObjectIdentifier(layout)) }
+        return layouts.reduce(0) { total, layout in
+            identifiers.insert(ObjectIdentifier(layout)).inserted ? total + layout.retainedBytes : total
+        }
     }
 }

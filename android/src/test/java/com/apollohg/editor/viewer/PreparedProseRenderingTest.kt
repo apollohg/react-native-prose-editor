@@ -312,6 +312,12 @@ class PreparedProseRenderingTest {
         val wrapped = textLayout(densityOne, paragraphs[1].index)
         assertTrue("wrapped fixture must have a final line", wrapped.lineCount >= 2)
         assertEqualsLazy(48, lineHeight(wrapped, wrapped.lineCount - 1)) { "wrapped paragraph ${metricProjection(document, densityOne)}" }
+        val forcedWrapped = prepare(document, densityOneTheme, 1)
+        val forcedWrappedText = textLayout(forcedWrapped, paragraphs[1].index)
+        assertTrue("one-pixel artifact must wrap the final paragraph", forcedWrappedText.lineCount >= 2)
+        assertEqualsLazy(48, lineHeight(forcedWrappedText, forcedWrappedText.lineCount - 1)) {
+            "one-pixel wrapped final paragraph ${metricProjection(document, forcedWrapped)}"
+        }
         val hardBreak = textLayout(densityOne, paragraphs[2].index)
         assertTrue("hard-break fixture must have a final line", hardBreak.lineCount >= 2)
         assertEqualsLazy(48, lineHeight(hardBreak, hardBreak.lineCount - 1)) { "hard-break final paragraph ${metricProjection(document, densityOne)}" }

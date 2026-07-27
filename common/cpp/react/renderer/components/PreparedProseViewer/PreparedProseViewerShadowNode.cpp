@@ -1,5 +1,7 @@
 #include "PreparedProseViewerShadowNode.h"
 
+#include <react/renderer/core/LayoutContext.h>
+
 #include <cmath>
 #include <limits>
 

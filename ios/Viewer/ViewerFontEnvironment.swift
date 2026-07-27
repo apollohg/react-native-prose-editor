@@ -79,6 +79,14 @@ public final class ViewerFontEnvironment: NSObject {
         return inserted
     }
 
+    /// Test/internal inspection only. Unlike `shouldWarnForMissingFamily`,
+    /// this does not insert, evict, or otherwise mutate warning dedup state.
+    func hasMissingFamilyWarning(_ family: String, semanticGeneration: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return missingWarningsBySemanticGeneration[semanticGeneration]?.contains(family) ?? false
+    }
+
     /// The sole viewer font-family resolution contract. Theme paints and
     /// inline marks both reach this path, so availability, deterministic
     /// fallback, and semantic-generation warning scope cannot diverge.
