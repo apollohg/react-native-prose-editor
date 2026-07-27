@@ -1,9 +1,9 @@
 #import <Foundation/Foundation.h>
 
-#if __has_include("react_renderer_components_PreparedProseViewer-Swift.h")
-#import "react_renderer_components_PreparedProseViewer-Swift.h"
+#if __has_include("ReactNativeProseEditor-Swift.h")
+#import "ReactNativeProseEditor-Swift.h"
 #else
-#error "PreparedProseViewer codegen is stale or mismatched: expected react_renderer_components_PreparedProseViewer-Swift.h"
+#error "ReactNativeProseEditor Swift compatibility header is unavailable; verify the pod module name and consumer codegen"
 #endif
 
 #include <react/renderer/components/PreparedProseViewer/PreparedProseMeasurementsManager.h>

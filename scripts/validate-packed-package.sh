@@ -651,6 +651,10 @@ validate_package_entries() {
     abort "PreparedProseViewer provider entry is missing" unless provider == { "PreparedProseViewer" => "PREPPreparedProseViewerComponentView" }
     expo = JSON.parse(File.read(File.join(root, "expo-module.config.json")))
     abort "Expo must discover the package-root podspec" unless expo.fetch("ios").fetch("podspecPath") == "./ReactNativeProseEditor.podspec"
+    podspec = File.read(File.join(root, "ReactNativeProseEditor.podspec"))
+    pod_name = podspec[/s\.name\s*=\s*'([^']+)'/, 1]
+    pod_module_name = podspec[/s\.module_name\s*=\s*'([^']+)'/, 1]
+    abort "Expo-imported pod name must match the public Swift module name" unless pod_name == "ReactNativeProseEditor" && pod_module_name == pod_name
   ' "$root" || fail "packed package codegen discovery contract failed"
   require_file "$root" "dist/index.js"
   require_file "$root" "dist/index.d.ts"
@@ -803,6 +807,7 @@ ruby -rjson -e '
   source_files = Array(spec.fetch("source_files"))
   abort "podspec must compile Fabric implementation C++ sources" unless source_files.include?("common/cpp/**/*.{h,cpp}")
   abort "podspec must preserve the Fabric compiler header directory" unless spec.fetch("header_dir") == "react/renderer/components/PreparedProseViewer"
+  abort "podspec public Swift module must agree with Expo's pod-name import" unless spec.fetch("name") == "ReactNativeProseEditor" && spec.fetch("module_name") == spec.fetch("name")
 ' "$podspec_json" || fail "packed podspec does not unconditionally vend EditorCore.xcframework"
 
 validate_ios_consumer "$package_dir" "$tarball_path"

@@ -137,10 +137,18 @@ assert.deepEqual(packageJson.codegenConfig, {
 });
 
 const viewerPodspec = read('ReactNativeProseEditor.podspec');
+const podName = viewerPodspec.match(/s\.name\s*=\s*'([^']+)'/)?.[1];
+const podModuleName = viewerPodspec.match(/s\.module_name\s*=\s*'([^']+)'/)?.[1];
+assert.equal(podName, 'ReactNativeProseEditor', 'Expo autolinking must resolve the expected pod name');
+assert.equal(
+    podModuleName,
+    podName,
+    'Expo imports the pod name as its Swift module, so the public pod module name must agree exactly',
+);
 assert.doesNotMatch(
     viewerPodspec,
-    /s\.module_name\s*=/,
-    'React Native codegen owns the PreparedProseViewer Swift compatibility module name',
+    /s\.module_name\s*=\s*'react_renderer_components_PreparedProseViewer'/,
+    'Fabric header_dir must not leak into the pod public Swift module identity',
 );
 assert.match(
     viewerPodspec,
@@ -196,13 +204,13 @@ for (const path of [
     const implementation = read(path);
     assert.match(
         implementation,
-        /#if __has_include\("react_renderer_components_PreparedProseViewer-Swift\.h"\)\s*\n#import "react_renderer_components_PreparedProseViewer-Swift\.h"\s*\n#else\s*\n#error "PreparedProseViewer codegen is stale or mismatched: expected react_renderer_components_PreparedProseViewer-Swift\.h"\s*\n#endif/,
-        `${path} must import the exact React Native codegen Swift compatibility header and reject stale codegen`,
+        /#if __has_include\("ReactNativeProseEditor-Swift\.h"\)\s*\n#import "ReactNativeProseEditor-Swift\.h"\s*\n#else\s*\n#error "ReactNativeProseEditor Swift compatibility header is unavailable; verify the pod module name and consumer codegen"\s*\n#endif/,
+        `${path} must import the public pod Swift compatibility header and reject stale module identity`,
     );
     assert.doesNotMatch(
         implementation,
-        /ReactNativeProseEditor-Swift\.h/,
-        `${path} must not import the obsolete pod-name Swift compatibility header`,
+        /react_renderer_components_PreparedProseViewer-Swift\.h/,
+        `${path} must not import a Swift compatibility header derived from the Fabric header directory`,
     );
 }
 const viewerPerformanceTests = read('ios/Tests/NativePerformanceTests.swift');
