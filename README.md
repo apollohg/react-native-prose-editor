@@ -282,6 +282,27 @@ let configuration = ProseViewerConfiguration(
 final class MessageCell: UICollectionViewCell {
     let proseViewer = ProseViewerView(frame: .zero)
 
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        installProseViewer()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installProseViewer()
+    }
+
+    private func installProseViewer() {
+        proseViewer.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(proseViewer)
+        NSLayoutConstraint.activate([
+            proseViewer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            proseViewer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            proseViewer.topAnchor.constraint(equalTo: contentView.topAnchor),
+            proseViewer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+    }
+
     func configure(documentJSON: String) {
         _ = proseViewer.apply(source: .json(documentJSON), configuration: configuration)
     }
