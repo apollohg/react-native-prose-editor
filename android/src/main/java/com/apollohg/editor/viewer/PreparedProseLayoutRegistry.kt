@@ -196,7 +196,9 @@ internal class PreparedProseLayoutRegistry(
         if (leaseHandle <= 0) return
         synchronized(fabricLeaseLock) {
             val owner = FabricLeaseOwner(surface, leaseHandle)
-            activeFabricLeases.getOrPut(owner, ::FabricLeaseState).active.set(true)
+            // Surface teardown leaves an inactive record until the C++ family
+            // guard reaches terminal cleanup. Registration must not revive it.
+            activeFabricLeases.getOrPut(owner, ::FabricLeaseState)
         }
     }
 
@@ -208,7 +210,7 @@ internal class PreparedProseLayoutRegistry(
     fun activateFabricGeneration(generation: FabricGenerationToken) {
         val owner = FabricLeaseOwner(generation.surface, generation.leaseHandle)
         synchronized(fabricLeaseLock) {
-            val state = activeFabricLeases.getOrPut(owner, ::FabricLeaseState)
+            val state = activeFabricLeases[owner] ?: return
             if (!state.active.get()) return
             state.permittedGenerationIdentity = generation.generationIdentity
         }
@@ -232,7 +234,12 @@ internal class PreparedProseLayoutRegistry(
         val owner = FabricLeaseOwner(surface, leaseHandle)
         // Mark inactive before releasing containers so a delayed Yoga worker
         // sees cancellation even if it races this cleanup.
-        synchronized(fabricLeaseLock) { activeFabricLeases.remove(owner)?.active?.set(false) }
+        synchronized(fabricLeaseLock) {
+            // Terminal family cleanup is the sole removal path. Mark first so
+            // any concurrent measurement observes cancellation before removal.
+            activeFabricLeases[owner]?.active?.set(false)
+            activeFabricLeases.remove(owner)
+        }
         layoutCache.releaseOwner(owner)
         FabricAttachmentSidecars.remove(owner)
         synchronized(compilerLock) {
@@ -244,7 +251,7 @@ internal class PreparedProseLayoutRegistry(
     fun releaseFabricSurface(surface: FabricSurfaceToken) {
         synchronized(fabricLeaseLock) {
             activeFabricLeases.keys.filter { it.surface == surface }
-                .forEach { activeFabricLeases.remove(it)?.active?.set(false) }
+                .forEach { activeFabricLeases[it]?.active?.set(false) }
         }
         layoutCache.releaseSurface(surface)
         FabricAttachmentSidecars.remove(surface)
@@ -263,7 +270,7 @@ internal class PreparedProseLayoutRegistry(
     fun releaseFabricSurfaceId(surfaceId: Int) {
         synchronized(fabricLeaseLock) {
             activeFabricLeases.keys.filter { it.surface.surfaceId == surfaceId }
-                .forEach { activeFabricLeases.remove(it)?.active?.set(false) }
+                .forEach { activeFabricLeases[it]?.active?.set(false) }
         }
         layoutCache.releaseSurfaceId(surfaceId)
         FabricAttachmentSidecars.removeSurface(surfaceId)

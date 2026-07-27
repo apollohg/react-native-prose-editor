@@ -4,6 +4,7 @@
 #include <folly/dynamic.h>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <react/jni/ReadableNativeMap.h>
@@ -52,10 +53,18 @@ folly::dynamic toState(
 // that created it. The bridge owns no state-family object, avoiding a cycle.
 class AndroidLeaseLifecycleBridge final {
  public:
-  static std::shared_ptr<AndroidLeaseLifecycleBridge> create() {
-    return std::make_shared<AndroidLeaseLifecycleBridge>(
-        facebook::jni::make_global(facebook::jni::findClassStatic(
-            "com/apollohg/editor/viewer/FabricLeaseHandleBridge")));
+  static AndroidLeaseLifecycleBridge& processLifetime() {
+    // Intentionally process-lifetime: VM teardown can occur from an
+    // unattached native thread, where destroying a JNI global is unsafe.
+    static std::mutex mutex;
+    static AndroidLeaseLifecycleBridge* bridge = nullptr;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!bridge) {
+      bridge = new AndroidLeaseLifecycleBridge(
+          facebook::jni::make_global(facebook::jni::findClassStatic(
+              "com/apollohg/editor/viewer/FabricLeaseHandleBridge")));
+    }
+    return *bridge;
   }
 
   explicit AndroidLeaseLifecycleBridge(
@@ -102,31 +111,25 @@ void PreparedProseMeasurementsManager::bindLeaseLifecycle(
   }
   try {
     facebook::jni::ThreadScope threadScope;
-    auto bridge = AndroidLeaseLifecycleBridge::create();
-    bridge->registerLease(surfaceId, componentTag, leaseHandle);
-    leaseLifecycle->bindTerminalCleanup([bridge = std::move(bridge), surfaceId, componentTag, leaseHandle]() mutable {
-      // Destroy the owning global reference while this callback still owns an
-      // attached JNI environment. During VM teardown, releasing a Java lease
-      // is optional; dropping the reference remains bounded to this family.
+    auto& bridge = AndroidLeaseLifecycleBridge::processLifetime();
+    bridge.registerLease(surfaceId, componentTag, leaseHandle);
+    leaseLifecycle->bindTerminalCleanup([surfaceId, componentTag, leaseHandle] {
+      // The class global is intentionally process-lifetime. Runtime-unavailable
+      // paths no-op; they never reset or destroy it without an attached env.
       try {
         if (!facebook::jni::Environment::isGlobalJvmAvailable()) {
-          bridge.reset();
           return;
         }
         facebook::jni::ThreadScope threadScope;
         try {
-          bridge->releaseLease(surfaceId, componentTag, leaseHandle);
+          AndroidLeaseLifecycleBridge::processLifetime().releaseLease(
+              surfaceId, componentTag, leaseHandle);
         } catch (...) {
           // The Java registry may already be gone during runtime teardown.
         }
-        // This reset is deliberately inside ThreadScope, including when the
-        // Java callback threw, so fbjni releases the global reference through
-        // a valid attached environment.
-        bridge.reset();
       } catch (...) {
         // A failed attach means VM teardown is already underway. The process
-        // owns the remaining JNI globals; never dereference Java from here.
-        bridge.reset();
+        // lifetime bridge is deliberately left untouched.
       }
     });
   } catch (...) {

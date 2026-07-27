@@ -715,6 +715,64 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.layoutRetainedBytesForTesting, 2)
     }
 
+    func testPendingLeaseEntryBudgetEvictsDuplicateMetadataButKeepsMountedAndPreferredOwners() throws {
+        let cache = PreparedProseLayoutCache(byteBudget: 1, pendingLeaseBudget: 2)
+        let key = ProseLayoutKey(
+            semanticKey: String(repeating: "a", count: 64),
+            widthPixels: 320,
+            themeDigest: "theme",
+            nativeFontRevision: 0,
+            fontEnvironmentRevision: 0,
+            displayScale: 2,
+            attachmentRevision: 0,
+            generationIdentity: "shared",
+            semanticGenerationIdentity: "shared"
+        )
+        let artifact = PreparedProseLayout(
+            key: key,
+            size: CGSize(width: 160, height: 20),
+            blocks: [],
+            retainedBytes: 80
+        )
+        let surface = FabricSurfaceToken(surfaceId: 88, componentTag: 880)
+        let mounted: UInt64 = 1
+        let firstPending: UInt64 = 2
+        let secondPending: UInt64 = 3
+        let preferred: UInt64 = 4
+
+        _ = try cache.value(for: key, fabricSurface: surface, fabricLeaseHandle: mounted) { artifact }
+        XCTAssertTrue(cache.acquireForFabricMount(
+            surface: surface,
+            generationIdentity: key.generationIdentity,
+            widthPixels: key.widthPixels,
+            displayScale: 2,
+            leaseHandle: mounted
+        ) === artifact)
+        for handle in [firstPending, secondPending, preferred] {
+            _ = try cache.value(for: key, fabricSurface: surface, fabricLeaseHandle: handle) {
+                XCTFail("A live immutable artifact must be reused.")
+                return artifact
+            }
+        }
+
+        XCTAssertEqual(cache.pendingLeaseCountForTesting, 2)
+        XCTAssertEqual(cache.mountedLeaseCountForTesting, 1)
+        XCTAssertNil(cache.acquireForFabricMount(
+            surface: surface,
+            generationIdentity: key.generationIdentity,
+            widthPixels: key.widthPixels,
+            displayScale: 2,
+            leaseHandle: firstPending
+        ))
+        XCTAssertTrue(cache.acquireForFabricMount(
+            surface: surface,
+            generationIdentity: key.generationIdentity,
+            widthPixels: key.widthPixels,
+            displayScale: 2,
+            leaseHandle: preferred
+        ) === artifact)
+    }
+
     func testStaleFabricMountMissPreservesNewerPendingWidthAndMountedArtifact() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -770,6 +828,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         let generationIdentity = canonicalFabricGenerationIdentity(request, registry: registry)
         let h1 = FabricGenerationToken(surface: surface, generationIdentity: generationIdentity, leaseHandle: 101)
         let h2 = FabricGenerationToken(surface: surface, generationIdentity: generationIdentity, leaseHandle: 202)
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: h1.leaseHandle)
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: h2.leaseHandle)
 
         _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: h1.leaseHandle)
         _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: h2.leaseHandle)
@@ -834,6 +894,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(shadow.contains("ShadowNodeFamily*"))
         XCTAssertTrue(manager.contains("leaseHandle:leaseHandle"))
         XCTAssertTrue(manager.contains("bindLeaseLifecycle"))
+        XCTAssertTrue(manager.contains("registerFabricLeaseSurfaceId"))
         XCTAssertTrue(manager.contains("!leaseLifecycle->isActive()"))
         XCTAssertTrue(android.contains("beginNativeMeasure"))
         XCTAssertTrue(android.contains("static_cast<int64_t>(leaseHandle)"))
@@ -928,7 +989,9 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(jni.contains("global_ref<facebook::jni::JClass>"))
         XCTAssertFalse(jni.contains("alias_ref<facebook::jni::JClass>"))
         XCTAssertTrue(jni.contains("make_global"))
-        XCTAssertTrue(jni.contains("bridge.reset()"))
+        XCTAssertTrue(jni.contains("processLifetime"))
+        XCTAssertTrue(jni.contains("process-lifetime"))
+        XCTAssertFalse(jni.contains("bridge.reset()"))
         XCTAssertTrue(jni.contains("facebook::jni::ThreadScope"))
         XCTAssertTrue(jni.contains("Every object allocation, class lookup, and Java invocation below can run"))
         XCTAssertTrue(jni.contains("Still inside ThreadScope"))
@@ -956,6 +1019,7 @@ final class PreparedProseLayoutTests: XCTestCase {
             generationIdentity: canonicalFabricGenerationIdentity(second, registry: registry),
             leaseHandle: handle
         )
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: handle)
 
         // Both may prepare before a component commit has selected a winner.
         _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: handle)
@@ -976,6 +1040,34 @@ final class PreparedProseLayoutTests: XCTestCase {
     }
 
 #if DEBUG
+    func testTerminalReleaseAfterSidecarRegistrationRemovesOnlyItsExactSidecar() {
+        let registry = PreparedProseLayoutRegistry(
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(key: key, size: CGSize(width: width, height: 20), blocks: [], retainedBytes: 1)
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 91, componentTag: 910)
+        let h1: UInt64 = 1
+        let h2: UInt64 = 2
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: h1)
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: h2)
+        registry.fabricSidecarRegisteredForTesting = {
+            registry.releaseFabricLease(
+                surfaceId: surface.surfaceId,
+                componentTag: surface.componentTag,
+                leaseHandle: h1
+            )
+        }
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: h1)
+
+        XCTAssertNil(FabricAttachmentSidecars.state(for: surface, leaseHandle: h1))
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: h2)
+        XCTAssertNotNil(FabricAttachmentSidecars.state(for: surface, leaseHandle: h2))
+    }
+
     func testConcurrentFabricMeasureRetainsGenerationPinAfterStaleMountMissCleanup() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -1062,6 +1154,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
         XCTAssertNil(FabricAttachmentSidecars.state(for: surface, leaseHandle: generation.leaseHandle))
 
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: 2)
         let fresh = registry.measure(
             request: request,
             widthPoints: 160,
@@ -1287,6 +1380,29 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
     }
 
+    func testSurfaceStopKeepsOldFamilyInactiveUntilTerminalCleanupAndAllowsNewHandle() {
+        let registry = PreparedProseLayoutRegistry(
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(key: key, size: CGSize(width: width, height: 20), blocks: [], retainedBytes: 1)
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 89, componentTag: 890)
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: 1)
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: 1)
+
+        registry.releaseFabricSurface(surface)
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: 1)
+        XCTAssertEqual(registry.fabricLeaseCountForTesting, 0)
+        XCTAssertNil(FabricAttachmentSidecars.state(for: surface, leaseHandle: 1))
+
+        registry.releaseFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: 1)
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: 2)
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: 2)
+        XCTAssertEqual(registry.fabricLeaseCountForTesting, 1)
+    }
+
     func testMemoryWarningThenSurfaceReleaseRemovesCacheDiscoveredMountedLease() {
         let registry = makeRegistry { document, key, width, scale in
             try CoreTextProseLayoutEngine().prepare(
@@ -1426,6 +1542,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         )
 
         XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: 2)
         _ = registry.measure(
             request: request,
             widthPoints: 160,
@@ -1662,5 +1779,29 @@ final class PreparedProseLayoutTests: XCTestCase {
         func proseViewer(_ view: ProseViewerView, didFail error: ProseViewerError) {
             errors.append(error)
         }
+    }
+}
+
+// Direct registry tests model the C++ state-family bridge explicitly. Calls
+// that omit an opaque handle use the test's canonical H1 family.
+extension PreparedProseLayoutRegistry {
+    func measure(
+        request: ProseViewerRequest,
+        widthPoints: CGFloat,
+        scale: CGFloat,
+        fabricSurface: FabricSurfaceToken
+    ) -> PreparedProseLayout {
+        registerFabricLease(
+            surfaceId: fabricSurface.surfaceId,
+            componentTag: fabricSurface.componentTag,
+            leaseHandle: 1
+        )
+        return measure(
+            request: request,
+            widthPoints: widthPoints,
+            scale: scale,
+            fabricSurface: fabricSurface,
+            fabricLeaseHandle: 1
+        )
     }
 }

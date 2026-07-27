@@ -34,7 +34,11 @@ void PreparedProseMeasurementsManager::bindLeaseLifecycle(
     Tag componentTag,
     uint64_t leaseHandle,
     const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const {
-  if (leaseHandle == 0 || !leaseLifecycle) return;
+  if (leaseHandle == 0 || !leaseLifecycle || !leaseLifecycle->isActive()) return;
+  [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      registerFabricLeaseSurfaceId:static_cast<int64_t>(surfaceId)
+                    componentTag:static_cast<int64_t>(componentTag)
+                     leaseHandle:leaseHandle];
   leaseLifecycle->bindTerminalCleanup([
       surfaceId, componentTag, leaseHandle] {
     [[PREPPreparedProseLayoutRegistry sharedRegistry]

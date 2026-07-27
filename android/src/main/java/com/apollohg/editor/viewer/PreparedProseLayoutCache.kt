@@ -198,7 +198,7 @@ internal class PreparedProseLayoutCache(
     }
 
     private fun enforceBudgetLocked(preferredGeneration: FabricGenerationToken?) {
-        while (budgetedRetainedBytesLocked() > byteBudget || pendingLeases.size > pendingLeaseBudget) {
+        while (budgetedRetainedBytesLocked() > byteBudget) {
             val completedEntry = completed.entries.firstOrNull()
             if (completedEntry != null) {
                 completed.remove(completedEntry.key)
@@ -212,6 +212,14 @@ internal class PreparedProseLayoutCache(
             // breaking exact-once handoff ownership.
             val pendingEntry = pendingLeases.entries.firstOrNull {
                 it.key.generation != preferredGeneration && pendingRemovalLowersBudgetLocked(it)
+            } ?: break
+            pendingLeases.remove(pendingEntry.key)
+        }
+        // Shared immutable artifacts may make a pending handoff free zero
+        // bytes. Its owner metadata still needs a hard cap in long feeds.
+        while (pendingLeases.size > pendingLeaseBudget) {
+            val pendingEntry = pendingLeases.entries.firstOrNull {
+                it.key.generation != preferredGeneration
             } ?: break
             pendingLeases.remove(pendingEntry.key)
         }

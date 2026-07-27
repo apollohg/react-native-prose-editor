@@ -28,9 +28,13 @@ final class PreparedProseLayoutCache {
     private var publishedKeys: Set<ProseLayoutKey> = []
 #endif
     private let byteBudget: Int
+    /// Bound handoff metadata separately from retained bytes: many virtualized
+    /// owners can share one immutable artifact without sharing one lease key.
+    private let pendingLeaseBudget: Int
 
-    init(byteBudget: Int = 32 * 1024 * 1024) {
+    init(byteBudget: Int = 32 * 1024 * 1024, pendingLeaseBudget: Int = 256) {
         self.byteBudget = byteBudget
+        self.pendingLeaseBudget = max(1, pendingLeaseBudget)
     }
 
     func value(
@@ -442,6 +446,15 @@ final class PreparedProseLayoutCache {
                 continue
             }
             break
+        }
+        // Byte pressure must retain duplicate handoffs that free no memory.
+        // Metadata pressure is independent: evict oldest non-preferred pending
+        // ownership even when the artifact remains mounted elsewhere.
+        while pendingLeases.count > pendingLeaseBudget {
+            guard let oldest = pendingLeaseAccessOrder.first(where: {
+                $0 != preferredPendingLease && pendingLeases[$0] != nil
+            }) else { break }
+            removePendingLeaseLocked(oldest)
         }
         retireUnownedPublicationKeysLocked()
         publishOwnerBytesLocked()

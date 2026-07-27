@@ -224,6 +224,14 @@ class PreparedProseLayoutTest {
 
         assertEquals(0, registry.fabricGenerationPinCountForTesting)
         assertEquals(0, registry.fabricLeaseCountForTesting)
+        // Surface stop leaves bounded inactive family records until their C++
+        // guards terminate. A delayed H1 cannot recreate ownership.
+        registry.measure(request("late"), 320, 1f, first, fabricLeaseHandle = 1)
+        assertEquals(0, registry.fabricLeaseCountForTesting)
+        registry.releaseFabricLease(first, 1)
+        registry.registerFabricLease(first, 3)
+        registry.measure(request("fresh"), 320, 1f, first, fabricLeaseHandle = 3)
+        assertTrue(registry.fabricLeaseCountForTesting > 0)
     }
 
     @Test
@@ -412,7 +420,30 @@ class PreparedProseLayoutTest {
     }
 
     @Test
-    fun `budget retains pending duplicate already mounted by another Fabric owner`() {
+    fun `pending entry cap evicts duplicate metadata without touching mounted or preferred owners`() {
+        val cache = PreparedProseLayoutCache(byteBudget = 1, pendingLeaseBudget = 2)
+        val key = testLayoutKey("shared duplicate")
+        val artifact = testArtifact(key, retainedBytes = 80)
+        val surface = FabricSurfaceToken(18, 180)
+        val mounted = FabricGenerationToken(surface, key.generationIdentity, 1)
+        val firstPending = FabricGenerationToken(surface, key.generationIdentity, 2)
+        val secondPending = FabricGenerationToken(surface, key.generationIdentity, 3)
+        val preferred = FabricGenerationToken(surface, key.generationIdentity, 4)
+
+        assertTrue(cache.value(key, mounted) { artifact } === artifact)
+        assertTrue(cache.acquireForFabricMount(mounted, key.widthPx, key.densityBits) === artifact)
+        listOf(firstPending, secondPending, preferred).forEach { generation ->
+            assertTrue(cache.value(key, generation) { error("live artifact must be reused") } === artifact)
+        }
+
+        assertEquals(2, cache.pendingLeaseCountForTesting)
+        assertEquals(3, cache.leaseCountForTesting)
+        assertEquals(null, cache.acquireForFabricMount(firstPending, key.widthPx, key.densityBits))
+        assertTrue(cache.acquireForFabricMount(preferred, key.widthPx, key.densityBits) === artifact)
+    }
+
+    @Test
+    fun `entry cap evicts old duplicate handoff while preserving current oversized owner`() {
         val cache = PreparedProseLayoutCache(byteBudget = 1, pendingLeaseBudget = 1)
         val sharedKey = testLayoutKey("mounted duplicate")
         val shared = testArtifact(sharedKey, retainedBytes = 80)
@@ -426,9 +457,11 @@ class PreparedProseLayoutTest {
         assertTrue(cache.value(sharedKey, pendingOwner) { error("mounted artifact must be reused") } === shared)
         cache.value(oversizedKey, oversizedOwner) { testArtifact(oversizedKey, retainedBytes = 80) }
 
-        // Removing pendingOwner would free no bytes: the mounted owner still
-        // retains the same immutable artifact, so it remains an exact handoff.
-        assertTrue(cache.acquireForFabricMount(pendingOwner, sharedKey.widthPx, sharedKey.densityBits) === shared)
+        // Removing pendingOwner frees no bytes, but metadata pressure still
+        // bounds it. The mounted owner remains intact and the current pending
+        // handoff is preferred.
+        assertEquals(null, cache.acquireForFabricMount(pendingOwner, sharedKey.widthPx, sharedKey.densityBits))
+        assertTrue(cache.acquireForFabricMount(oversizedOwner, oversizedKey.widthPx, oversizedKey.densityBits) != null)
     }
 
     @Test
