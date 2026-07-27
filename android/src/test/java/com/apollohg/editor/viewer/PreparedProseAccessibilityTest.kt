@@ -156,8 +156,12 @@ class PreparedProseAccessibilityTest {
     @Test
     fun `fallback keeps an internal LTR terminal in an RTL paragraph out of adjacent visual text`() {
         assertInternalMixedSoftWrapTerminalBoundary(
-            firstLine = "\u05d0\u05d1\u05d2 abc",
-            continuation = "next",
+            // Keep the visible break space within the LTR isolate. Otherwise
+            // Bidi resets trailing whitespace to the RTL paragraph direction
+            // and the whitespace, rather than the LTR content, becomes the
+            // terminal run under test.
+            firstLine = "\u05d0\u05d1\u05d2 \u2066abc ",
+            continuation = "\u2069next",
             paragraphDirection = Layout.DIR_RIGHT_TO_LEFT,
             terminalRunIsRtl = false,
             expectedVisualLogicalOrder = listOf(1, 0),
@@ -167,8 +171,11 @@ class PreparedProseAccessibilityTest {
     @Test
     fun `fallback keeps an internal RTL terminal in an LTR paragraph out of adjacent visual text`() {
         assertInternalMixedSoftWrapTerminalBoundary(
-            firstLine = "abc \u05d0\u05d1\u05d2",
-            continuation = "next",
+            // Likewise, retain the visible break space in the RTL isolate so
+            // the LTR paragraph's trailing whitespace cannot replace the RTL
+            // terminal run selected below.
+            firstLine = "abc \u2067\u05d0\u05d1\u05d2 ",
+            continuation = "\u2069next",
             paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
             terminalRunIsRtl = true,
             expectedVisualLogicalOrder = listOf(0, 1),
@@ -468,8 +475,10 @@ class PreparedProseAccessibilityTest {
         val text = layout.text
         assertTrue(layout.lineCount >= 2)
         val lineEnd = layout.getLineEnd(0)
+        assertEquals(firstLine.length, lineEnd)
         assertTrue(lineEnd < text.length)
         assertEquals(lineEnd, layout.getLineStart(1))
+        assertEquals(' ', text[lineEnd - 1])
         assertTrue(text[lineEnd - 1] != '\n')
         val bidiDirection = if (paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
             Bidi.DIRECTION_RIGHT_TO_LEFT
@@ -499,6 +508,7 @@ class PreparedProseAccessibilityTest {
         val terminal = visualRuns.single {
             it.documentEnd == lineEnd && it.isRtl == terminalRunIsRtl
         }
+        assertTrue(text.subSequence(terminal.documentStart, terminal.documentEnd).any { it.isLetter() })
         val terminalEdge = if (terminal.isRtl) FallbackVisualEdge.LEFT else FallbackVisualEdge.RIGHT
         val neighbor = when (terminalEdge) {
             FallbackVisualEdge.LEFT -> visualRuns[terminal.visualIndex - 1]

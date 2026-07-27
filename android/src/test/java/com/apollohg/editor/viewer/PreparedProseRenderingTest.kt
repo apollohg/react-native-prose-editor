@@ -40,10 +40,11 @@ class PreparedProseRenderingTest {
         // These constants are the supported API-34/Robolectric geometry contract
         // for this compiler-backed source at density 1. One pixel permits only
         // integer rounding at StaticLayout's visual replacement-slot boundary.
-        assertTrue(
-            "fixture=${Fixture.finalAndroidEdge.name} artifact height expected=${expected.heightPx} actual=${first.heightPx} tolerance=${expected.tolerancePx} ${layoutProjection(document, first)}",
+        assertTrueLazy(
             kotlin.math.abs(expected.heightPx - first.heightPx) <= expected.tolerancePx,
-        )
+        ) {
+            "fixture=${Fixture.finalAndroidEdge.name} artifact height expected=${expected.heightPx} actual=${first.heightPx} tolerance=${expected.tolerancePx} ${layoutProjection(document, first)}"
+        }
         expected.blockBounds.forEachIndexed { index, bounds ->
             assertRectEquals("block $index", bounds, first.blocks[index].bounds, expected.tolerancePx)
         }
@@ -293,7 +294,7 @@ class PreparedProseRenderingTest {
         assertEquals(2, paragraphs.size)
         val single = textLayout(densityOne, paragraphs[0].index)
         val naturalSingle = textLayout(natural, paragraphs[0].index)
-        assertEquals("single paragraph ${metricProjection(document, densityOne)}", 30, lineHeight(single, 0))
+        assertEqualsLazy(30, lineHeight(single, 0)) { "single paragraph ${metricProjection(document, densityOne)}" }
         assertEquals(
             (30 - lineHeight(naturalSingle, 0)) / 2,
             single.getLineBaseline(0) - naturalSingle.getLineBaseline(0),
@@ -301,11 +302,11 @@ class PreparedProseRenderingTest {
         assertEquals(1, (single.text as android.text.Spanned).getSpans(0, single.text.length, FixedLineHeightMetricSpan::class.java).size)
         val wrapped = textLayout(densityOne, paragraphs[1].index)
         assertTrue("wrapped fixture must have a final line", wrapped.lineCount >= 2)
-        assertEquals("wrapped paragraph ${metricProjection(document, densityOne)}", 30, lineHeight(wrapped, wrapped.lineCount - 1))
-        assertEquals("heading ${metricProjection(document, densityOne)}", 46, lineHeight(textLayout(densityOne, heading), 0))
-        assertEquals("code ${metricProjection(document, densityOne)}", 26, lineHeight(textLayout(densityOne, code), 0))
-        assertEquals("list text ${metricProjection(document, densityOne)}", 30, lineHeight(textLayout(densityOne, list), 0))
-        assertEquals("list marker ${metricProjection(document, densityOne)}", 30, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
+        assertEqualsLazy(30, lineHeight(wrapped, wrapped.lineCount - 1)) { "wrapped paragraph ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(46, lineHeight(textLayout(densityOne, heading), 0)) { "heading ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(26, lineHeight(textLayout(densityOne, code), 0)) { "code ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(30, lineHeight(textLayout(densityOne, list), 0)) { "list text ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(30, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "list marker ${metricProjection(document, densityOne)}" }
 
         val densityTwo = prepare(
             document,
@@ -315,10 +316,10 @@ class PreparedProseRenderingTest {
             ),
             320,
         )
-        assertEquals("density-two paragraph ${metricProjection(document, densityTwo)}", 60, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0))
-        assertEquals("density-two heading ${metricProjection(document, densityTwo)}", 92, lineHeight(textLayout(densityTwo, heading), 0))
-        assertEquals("density-two code ${metricProjection(document, densityTwo)}", 52, lineHeight(textLayout(densityTwo, code), 0))
-        assertEquals("density-two list marker ${metricProjection(document, densityTwo)}", 60, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
+        assertEqualsLazy(60, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0)) { "density-two paragraph ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(92, lineHeight(textLayout(densityTwo, heading), 0)) { "density-two heading ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(52, lineHeight(textLayout(densityTwo, code), 0)) { "density-two code ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(60, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "density-two list marker ${metricProjection(document, densityTwo)}" }
     }
 
     @Test
@@ -433,10 +434,17 @@ class PreparedProseRenderingTest {
     }
 
     private fun assertDocumentProjection(fixture: Fixture, document: ViewerDocument) {
-        assertTrue(
-            "fixture=${fixture.name} expectedDocument=${fixture.documentExpectation} actualDocument=${documentProjection(document)}",
-            fixture.assertDocument(document),
-        )
+        assertTrueLazy(fixture.assertDocument(document)) {
+            "fixture=${fixture.name} expectedDocument=${fixture.documentExpectation} actualDocument=${documentProjection(document)}"
+        }
+    }
+
+    private inline fun assertTrueLazy(condition: Boolean, message: () -> String) {
+        if (!condition) assertTrue(message(), false)
+    }
+
+    private inline fun assertEqualsLazy(expected: Int, actual: Int, message: () -> String) {
+        if (expected != actual) assertEquals(message(), expected, actual)
     }
 
     private fun documentProjection(document: ViewerDocument): String = document.blocks.mapIndexed { index, block ->
