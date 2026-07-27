@@ -47,6 +47,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
     }
     var layoutRetainedBytesForTesting: Int { layoutCache.retainedBytesForTesting }
     var oversizedLeaseCountForTesting: Int { layoutCache.oversizedLeaseCountForTesting }
+    var pendingFabricLeaseCountForTesting: Int { layoutCache.pendingLeaseCountForTesting }
+    var mountedFabricLeaseCountForTesting: Int { layoutCache.mountedLeaseCountForTesting }
+    var fabricLeaseCountForTesting: Int { layoutCache.leaseCountForTesting }
     var preparedThemeCountForTesting: Int {
         compiledCondition.lock()
         defer { compiledCondition.unlock() }

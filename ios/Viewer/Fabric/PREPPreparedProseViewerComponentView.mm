@@ -443,9 +443,20 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     // release the stable token it recorded when it bound the old sidecar.
     [self releaseFabricSidecarOwnership];
   }
+  const BOOL preservesMountedArtifactForWidthReplacement =
+      _hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
+      _ownedComponentTag == componentTag &&
+      [_ownedGeneration isEqualToString:generation] &&
+      _installedMeasurementIdentity != nil;
   if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
-    [_drawingView installWithLayout:nil];
-    _installedMeasurementIdentity = nil;
+    // Width-only replacement is two-phase: retain the currently installed
+    // artifact until the exact new Yoga handoff is acquired. A missing or
+    // pressure-evicted replacement must not blank the view or release the
+    // old mounted lease. Semantic/recycled-owner changes still clear first.
+    if (!preservesMountedArtifactForWidthReplacement) {
+      [_drawingView installWithLayout:nil];
+      _installedMeasurementIdentity = nil;
+    }
   }
 
   // Establish ownership before acquisition. A mount miss otherwise leaves a
@@ -481,7 +492,11 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                                  scale:scale];
   if (!installed) {
     // The lease and generation pin were created by Yoga, but Fabric found no
-    // artifact to install. Release this exact persisted owner immediately.
+    // artifact to install. A width replacement may have an older mounted
+    // artifact, which remains valid until a replacement successfully mounts.
+    if (preservesMountedArtifactForWidthReplacement) {
+      return;
+    }
     [[PREPPreparedProseLayoutRegistry sharedRegistry]
         releaseFabricMountMissSurfaceId:_ownedSurfaceId
                            componentTag:_ownedComponentTag

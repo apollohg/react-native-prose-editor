@@ -122,8 +122,15 @@ final class PreparedProseLayoutCache {
 
         // A Fabric mount can only consume the Yoga handoff once. Do not fall
         // back to completed here: that would let a second/recycled component
-        // mount an artifact that was never measured for its own owner.
+        // mount an artifact that was never measured for its own owner. Move
+        // the pending handoff to mounted ownership under this lock, retiring
+        // only older widths for the same surface/generation in the same
+        // critical section. A replacement that never reaches this point
+        // therefore cannot disturb the currently mounted artifact.
         removePendingLeaseLocked(leaseKey)
+        mountedLeases.keys
+            .filter { sameFabricOwner($0, as: leaseKey) && $0 != leaseKey }
+            .forEach { mountedLeases.removeValue(forKey: $0) }
         mountedLeases[leaseKey] = layout
         retireUnownedPublicationKeysLocked()
         publishOwnerBytesLocked()
@@ -158,8 +165,12 @@ final class PreparedProseLayoutCache {
         completed.removeAll()
         accessOrder.removeAll()
         mountIndex.removeAll()
-        // Fabric/direct mounted owners survive pressure. Registry clears
-        // compiled documents only after this unmounted cache step.
+        pendingLeases.removeAll()
+        pendingLeaseAccessOrder.removeAll()
+        // Pending handoffs are unmounted owners, so memory pressure retires
+        // them with the completed cache. Fabric/direct mounted owners survive
+        // until their explicit release paths run. Registry clears compiled
+        // documents only after this unmounted cache step.
         retireUnownedPublicationKeysLocked()
         publishOwnerBytesLocked()
         condition.unlock()
@@ -185,15 +196,44 @@ final class PreparedProseLayoutCache {
             .count
     }
 
+    var pendingLeaseCountForTesting: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return pendingLeases.count
+    }
+
+    var mountedLeaseCountForTesting: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return mountedLeases.count
+    }
+
+    var leaseCountForTesting: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return pendingLeases.count + mountedLeases.count
+    }
+
     private func createPendingLeaseLocked(
         _ layout: PreparedProseLayout,
         for key: ProseLayoutKey,
         surface: FabricSurfaceToken
     ) {
         let leaseKey = FabricLeaseKey(surface: surface, layout: key)
-        // Repeated Yoga measurements before mount refresh one pending handoff;
-        // repeated measurements after mount never manufacture a second mount.
-        guard mountedLeases[leaseKey] == nil else { return }
+        // A new measurement supersedes only unmounted handoffs for this
+        // Fabric surface and generation. Keep a mounted artifact alive until
+        // the replacement is actually acquired by a component view.
+        pendingLeases.keys
+            .filter { sameFabricOwner($0, as: leaseKey) && $0 != leaseKey }
+            .forEach(removePendingLeaseLocked)
+
+        // Repeated Yoga measurements for an already mounted identity neither
+        // replace that mounted artifact nor manufacture another handoff.
+        guard mountedLeases[leaseKey] == nil else {
+            retireUnownedPublicationKeysLocked()
+            publishOwnerBytesLocked()
+            return
+        }
         pendingLeases[leaseKey] = layout
         touchPendingLease(leaseKey)
         enforceBudgetLocked(preferredPendingLease: leaseKey)
@@ -213,6 +253,10 @@ final class PreparedProseLayoutCache {
     private func touchPendingLease(_ key: FabricLeaseKey) {
         pendingLeaseAccessOrder.removeAll { $0 == key }
         pendingLeaseAccessOrder.append(key)
+    }
+
+    private func sameFabricOwner(_ lhs: FabricLeaseKey, as rhs: FabricLeaseKey) -> Bool {
+        lhs.surface == rhs.surface && lhs.layout.generationIdentity == rhs.layout.generationIdentity
     }
 
     private func mountKey(for layoutKey: ProseLayoutKey) -> ProseMountKey {
