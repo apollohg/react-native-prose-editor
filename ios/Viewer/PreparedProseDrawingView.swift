@@ -130,13 +130,13 @@ public final class PreparedProseDrawingView: UIView {
         imageRevisions.reset()
     }
 
-    @objc var errorDomain: String? { layout?.error?.domain }
-    @objc var errorCode: String? { layout?.error?.code }
-    @objc var errorMessage: String? { layout?.error?.message }
+    @objc public var errorDomain: String? { layout?.error?.domain }
+    @objc public var errorCode: String? { layout?.error?.code }
+    @objc public var errorMessage: String? { layout?.error?.message }
     /// The owner chooses its delivery channel (UIKit delegate or Fabric event).
     var onActivateInteraction: ((PreparedProseInteraction) -> Bool)?
     @objc public weak var interactionDelegate: PreparedProseDrawingViewInteractionDelegate?
-    var linkInteractionsEnabled = true {
+    @objc public var linkInteractionsEnabled = true {
         didSet {
             guard oldValue != linkInteractionsEnabled else { return }
             invalidateAccessibilityNodes()

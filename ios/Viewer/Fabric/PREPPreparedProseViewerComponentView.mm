@@ -6,6 +6,7 @@
 #error "PreparedProseViewer codegen is stale or mismatched: expected react_renderer_components_PreparedProseViewer-Swift.h"
 #endif
 #import <React/RCTComponent.h>
+#import <React/RCTConversions.h>
 
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerComponentDescriptor.h>
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.h>
