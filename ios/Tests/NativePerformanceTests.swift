@@ -359,8 +359,10 @@ final class NativePerformanceTests: XCTestCase {
         harness.traverse(corpus.warmTraversal, phase: .warm)
         harness.traverse(corpus.coldTraversal, phase: .imagesDisabled, imagesEnabled: false)
         harness.resetCache()
+        let benchmarkExport = PreparedProseInstrumentation.exportJSON()
+        print("[PreparedProseBenchmarkExport]\\(benchmarkExport)")
         try PreparedProsePerformanceGates.assertPasses(
-            exportJSON: PreparedProseInstrumentation.exportJSON(),
+            exportJSON: benchmarkExport,
             expectedDocuments: corpus.documents.count
         )
     }

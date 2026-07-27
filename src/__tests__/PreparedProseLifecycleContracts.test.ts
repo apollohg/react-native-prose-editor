@@ -337,6 +337,23 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(projectYml).toContain('PREPARED_PROSE_DEVICE_BENCHMARK: "1"');
     });
 
+    it('prints the prepared-prose benchmark export before gating the same local export', () => {
+        const performanceTests = readSource('ios/Tests/NativePerformanceTests.swift');
+        const benchmark = performanceTests.slice(
+            performanceTests.indexOf('func testPerformance_preparedProseCorpusGates_iPhone13() throws {'),
+            performanceTests.indexOf('\n    /// Fixture-only device contract')
+        );
+        const localExport = 'let benchmarkExport = PreparedProseInstrumentation.exportJSON()';
+        const diagnostic = 'print("[PreparedProseBenchmarkExport]\\(benchmarkExport)")';
+        const gate = 'exportJSON: benchmarkExport,';
+
+        expect(benchmark).toContain(localExport);
+        expect(benchmark).toContain(diagnostic);
+        expect(benchmark).toContain(gate);
+        expect(benchmark.indexOf(localExport)).toBeLessThan(benchmark.indexOf(diagnostic));
+        expect(benchmark.indexOf(diagnostic)).toBeLessThan(benchmark.indexOf(gate));
+    });
+
     it('shares one complete corpus schema and image policy with every benchmark surface', () => {
         const configuration = JSON.parse(readSource('scripts/tests/prepared-prose-benchmark-config.json')) as {
             configuration: { initialization: { type: string }; schema: { nodes: Array<{ name: string; attrs?: Record<string, unknown> }>; marks: Array<{ name: string; attrs?: Record<string, unknown> }> } };
