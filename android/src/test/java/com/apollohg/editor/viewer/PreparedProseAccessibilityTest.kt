@@ -179,6 +179,17 @@ class PreparedProseAccessibilityTest {
     }
 
     @Test
+    fun `Bidi visual reordering reverses nested logical runs`() {
+        val logical = arrayOf<Any>("base", "rtl-outer", "ltr-inner", "rtl-tail", "base-tail")
+        Bidi.reorderVisually(byteArrayOf(0, 1, 2, 1, 0), 0, logical, 0, logical.size)
+
+        assertEquals(
+            listOf("base", "rtl-tail", "ltr-inner", "rtl-outer", "base-tail"),
+            logical.toList(),
+        )
+    }
+
+    @Test
     fun `Fabric-equivalent prepared replacement announces one subtree change and preserves focus clear`() {
         val context = RuntimeEnvironment.getApplication()
         val view = PreparedProseDrawingView(context)
@@ -389,14 +400,14 @@ class PreparedProseAccessibilityTest {
         }
         val bidi = Bidi(layout.text.subSequence(lineStart, lineEnd).toString(), direction)
         val expected = buildList {
-            for (run in 0 until bidi.runCount) {
-                val runStart = max(start, lineStart + bidi.getRunStart(run))
-                val runEnd = min(end, lineStart + bidi.getRunLimit(run))
+            for (run in expectedVisualRuns(bidi, lineStart)) {
+                val runStart = max(start, run.documentStart)
+                val runEnd = min(end, run.documentEnd)
                 fallbackSelectionRectForVisualRun(
                     layout = layout,
                     runStart = runStart,
                     runEnd = runEnd,
-                    runIsRtl = (bidi.getRunLevel(run) and 1) == 1,
+                    runIsRtl = run.isRtl,
                     line = line,
                     width = width,
                 )?.let(::add)
@@ -480,26 +491,29 @@ class PreparedProseAccessibilityTest {
                     Bidi.DIRECTION_LEFT_TO_RIGHT
                 }
                 val bidi = Bidi(text.substring(lineStart, lineEnd), bidiDirection)
-                for (visualIndex in 0 until bidi.runCount) {
-                    val runStart = lineStart + bidi.getRunStart(visualIndex)
-                    val runEnd = lineStart + bidi.getRunLimit(visualIndex)
-                    val isRtl = (bidi.getRunLevel(visualIndex) and 1) == 1
+                val visualRuns = expectedVisualRuns(bidi, lineStart)
+                if (visualRuns.size < 3 || visualRuns.all { it.logicalIndex == it.visualIndex }) continue
+                for (run in visualRuns) {
+                    val runStart = run.documentStart
+                    val runEnd = run.documentEnd
+                    val isRtl = run.isRtl
                     val terminalEdge = if (isRtl) FallbackVisualEdge.LEFT else FallbackVisualEdge.RIGHT
-                    val isInternal = (terminalEdge == FallbackVisualEdge.LEFT && visualIndex > 0) ||
-                        (terminalEdge == FallbackVisualEdge.RIGHT && visualIndex < bidi.runCount - 1)
+                    val isInternal = (terminalEdge == FallbackVisualEdge.LEFT && run.visualIndex > 0) ||
+                        (terminalEdge == FallbackVisualEdge.RIGHT && run.visualIndex < visualRuns.lastIndex)
                     if (runEnd != lineEnd || isRtl != terminalRunIsRtl || !isInternal) continue
-                    val neighborIndex = if (terminalEdge == FallbackVisualEdge.LEFT) visualIndex - 1 else visualIndex + 1
-                    val neighborIsRtl = (bidi.getRunLevel(neighborIndex) and 1) == 1
+                    val neighbor = if (terminalEdge == FallbackVisualEdge.LEFT) {
+                        visualRuns[run.visualIndex - 1]
+                    } else {
+                        visualRuns[run.visualIndex + 1]
+                    }
                     val neighborEdge = if (terminalEdge == FallbackVisualEdge.LEFT) {
                         FallbackVisualEdge.RIGHT
                     } else {
                         FallbackVisualEdge.LEFT
                     }
-                    val neighborStart = lineStart + bidi.getRunStart(neighborIndex)
-                    val neighborEnd = lineStart + bidi.getRunLimit(neighborIndex)
                     val neighborOffset = when (neighborEdge) {
-                        FallbackVisualEdge.LEFT -> if (neighborIsRtl) neighborEnd else neighborStart
-                        FallbackVisualEdge.RIGHT -> if (neighborIsRtl) neighborStart else neighborEnd
+                        FallbackVisualEdge.LEFT -> if (neighbor.isRtl) neighbor.documentEnd else neighbor.documentStart
+                        FallbackVisualEdge.RIGHT -> if (neighbor.isRtl) neighbor.documentStart else neighbor.documentEnd
                     }
                     if (neighborOffset == lineEnd) continue
                     return InternalMixedSoftWrapFixture(
@@ -516,6 +530,39 @@ class PreparedProseAccessibilityTest {
             }
         }
         throw AssertionError("No internal mixed-Bidi soft-wrap terminal fixture was constructed")
+    }
+
+    private data class ExpectedVisualRun(
+        val logicalIndex: Int,
+        val visualIndex: Int,
+        val documentStart: Int,
+        val documentEnd: Int,
+        val isRtl: Boolean,
+        val level: Byte,
+    )
+
+    /**
+     * Test-only expected order deliberately starts from Java Bidi's logical
+     * accessors and applies its public reordering API. The fixture never
+     * equates a logical index with a visual neighbour.
+     */
+    private fun expectedVisualRuns(bidi: Bidi, documentOffset: Int): List<ExpectedVisualRun> {
+        if (bidi.runCount == 0) return emptyList()
+        val logical = List(bidi.runCount) { logicalIndex ->
+            ExpectedVisualRun(
+                logicalIndex = logicalIndex,
+                visualIndex = -1,
+                documentStart = documentOffset + bidi.getRunStart(logicalIndex),
+                documentEnd = documentOffset + bidi.getRunLimit(logicalIndex),
+                isRtl = (bidi.getRunLevel(logicalIndex) and 1) == 1,
+                level = bidi.getRunLevel(logicalIndex).toByte(),
+            )
+        }
+        val reordered: Array<Any> = Array(logical.size) { logical[it] }
+        Bidi.reorderVisually(ByteArray(logical.size) { logical[it].level }, 0, reordered, 0, reordered.size)
+        return reordered.mapIndexed { visualIndex, value ->
+            (value as ExpectedVisualRun).copy(visualIndex = visualIndex)
+        }
     }
 
     private fun visualEdgeBoundary(

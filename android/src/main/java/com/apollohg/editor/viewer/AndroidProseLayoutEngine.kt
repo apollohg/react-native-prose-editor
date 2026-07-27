@@ -64,17 +64,27 @@ private const val SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX = 1
 internal enum class FallbackVisualEdge { LEFT, RIGHT }
 
 /**
- * [Bidi] exposes runs in visual order while its offsets remain relative to the
- * logical line. Keep both identities together so a soft-wrap terminal can use
- * the adjacent visual run without accidentally asking [Layout] about the next
- * line that shares the same logical offset.
+ * Java [Bidi]'s run accessors are indexed in logical order. Keep that source
+ * identity immutable, then explicitly project it into visual order before any
+ * geometry asks about neighbours or line-edge ownership.
  */
-private data class FallbackVisualBidiRun(
-    val visualIndex: Int,
+private data class FallbackLogicalBidiRun(
+    val logicalIndex: Int,
     val documentStart: Int,
     val documentEnd: Int,
-    val isRtl: Boolean,
+    val level: Byte,
 ) {
+    val isRtl: Boolean get() = (level.toInt() and 1) == 1
+}
+
+private data class FallbackVisualBidiRun(
+    val visualIndex: Int,
+    val logicalRun: FallbackLogicalBidiRun,
+) {
+    val documentStart: Int get() = logicalRun.documentStart
+    val documentEnd: Int get() = logicalRun.documentEnd
+    val isRtl: Boolean get() = logicalRun.isRtl
+
     fun offsetAt(edge: FallbackVisualEdge): Int = when (edge) {
         FallbackVisualEdge.LEFT -> if (isRtl) documentEnd else documentStart
         FallbackVisualEdge.RIGHT -> if (isRtl) documentStart else documentEnd
@@ -82,6 +92,22 @@ private data class FallbackVisualBidiRun(
 
     fun edgeForLogicalEnd(): FallbackVisualEdge =
         if (isRtl) FallbackVisualEdge.LEFT else FallbackVisualEdge.RIGHT
+}
+
+/**
+ * [Bidi.getRunStart], [Bidi.getRunLimit], and [Bidi.getRunLevel] take a
+ * logical run index. [Bidi.reorderVisually] is the public Unicode Bidi API
+ * that turns those immutable logical records into left-to-right visual order.
+ */
+private fun visualBidiRuns(logicalRuns: List<FallbackLogicalBidiRun>): List<FallbackVisualBidiRun> {
+    if (logicalRuns.isEmpty()) return emptyList()
+
+    val levels = ByteArray(logicalRuns.size) { logicalRuns[it].level }
+    val reordered: Array<Any> = Array(logicalRuns.size) { logicalRuns[it] }
+    Bidi.reorderVisually(levels, 0, reordered, 0, reordered.size)
+    return reordered.mapIndexed { visualIndex, value ->
+        FallbackVisualBidiRun(visualIndex, value as FallbackLogicalBidiRun)
+    }
 }
 
 private fun fallbackHorizontalAtVisualEdge(
@@ -218,14 +244,15 @@ internal fun fallbackSelectionRectsForLine(
         Bidi.DIRECTION_LEFT_TO_RIGHT
     }
     val bidi = Bidi(layout.text.subSequence(lineStart, lineEnd).toString(), direction)
-    val visualRuns = List(bidi.runCount) { visualIndex ->
-        FallbackVisualBidiRun(
-            visualIndex = visualIndex,
-            documentStart = lineStart + bidi.getRunStart(visualIndex),
-            documentEnd = lineStart + bidi.getRunLimit(visualIndex),
-            isRtl = (bidi.getRunLevel(visualIndex) and 1) == 1,
+    val logicalRuns = List(bidi.runCount) { logicalIndex ->
+        FallbackLogicalBidiRun(
+            logicalIndex = logicalIndex,
+            documentStart = lineStart + bidi.getRunStart(logicalIndex),
+            documentEnd = lineStart + bidi.getRunLimit(logicalIndex),
+            level = bidi.getRunLevel(logicalIndex).toByte(),
         )
     }
+    val visualRuns = visualBidiRuns(logicalRuns)
     val fragments = mutableListOf<Rect>()
     for (visualRun in visualRuns) {
         val intersectedStart = maxOf(selectedStart, visualRun.documentStart)
