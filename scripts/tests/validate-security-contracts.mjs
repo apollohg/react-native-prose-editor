@@ -130,7 +130,7 @@ for (const [name, ceiling] of Object.entries(resourceCeilings)) {
     assert.equal(evaluateRustInteger(compactRust, match[1]), ceiling, `Rust ceiling drift for ${name}`);
 }
 
-const android = read('android/src/main/java/com/apollohg/editor/RenderBridge.kt');
+const android = read('android/src/main/java/com/apollohg/editor/SharedNativeImagePipeline.kt');
 assert.deepEqual(
     objectAssignments(
         android,
@@ -147,7 +147,7 @@ for (const [name, ceiling] of Object.entries(imageCeilings)) {
     assert.equal(evaluateInteger(match[1]), ceiling, `Android ceiling drift for ${name}`);
 }
 
-const ios = read('ios/RenderBridge.swift');
+const ios = read('ios/SharedNativeImagePipeline.swift');
 const iosDefaults = objectAssignments(ios, 'static let `default` = ImageLoadingPolicy(', {
     maxSourceBytes: 'maxSourceBytes',
     connectTimeout: 'connectTimeoutMs',

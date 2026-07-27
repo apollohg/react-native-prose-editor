@@ -31,7 +31,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
             PreparedProseInstrumentation.retained(
                 PreparedProseInstrumentation.Owner.IMAGE,
                 "drawing-${System.identityHashCode(this)}",
-                retainedImagePixelsBytes,
+                retainedImagePixelsBytes(value),
             )
             invalidate()
         }
