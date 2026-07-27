@@ -57,6 +57,18 @@ final class PreparedProseLayoutCache {
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
             return layout
         }
+        // Immutable prepared layouts are global to their complete layout key,
+        // while Fabric ownership is intentionally surface-scoped. A mounted
+        // artifact therefore remains a valid source for another surface's
+        // pending handoff after completed and pending entries are evicted.
+        // The new owner still receives its own exact-once lease below.
+        if let fabricSurface,
+           let layout = mountedLeases.values.first(where: { $0.key == key }) {
+            createPendingLeaseLocked(layout, for: key, surface: fabricSurface)
+            condition.unlock()
+            PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
+            return layout
+        }
         if let preparation = inFlight[key] {
             while preparation.result == nil { condition.wait() }
             let result = preparation.result!
@@ -160,6 +172,37 @@ final class PreparedProseLayoutCache {
         retireUnownedPublicationKeysLocked()
         publishOwnerBytesLocked()
         condition.unlock()
+    }
+
+    /// Removes only the unmounted handoff requested by a stale Fabric mount
+    /// callback. Mounted ownership is deliberately preserved: it may be the
+    /// currently displayed width while another width is pending.
+    ///
+    /// Returns whether another lease for the same surface/generation remains,
+    /// so the registry can retain its generation-scoped compiler pin.
+    func releasePendingLease(
+        for surface: FabricSurfaceToken,
+        generationIdentity: String,
+        widthPixels: Int,
+        displayScale: CGFloat
+    ) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+
+        let requested = ProseMountKey(
+            generationIdentity: generationIdentity,
+            widthPixels: widthPixels,
+            displayScale: displayScale
+        )
+        if let leaseKey = pendingLeases.keys.first(where: {
+            $0.surface == surface && mountKey(for: $0.layout) == requested
+        }) {
+            removePendingLeaseLocked(leaseKey)
+            retireUnownedPublicationKeysLocked()
+            publishOwnerBytesLocked()
+        }
+        return pendingLeases.keys.contains { $0.surface == surface && $0.layout.generationIdentity == generationIdentity }
+            || mountedLeases.keys.contains { $0.surface == surface && $0.layout.generationIdentity == generationIdentity }
     }
 
     func registerDirectMount(_ owner: String, layout: PreparedProseLayout) {
@@ -330,10 +373,11 @@ final class PreparedProseLayoutCache {
 
     private func completedRetainedBytesLocked() -> Int {
         var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
-        let mountedKeys = Set(pendingLeases.values.map(\.key))
-            .union(mountedLeases.values.map(\.key))
-            .union(directMounted.values.map(\.key))
-        for layout in completed.values where !mountedKeys.contains(layout.key) {
+        let ownedIdentifiers = Set(
+            (Array(pendingLeases.values) + Array(mountedLeases.values) + Array(directMounted.values))
+                .map(ObjectIdentifier.init)
+        )
+        for layout in completed.values where !ownedIdentifiers.contains(ObjectIdentifier(layout)) {
             uniqueLayouts[ObjectIdentifier(layout)] = layout
         }
         return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
@@ -341,11 +385,13 @@ final class PreparedProseLayoutCache {
 
     private func budgetedRetainedBytesLocked() -> Int {
         var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
-        let mountedKeys = Set(mountedLeases.values.map(\.key)).union(directMounted.values.map(\.key))
-        for layout in completed.values where !mountedKeys.contains(layout.key) {
+        let mountedIdentifiers = Set(
+            (Array(mountedLeases.values) + Array(directMounted.values)).map(ObjectIdentifier.init)
+        )
+        for layout in completed.values where !mountedIdentifiers.contains(ObjectIdentifier(layout)) {
             uniqueLayouts[ObjectIdentifier(layout)] = layout
         }
-        for layout in pendingLeases.values where !mountedKeys.contains(layout.key) {
+        for layout in pendingLeases.values where !mountedIdentifiers.contains(ObjectIdentifier(layout)) {
             uniqueLayouts[ObjectIdentifier(layout)] = layout
         }
         return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
@@ -363,34 +409,29 @@ final class PreparedProseLayoutCache {
 
     private func publishOwnerBytesLocked() {
         PreparedProseInstrumentation.retained(.unmountedLayout, scope: "cache", bytes: completedRetainedBytesLocked())
+        let directLayouts = Array(directMounted.values)
+        let fabricLayouts = Array(pendingLeases.values) + Array(mountedLeases.values)
         PreparedProseInstrumentation.retained(
             .fabricLeaseHandoff,
             scope: "leases",
-            bytes: uniqueBytes(pendingLeases.values) + uniqueBytesExcluding(mountedLeases.values, layouts: pendingLeases.values)
+            bytes: uniqueBytes(fabricLayouts, excluding: directLayouts)
         )
-        PreparedProseInstrumentation.retained(.directMounted, scope: "views", bytes: uniqueBytes(directMounted.values))
+        PreparedProseInstrumentation.retained(.directMounted, scope: "views", bytes: uniqueBytes(directLayouts))
     }
 
-    private func uniqueBytes(_ layouts: Dictionary<FabricLeaseKey, PreparedProseLayout>.Values) -> Int {
+    private func uniqueBytes(_ layouts: [PreparedProseLayout]) -> Int {
         var identifiers = Set<ObjectIdentifier>()
         return layouts.reduce(0) { total, layout in
             identifiers.insert(ObjectIdentifier(layout)).inserted ? total + layout.retainedBytes : total
         }
     }
 
-    private func uniqueBytes(_ layouts: Dictionary<String, PreparedProseLayout>.Values) -> Int {
-        var identifiers = Set<ObjectIdentifier>()
-        return layouts.reduce(0) { total, layout in
-            identifiers.insert(ObjectIdentifier(layout)).inserted ? total + layout.retainedBytes : total
-        }
-    }
-
-    private func uniqueBytesExcluding(
-        _ layouts: Dictionary<FabricLeaseKey, PreparedProseLayout>.Values,
-        layouts excluded: Dictionary<FabricLeaseKey, PreparedProseLayout>.Values
+    private func uniqueBytes(
+        _ layouts: [PreparedProseLayout],
+        excluding excluded: [PreparedProseLayout]
     ) -> Int {
         var identifiers = Set<ObjectIdentifier>()
-        for layout in excluded { identifiers.insert(ObjectIdentifier(layout)) }
+        excluded.forEach { identifiers.insert(ObjectIdentifier($0)) }
         return layouts.reduce(0) { total, layout in
             identifiers.insert(ObjectIdentifier(layout)).inserted ? total + layout.retainedBytes : total
         }

@@ -500,7 +500,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     [[PREPPreparedProseLayoutRegistry sharedRegistry]
         releaseFabricMountMissSurfaceId:_ownedSurfaceId
                            componentTag:_ownedComponentTag
-                     generationIdentity:_ownedGeneration];
+                     generationIdentity:_ownedGeneration
+                           widthPoints:width
+                                  scale:scale];
     _hasOwnedSurface = NO;
     _ownedGeneration = nil;
     return;

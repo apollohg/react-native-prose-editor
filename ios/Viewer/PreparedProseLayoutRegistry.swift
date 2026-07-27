@@ -433,11 +433,29 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.unlock()
     }
 
-    /// Fabric records an owner before it tries to consume Yoga's lease. If
-    /// acquisition misses, this deterministic cleanup drops that generation's
-    /// lease and compiler pin without touching a newly recycled view's token.
-    func releaseFabricMountMiss(_ generation: FabricGenerationToken) {
-        releaseFabricGeneration(generation)
+    /// Fabric records an owner before it tries to consume Yoga's lease. A
+    /// stale mount callback may only retire its exact unmounted handoff; a
+    /// newer width or a displayed mounted artifact for the same generation
+    /// must remain owned. Release the compiler pin only when no lease for the
+    /// surface/generation survives that exact cleanup.
+    func releaseFabricMountMiss(
+        _ generation: FabricGenerationToken,
+        widthPoints: CGFloat,
+        scale: CGFloat
+    ) {
+        guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale),
+              !layoutCache.releasePendingLease(
+                  for: generation.surface,
+                  generationIdentity: generation.generationIdentity,
+                  widthPixels: widthPixels,
+                  displayScale: scale
+              )
+        else { return }
+        compiledCondition.lock()
+        documentsByFabricGeneration.removeValue(forKey: generation)
+        failuresByFabricGeneration.removeValue(forKey: generation)
+        releaseThemeOwnership(for: generation)
+        compiledCondition.unlock()
     }
 
     func registerDirectMounted(_ owner: String, layout: PreparedProseLayout) {
@@ -467,17 +485,21 @@ public final class PreparedProseLayoutRegistry: NSObject {
         )
     }
 
-    @objc(releaseFabricMountMissSurfaceId:componentTag:generationIdentity:)
+    @objc(releaseFabricMountMissSurfaceId:componentTag:generationIdentity:widthPoints:scale:)
     public func releaseFabricMountMiss(
         surfaceId: Int64,
         componentTag: Int64,
-        generationIdentity: NSString
+        generationIdentity: NSString,
+        widthPoints: CGFloat,
+        scale: CGFloat
     ) {
         releaseFabricMountMiss(
             FabricGenerationToken(
                 surface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
                 generationIdentity: generationIdentity as String
-            )
+            ),
+            widthPoints: widthPoints,
+            scale: scale
         )
     }
 

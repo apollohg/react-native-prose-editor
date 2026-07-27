@@ -610,6 +610,117 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.layoutRetainedBytesForTesting, 160)
     }
 
+    func testFabricSurfaceReusesGloballyMountedArtifactAfterMemoryWarning() {
+        var preparations = 0
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                preparations += 1
+                return PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: Int(width)
+                )
+            }
+        )
+        let request = request()
+        let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+
+        let first = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+        registry.didReceiveMemoryWarning()
+
+        let second = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: secondSurface)
+
+        XCTAssertTrue(second === first)
+        XCTAssertEqual(preparations, 1)
+        XCTAssertEqual(registry.preparedLayoutCacheCountForTesting, 0)
+        XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 1)
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 1)
+        XCTAssertEqual(registry.layoutRetainedBytesForTesting, 160)
+        let secondView = PreparedProseDrawingView(frame: .zero)
+        XCTAssertTrue(install(request, in: secondView, surface: secondSurface, registry: registry))
+        XCTAssertTrue(secondView.layout === first)
+        XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 0)
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 2)
+        XCTAssertEqual(registry.layoutRetainedBytesForTesting, 160)
+    }
+
+    func testStaleFabricMountMissPreservesNewerPendingWidthAndMountedArtifact() {
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: Int(width)
+                )
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let mountedView = PreparedProseDrawingView(frame: .zero)
+
+        let mounted = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        XCTAssertTrue(install(request, in: mountedView, surface: surface, registry: registry))
+        let replacement = registry.measure(request: request, widthPoints: 140, scale: 2, fabricSurface: surface)
+
+        registry.releaseFabricMountMiss(
+            FabricGenerationToken(
+                surface: surface,
+                generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+            ),
+            widthPoints: 160,
+            scale: 2
+        )
+
+        XCTAssertTrue(mountedView.layout === mounted)
+        XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 1)
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 1)
+        XCTAssertTrue(install(request, in: mountedView, surface: surface, registry: registry, width: 140))
+        XCTAssertTrue(mountedView.layout === replacement)
+    }
+
+    func testExactFabricMountMissCleanupPreservesOtherSurfaceAndGenerationLeases() {
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: Int(width)
+                )
+            }
+        )
+        let first = request(source: "first")
+        let second = request(source: "second")
+        let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: secondSurface)
+        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+        registry.releaseFabricMountMiss(
+            FabricGenerationToken(
+                surface: firstSurface,
+                generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry)
+            ),
+            widthPoints: 160,
+            scale: 2
+        )
+
+        XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+        XCTAssertTrue(install(first, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry))
+        XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+    }
+
     func testFabricWidthLeaseReplacementLeavesOtherSurfacesAndGenerationsOwned() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -771,7 +882,9 @@ final class PreparedProseLayoutTests: XCTestCase {
             FabricGenerationToken(
                 surface: firstSurface,
                 generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry)
-            )
+            ),
+            widthPoints: 160,
+            scale: 2
         )
         XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry))
         _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
