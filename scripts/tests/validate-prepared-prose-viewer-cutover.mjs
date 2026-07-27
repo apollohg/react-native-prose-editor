@@ -106,16 +106,32 @@ assert.match(read('react-native.config.js'), /PreparedProseViewerComponentDescri
 assert.doesNotMatch(read('expo-module.config.json'), /NativeProseViewer/);
 
 const viewerPodspec = read('ios/ReactNativeProseEditor.podspec');
-assert.match(
+assert.doesNotMatch(
     viewerPodspec,
-    /s\.module_name\s*=\s*'ReactNativeProseEditor'/,
-    'the pod module must match Objective-C++ imports of ReactNativeProseEditor-Swift.h',
+    /s\.module_name\s*=/,
+    'React Native codegen owns the PreparedProseViewer Swift compatibility module name',
 );
 assert.match(
     viewerPodspec,
     /s\.private_header_files\s*=\s*'Viewer\/Fabric\/PREPPreparedProseViewerComponentView\.h'/,
     'the Fabric C++ component header must remain private to the pod implementation',
 );
+for (const path of [
+    'ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm',
+    'ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm',
+]) {
+    const implementation = read(path);
+    assert.match(
+        implementation,
+        /#if __has_include\("react_renderer_components_PreparedProseViewer-Swift\.h"\)\s*\n#import "react_renderer_components_PreparedProseViewer-Swift\.h"\s*\n#else\s*\n#error "PreparedProseViewer codegen is stale or mismatched: expected react_renderer_components_PreparedProseViewer-Swift\.h"\s*\n#endif/,
+        `${path} must import the exact React Native codegen Swift compatibility header and reject stale codegen`,
+    );
+    assert.doesNotMatch(
+        implementation,
+        /ReactNativeProseEditor-Swift\.h/,
+        `${path} must not import the obsolete pod-name Swift compatibility header`,
+    );
+}
 const viewerPerformanceTests = read('ios/Tests/NativePerformanceTests.swift');
 assert.match(
     viewerPerformanceTests,

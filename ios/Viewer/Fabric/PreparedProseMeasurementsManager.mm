@@ -1,6 +1,10 @@
 #import <Foundation/Foundation.h>
 
-#import "ReactNativeProseEditor-Swift.h"
+#if __has_include("react_renderer_components_PreparedProseViewer-Swift.h")
+#import "react_renderer_components_PreparedProseViewer-Swift.h"
+#else
+#error "PreparedProseViewer codegen is stale or mismatched: expected react_renderer_components_PreparedProseViewer-Swift.h"
+#endif
 
 #include <react/renderer/components/PreparedProseViewer/PreparedProseMeasurementsManager.h>
 

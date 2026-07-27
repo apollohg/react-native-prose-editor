@@ -8,7 +8,6 @@ end
 
 Pod::Spec.new do |s|
   s.name           = 'ReactNativeProseEditor'
-  s.module_name    = 'ReactNativeProseEditor'
   s.version        = package['version']
   s.summary        = package['description']
   s.description    = package['description']
