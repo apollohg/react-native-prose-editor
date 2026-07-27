@@ -378,11 +378,27 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   if (terminal && stateLeaseHandle != 0) {
     DeactivateLease(_viewerState, stateLeaseHandle);
   }
-  if (!_hasOwnedSurface || !_ownedGeneration) {
+  if (!_hasOwnedSurface) {
     return;
   }
-  const auto leaseHandle = _ownedLeaseHandle;
-  if (terminal) DeactivateLease(_viewerState, leaseHandle);
+  const auto leaseHandle = _ownedLeaseHandle != 0 ? _ownedLeaseHandle : stateLeaseHandle;
+  if (terminal) {
+    // A replacement can retain a mounted G1 while G2 is the only current
+    // generation.  Terminal recycle must sweep the state-family owner, not
+    // merely G2; this API intentionally works after the handle is inactive.
+    // The C++ lifecycle guard may subsequently repeat this exact cleanup.
+    [[PREPPreparedProseLayoutRegistry sharedRegistry]
+        releaseFabricLeaseSurfaceId:_ownedSurfaceId
+                        componentTag:_ownedComponentTag
+                        leaseHandle:leaseHandle];
+    _hasOwnedSurface = NO;
+    _ownedGeneration = nil;
+    _ownedLeaseHandle = 0;
+    return;
+  }
+  if (!_ownedGeneration) {
+    return;
+  }
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
       releaseFabricGenerationSurfaceId:_ownedSurfaceId
                           componentTag:_ownedComponentTag

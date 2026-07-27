@@ -1039,6 +1039,63 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(g1))
     }
 
+    func testTerminalFabricOwnerSweepRemovesRetainedMountedReplacementAndIsExact() {
+        let registry = PreparedProseLayoutRegistry(
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(key: key, size: CGSize(width: width, height: 20), blocks: [], retainedBytes: Int(width))
+            }
+        )
+        let first = request(source: "mounted G1")
+        let second = request(source: "failed G2")
+        let surface = FabricSurfaceToken(surfaceId: 63, componentTag: 630)
+        let isolatedSurface = FabricSurfaceToken(surfaceId: 63, componentTag: 631)
+        let handle: UInt64 = 63
+        let isolatedHandle: UInt64 = 64
+        let g1 = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry),
+            leaseHandle: handle
+        )
+        let g2 = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(second, registry: registry),
+            leaseHandle: handle
+        )
+        let isolated = FabricGenerationToken(
+            surface: isolatedSurface,
+            generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry),
+            leaseHandle: isolatedHandle
+        )
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: handle)
+        registry.registerFabricLease(surfaceId: isolatedSurface.surfaceId, componentTag: isolatedSurface.componentTag, leaseHandle: isolatedHandle)
+
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: handle)
+        XCTAssertTrue(install(first, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry, leaseHandle: handle))
+        registry.activateFabricGeneration(g2)
+        _ = registry.measure(request: second, widthPoints: 140, scale: 2, fabricSurface: surface, fabricLeaseHandle: handle)
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: isolatedSurface, fabricLeaseHandle: isolatedHandle)
+
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 1)
+        XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 2)
+        registry.releaseFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: handle)
+
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 0)
+        XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 1)
+        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(g1))
+        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(g2))
+        XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(g1))
+        XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(g2))
+        XCTAssertNil(FabricAttachmentSidecars.state(for: surface, leaseHandle: handle))
+        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(isolated))
+        XCTAssertNotNil(FabricAttachmentSidecars.state(for: isolatedSurface, leaseHandle: isolatedHandle))
+
+        // The C++ family guard may release after the UIView has already swept.
+        registry.releaseFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: handle)
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 0)
+        XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 1)
+    }
+
 #if DEBUG
     func testTerminalReleaseAfterSidecarRegistrationRemovesOnlyItsExactSidecar() {
         let registry = PreparedProseLayoutRegistry(

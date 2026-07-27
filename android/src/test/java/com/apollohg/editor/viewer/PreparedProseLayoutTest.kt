@@ -381,6 +381,43 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `terminal Fabric owner sweep removes retained G1 and pending G2 exactly once`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val first = request("mounted G1")
+        val second = request("failed G2")
+        val surface = FabricSurfaceToken(43, 430)
+        val isolatedSurface = FabricSurfaceToken(43, 431)
+        val handle = 43L
+        val isolatedHandle = 44L
+        val g1 = FabricGenerationToken(surface, first.generationIdentity, handle)
+        val g2 = FabricGenerationToken(surface, second.generationIdentity, handle)
+        val isolated = FabricGenerationToken(isolatedSurface, first.generationIdentity, isolatedHandle)
+        registry.registerFabricLease(surface, handle)
+        registry.registerFabricLease(isolatedSurface, isolatedHandle)
+
+        registry.measure(first, 320, 1f, surface, handle)
+        assertNotNull(registry.acquireForFabricMount(g1, first, 320, 1f))
+        registry.activateFabricGeneration(g2)
+        registry.measure(second, 280, 1f, surface, handle)
+        registry.measure(first, 320, 1f, isolatedSurface, isolatedHandle)
+
+        assertEquals(3, registry.fabricLeaseCountForTesting)
+        registry.releaseFabricLease(surface, handle)
+
+        assertEquals(1, registry.fabricLeaseCountForTesting)
+        assertEquals(1, registry.fabricGenerationPinCountForTesting)
+        assertEquals(null, FabricAttachmentSidecars.state(g1))
+        assertEquals(null, FabricAttachmentSidecars.state(g2))
+        assertNotNull(FabricAttachmentSidecars.state(isolated))
+        assertNotNull(registry.acquireForFabricMount(isolated, first, 320, 1f))
+
+        // The family guard terminal callback is idempotent after view release.
+        registry.releaseFabricLease(surface, handle)
+        assertEquals(1, registry.fabricLeaseCountForTesting)
+        assertEquals(1, registry.fabricGenerationPinCountForTesting)
+    }
+
+    @Test
     fun `live exact artifact is shared across Fabric owners after cache eviction`() {
         val cache = PreparedProseLayoutCache(byteBudget = 100, pendingLeaseBudget = 2)
         val key = testLayoutKey("shared")

@@ -521,9 +521,17 @@ internal class PreparedProseViewerManager :
         }
 
         fun release() {
-            generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
+            // A replacement keeps mounted G1 alive while G2 is pending or
+            // failed. Recycling is terminal for the exact state-family
+            // handle, so sweep every owner lease after marking it inactive
+            // rather than releasing only G2 through active-generation checks.
+            val terminalOwner = generation?.let { FabricLeaseOwner(it.surface, it.leaseHandle) }
+                ?: sidecarGeneration?.let { FabricLeaseOwner(it.surface, it.leaseHandle) }
+            terminalOwner?.let { owner ->
+                PreparedProseLayoutRegistry.shared.releaseFabricLease(owner.surface, owner.leaseHandle)
+            }
             generation = null
-            releaseSidecarOwnership()
+            sidecarGeneration = null
             imagePipeline.cancel()
             fontEnvironment.deactivate()
             attachmentRevisions.reset()
