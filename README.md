@@ -268,6 +268,7 @@ from your React Native boundary rather than constructing an editor session.
 UIKit:
 
 ```swift
+import UIKit
 import ReactNativeProseEditor
 
 let configuration = ProseViewerConfiguration(
@@ -299,6 +300,11 @@ final class MessageCell: UICollectionViewCell {
 Android:
 
 ```kotlin
+import androidx.recyclerview.widget.RecyclerView
+import com.apollohg.editor.ProseViewerConfiguration
+import com.apollohg.editor.ProseViewerSource
+import com.apollohg.editor.ProseViewerView
+
 val configuration = ProseViewerConfiguration(
     configJson = completeViewerConfigurationJson,
     themeJson = themeJson,

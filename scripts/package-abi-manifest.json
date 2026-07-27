@@ -4,6 +4,15 @@
     "architecture": "fabric-only",
     "component": "PreparedProseViewer",
     "nativeFacade": "ProseViewerSource + ProseViewerConfiguration",
+    "removedPaths": [
+      "android/src/main/java/com/apollohg/editor/NativeProseViewerExpoView.kt",
+      "android/src/test/java/com/apollohg/editor/NativeProseViewerExpoViewTest.kt",
+      "android/src/test/java/com/apollohg/editor/ProseViewerViewTest.kt",
+      "ios/NativeProseViewerExpoView.swift",
+      "ios/Tests/ProseViewerViewTests.swift",
+      "src/heightCache.ts",
+      "src/__tests__/heightCache.test.ts"
+    ],
     "forbidden": [
       "NativeProseViewerExpoView",
       "heightCache",

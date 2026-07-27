@@ -52,6 +52,28 @@ function visitCorpusNode(
 }
 
 describe('prepared prose native lifecycle contracts', () => {
+    it('keeps the hard cutover validator manifest-driven across exports and native project membership', () => {
+        const validator = readSource('scripts/tests/validate-prepared-prose-viewer-cutover.mjs');
+        const manifest = JSON.parse(readSource('scripts/package-abi-manifest.json')) as {
+            preparedProseViewer: { removedPaths: string[] };
+        };
+
+        expect(validator).toContain("const exists = (path) => existsSync(resolve(root, path));");
+        expect(validator).toContain('for (const path of manifest.removedPaths)');
+        expect(validator).toContain("'src/index.ts'");
+        expect(validator).toContain("'ios-tests/project.yml'");
+        expect(validator).toContain("'ios-tests/NativeEditorTests.xcodeproj/project.pbxproj'");
+        expect(manifest.preparedProseViewer.removedPaths).toEqual([
+            'android/src/main/java/com/apollohg/editor/NativeProseViewerExpoView.kt',
+            'android/src/test/java/com/apollohg/editor/NativeProseViewerExpoViewTest.kt',
+            'android/src/test/java/com/apollohg/editor/ProseViewerViewTest.kt',
+            'ios/NativeProseViewerExpoView.swift',
+            'ios/Tests/ProseViewerViewTests.swift',
+            'src/heightCache.ts',
+            'src/__tests__/heightCache.test.ts',
+        ]);
+    });
+
     it('keeps an iOS Fabric artifact generation intact for link-permission-only updates', () => {
         const source = readSource('ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm');
         const generationComparator = methodBody(source, 'bool HasEquivalentGenerationProps(');
