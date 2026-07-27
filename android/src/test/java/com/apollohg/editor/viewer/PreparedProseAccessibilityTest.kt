@@ -50,6 +50,8 @@ class PreparedProseAccessibilityTest {
         val width = 300
         val layout = StaticLayout.Builder.obtain(
             text,
+            0,
+            text.length,
             TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 18f },
             width,
         ).build()
@@ -379,6 +381,8 @@ class PreparedProseAccessibilityTest {
 
     private fun layoutFor(text: String, width: Int): StaticLayout = StaticLayout.Builder.obtain(
         text,
+        0,
+        text.length,
         TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 18f },
         width,
     ).build()

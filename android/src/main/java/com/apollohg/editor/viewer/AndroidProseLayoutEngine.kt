@@ -801,6 +801,9 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     private fun href(marks: List<uniffi.editor_core.FfiViewerMark>): String? = marks.firstOrNull { it.markType == "link" }
         ?.let { runCatching { org.json.JSONObject(it.attrsJson).optString("href") }.getOrNull()?.takeIf(String::isNotEmpty) }
 
+    private fun org.json.JSONObject.optionalString(key: String): String? =
+        if (has(key) && !isNull(key)) optString(key) else null
+
     private fun markSpans(marks: List<uniffi.editor_core.FfiViewerMark>, base: PreparedTextPaint, theme: PreparedProseTheme, warningSemanticGeneration: String): List<Any> {
         var explicitColor: Int? = null
         var background: Int? = null
@@ -827,9 +830,9 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                     underline = underline || (theme.link?.underline ?: true)
                     background = theme.link?.backgroundColor ?: background
                 }
-                "textColor", "color", "foregroundColor" -> explicitColor = parseColor(attrs?.optString("color", null) ?: attrs?.optString("textColor", null)) ?: explicitColor
-                "highlight", "backgroundColor" -> background = parseColor(attrs?.optString("color", null) ?: attrs?.optString("backgroundColor", null)) ?: background
-                "textStyle", "font" -> { family = attrs?.optString("fontFamily", null) ?: family; size = attrs?.optDouble("fontSize", Double.NaN)?.takeIf { it.isFinite() && it > 0 }?.toFloat() ?: size }
+                "textColor", "color", "foregroundColor" -> explicitColor = parseColor(attrs?.optionalString("color") ?: attrs?.optionalString("textColor")) ?: explicitColor
+                "highlight", "backgroundColor" -> background = parseColor(attrs?.optionalString("color") ?: attrs?.optionalString("backgroundColor")) ?: background
+                "textStyle", "font" -> { family = attrs?.optionalString("fontFamily") ?: family; size = attrs?.optDouble("fontSize", Double.NaN)?.takeIf { it.isFinite() && it > 0 }?.toFloat() ?: size }
             }
         }
         // Resolve link family/size/weight/style first, then combine explicit
