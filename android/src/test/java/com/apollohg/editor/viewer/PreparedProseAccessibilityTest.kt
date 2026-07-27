@@ -487,13 +487,12 @@ class PreparedProseAccessibilityTest {
         // positions. The adjacent visual run supplies the terminal edge by
         // the opposite affinity, not by its physical left/right label alone.
         assertEquals(terminal.documentStart, neighborOffset)
-        val terminalBoundary = if (terminal.isRtl) {
-            min(
+        val terminalBoundary = when (neighborEdge) {
+            FallbackVisualEdge.LEFT -> min(
                 layout.getPrimaryHorizontal(neighborOffset),
                 layout.getSecondaryHorizontal(neighborOffset),
             )
-        } else {
-            max(
+            FallbackVisualEdge.RIGHT -> max(
                 layout.getPrimaryHorizontal(neighborOffset),
                 layout.getSecondaryHorizontal(neighborOffset),
             )

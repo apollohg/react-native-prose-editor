@@ -286,8 +286,18 @@ assert.match(
 );
 assert.match(
     androidBuild,
-    /tasks\.register\('buildHostEditorCore', Exec\)[\s\S]*?rust\/toolchain-cargo\.sh[\s\S]*?CARGO_TARGET_DIR/,
-    'JVM tests must build editor_core with the pinned Cargo wrapper into an isolated host target directory'
+    /def pinnedCargoScript = new File\(repositoryRoot, 'rust\/toolchain-cargo\.sh'\)\.absolutePath/,
+    'the host editor_core build must pin Cargo to the checked-in wrapper'
+);
+assert.match(
+    androidBuild,
+    /def hostCargoCommand = hostOsName\.contains\('windows'\) \? \['bash', pinnedCargoScript\] : \[pinnedCargoScript\]/,
+    'the host editor_core command must execute the pinned Cargo wrapper on every host platform'
+);
+assert.match(
+    androidBuild,
+    /tasks\.register\('buildHostEditorCore', Exec\)\s*\{[\s\S]*?environment 'CARGO_TARGET_DIR', hostRustTargetDirectory\.absolutePath[\s\S]*?commandLine\(\*\(hostCargoCommand \+ \[[\s\S]*?'build',[\s\S]*?'--manifest-path', new File\(repositoryRoot, 'rust\/editor-core\/Cargo\.toml'\)\.absolutePath,[\s\S]*?'--release',[\s\S]*?\]\)\)/,
+    'JVM tests must build editor_core through the pinned Cargo command into an isolated release target with the editor-core manifest'
 );
 assert.match(
     androidBuild,
