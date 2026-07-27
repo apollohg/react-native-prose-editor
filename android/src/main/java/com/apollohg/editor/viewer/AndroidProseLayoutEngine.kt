@@ -121,6 +121,27 @@ private fun fallbackHorizontalAtVisualEdge(
 }
 
 /**
+ * Resolves a cursor position for one concrete visual run. At a shared logical
+ * offset, [StaticLayout] exposes primary and secondary caret positions. The
+ * primary affinity follows the paragraph direction, while the other visual
+ * direction owns the secondary affinity; collapsing those positions to a
+ * physical edge loses the run identity required by a Bidi selection contour.
+ */
+private fun fallbackHorizontalForVisualRun(
+    layout: StaticLayout,
+    run: FallbackVisualBidiRun,
+    paragraphDirection: Int,
+    offset: Int,
+): Float {
+    val primary = layout.getPrimaryHorizontal(offset)
+    val secondary = layout.getSecondaryHorizontal(offset)
+    if (primary == secondary) return primary
+
+    val paragraphIsRtl = paragraphDirection == Layout.DIR_RIGHT_TO_LEFT
+    return if (run.isRtl == paragraphIsRtl) primary else secondary
+}
+
+/**
  * Emulates Layout's private current-line trailing lookup at a soft-wrap end.
  * The public horizontal APIs resolve that shared offset as the next line's
  * start, so an internal terminal run instead borrows the same visual boundary
@@ -132,7 +153,7 @@ private fun softWrapTerminalBoundary(
     visualRuns: List<FallbackVisualBidiRun>,
     softWrapLineEnd: Int,
     outerLineBoundary: (FallbackVisualEdge) -> Float,
-    visualEdgeBoundary: (offset: Int, edge: FallbackVisualEdge) -> Float,
+    visualEdgeBoundary: (run: FallbackVisualBidiRun, offset: Int, edge: FallbackVisualEdge) -> Float,
 ): Float? {
     val terminalEdge = terminalRun.edgeForLogicalEnd()
     val isOuter = when (terminalEdge) {
@@ -157,7 +178,7 @@ private fun softWrapTerminalBoundary(
     // malformed/unexpected Bidi result rather than resolving that offset on
     // the next line and expanding this hit rectangle across adjacent content.
     if (neighborOffset == softWrapLineEnd) return null
-    return visualEdgeBoundary(neighborOffset, neighborEdge)
+    return visualEdgeBoundary(neighbor, neighborOffset, neighborEdge)
 }
 
 /**
@@ -220,7 +241,7 @@ internal data class FallbackLineGeometry(
     val bottom: Int,
     val width: Int,
     val outerLineBoundary: (FallbackVisualEdge) -> Float,
-    val visualEdgeBoundary: (offset: Int, edge: FallbackVisualEdge) -> Float,
+    val visualEdgeBoundary: (run: FallbackVisualBidiRun, offset: Int, edge: FallbackVisualEdge) -> Float,
 )
 
 /**
@@ -297,7 +318,7 @@ internal fun fallbackSelectionRectsForGeometry(
             if (!logicalRunStart && offset == softWrapLineEnd) {
                 return terminalBoundary ?: geometry.outerLineBoundary(edge)
             }
-            return geometry.visualEdgeBoundary(offset, edge)
+            return geometry.visualEdgeBoundary(visualRun, offset, edge)
         }
         val startBoundary = visualBoundary(intersectedStart, logicalRunStart = true)
         val endBoundary = visualBoundary(intersectedEnd, logicalRunStart = false)
@@ -337,7 +358,9 @@ internal fun fallbackSelectionRectsForLine(
         outerLineBoundary = { edge ->
             if (edge == FallbackVisualEdge.LEFT) layout.getLineLeft(line) else layout.getLineRight(line)
         },
-        visualEdgeBoundary = { offset, edge -> fallbackHorizontalAtVisualEdge(layout, offset, edge) },
+        visualEdgeBoundary = { run, offset, _ ->
+            fallbackHorizontalForVisualRun(layout, run, layout.getParagraphDirection(line), offset)
+        },
     ),
     start,
     end,

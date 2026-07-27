@@ -286,6 +286,15 @@ class PreparedProseRenderingTest {
             PreparedProseTheme.resolve("""{"paragraph":{"fontSize":16},"codeBlock":{"fontSize":14}}""", 1f),
             160,
         )
+        val naturalAtomDocument = compileSource(
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"opaque","attrs":{"label":"atom"}}]}]}""",
+            Fixture.structural[2].configJson,
+        )
+        val naturalAtom = prepare(
+            naturalAtomDocument,
+            PreparedProseTheme.resolve("""{"paragraph":{"fontSize":16}}""", 1f),
+            160,
+        ).blocks.single().fragments.single { it.kind == PreparedProseFragmentKind.ATOM }.labelLayout!!
         val paragraphs = document.blocks.withIndex().filter { it.value.nodeType == "paragraph" && it.value.listContext == null }
         val heading = document.blocks.indexOfFirst { it.nodeType == "h1" }
         val code = document.blocks.indexOfFirst { it.nodeType == "codeBlock" }
@@ -326,7 +335,7 @@ class PreparedProseRenderingTest {
         assertEqualsLazy(128, lineHeight(textLayout(densityTwo, heading), 0)) { "density-two heading ${metricProjection(document, densityTwo)}" }
         assertEqualsLazy(96, lineHeight(textLayout(densityTwo, code), 0)) { "density-two code ${metricProjection(document, densityTwo)}" }
         assertEqualsLazy(96, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "density-two list marker ${metricProjection(document, densityTwo)}" }
-        assertTrue(
+        assertTrueLazy(
             natural.blocks.flatMap { it.fragments }
                 .filter { it.kind == PreparedProseFragmentKind.TEXT }
                 .all { fragment ->
@@ -336,7 +345,10 @@ class PreparedProseRenderingTest {
                             .isEmpty()
                     }
                 },
-        )
+        ) { "natural text line-height spans ${metricProjection(document, natural)}" }
+        val naturalMarker = natural.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.layout!!
+        assertNaturalStaticLayoutMetrics(naturalMarker) { "natural list marker ${metricProjection(document, natural)}" }
+        assertNaturalStaticLayoutMetrics(naturalAtom) { "natural atom label layout=$naturalAtom" }
     }
 
     @Test
@@ -462,6 +474,15 @@ class PreparedProseRenderingTest {
 
     private inline fun assertEqualsLazy(expected: Int, actual: Int, message: () -> String) {
         if (expected != actual) assertEquals(message(), expected, actual)
+    }
+
+    private inline fun assertNaturalStaticLayoutMetrics(layout: StaticLayout, message: () -> String) {
+        val text = layout.text as? android.text.Spanned
+        assertTrueLazy(text != null) { message() }
+        assertTrueLazy(
+            text!!.getSpans(0, text.length, FixedLineHeightMetricSpan::class.java).isEmpty(),
+        ) { message() }
+        assertEqualsLazy(layout.height, lineHeight(layout, 0)) { message() }
     }
 
     private fun documentProjection(document: ViewerDocument): String = document.blocks.mapIndexed { index, block ->

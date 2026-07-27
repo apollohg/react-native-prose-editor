@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -521,12 +522,12 @@ class PreparedProseAccessibilityTest {
         // the opposite affinity, not by its physical left/right label alone.
         assertEquals(terminal.documentStart, neighborOffset)
         val width = visualRuns.size * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
-        val visualEdges = mutableMapOf<Pair<Int, FallbackVisualEdge>, Float>()
+        val visualEdges = mutableMapOf<FixedVisualCaret, Float>()
         visualRuns.forEach { run ->
             val left = run.visualIndex * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX.toFloat()
             val right = left + MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
-            visualEdges[run.offsetAt(FallbackVisualEdge.LEFT) to FallbackVisualEdge.LEFT] = left
-            visualEdges[run.offsetAt(FallbackVisualEdge.RIGHT) to FallbackVisualEdge.RIGHT] = right
+            visualEdges[FixedVisualCaret(run, run.offsetAt(FallbackVisualEdge.LEFT), FallbackVisualEdge.LEFT)] = left
+            visualEdges[FixedVisualCaret(run, run.offsetAt(FallbackVisualEdge.RIGHT), FallbackVisualEdge.RIGHT)] = right
         }
         val geometry = FallbackLineGeometry(
             text = text,
@@ -538,7 +539,7 @@ class PreparedProseAccessibilityTest {
             bottom = 30,
             width = width,
             outerLineBoundary = { edge -> if (edge == FallbackVisualEdge.LEFT) 0f else width.toFloat() },
-            visualEdgeBoundary = { offset, edge -> requireNotNull(visualEdges[offset to edge]) },
+            visualEdgeBoundary = { run, offset, edge -> requireNotNull(visualEdges[FixedVisualCaret(run, offset, edge)]) },
         )
         val rect = fallbackSelectionRectsForGeometry(
             geometry = geometry,
@@ -546,8 +547,13 @@ class PreparedProseAccessibilityTest {
             end = terminal.documentEnd,
         ).single()
         val terminalStartEdge = if (terminal.isRtl) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT
-        val startBoundary = requireNotNull(visualEdges[terminal.documentStart to terminalStartEdge])
-        val terminalBoundary = requireNotNull(visualEdges[neighborOffset to neighborEdge])
+        val startBoundary = requireNotNull(visualEdges[FixedVisualCaret(terminal, terminal.documentStart, terminalStartEdge)])
+        val terminalBoundary = requireNotNull(visualEdges[FixedVisualCaret(neighbor, neighborOffset, neighborEdge)])
+        assertNotEquals(
+            "shared logical offset must retain distinct terminal and adjacent-run caret positions",
+            startBoundary,
+            terminalBoundary,
+        )
         assertEquals(
             Rect(
                 kotlin.math.floor(min(startBoundary, terminalBoundary)).toInt().coerceIn(0, width),
@@ -559,6 +565,12 @@ class PreparedProseAccessibilityTest {
         )
         assertTrue(rect.left < rect.right)
     }
+
+    private data class FixedVisualCaret(
+        val run: FallbackVisualBidiRun,
+        val offset: Int,
+        val edge: FallbackVisualEdge,
+    )
 
     private data class ExpectedVisualRun(
         val logicalIndex: Int,
