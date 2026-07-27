@@ -45,15 +45,42 @@ requireWorkflow(
   'publish job must export ANDROID_NDK_HOME for cargo-ndk',
 );
 
-const podInstallIndex = publishWorkflow.indexOf('pod install');
-const publishIndex = publishWorkflow.indexOf('npm publish');
-assert.notEqual(podInstallIndex, -1, 'publish job must install CocoaPods dependencies for example/ios');
+const workflowLines = publishWorkflow.split(/\r?\n/);
+const podInstallRunPattern = /^(\s*)run:\s*pod\s+install(?:\s+[^\r\n]*)?$/;
+const npmPublishRunPattern = /^\s*run:\s*npm\s+publish(?:\s+[^\r\n]*)?$/;
+const podInstallLineIndex = workflowLines.findIndex((line) => podInstallRunPattern.test(line));
+const publishLineIndex = workflowLines.findIndex((line) => npmPublishRunPattern.test(line));
+assert.notEqual(podInstallLineIndex, -1, 'publish job must install CocoaPods dependencies for example/ios');
+assert.notEqual(publishLineIndex, -1, 'publish job must publish the package to npm');
+
+const podInstallIndent = podInstallRunPattern.exec(workflowLines[podInstallLineIndex])[1].length;
+let podInstallStepStart = -1;
+let podInstallStepIndent = -1;
+for (let lineIndex = podInstallLineIndex - 1; lineIndex >= 0; lineIndex -= 1) {
+  const listItem = /^(\s*)-\s+/.exec(workflowLines[lineIndex]);
+  if (listItem && listItem[1].length < podInstallIndent) {
+    podInstallStepStart = lineIndex;
+    podInstallStepIndent = listItem[1].length;
+    break;
+  }
+}
+assert.notEqual(podInstallStepStart, -1, 'CocoaPods install run line must belong to a YAML step');
+
+let podInstallStepEnd = workflowLines.length;
+for (let lineIndex = podInstallLineIndex + 1; lineIndex < workflowLines.length; lineIndex += 1) {
+  const listItem = /^(\s*)-\s+/.exec(workflowLines[lineIndex]);
+  if (listItem && listItem[1].length <= podInstallStepIndent) {
+    podInstallStepEnd = lineIndex;
+    break;
+  }
+}
+const podInstallStep = workflowLines.slice(podInstallStepStart, podInstallStepEnd).join('\n');
 assert.match(
-  publishWorkflow.slice(Math.max(0, podInstallIndex - 200), podInstallIndex + 200),
-  /working-directory:\s*example\/ios/,
+  podInstallStep,
+  /^\s*working-directory:\s*example\/ios\s*$/m,
   'CocoaPods install must run in example/ios',
 );
-assert.ok(podInstallIndex < publishIndex, 'example/ios CocoaPods install must run before npm publish');
+assert.ok(podInstallLineIndex < publishLineIndex, 'example/ios CocoaPods install must run before npm publish');
 
 assert.equal(
   packageJson.scripts?.prepublishOnly,
