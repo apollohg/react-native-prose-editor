@@ -561,7 +561,7 @@ class PreparedProseAccessibilityTest {
         val spanned = SpannableString(text)
         text.indices.forEach { index ->
             spanned.setSpan(
-                FixedWidthCharacterSpan,
+                FixedWidthCharacterSpan(),
                 index,
                 index + 1,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
@@ -579,7 +579,7 @@ class PreparedProseAccessibilityTest {
             .build()
     }
 
-    private object FixedWidthCharacterSpan : ReplacementSpan() {
+    private class FixedWidthCharacterSpan : ReplacementSpan() {
         override fun getSize(
             paint: Paint,
             text: CharSequence?,
