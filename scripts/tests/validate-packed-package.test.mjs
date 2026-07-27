@@ -62,8 +62,10 @@ function makeFixture(name) {
   for (const path of [
     "package.json",
     "expo-module.config.json",
+    "react-native.config.js",
     "LICENSE",
     "ReactNativeProseEditor.podspec",
+    "src/specs",
     "ios",
     "android",
     "rust/android",
@@ -449,7 +451,7 @@ try {
     expectFailure(
       "CocoaPods installs but cannot link",
       run("--validate-ios-consumer", linklessPod),
-      /iOS consumer xcodebuild failed/,
+      /iOS consumer xcodebuild failed[\s\S]*(?:Undefined symbols for architecture arm64|symbol\(s\) not found)/,
     );
 
     const unpackagedAndroid = makeFixture("unpackaged-android");
