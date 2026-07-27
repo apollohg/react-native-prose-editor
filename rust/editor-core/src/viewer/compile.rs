@@ -21,6 +21,11 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
             request.source_kind.clone(),
             &request.source,
         )?;
+        let is_empty = crate::editor_state::document_is_empty_after_omitting(
+            &resolved.document,
+            &resolved.schema,
+            |node| !request.images_enabled && is_image_node(node),
+        );
         let elements = crate::render::incremental::flatten_render_blocks(
             &crate::render::incremental::render_blocks(&resolved.document, &resolved.schema),
         )
@@ -36,7 +41,6 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
             request.mention_prefix.as_deref(),
         );
         let retained_bytes = retained_bytes(&semantic_key, &elements);
-        let is_empty = semantic_elements_are_empty(&elements, &resolved.schema);
 
         Ok::<_, crate::session::SessionError>(Arc::new(ViewerCompiledDocument {
             semantic_key,
@@ -71,6 +75,14 @@ fn is_image_atom(element: &RenderElement) -> bool {
         | RenderElement::BlockEnd => return false,
     };
 
+    is_image_node_identity(node_type, attrs)
+}
+
+fn is_image_node(node: &crate::model::Node) -> bool {
+    is_image_node_identity(node.node_type(), node.attrs())
+}
+
+fn is_image_node_identity(node_type: &str, attrs: &HashMap<String, serde_json::Value>) -> bool {
     node_type == "image"
         || matches!(node_type, "__opaque_json" | "__opaque")
             && (attrs
@@ -150,22 +162,6 @@ fn viewer_element(element: RenderElement, mention_prefix: Option<&str>) -> FfiVi
             list_context_json: list_context.as_ref().map(canonical_list_context_json),
         },
         RenderElement::BlockEnd => FfiViewerElement::BlockEnd,
-    }
-}
-
-fn semantic_elements_are_empty(
-    elements: &[FfiViewerElement],
-    schema: &crate::schema::Schema,
-) -> bool {
-    match elements {
-        [] => true,
-        [
-            FfiViewerElement::BlockStart { node_type, .. },
-            FfiViewerElement::BlockEnd,
-        ] => schema
-            .preferred_text_block()
-            .is_some_and(|preferred| preferred.name == *node_type),
-        _ => false,
     }
 }
 

@@ -882,22 +882,37 @@ fn resource_growth_fits(
 /// contributes no characters, so any character-based test reports it as empty
 /// and hides a structure the user can plainly see.
 pub(crate) fn document_is_empty(document: &Document, schema: &Schema) -> bool {
+    document_is_empty_after_omitting(document, schema, |_| false)
+}
+
+/// Whether the document remains empty after a caller omits selected direct
+/// children from the root and the preferred text block.
+///
+/// The omission is intentionally structural: it never derives emptiness from
+/// rendered text, so authored zero-width text and empty non-text containers
+/// remain content. Callers use this for presentation-only visibility rules
+/// without mutating the admitted document.
+pub(crate) fn document_is_empty_after_omitting(
+    document: &Document,
+    schema: &Schema,
+    mut is_omitted: impl FnMut(&Node) -> bool,
+) -> bool {
     let Some(content) = document.root().content() else {
         return true;
     };
-    let mut blocks = content.iter();
+    let mut blocks = content.iter().filter(|node| !is_omitted(node));
     let Some(block) = blocks.next() else {
         return true;
     };
     if blocks.next().is_some() {
         return false;
     }
-    if block.content_size() != 0 {
-        return false;
-    }
     schema
         .preferred_text_block()
         .is_some_and(|spec| spec.name == block.node_type())
+        && block
+            .content()
+            .is_none_or(|content| content.iter().all(|node| is_omitted(node)))
 }
 
 pub(crate) fn document_node_count(node: &Node) -> usize {
