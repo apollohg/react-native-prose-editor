@@ -2,6 +2,7 @@ package com.apollohg.editor.viewer
 
 import android.graphics.Rect
 import android.graphics.Paint
+import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
@@ -78,6 +79,55 @@ class PreparedProseAccessibilityTest {
         assertEquals(expectedRight, rect.right)
         assertEquals(layout.getLineTop(0), rect.top)
         assertEquals(layout.getLineBottom(0), rect.bottom)
+    }
+
+    @Test
+    fun `fallback resolves LTR selection from complete RTL paragraph line`() {
+        val text = "\u05d0\u05d1\u05d2 Latin \u05d3\u05d4\u05d5\nnext"
+        val layout = layoutFor(text, width = 300)
+        val start = text.indexOf("Latin")
+        val end = start + "Latin ".length
+
+        assertFallbackMatchesCompleteLineBidi(layout, start, end, line = 0, width = 300)
+    }
+
+    @Test
+    fun `fallback resolves RTL selection from complete LTR paragraph line`() {
+        val text = "Latin \u05d0\u05d1\u05d2- next"
+        val layout = layoutFor(text, width = 300)
+        val start = text.indexOf('\u05d0')
+        val end = text.indexOf("- ") + 2
+
+        assertFallbackMatchesCompleteLineBidi(layout, start, end, line = 0, width = 300)
+    }
+
+    @Test
+    fun `fallback preserves paragraph direction for wrapped continuation with different first strong character`() {
+        val text = "\u05d0\u05d1\u05d2\u05d3\u05d4\u05d5\u05d6\u05d7\u05d8\u05d9\u05db\u05dc\u05de\u05e0\u05e1\u05e2 Latin \u05e4\u05e6\u05e7\u05e8 trailing words"
+        val layout = layoutFor(text, width = 120)
+        val line = (1 until layout.lineCount).first { candidate ->
+            val lineStart = layout.getLineStart(candidate)
+            val lineEnd = layout.getLineEnd(candidate)
+            val firstStrong = (lineStart until lineEnd).firstOrNull {
+                layout.text[it] in 'A'..'Z' || layout.text[it] in 'a'..'z' || layout.text[it] in '\u0590'..'\u05ff'
+            }
+            val firstStrongIsLtr = firstStrong?.let {
+                layout.text[it] in 'A'..'Z' || layout.text[it] in 'a'..'z'
+            } == true
+            val hasFollowingRtl = firstStrong?.let { firstStrongOffset ->
+                (firstStrongOffset + 1 until lineEnd).any { layout.text[it] in '\u0590'..'\u05ff' }
+            } == true
+            firstStrongIsLtr && hasFollowingRtl
+        }
+        val lineStart = layout.getLineStart(line)
+        val lineEnd = layout.getLineEnd(line).let { rawEnd ->
+            if (rawEnd > lineStart && layout.text[rawEnd - 1] == '\n') rawEnd - 1 else rawEnd
+        }
+        val firstStrong = (lineStart until lineEnd).first { layout.text[it] in 'A'..'Z' || layout.text[it] in 'a'..'z' }
+        val end = (firstStrong until lineEnd).first { layout.text[it] in '\u0590'..'\u05ff' } + 1
+
+        assertEquals(Layout.DIR_RIGHT_TO_LEFT, layout.getParagraphDirection(line))
+        assertFallbackMatchesCompleteLineBidi(layout, firstStrong, end, line, width = 120)
     }
 
     @Test
@@ -267,6 +317,48 @@ class PreparedProseAccessibilityTest {
         attachmentRevision = 0,
         generationIdentity = "fixture",
     )
+
+    private fun layoutFor(text: String, width: Int): StaticLayout = StaticLayout.Builder.obtain(
+        text,
+        TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 18f },
+        width,
+    ).build()
+
+    private fun assertFallbackMatchesCompleteLineBidi(
+        layout: StaticLayout,
+        start: Int,
+        end: Int,
+        line: Int,
+        width: Int,
+    ) {
+        val lineStart = layout.getLineStart(line)
+        val rawLineEnd = layout.getLineEnd(line)
+        val lineEnd = if (rawLineEnd > lineStart && layout.text[rawLineEnd - 1] == '\n') rawLineEnd - 1 else rawLineEnd
+        val direction = if (layout.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT) {
+            Bidi.DIRECTION_RIGHT_TO_LEFT
+        } else {
+            Bidi.DIRECTION_LEFT_TO_RIGHT
+        }
+        val bidi = Bidi(layout.text.subSequence(lineStart, lineEnd).toString(), direction)
+        val expected = buildList {
+            for (run in 0 until bidi.runCount) {
+                val runStart = max(start, lineStart + bidi.getRunStart(run))
+                val runEnd = min(end, lineStart + bidi.getRunLimit(run))
+                fallbackSelectionRectForVisualRun(
+                    layout = layout,
+                    runStart = runStart,
+                    runEnd = runEnd,
+                    runIsRtl = (bidi.getRunLevel(run) and 1) == 1,
+                    line = line,
+                    width = width,
+                )?.let(::add)
+            }
+        }
+
+        assertEquals(expected, fallbackSelectionRectsForLine(layout, start, end, line, width))
+        assertTrue(expected.size >= 2)
+        assertTrue(expected.all { it.left in 0..width && it.right in 0..width && it.left < it.right })
+    }
 
     private fun preparedArtifact(generation: String): PreparedProseLayout = PreparedProseLayout(
         key = ProseLayoutKey(

@@ -92,6 +92,57 @@ internal fun fallbackSelectionRectForVisualRun(
     return Rect(left, layout.getLineTop(line), right, layout.getLineBottom(line)).takeIf { !it.isEmpty }
 }
 
+/**
+ * Derives fallback selection geometry from the complete [StaticLayout] line.
+ *
+ * The line's Bidi resolution must use the same paragraph direction as the
+ * layout that supplied its cursor positions. Resolving only the selected
+ * substring can give neutral characters and embedded runs a different level.
+ */
+internal fun fallbackSelectionRectsForLine(
+    layout: StaticLayout,
+    start: Int,
+    end: Int,
+    line: Int,
+    width: Int,
+): List<Rect> {
+    val lineStart = layout.getLineStart(line)
+    val rawLineEnd = layout.getLineEnd(line)
+    // A hard-break line includes its terminator in StaticLayout's end offset.
+    // It has no drawable/cursor run, so exclude it before constructing Bidi.
+    val lineEnd = if (
+        rawLineEnd > lineStart &&
+        rawLineEnd <= layout.text.length &&
+        layout.text[rawLineEnd - 1] == '\n'
+    ) rawLineEnd - 1 else rawLineEnd
+    val selectedStart = maxOf(start, lineStart).coerceAtMost(lineEnd)
+    val selectedEnd = minOf(end, lineEnd).coerceAtLeast(lineStart)
+    if (selectedStart >= selectedEnd || lineStart >= lineEnd) return emptyList()
+
+    val direction = if (layout.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT) {
+        Bidi.DIRECTION_RIGHT_TO_LEFT
+    } else {
+        Bidi.DIRECTION_LEFT_TO_RIGHT
+    }
+    val bidi = Bidi(layout.text.subSequence(lineStart, lineEnd).toString(), direction)
+    val fragments = mutableListOf<Rect>()
+    for (run in 0 until bidi.runCount) {
+        val runStart = lineStart + bidi.getRunStart(run)
+        val runEnd = lineStart + bidi.getRunLimit(run)
+        val intersectedStart = maxOf(selectedStart, runStart)
+        val intersectedEnd = minOf(selectedEnd, runEnd)
+        fallbackSelectionRectForVisualRun(
+            layout = layout,
+            runStart = intersectedStart,
+            runEnd = intersectedEnd,
+            runIsRtl = (bidi.getRunLevel(run) and 1) == 1,
+            line = line,
+            width = width,
+        )?.let(fragments::add)
+    }
+    return fragments
+}
+
 /** Creates immutable StaticLayout fragments without depending on a mounted View. */
 internal interface AndroidProseLayoutEngine {
     fun prepare(
@@ -552,28 +603,6 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             result += fallbackSelectionRectsForLine(layout, start, end, line, width)
         }
         return result.sortedWith(compareBy<Rect> { it.top }.thenBy { it.left })
-    }
-
-    private fun fallbackSelectionRectsForLine(
-        layout: StaticLayout,
-        start: Int,
-        end: Int,
-        line: Int,
-        width: Int,
-    ): List<Rect> {
-        val fragments = mutableListOf<Rect>()
-        val bidi = Bidi(layout.text.subSequence(start, end).toString(), Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT)
-        for (run in 0 until bidi.runCount) {
-            fallbackSelectionRectForVisualRun(
-                layout = layout,
-                runStart = start + bidi.getRunStart(run),
-                runEnd = start + bidi.getRunLimit(run),
-                runIsRtl = (bidi.getRunLevel(run) and 1) == 1,
-                line = line,
-                width = width,
-            )?.let(fragments::add)
-        }
-        return fragments
     }
 
     private data class AttributedBlock(val text: SpannableString, val atoms: List<PreparedAtomSpec>, val semanticRanges: List<PreparedSemanticRange>, val retainedBytes: Long)
