@@ -96,6 +96,13 @@ struct FabricGenerationToken: Hashable {
     }
 }
 
+/// State-family identity across all semantic, attachment, font, and width
+/// revisions. The registry permits at most one committed generation for it.
+struct FabricLeaseOwner: Hashable {
+    let surface: FabricSurfaceToken
+    let leaseHandle: UInt64
+}
+
 /// This identity intentionally excludes the surface owner: completed immutable
 /// layouts may be shared, while leases remain surface-scoped.
 struct ProseMountKey: Hashable {

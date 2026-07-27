@@ -32,7 +32,15 @@ internal class PreparedProseLayoutRegistry(
      * state snapshot; terminal JNI cleanup removes them rather than leaving
      * process-lifetime cancellation tombstones behind.
      */
-    private val activeFabricLeases = ConcurrentHashMap<FabricLeaseOwner, AtomicBoolean>()
+    private class FabricLeaseState {
+        val active = AtomicBoolean(true)
+        /** Null means Yoga may prepare before the first component commit. */
+        var permittedGenerationIdentity: String? = null
+    }
+
+    private val fabricLeaseLock = Any()
+    /** Bounded to currently-live state-family handles; terminal cleanup removes entries. */
+    private val activeFabricLeases = mutableMapOf<FabricLeaseOwner, FabricLeaseState>()
     private val layoutCache = PreparedProseLayoutCache(byteBudget = byteBudget)
     private var compiledRetainedBytes = 0L
     private var themeRetainedBytes = 0L
@@ -174,6 +182,7 @@ internal class PreparedProseLayoutRegistry(
     }
 
     fun releaseFabricGeneration(generation: FabricGenerationToken) {
+        if (!isLeaseActive(generation, activeLeaseFor(generation))) return
         layoutCache.releaseLease(generation)
         FabricAttachmentSidecars.remove(generation)
         synchronized(compilerLock) {
@@ -185,7 +194,37 @@ internal class PreparedProseLayoutRegistry(
     /** Called from the C++ state-family terminal callback; exact-handle only. */
     fun registerFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
         if (leaseHandle <= 0) return
-        activeFabricLeases.computeIfAbsent(FabricLeaseOwner(surface, leaseHandle)) { AtomicBoolean(true) }.set(true)
+        synchronized(fabricLeaseLock) {
+            val owner = FabricLeaseOwner(surface, leaseHandle)
+            activeFabricLeases.getOrPut(owner, ::FabricLeaseState).active.set(true)
+        }
+    }
+
+    /**
+     * Commits the one generation permitted to publish for this state-family
+     * handle. Earlier pre-commit Yoga work is rejected after this point;
+     * the new generation's already-running work remains permitted.
+     */
+    fun activateFabricGeneration(generation: FabricGenerationToken) {
+        val owner = FabricLeaseOwner(generation.surface, generation.leaseHandle)
+        synchronized(fabricLeaseLock) {
+            val state = activeFabricLeases.getOrPut(owner, ::FabricLeaseState)
+            if (!state.active.get()) return
+            state.permittedGenerationIdentity = generation.generationIdentity
+        }
+        synchronized(compilerLock) {
+            val tokens = (documentsByFabricGeneration.keys + failuresByFabricGeneration.keys)
+                .filter { FabricLeaseOwner(it.surface, it.leaseHandle) == owner && it != generation }
+                .toSet()
+            tokens.forEach {
+                documentsByFabricGeneration.remove(it)
+                failuresByFabricGeneration.remove(it)
+            }
+        }
+        // Cache and sidecars own independent locks. No registry lock is held
+        // while crossing either boundary, avoiding a cache/compiler inversion.
+        layoutCache.activateFabricGeneration(generation)
+        FabricAttachmentSidecars.removeOtherGenerations(owner, generation)
     }
 
     fun releaseFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
@@ -193,7 +232,7 @@ internal class PreparedProseLayoutRegistry(
         val owner = FabricLeaseOwner(surface, leaseHandle)
         // Mark inactive before releasing containers so a delayed Yoga worker
         // sees cancellation even if it races this cleanup.
-        activeFabricLeases.remove(owner)?.set(false)
+        synchronized(fabricLeaseLock) { activeFabricLeases.remove(owner)?.active?.set(false) }
         layoutCache.releaseOwner(owner)
         FabricAttachmentSidecars.remove(owner)
         synchronized(compilerLock) {
@@ -203,7 +242,10 @@ internal class PreparedProseLayoutRegistry(
     }
 
     fun releaseFabricSurface(surface: FabricSurfaceToken) {
-        activeFabricLeases.keys.filter { it.surface == surface }.forEach { activeFabricLeases.remove(it)?.set(false) }
+        synchronized(fabricLeaseLock) {
+            activeFabricLeases.keys.filter { it.surface == surface }
+                .forEach { activeFabricLeases.remove(it)?.active?.set(false) }
+        }
         layoutCache.releaseSurface(surface)
         FabricAttachmentSidecars.remove(surface)
         synchronized(compilerLock) {
@@ -219,7 +261,10 @@ internal class PreparedProseLayoutRegistry(
      * this Fabric surface unconditionally.
      */
     fun releaseFabricSurfaceId(surfaceId: Int) {
-        activeFabricLeases.keys.filter { it.surface.surfaceId == surfaceId }.forEach { activeFabricLeases.remove(it)?.set(false) }
+        synchronized(fabricLeaseLock) {
+            activeFabricLeases.keys.filter { it.surface.surfaceId == surfaceId }
+                .forEach { activeFabricLeases.remove(it)?.active?.set(false) }
+        }
         layoutCache.releaseSurfaceId(surfaceId)
         FabricAttachmentSidecars.removeSurface(surfaceId)
         synchronized(compilerLock) {
@@ -231,6 +276,7 @@ internal class PreparedProseLayoutRegistry(
     /** A stale mount can retire only the exact unmounted handoff it requested. */
     fun releaseFabricMountMiss(generation: FabricGenerationToken, widthPx: Int, density: Float) {
         if (!isValidMeasurement(widthPx, density)) return
+        if (!isLeaseActive(generation, activeLeaseFor(generation))) return
         layoutCache.releasePendingLease(generation, widthPx, density.toRawBits().toLong())
         synchronized(compilerLock) {
             if (!hasFabricLease(generation)) {
@@ -265,14 +311,16 @@ internal class PreparedProseLayoutRegistry(
         documentsByFabricGeneration.size + failuresByFabricGeneration.size
     }
     internal val preparedThemeCountForTesting: Int get() = synchronized(compilerLock) { themes.size }
-    internal val activeFabricLeaseCountForTesting: Int get() = activeFabricLeases.size
+    internal val activeFabricLeaseCountForTesting: Int get() = synchronized(fabricLeaseLock) { activeFabricLeases.size }
+    internal fun permittedFabricGenerationForTesting(owner: FabricLeaseOwner): String? =
+        synchronized(fabricLeaseLock) { activeFabricLeases[owner]?.permittedGenerationIdentity }
     private fun hasFabricLease(generation: FabricGenerationToken): Boolean = layoutCache.hasLease(generation)
 
     private fun preparedDocument(
         request: ProseViewerRequest,
         generation: FabricGenerationToken?,
         suppliedDocument: ViewerDocument?,
-        leaseActive: AtomicBoolean?,
+        leaseActive: FabricLeaseState?,
     ): ViewerDocument {
         if (generation != null) synchronized(compilerLock) {
             documentsByFabricGeneration[generation]?.let { return it }
@@ -300,7 +348,7 @@ internal class PreparedProseLayoutRegistry(
         densityBits: Long,
         error: ProseViewerError,
         fabricGeneration: FabricGenerationToken?,
-        leaseActive: AtomicBoolean?,
+        leaseActive: FabricLeaseState?,
     ): PreparedProseLayout {
         val key = ProseLayoutKey(
             semanticKey = "error:${request.compiledCacheKey}",
@@ -383,11 +431,15 @@ internal class PreparedProseLayoutRegistry(
     private fun isValidMeasurement(widthPx: Int, density: Float): Boolean =
         widthPx > 0 && density.isFinite() && density > 0f
 
-    private fun activeLeaseFor(generation: FabricGenerationToken): AtomicBoolean? =
-        activeFabricLeases[FabricLeaseOwner(generation.surface, generation.leaseHandle)]
+    private fun activeLeaseFor(generation: FabricGenerationToken): FabricLeaseState? =
+        synchronized(fabricLeaseLock) { activeFabricLeases[FabricLeaseOwner(generation.surface, generation.leaseHandle)] }
 
-    private fun isLeaseActive(generation: FabricGenerationToken, lease: AtomicBoolean?): Boolean =
-        lease?.get() == true && activeFabricLeases[FabricLeaseOwner(generation.surface, generation.leaseHandle)] === lease
+    private fun isLeaseActive(generation: FabricGenerationToken, lease: FabricLeaseState?): Boolean =
+        lease?.active?.get() == true && synchronized(fabricLeaseLock) {
+            activeFabricLeases[FabricLeaseOwner(generation.surface, generation.leaseHandle)] === lease &&
+                (lease.permittedGenerationIdentity == null ||
+                    lease.permittedGenerationIdentity == generation.generationIdentity)
+        }
 
     companion object {
         val shared = PreparedProseLayoutRegistry()

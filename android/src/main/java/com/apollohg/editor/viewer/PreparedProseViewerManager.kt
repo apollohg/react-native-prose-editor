@@ -306,7 +306,8 @@ internal class PreparedProseViewerManager :
             state.releaseGeneration(view)
             return
         }
-        state.releaseReplacedGeneration(request, view)
+        // `adopt` is the authoritative commit boundary. Releasing G1 here
+        // would race a G2 Yoga handoff and blank a valid mounted fallback.
         installCachedLayout(view)
     }
 
@@ -484,15 +485,6 @@ internal class PreparedProseViewerManager :
             view.install(null)
         }
 
-        fun releaseReplacedGeneration(request: ProseViewerRequest, view: PreparedProseDrawingView) {
-            val previous = generation ?: return
-            if (previous.generationIdentity == request.generationIdentity) return
-            PreparedProseLayoutRegistry.shared.releaseFabricGeneration(previous)
-            generation = null
-            imagePipeline.cancel()
-            replacementAccessibilityTransaction.clearReplacing(view)
-        }
-
         fun installMountedReplacement(view: PreparedProseDrawingView, artifact: PreparedProseLayout) {
             replacementAccessibilityTransaction.installMountedReplacement(view, artifact)
         }
@@ -508,6 +500,11 @@ internal class PreparedProseViewerManager :
             val handle = revisions?.leaseHandle ?: 0L
             require(handle > 0) { "Fabric mount attempted without an exact native lease handle." }
             val next = FabricGenerationToken(surface, request.generationIdentity, handle)
+            // This is the state/props commit boundary. Permit the canonical
+            // incoming generation before releasing any prior owner or trying
+            // to acquire: delayed G1 Yoga callbacks are now inert, while a
+            // G2 measurement already in flight remains eligible to finish.
+            PreparedProseLayoutRegistry.shared.activateFabricGeneration(next)
             val previousSidecar = sidecarGeneration
             if (previousSidecar != null && previousSidecar != next) {
                 // The view may already carry another Fabric tag by the time

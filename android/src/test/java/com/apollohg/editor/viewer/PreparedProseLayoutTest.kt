@@ -347,6 +347,32 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `Fabric commit permits only its canonical generation for one family handle`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val first = request("first committed revision")
+        val second = request("second committed revision")
+        val surface = FabricSurfaceToken(42, 420)
+        val handle = 42L
+        val g1 = FabricGenerationToken(surface, first.generationIdentity, handle)
+        val g2 = FabricGenerationToken(surface, second.generationIdentity, handle)
+
+        registry.registerFabricLease(surface, handle)
+        // Yoga may finish both pre-commit measurements; the component commit
+        // selects G2 without cancelling its own already-created handoff.
+        registry.measure(first, 320, 1f, surface, handle)
+        registry.measure(second, 320, 1f, surface, handle)
+        registry.activateFabricGeneration(g2)
+
+        assertEquals(g2.generationIdentity, registry.permittedFabricGenerationForTesting(FabricLeaseOwner(surface, handle)))
+        assertEquals(null, registry.acquireForFabricMount(g1, first, 320, 1f))
+        assertNotNull(registry.acquireForFabricMount(g2, second, 320, 1f))
+
+        // A delayed G1 Yoga callback cannot recreate its sidecar or lease.
+        registry.measure(first, 320, 1f, surface, handle)
+        assertEquals(null, FabricAttachmentSidecars.state(g1))
+    }
+
+    @Test
     fun `live exact artifact is shared across Fabric owners after cache eviction`() {
         val cache = PreparedProseLayoutCache(byteBudget = 100, pendingLeaseBudget = 2)
         val key = testLayoutKey("shared")

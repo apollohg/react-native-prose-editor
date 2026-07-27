@@ -336,7 +336,13 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 
 - (void)beginNewGenerationTerminatingCurrentLease:(BOOL)terminal
 {
-  [self releaseFabricOwnershipTerminatingLease:terminal];
+  // Ordinary props/state revisions are committed by
+  // installMeasuredArtifactIfAttached, where the registry can atomically
+  // permit G2 before retiring G1's pending work. Releasing here would let a
+  // delayed G1 Yoga callback win that race and would blank the old mount.
+  if (terminal) {
+    [self releaseFabricOwnershipTerminatingLease:YES];
+  }
   [_drawingView cancelConfiguredImages];
   // Keep the last complete artifact visible while a new generation has no
   // representable layout metrics. The install gate clears it only
@@ -441,7 +447,16 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                  attachmentRevision:Revision(_viewerState, true)
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
-            fontEnvironmentRevision:FontEnvironmentRevision(props)];
+               fontEnvironmentRevision:FontEnvironmentRevision(props)];
+  // This is the props/state commit boundary for the state-family handle.
+  // Commit G2 before touching G1 ownership or attempting mount acquisition:
+  // delayed G1 Yoga callbacks are rejected, while an already-running G2
+  // measurement remains permitted to publish its exact handoff.
+  [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      activateFabricGenerationSurfaceId:*surfaceId
+                            componentTag:componentTag
+                      generationIdentity:generation
+                          leaseHandle:leaseHandle];
   if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
       _ownedComponentTag == componentTag &&
       [_ownedGeneration isEqualToString:generation] &&
@@ -451,16 +466,15 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   }
   if (_hasOwnedSurface &&
       (_ownedSurfaceId != *surfaceId || _ownedComponentTag != componentTag ||
-       ![_ownedGeneration isEqualToString:generation] || _ownedLeaseHandle != leaseHandle)) {
+       _ownedLeaseHandle != leaseHandle)) {
     // A reused view may have a different root/token before the previous
     // lifecycle callback finishes. Release only the persisted owner, never
     // the current UIView tag, which React Native may already have reset.
     [self releaseFabricOwnershipTerminatingLease:NO];
   }
-  const BOOL preservesMountedArtifactForWidthReplacement =
-      _hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
+  const BOOL preservesMountedArtifactForReplacement =
+            _hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
       _ownedComponentTag == componentTag &&
-      [_ownedGeneration isEqualToString:generation] &&
       _ownedLeaseHandle == leaseHandle &&
       _installedMeasurementIdentity != nil;
   if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
@@ -468,7 +482,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     // artifact until the exact new Yoga handoff is acquired. A missing or
     // pressure-evicted replacement must not blank the view or release the
     // old mounted lease. Semantic/recycled-owner changes still clear first.
-    if (!preservesMountedArtifactForWidthReplacement) {
+    if (!preservesMountedArtifactForReplacement) {
       [_drawingView installWithLayout:nil];
       _installedMeasurementIdentity = nil;
     }
@@ -507,7 +521,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     // The lease and generation pin were created by Yoga, but Fabric found no
     // artifact to install. A width replacement may have an older mounted
     // artifact, which remains valid until a replacement successfully mounts.
-    if (preservesMountedArtifactForWidthReplacement) {
+    if (preservesMountedArtifactForReplacement) {
       return;
     }
     [[PREPPreparedProseLayoutRegistry sharedRegistry]

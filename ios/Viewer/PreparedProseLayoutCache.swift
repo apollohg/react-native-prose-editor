@@ -196,6 +196,26 @@ final class PreparedProseLayoutCache {
         condition.unlock()
     }
 
+    /// Commits a replacement generation for one state-family handle. Pending
+    /// G1 handoffs are stale immediately; mounted G1 remains visible until
+    /// G2's exact pending handoff is acquired by the normal mount path.
+    func activateFabricGeneration(
+        surface: FabricSurfaceToken,
+        generationIdentity: String,
+        leaseHandle: UInt64
+    ) {
+        condition.lock()
+        pendingLeases.keys
+            .filter {
+                $0.surface == surface && $0.leaseHandle == leaseHandle &&
+                    $0.layout.generationIdentity != generationIdentity
+            }
+            .forEach(removePendingLeaseLocked)
+        retireUnownedPublicationKeysLocked()
+        publishOwnerBytesLocked()
+        condition.unlock()
+    }
+
     /// Removes only the unmounted handoff requested by a stale Fabric mount
     /// callback. Mounted ownership is deliberately preserved: it may be the
     /// currently displayed width while another width is pending.
@@ -381,7 +401,6 @@ final class PreparedProseLayoutCache {
 
     private func sameFabricOwner(_ lhs: FabricLeaseKey, as rhs: FabricLeaseKey) -> Bool {
         lhs.surface == rhs.surface &&
-            lhs.layout.generationIdentity == rhs.layout.generationIdentity &&
             lhs.leaseHandle == rhs.leaseHandle
     }
 

@@ -100,7 +100,9 @@ internal class PreparedProseLayoutCache(
             key.generation == generation && layout.key.widthPx == widthPx && layout.key.densityBits == densityBits
         } ?: return@synchronized null
         pendingLeases.remove(lease.key)
-        mountedLeases.keys.filter { it.generation == generation && it != lease.key }.forEach(mountedLeases::remove)
+        mountedLeases.keys
+            .filter { it.owner == lease.key.owner && it != lease.key }
+            .forEach(mountedLeases::remove)
         mountedLeases[lease.key] = lease.value
         retireUnownedPublicationsLocked()
         publishOwnersLocked()
@@ -110,6 +112,20 @@ internal class PreparedProseLayoutCache(
     fun releaseLease(generation: FabricGenerationToken) = synchronized(lock) {
         pendingLeases.keys.filter { it.generation == generation }.forEach(pendingLeases::remove)
         mountedLeases.keys.filter { it.generation == generation }.forEach(mountedLeases::remove)
+        retireUnownedPublicationsLocked()
+        publishOwnersLocked()
+    }
+
+    /**
+     * A family handle may commit only one generation. Retire stale pending
+     * handoffs now, but retain an older mounted artifact until this committed
+     * generation acquires its replacement under the same owner lock.
+     */
+    fun activateFabricGeneration(generation: FabricGenerationToken) = synchronized(lock) {
+        val owner = FabricLeaseOwner(generation.surface, generation.leaseHandle)
+        pendingLeases.keys
+            .filter { it.owner == owner && it.generation != generation }
+            .forEach(pendingLeases::remove)
         retireUnownedPublicationsLocked()
         publishOwnersLocked()
     }
@@ -172,7 +188,9 @@ internal class PreparedProseLayoutCache(
 
     private fun createPendingLeaseLocked(layout: PreparedProseLayout, generation: FabricGenerationToken) {
         val lease = FabricLeaseKey(generation, layout.key)
-        pendingLeases.keys.filter { it.generation == generation && it != lease }.forEach(pendingLeases::remove)
+        pendingLeases.keys
+            .filter { it.owner == lease.owner && it != lease }
+            .forEach(pendingLeases::remove)
         if (mountedLeases[lease] == null) pendingLeases[lease] = layout
         enforceBudgetLocked(preferredGeneration = generation)
         retireUnownedPublicationsLocked()

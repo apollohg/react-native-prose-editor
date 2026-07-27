@@ -57,4 +57,11 @@ internal object FabricAttachmentSidecars {
             .filter { it.surface == owner.surface && it.leaseHandle == owner.leaseHandle }
             .forEach { states.remove(it)?.reset() }
     }
+
+    /** Commit keeps the incoming generation's in-flight sidecar but drops every stale revision for this family. */
+    fun removeOtherGenerations(owner: FabricLeaseOwner, keeping: FabricGenerationToken) = synchronized(lock) {
+        states.keys
+            .filter { it.surface == owner.surface && it.leaseHandle == owner.leaseHandle && it != keeping }
+            .forEach { states.remove(it)?.reset() }
+    }
 }

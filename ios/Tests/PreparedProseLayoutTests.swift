@@ -839,6 +839,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(android.contains("static_cast<int64_t>(leaseHandle)"))
         XCTAssertTrue(registry.contains("leaseHandle: UInt64"))
         XCTAssertTrue(registry.contains("releaseFabricLeaseSurfaceId"))
+        XCTAssertTrue(registry.contains("permittedGenerationIdentity"))
+        XCTAssertTrue(registry.contains("activateFabricGeneration"))
         XCTAssertTrue(registry.contains("releaseFabricInvalidMeasurement"))
         XCTAssertFalse(registry.contains("retiredFabricLeaseHandles"))
         XCTAssertTrue(component.contains("installCachedLayoutInDrawingView"))
@@ -848,6 +850,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(component.contains("releaseFabricOwnershipTerminatingLease:terminal"))
         XCTAssertTrue(component.contains("if (terminal) DeactivateLease"))
         XCTAssertTrue(component.contains("releaseFabricMountMissSurfaceId"))
+        XCTAssertTrue(component.contains("activateFabricGenerationSurfaceId"))
         XCTAssertTrue(component.contains("leaseHandle:_ownedLeaseHandle"))
         XCTAssertTrue(cache.contains("$0.leaseHandle == leaseHandle"))
         XCTAssertTrue(cache.contains("fabricGenerations(for surface"))
@@ -923,7 +926,49 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(jni.contains("registerNativeLease"))
         XCTAssertTrue(jni.contains("releaseNativeLease"))
         XCTAssertTrue(jni.contains("facebook::jni::ThreadScope"))
+        XCTAssertTrue(jni.contains("Every object allocation, class lookup, and Java invocation below can run"))
+        XCTAssertTrue(jni.contains("Still inside ThreadScope"))
         XCTAssertTrue(jni.contains("std::to_string(static_cast<int64_t>(leaseHandle))"))
+    }
+
+    func testFabricCommitPermitsOnlyItsCanonicalGeneration() {
+        let registry = PreparedProseLayoutRegistry(
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(key: key, size: CGSize(width: width, height: 20), blocks: [], retainedBytes: 1)
+            }
+        )
+        let first = request(source: "{\"type\":\"doc\",\"content\":[]}")
+        let second = request(source: "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\"}]}")
+        let surface = FabricSurfaceToken(surfaceId: 41, componentTag: 410)
+        let handle: UInt64 = 41
+        let g1 = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry),
+            leaseHandle: handle
+        )
+        let g2 = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(second, registry: registry),
+            leaseHandle: handle
+        )
+
+        // Both may prepare before a component commit has selected a winner.
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: handle)
+        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: handle)
+        registry.activateFabricGeneration(g2)
+
+        XCTAssertEqual(
+            registry.permittedFabricGenerationForTesting(FabricLeaseOwner(surface: surface, leaseHandle: handle)),
+            g2.generationIdentity
+        )
+        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(g1))
+        XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry, leaseHandle: handle))
+        XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry, leaseHandle: handle))
+
+        // A late G1 callback cannot recreate ownership after G2 commits.
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: handle)
+        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(g1))
     }
 
 #if DEBUG
