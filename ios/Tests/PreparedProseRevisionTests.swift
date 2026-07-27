@@ -140,24 +140,18 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertEqual(state.revision, 1)
     }
 
-    @MainActor
     func testMountedPixelOwnershipCountsOnlySurfaceMapEntries() {
-        let drawing = PreparedProseDrawingView()
-        let image = UIImage()
-        drawing.imagePixels = ["first": image, "second": image]
         XCTAssertEqual(
             PreparedProseDrawingView.imagePixelMapRetainedBytes
                 + PreparedProseDrawingView.imagePixelEntryRetainedBytes * 2,
-            drawing.retainedImagePixelsBytesForTesting
+            PreparedProseDrawingView.retainedImagePixelMappingBytes(entryCount: 2)
         )
-        drawing.imagePixels = ["replacement": UIImage()]
         XCTAssertEqual(
             PreparedProseDrawingView.imagePixelMapRetainedBytes
                 + PreparedProseDrawingView.imagePixelEntryRetainedBytes,
-            drawing.retainedImagePixelsBytesForTesting
+            PreparedProseDrawingView.retainedImagePixelMappingBytes(entryCount: 1)
         )
-        drawing.imagePixels = [:]
-        XCTAssertEqual(drawing.retainedImagePixelsBytesForTesting, 0)
+        XCTAssertEqual(PreparedProseDrawingView.retainedImagePixelMappingBytes(entryCount: 0), 0)
     }
 
     func testFabricMeasurementScopeCannotConsultAnotherSurfaceSidecar() {

@@ -281,7 +281,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `compiler backed fixed line heights cover single final heading code list and density metrics`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"single"}]},{"type":"paragraph","content":[{"type":"text","text":"wrapped final line needs enough words to wrap at this fixed width"}]},{"type":"paragraph","content":[{"type":"text","text":"hard"},{"type":"hardBreak"},{"type":"text","text":"break"}]},{"type":"h1","content":[{"type":"text","text":"heading"}]},{"type":"codeBlock","content":[{"type":"text","text":"code"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"list leaf"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"single"}]},{"type":"paragraph","content":[{"type":"text","text":"wrapped final line needs enough words to wrap at this fixed width"}]},{"type":"paragraph","content":[{"type":"text","text":"hard"},{"type":"hardBreak"},{"type":"text","text":"break"}]},{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"heading"}]},{"type":"codeBlock","content":[{"type":"text","text":"code"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"list leaf"}]}]}]}]}""",
             Fixture.structural[1].configJson,
         )
         val densityOneTheme = PreparedProseTheme.resolve(

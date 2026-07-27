@@ -1527,7 +1527,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 0)
     }
 
-    func testLeaseBudgetCountsHandoffArtifactsAndKeepsOnlyOneOversizedLease() {
+    func testLeaseBudgetRetainsBothExactOversizedPendingHandoffsUntilMount() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 10,
             compile: { [document = self.document] _ in document },
@@ -1547,9 +1547,10 @@ final class PreparedProseLayoutTests: XCTestCase {
         _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
         _ = registry.measure(request: request, widthPoints: 120, scale: 2, fabricSurface: secondSurface)
 
-        XCTAssertEqual(registry.layoutRetainedBytesForTesting, 11)
-        XCTAssertEqual(registry.oversizedLeaseCountForTesting, 1)
-        XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+        XCTAssertEqual(registry.layoutRetainedBytesForTesting, 22)
+        XCTAssertEqual(registry.oversizedLeaseCountForTesting, 2)
+        XCTAssertEqual(registry.fabricLeaseCountForTesting, 2)
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
         XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry, width: 120))
     }
 
@@ -1597,16 +1598,17 @@ final class PreparedProseLayoutTests: XCTestCase {
 
         _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
         _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: secondSurface)
-        XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
 
         registry.releaseFabricMountMiss(
             FabricGenerationToken(
                 surface: firstSurface,
-                generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry)
+                generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry),
+                leaseHandle: 1
             ),
             widthPoints: 160,
             scale: 2
         )
+        XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
         XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry))
         _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
 

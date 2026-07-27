@@ -18,12 +18,7 @@ public final class PreparedProseDrawingView: UIView {
     /// This map owns only mapping/reference overhead. The shared native image
     /// cache is the sole owner charged for a decoded CGImage allocation.
     internal var retainedImagePixelsBytesForTesting: Int {
-        guard !imagePixels.isEmpty else { return 0 }
-        var retained = Self.imagePixelMapRetainedBytes
-        for _ in imagePixels.values {
-            retained = Self.saturatingAdd(retained, Self.imagePixelEntryRetainedBytes)
-        }
-        return retained
+        Self.retainedImagePixelMappingBytes(entryCount: imagePixels.count)
     }
     internal var preparedSurfaceRetainedBytesForTesting: Int {
         Self.saturatingAdd(
@@ -33,6 +28,13 @@ public final class PreparedProseDrawingView: UIView {
     }
     internal static let imagePixelMapRetainedBytes = 48
     internal static let imagePixelEntryRetainedBytes = 48
+    internal static func retainedImagePixelMappingBytes(entryCount: Int) -> Int {
+        guard entryCount > 0 else { return 0 }
+        return saturatingAdd(
+            imagePixelMapRetainedBytes,
+            saturatingMultiply(entryCount, imagePixelEntryRetainedBytes)
+        )
+    }
     @objc public static let imageMetadataDidResolve = Notification.Name("com.apollohg.editor.viewer.imageMetadataDidResolve")
     @objc public static let imageResourceDidFail = Notification.Name("com.apollohg.editor.viewer.imageResourceDidFail")
     private lazy var imagePipeline = ViewerImagePipeline(policy: .default)
