@@ -75,13 +75,23 @@ internal fun fallbackSelectionRectForVisualRun(
     runIsRtl: Boolean,
     line: Int,
     width: Int,
+    softWrapLineEnd: Int? = null,
 ): Rect? {
     if (runStart >= runEnd) return null
 
     fun visualBoundary(offset: Int, logicalRunStart: Boolean): Float {
+        val visualRightEdge = if (runIsRtl) logicalRunStart else !logicalRunStart
+        // A soft-wrap terminal offset is also the following line's start.
+        // Layout's horizontal lookup therefore resolves it on that following
+        // line. The current line's matching visual extreme is the exact
+        // trailing boundary for this Bidi run. Keep ordinary primary/secondary
+        // affinity lookup for a current-line start and for the final document
+        // boundary, neither of which has this ambiguous line ownership.
+        if (!logicalRunStart && offset == softWrapLineEnd) {
+            return if (visualRightEdge) layout.getLineRight(line) else layout.getLineLeft(line)
+        }
         val primary = layout.getPrimaryHorizontal(offset)
         val secondary = layout.getSecondaryHorizontal(offset)
-        val visualRightEdge = if (runIsRtl) logicalRunStart else !logicalRunStart
         return if (visualRightEdge) max(primary, secondary) else min(primary, secondary)
     }
 
@@ -115,6 +125,12 @@ internal fun fallbackSelectionRectsForLine(
         rawLineEnd <= layout.text.length &&
         layout.text[rawLineEnd - 1] == '\n'
     ) rawLineEnd - 1 else rawLineEnd
+    val softWrapLineEnd = rawLineEnd.takeIf {
+        lineEnd == rawLineEnd &&
+            rawLineEnd < layout.text.length &&
+            line + 1 < layout.lineCount &&
+            layout.getLineStart(line + 1) == rawLineEnd
+    }
     val selectedStart = maxOf(start, lineStart).coerceAtMost(lineEnd)
     val selectedEnd = minOf(end, lineEnd).coerceAtLeast(lineStart)
     if (selectedStart >= selectedEnd || lineStart >= lineEnd) return emptyList()
@@ -138,6 +154,7 @@ internal fun fallbackSelectionRectsForLine(
             runIsRtl = (bidi.getRunLevel(run) and 1) == 1,
             line = line,
             width = width,
+            softWrapLineEnd = softWrapLineEnd,
         )?.let(fragments::add)
     }
     return fragments

@@ -131,6 +131,38 @@ class PreparedProseAccessibilityTest {
     }
 
     @Test
+    fun `fallback keeps a soft-wrap terminal LTR selection on its current line`() {
+        val width = 72
+        val layout = layoutFor(
+            text = "alphabetical words continue onto a second visual line",
+            width = width,
+        )
+        val line = 0
+        val lineStart = layout.getLineStart(line)
+        val lineEnd = layout.getLineEnd(line)
+
+        assertTrue(lineEnd < layout.text.length)
+        assertEquals(lineEnd, layout.getLineStart(line + 1))
+
+        val rect = fallbackSelectionRectsForLine(
+            layout = layout,
+            start = lineStart,
+            end = lineEnd,
+            line = line,
+            width = width,
+        ).single()
+
+        assertEquals(layout.getLineTop(line), rect.top)
+        assertEquals(layout.getLineBottom(line), rect.bottom)
+        assertEquals(
+            ceil(layout.getLineRight(line)).toInt().coerceIn(0, width),
+            rect.right,
+        )
+        assertTrue(rect.right > rect.left)
+        assertTrue(rect.bottom <= layout.getLineTop(line + 1))
+    }
+
+    @Test
     fun `Fabric-equivalent prepared replacement announces one subtree change and preserves focus clear`() {
         val context = RuntimeEnvironment.getApplication()
         val view = PreparedProseDrawingView(context)
