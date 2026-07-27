@@ -56,7 +56,8 @@ Size PreparedProseMeasurementsManager::measure(
     uint64_t nativeFontRevision,
     double nativeFontScale,
     uint64_t /*fontEnvironmentRevision*/,
-    uint64_t leaseHandle) const {
+    uint64_t leaseHandle,
+    const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& /*leaseLifecycle*/) const {
   const auto& fabricUIManager =
       contextContainer_->at<jni::global_ref<jobject>>("FabricUIManager");
   static auto measure = facebook::jni::findClassStatic(

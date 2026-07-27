@@ -17,6 +17,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     private struct FabricMeasurementCancelled: Error {}
 
+    /// This record exists only while a measurement is executing. A release
+    /// marks it cancelled so post-layout ownership cannot be republished;
+    /// `endFabricMeasure` removes it when the final in-flight callback exits.
+    private struct FabricMeasurementState {
+        var count = 0
+        var cancelled = false
+    }
+
     private let lock = NSLock()
     private let compiledCondition = NSCondition()
     private var compiledDocuments: [String: ViewerDocument] = [:]
@@ -30,11 +38,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private var themeAccessOrder: [String] = []
     private var themeOwners: [FabricGenerationToken: String] = [:]
     private var themeOwnerCounts: [String: Int] = [:]
-    /// A handle is minted in the Fabric shadow-node state and never reused.
-    /// Retiring it makes every delayed measure/mount/release a no-op without
-    /// consulting whichever incarnation happens to be current.
-    private var retiredFabricLeaseHandles = Set<UInt64>()
-    private var fabricMeasurementsInFlight: [FabricGenerationToken: Int] = [:]
+    private var fabricMeasurementsInFlight: [FabricGenerationToken: FabricMeasurementState] = [:]
     private var fabricOwnershipRevisions: [FabricGenerationToken: UInt64] = [:]
     private var themesRetainedBytes = 0
     private var compiledRetainedBytes = 0
@@ -188,7 +192,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             )
         }
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
-            if let generation { releaseFabricGeneration(generation) }
+            if let generation { releaseFabricInvalidMeasurement(generation) }
             return invalidWidthArtifact(
                 request: request,
                 scale: scale,
@@ -209,14 +213,17 @@ public final class PreparedProseLayoutRegistry: NSObject {
         let canonicalWidth = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
         // Yoga can prepare before a component view exists. Reset the matching
         // surface sidecar before Core Text asks for intrinsic fallback.
-        let imageMeasurementState = fabricSurface.map {
+        let imageMeasurementState = generation.map {
             FabricAttachmentSidecars.begin(
-                $0,
+                $0.surface,
                 leaseHandle: fabricLeaseHandle,
                 semanticIdentity: request.semanticGenerationIdentity
             )
         } ?? measurementImageState
         do {
+            if let generation, !isFabricLeaseActive(generation) {
+                throw FabricMeasurementCancelled()
+            }
             let document = try preparedDocument(
                 request: request,
                 compiledDocument: compiledDocument,
@@ -274,6 +281,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             }
             return layout
         } catch is FabricMeasurementCancelled {
+            if let generation { discardCancelledFabricMeasurement(generation, widthPixels: widthPixels, scale: scale) }
             return invalidWidthArtifact(
                 request: request,
                 scale: scale,
@@ -356,7 +364,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
             request: request,
             widthPoints: widthPoints,
             scale: scale,
-            fabricSurface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
+            fabricSurface: leaseHandle == 0
+                ? nil
+                : FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
             fabricLeaseHandle: leaseHandle
         ).size
     }
@@ -515,16 +525,20 @@ public final class PreparedProseLayoutRegistry: NSObject {
     }
 
     func releaseFabricSurface(_ surface: FabricSurfaceToken) {
+        let cachedGenerations = layoutCache.fabricGenerations(for: surface)
         compiledCondition.lock()
         let generations = Set(fabricMeasurementsInFlight.keys)
             .union(fabricOwnershipRevisions.keys)
             .union(documentsByFabricGeneration.keys)
             .union(failuresByFabricGeneration.keys)
+            .union(cachedGenerations)
             .filter { $0.surface == surface }
-        for generation in generations where generation.leaseHandle != 0 {
-            retiredFabricLeaseHandles.insert(generation.leaseHandle)
+        for generation in generations {
+            cancelFabricMeasurementLocked(generation)
         }
-        fabricMeasurementsInFlight = fabricMeasurementsInFlight.filter { $0.key.surface != surface }
+        // Keep cancelled in-flight callbacks until their defer path exits.
+        // Removing them here would let an already-running stale measure pin
+        // compiler/theme ownership again after surface shutdown.
         fabricOwnershipRevisions = fabricOwnershipRevisions.filter { $0.key.surface != surface }
         documentsByFabricGeneration = documentsByFabricGeneration.filter { $0.key.surface != surface }
         failuresByFabricGeneration = failuresByFabricGeneration.filter { $0.key.surface != surface }
@@ -538,16 +552,62 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     func releaseFabricGeneration(_ generation: FabricGenerationToken) {
         compiledCondition.lock()
-        if generation.leaseHandle != 0 {
-            retiredFabricLeaseHandles.insert(generation.leaseHandle)
-        }
-        fabricMeasurementsInFlight.removeValue(forKey: generation)
+        cancelFabricMeasurementLocked(generation)
         fabricOwnershipRevisions.removeValue(forKey: generation)
         documentsByFabricGeneration.removeValue(forKey: generation)
         failuresByFabricGeneration.removeValue(forKey: generation)
         releaseThemeOwnership(for: generation)
         compiledCondition.unlock()
         layoutCache.releaseLease(
+            for: generation.surface,
+            generationIdentity: generation.generationIdentity,
+            leaseHandle: generation.leaseHandle
+        )
+        FabricAttachmentSidecars.remove(generation.surface, leaseHandle: generation.leaseHandle)
+    }
+
+    /// Called by the Objective-C++ measurement bridge when a state-owned
+    /// lifecycle is cancelled while its synchronous registry call is running.
+    /// It intentionally identifies ownership by the opaque handle alone: the
+    /// stale callback may have completed after a new revision changed the
+    /// generation digest, but it can never affect another handle.
+    @objc(releaseFabricLeaseSurfaceId:componentTag:leaseHandle:)
+    public func releaseFabricLease(
+        surfaceId: Int64,
+        componentTag: Int64,
+        leaseHandle: UInt64
+    ) {
+        guard leaseHandle != 0 else { return }
+        let surface = FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag)
+        compiledCondition.lock()
+        let generations = Set(fabricMeasurementsInFlight.keys)
+            .union(fabricOwnershipRevisions.keys)
+            .union(documentsByFabricGeneration.keys)
+            .union(failuresByFabricGeneration.keys)
+            .filter { $0.surface == surface && $0.leaseHandle == leaseHandle }
+        for generation in generations {
+            cancelFabricMeasurementLocked(generation)
+            fabricOwnershipRevisions.removeValue(forKey: generation)
+            documentsByFabricGeneration.removeValue(forKey: generation)
+            failuresByFabricGeneration.removeValue(forKey: generation)
+            releaseThemeOwnership(for: generation)
+        }
+        compiledCondition.unlock()
+        layoutCache.releaseLease(for: surface, leaseHandle: leaseHandle)
+        FabricAttachmentSidecars.remove(surface, leaseHandle: leaseHandle)
+    }
+
+    /// An invalid width did not create a new handoff. Clean up only pending
+    /// work for the exact state-carried handle, preserving both its lifecycle
+    /// and any mounted layout so a later valid width can reuse the same token.
+    private func releaseFabricInvalidMeasurement(_ generation: FabricGenerationToken) {
+        compiledCondition.lock()
+        fabricOwnershipRevisions.removeValue(forKey: generation)
+        documentsByFabricGeneration.removeValue(forKey: generation)
+        failuresByFabricGeneration.removeValue(forKey: generation)
+        releaseThemeOwnership(for: generation)
+        compiledCondition.unlock()
+        layoutCache.releasePendingLeases(
             for: generation.surface,
             generationIdentity: generation.generationIdentity,
             leaseHandle: generation.leaseHandle
@@ -590,10 +650,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         // release the condition and establishes its own ownership afresh.
         compiledCondition.lock()
         guard !hasSurvivingLease,
-              fabricMeasurementsInFlight[
-                  generation,
-                  default: 0
-              ] == 0,
+              (fabricMeasurementsInFlight[generation]?.count ?? 0) == 0,
               fabricOwnershipRevisions[generation, default: 0] == ownershipRevision,
               isFabricLeaseActiveLocked(generation)
         else {
@@ -682,18 +739,29 @@ public final class PreparedProseLayoutRegistry: NSObject {
             compiledCondition.unlock()
             return false
         }
-        fabricMeasurementsInFlight[generation, default: 0] += 1
+        var state = fabricMeasurementsInFlight[generation] ?? FabricMeasurementState()
+        guard !state.cancelled else {
+            compiledCondition.unlock()
+            return false
+        }
+        state.count += 1
+        fabricMeasurementsInFlight[generation] = state
         compiledCondition.unlock()
         return true
     }
 
     private func endFabricMeasure(_ generation: FabricGenerationToken) {
         compiledCondition.lock()
-        let remaining = max(0, fabricMeasurementsInFlight[generation, default: 1] - 1)
+        guard var state = fabricMeasurementsInFlight[generation] else {
+            compiledCondition.unlock()
+            return
+        }
+        let remaining = max(0, state.count - 1)
         if remaining == 0 {
             fabricMeasurementsInFlight.removeValue(forKey: generation)
         } else {
-            fabricMeasurementsInFlight[generation] = remaining
+            state.count = remaining
+            fabricMeasurementsInFlight[generation] = state
         }
         compiledCondition.unlock()
     }
@@ -706,7 +774,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     /// Caller must hold `compiledCondition`.
     private func isFabricLeaseActiveLocked(_ generation: FabricGenerationToken) -> Bool {
-        generation.leaseHandle != 0 && !retiredFabricLeaseHandles.contains(generation.leaseHandle)
+        generation.leaseHandle != 0 && !(fabricMeasurementsInFlight[generation]?.cancelled ?? false)
+    }
+
+    /// Caller must hold `compiledCondition`.
+    private func cancelFabricMeasurementLocked(_ generation: FabricGenerationToken) {
+        guard var state = fabricMeasurementsInFlight[generation] else { return }
+        state.cancelled = true
+        fabricMeasurementsInFlight[generation] = state
     }
 
     private func retireStaleFabricLease(
@@ -721,6 +796,16 @@ public final class PreparedProseLayoutRegistry: NSObject {
             displayScale: scale,
             leaseHandle: generation.leaseHandle
         )
+        FabricAttachmentSidecars.remove(generation.surface, leaseHandle: generation.leaseHandle)
+    }
+
+    private func discardCancelledFabricMeasurement(
+        _ generation: FabricGenerationToken,
+        widthPixels: Int,
+        scale: CGFloat
+    ) {
+        retireStaleFabricLease(generation, widthPixels: widthPixels, scale: scale)
+        FabricAttachmentSidecars.remove(generation.surface, leaseHandle: generation.leaseHandle)
     }
 
     private func layoutKey(

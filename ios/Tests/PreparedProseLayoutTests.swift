@@ -813,17 +813,38 @@ final class PreparedProseLayoutTests: XCTestCase {
         let registry = try source("ios/Viewer/PreparedProseLayoutRegistry.swift")
         let component = try source("ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm")
         let cache = try source("ios/Viewer/PreparedProseLayoutCache.swift")
+        let android = try source("android/src/main/jni/PreparedProseViewerMeasurementsManager.cpp")
 
         XCTAssertTrue(state.contains("uint64_t leaseHandle{0}"))
+        XCTAssertTrue(state.contains("previousState.leaseHandle"))
+        XCTAssertTrue(state.contains("if (data.count(key) == 0)"))
+        XCTAssertTrue(state.contains("return fallback;"))
+        XCTAssertTrue(state.contains("leaseLifecycle"))
         XCTAssertTrue(shadow.contains("NextFabricLeaseHandle"))
-        XCTAssertTrue(shadow.contains("leaseHandle);"))
+        XCTAssertTrue(shadow.contains("initialStateData"))
+        XCTAssertTrue(shadow.contains("state.leaseHandle = NextFabricLeaseHandle()"))
+        XCTAssertLessThan(
+            shadow.range(of: "initialStateData")!.lowerBound,
+            shadow.range(of: "measureContent")!.lowerBound
+        )
+        XCTAssertFalse(shadow.contains("updateState("))
+        XCTAssertFalse(shadow.contains("PendingLeaseHandles"))
+        XCTAssertFalse(shadow.contains("ShadowNodeFamily*"))
         XCTAssertTrue(manager.contains("leaseHandle:leaseHandle"))
+        XCTAssertTrue(manager.contains("!leaseLifecycle->isActive()"))
+        XCTAssertTrue(android.contains("leaseHandle,"))
         XCTAssertTrue(registry.contains("leaseHandle: UInt64"))
+        XCTAssertTrue(registry.contains("releaseFabricLeaseSurfaceId"))
+        XCTAssertTrue(registry.contains("releaseFabricInvalidMeasurement"))
+        XCTAssertFalse(registry.contains("retiredFabricLeaseHandles"))
         XCTAssertTrue(component.contains("installCachedLayoutInDrawingView"))
+        XCTAssertTrue(component.contains("const auto leaseHandle = LeaseHandle(_viewerState)"))
         XCTAssertTrue(component.contains("leaseHandle:leaseHandle"))
+        XCTAssertTrue(component.contains("DeactivateLease(_viewerState, leaseHandle)"))
         XCTAssertTrue(component.contains("releaseFabricMountMissSurfaceId"))
         XCTAssertTrue(component.contains("leaseHandle:_ownedLeaseHandle"))
         XCTAssertTrue(cache.contains("$0.leaseHandle == leaseHandle"))
+        XCTAssertTrue(cache.contains("fabricGenerations(for surface"))
         XCTAssertFalse(cache.contains(".max(by: { $0.epoch < $1.epoch })"))
     }
 
@@ -912,6 +933,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.fabricLeaseCountForTesting, 0)
         XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(generation))
         XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
+        XCTAssertNil(FabricAttachmentSidecars.state(for: surface, leaseHandle: generation.leaseHandle))
 
         let fresh = registry.measure(
             request: request,
@@ -932,7 +954,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(freshGeneration))
     }
 
-    func testInvalidFabricWidthReleasesOnlyItsGenerationOwnership() {
+    func testInvalidFabricWidthReleasesOwnershipButRetainsLifecycleHandleForLaterValidMeasure() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
             compile: { [document = self.document] _ in document },
@@ -966,6 +988,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(generation))
         XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
         XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
         XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(otherGeneration))
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(otherGeneration))
         XCTAssertTrue(install(otherRequest, in: PreparedProseDrawingView(frame: .zero), surface: otherSurface, registry: registry, width: 120))
@@ -1126,6 +1150,28 @@ final class PreparedProseLayoutTests: XCTestCase {
         registry.didReceiveMemoryWarning()
 
         XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+    }
+
+    func testMemoryWarningThenSurfaceReleaseRemovesCacheDiscoveredMountedLease() {
+        let registry = makeRegistry { document, key, width, scale in
+            try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+
+        registry.didReceiveMemoryWarning()
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 1)
+        registry.releaseFabricSurface(surface)
+
+        XCTAssertEqual(registry.fabricLeaseCountForTesting, 0)
+        XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 0)
     }
 
     func testLeaseBudgetCountsHandoffArtifactsAndKeepsOnlyOneOversizedLease() {

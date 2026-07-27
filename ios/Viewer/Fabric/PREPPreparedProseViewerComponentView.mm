@@ -71,6 +71,14 @@ uint64_t LeaseHandle(const PreparedProseViewerShadowNode::ConcreteState::Shared 
   return state ? state->getData().leaseHandle : 0;
 }
 
+void DeactivateLease(
+    const PreparedProseViewerShadowNode::ConcreteState::Shared &state,
+    uint64_t leaseHandle) {
+  if (!state || state->getData().leaseHandle != leaseHandle) return;
+  const auto &lifecycle = state->getData().leaseLifecycle;
+  if (lifecycle) lifecycle->deactivate();
+}
+
 uint64_t ScaleBits(CGFloat scale) {
   const double value = scale;
   uint64_t bits = 0;
@@ -259,7 +267,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   const auto nextState = std::static_pointer_cast<const PreparedProseViewerShadowNode::ConcreteState>(state);
   if (!_viewerState || Revision(_viewerState, true) != Revision(nextState, true) ||
       Revision(_viewerState, false) != Revision(nextState, false) ||
-      NativeFontScale(_viewerState) != NativeFontScale(nextState)) {
+      NativeFontScale(_viewerState) != NativeFontScale(nextState) ||
+      LeaseHandle(_viewerState) != LeaseHandle(nextState)) {
     [self beginNewGeneration];
   }
   _viewerState = nextState;
@@ -352,25 +361,26 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 
 - (void)releaseFabricOwnership
 {
+  // A Yoga handoff can exist before this component has acquired it. Recycling
+  // still terminates that exact state incarnation so a delayed first mount or
+  // measure cannot turn the orphaned handoff into new retained ownership.
+  const auto stateLeaseHandle = LeaseHandle(_viewerState);
+  if (stateLeaseHandle != 0) {
+    DeactivateLease(_viewerState, stateLeaseHandle);
+  }
   if (!_hasOwnedSurface || !_ownedGeneration) {
     return;
   }
   const auto leaseHandle = _ownedLeaseHandle;
+  // Deactivate the state-owned incarnation before touching the registry. Any
+  // delayed Yoga snapshot sharing this state can now produce only an unowned
+  // bounded cache artifact, never a new Fabric lease or image sidecar.
+  DeactivateLease(_viewerState, leaseHandle);
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
       releaseFabricGenerationSurfaceId:_ownedSurfaceId
                           componentTag:_ownedComponentTag
                     generationIdentity:_ownedGeneration
                         leaseHandle:leaseHandle];
-  if (_viewerState && leaseHandle != 0) {
-    _viewerState->updateState(
-        [leaseHandle](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
-            -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
-          if (oldData.leaseHandle != leaseHandle) return nullptr;
-          auto nextData = oldData;
-          nextData.leaseHandle = 0;
-          return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
-        });
-  }
   _hasOwnedSurface = NO;
   _ownedGeneration = nil;
   _ownedLeaseHandle = 0;

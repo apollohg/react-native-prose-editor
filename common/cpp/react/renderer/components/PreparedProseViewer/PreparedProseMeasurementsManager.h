@@ -4,6 +4,7 @@
 #include <memory>
 
 #include <react/renderer/components/ReactNativeProseEditorSpec/Props.h>
+#include <react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h>
 #include <react/renderer/core/LayoutConstraints.h>
 #include <react/renderer/core/ReactPrimitives.h>
 #include <react/utils/ContextContainer.h>
@@ -26,7 +27,8 @@ class PreparedProseMeasurementsManager {
       uint64_t nativeFontRevision,
       double nativeFontScale,
       uint64_t fontEnvironmentRevision,
-      uint64_t leaseHandle) const;
+      uint64_t leaseHandle,
+      const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const;
 
  private:
   const ContextContainer::Shared contextContainer_;

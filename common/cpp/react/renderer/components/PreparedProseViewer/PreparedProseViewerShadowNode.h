@@ -9,6 +9,8 @@
 
 namespace facebook::react {
 
+class ComponentDescriptor;
+
 extern const char PreparedProseViewerComponentName[];
 
 class PreparedProseViewerShadowNode final
@@ -21,6 +23,11 @@ class PreparedProseViewerShadowNode final
   using ConcreteViewShadowNode::ConcreteViewShadowNode;
 
   static ShadowNodeTraits BaseTraits();
+
+  static ConcreteStateData initialStateData(
+      const Props::Shared& props,
+      const ShadowNodeFamily::Shared& family,
+      const ComponentDescriptor& componentDescriptor);
 
   void setMeasurementsManager(
       const std::shared_ptr<PreparedProseMeasurementsManager>&

@@ -237,6 +237,44 @@ final class PreparedProseLayoutCache {
         }
     }
 
+    /// Invalid Yoga widths have no physical-layout key to retire. They can
+    /// discard only this incarnation's unmounted handoffs; a currently drawn
+    /// artifact remains visible until a valid replacement mounts.
+    func releasePendingLeases(
+        for surface: FabricSurfaceToken,
+        generationIdentity: String,
+        leaseHandle: UInt64
+    ) {
+        condition.lock()
+        pendingLeases.keys
+            .filter {
+                $0.surface == surface &&
+                    $0.layout.generationIdentity == generationIdentity &&
+                    $0.leaseHandle == leaseHandle
+            }
+            .forEach(removePendingLeaseLocked)
+        retireUnownedPublicationKeysLocked()
+        publishOwnerBytesLocked()
+        condition.unlock()
+    }
+
+    /// Surface shutdown must release mounted artifacts even after memory
+    /// pressure has already cleared registry compiler ownership. Return the
+    /// exact lease identities before mutating this bounded cache.
+    func fabricGenerations(for surface: FabricSurfaceToken) -> Set<FabricGenerationToken> {
+        condition.lock()
+        defer { condition.unlock() }
+        return Set((Array(pendingLeases.keys) + Array(mountedLeases.keys))
+            .filter { $0.surface == surface }
+            .map {
+                FabricGenerationToken(
+                    surface: $0.surface,
+                    generationIdentity: $0.layout.generationIdentity,
+                    leaseHandle: $0.leaseHandle
+                )
+            })
+    }
+
     func registerDirectMount(_ owner: String, layout: PreparedProseLayout) {
         condition.lock(); directMounted[owner] = layout; retireUnownedPublicationKeysLocked(); publishOwnerBytesLocked(); condition.unlock()
     }
