@@ -909,7 +909,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(component.contains("leaseHandle:leaseHandle"))
         XCTAssertTrue(component.contains("beginNewGenerationTerminatingCurrentLease:NO"))
         XCTAssertTrue(component.contains("releaseFabricOwnershipTerminatingLease:terminal"))
-        XCTAssertTrue(component.contains("if (terminal) DeactivateLease"))
+        XCTAssertTrue(component.contains("if (terminal) {"))
+        XCTAssertTrue(component.contains("DeactivateLease(_viewerState, stateLeaseHandle)"))
         XCTAssertTrue(component.contains("releaseFabricMountMissSurfaceId"))
         XCTAssertTrue(component.contains("activateFabricGenerationSurfaceId"))
         XCTAssertTrue(component.contains("leaseHandle:_ownedLeaseHandle"))
@@ -985,7 +986,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(cache.contains("completed[mountIndex"))
         XCTAssertTrue(jni.contains("getStaticMethod<void(jlong)>(\"beginNativeMeasure\")"))
         XCTAssertTrue(jni.contains("registerNativeLease"))
-        XCTAssertTrue(jni.contains("releaseNativeLease"))
+        XCTAssertTrue(jni.contains("finalizeNativeLease"))
         XCTAssertTrue(jni.contains("global_ref<facebook::jni::JClass>"))
         XCTAssertFalse(jni.contains("alias_ref<facebook::jni::JClass>"))
         XCTAssertTrue(jni.contains("make_global"))
@@ -1231,6 +1232,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(freshGeneration))
     }
 
+    @MainActor
     func testInvalidFabricWidthPreservesMountedOwnershipAndLaterValidReplacement() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -1248,18 +1250,19 @@ final class PreparedProseLayoutTests: XCTestCase {
         let otherRequest = request(source: "other")
         let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
         let otherSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
-        let generation = FabricGenerationToken(
-            surface: surface,
-            generationIdentity: canonicalFabricGenerationIdentity(primaryRequest, registry: registry)
+        let generation = registerAndActivateFabricGeneration(
+            primaryRequest, surface: surface, registry: registry, leaseHandle: 101
         )
-        let otherGeneration = FabricGenerationToken(
-            surface: otherSurface,
-            generationIdentity: canonicalFabricGenerationIdentity(otherRequest, registry: registry)
+        let otherGeneration = registerAndActivateFabricGeneration(
+            otherRequest, surface: otherSurface, registry: registry, leaseHandle: 201
         )
 
-        let mounted = registry.measure(request: primaryRequest, widthPoints: 160, scale: 2, fabricSurface: surface)
+        let mounted = registry.measure(
+            request: primaryRequest, widthPoints: 160, scale: 2,
+            fabricSurface: surface, fabricLeaseHandle: generation.leaseHandle
+        )
         let mountedView = PreparedProseDrawingView(frame: .zero)
-        XCTAssertTrue(install(primaryRequest, in: mountedView, surface: surface, registry: registry))
+        XCTAssertTrue(install(primaryRequest, in: mountedView, surface: surface, registry: registry, leaseHandle: generation.leaseHandle))
         XCTAssertTrue(mountedView.layout === mounted)
         guard let sidecar = FabricAttachmentSidecars.state(
             for: generation.surface,
@@ -1267,8 +1270,14 @@ final class PreparedProseLayoutTests: XCTestCase {
         ) else {
             return XCTFail("The mounted Fabric generation should retain its attachment sidecar.")
         }
-        _ = registry.measure(request: otherRequest, widthPoints: 120, scale: 2, fabricSurface: otherSurface)
-        let invalid = registry.measure(request: primaryRequest, widthPoints: 0, scale: 2, fabricSurface: surface)
+        _ = registry.measure(
+            request: otherRequest, widthPoints: 120, scale: 2,
+            fabricSurface: otherSurface, fabricLeaseHandle: otherGeneration.leaseHandle
+        )
+        let invalid = registry.measure(
+            request: primaryRequest, widthPoints: 0, scale: 2,
+            fabricSurface: surface, fabricLeaseHandle: generation.leaseHandle
+        )
 
         XCTAssertEqual(invalid.error?.code, "INVALID_WIDTH")
         XCTAssertTrue(mountedView.layout === mounted)
@@ -1280,12 +1289,15 @@ final class PreparedProseLayoutTests: XCTestCase {
                 leaseHandle: generation.leaseHandle
             ) === sidecar
         )
-        let replacement = registry.measure(request: primaryRequest, widthPoints: 140, scale: 2, fabricSurface: surface)
-        XCTAssertTrue(install(primaryRequest, in: mountedView, surface: surface, registry: registry, width: 140))
+        let replacement = registry.measure(
+            request: primaryRequest, widthPoints: 140, scale: 2,
+            fabricSurface: surface, fabricLeaseHandle: generation.leaseHandle
+        )
+        XCTAssertTrue(install(primaryRequest, in: mountedView, surface: surface, registry: registry, width: 140, leaseHandle: generation.leaseHandle))
         XCTAssertTrue(mountedView.layout === replacement)
         XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(otherGeneration))
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(otherGeneration))
-        XCTAssertTrue(install(otherRequest, in: PreparedProseDrawingView(frame: .zero), surface: otherSurface, registry: registry, width: 120))
+        XCTAssertTrue(install(otherRequest, in: PreparedProseDrawingView(frame: .zero), surface: otherSurface, registry: registry, width: 120, leaseHandle: otherGeneration.leaseHandle))
     }
 
     func testReleasedFabricCompileFailureCannotResurrectFailureOwnership() {
@@ -1325,6 +1337,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
     }
 
+    @MainActor
     func testExactFabricMountMissCleanupPreservesOtherSurfaceAndGenerationLeases() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -1343,23 +1356,27 @@ final class PreparedProseLayoutTests: XCTestCase {
         let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
         let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
 
-        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
-        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: secondSurface)
-        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
-        registry.releaseFabricMountMiss(
-            FabricGenerationToken(
-                surface: firstSurface,
-                generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry)
-            ),
-            widthPoints: 160,
-            scale: 2
+        let firstGeneration = registerAndActivateFabricGeneration(
+            first, surface: firstSurface, registry: registry, leaseHandle: 101
+        )
+        let otherSurfaceGeneration = registerAndActivateFabricGeneration(
+            first, surface: secondSurface, registry: registry, leaseHandle: 201
+        )
+        let replacementGeneration = registerAndActivateFabricGeneration(
+            second, surface: firstSurface, registry: registry, leaseHandle: 102
         )
 
-        XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
-        XCTAssertTrue(install(first, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry))
-        XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: firstSurface, fabricLeaseHandle: firstGeneration.leaseHandle)
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: secondSurface, fabricLeaseHandle: otherSurfaceGeneration.leaseHandle)
+        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: firstSurface, fabricLeaseHandle: replacementGeneration.leaseHandle)
+        registry.releaseFabricMountMiss(firstGeneration, widthPoints: 160, scale: 2)
+
+        XCTAssertFalse(install(first, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry, leaseHandle: firstGeneration.leaseHandle))
+        XCTAssertTrue(install(first, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry, leaseHandle: otherSurfaceGeneration.leaseHandle))
+        XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry, leaseHandle: replacementGeneration.leaseHandle))
     }
 
+    @MainActor
     func testFabricWidthLeaseReplacementLeavesOtherSurfacesAndGenerationsOwned() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -1378,21 +1395,32 @@ final class PreparedProseLayoutTests: XCTestCase {
         let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
         let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
 
-        _ = registry.measure(request: firstGeneration, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+        let firstSurfaceGeneration = registerAndActivateFabricGeneration(
+            firstGeneration, surface: firstSurface, registry: registry, leaseHandle: 101
+        )
+        let secondSurfaceGeneration = registerAndActivateFabricGeneration(
+            firstGeneration, surface: secondSurface, registry: registry, leaseHandle: 201
+        )
+        let replacementGeneration = registerAndActivateFabricGeneration(
+            secondGeneration, surface: firstSurface, registry: registry, leaseHandle: 102
+        )
+        _ = registry.measure(request: firstGeneration, widthPoints: 160, scale: 2, fabricSurface: firstSurface, fabricLeaseHandle: firstSurfaceGeneration.leaseHandle)
         XCTAssertTrue(
             install(
                 firstGeneration,
                 in: PreparedProseDrawingView(frame: .zero),
                 surface: firstSurface,
-                registry: registry
+                registry: registry,
+                leaseHandle: firstSurfaceGeneration.leaseHandle
             )
         )
-        _ = registry.measure(request: firstGeneration, widthPoints: 120, scale: 2, fabricSurface: secondSurface)
+        _ = registry.measure(request: firstGeneration, widthPoints: 120, scale: 2, fabricSurface: secondSurface, fabricLeaseHandle: secondSurfaceGeneration.leaseHandle)
         let replacement = registry.measure(
             request: secondGeneration,
             widthPoints: 140,
             scale: 2,
-            fabricSurface: firstSurface
+            fabricSurface: firstSurface,
+            fabricLeaseHandle: replacementGeneration.leaseHandle
         )
 
         let replacementView = PreparedProseDrawingView(frame: .zero)
@@ -1402,7 +1430,8 @@ final class PreparedProseLayoutTests: XCTestCase {
                 in: replacementView,
                 surface: firstSurface,
                 registry: registry,
-                width: 140
+                width: 140,
+                leaseHandle: replacementGeneration.leaseHandle
             )
         )
         XCTAssertTrue(replacementView.layout === replacement)
@@ -1417,7 +1446,8 @@ final class PreparedProseLayoutTests: XCTestCase {
                 in: PreparedProseDrawingView(frame: .zero),
                 surface: secondSurface,
                 registry: registry,
-                width: 120
+                width: 120,
+                leaseHandle: secondSurfaceGeneration.leaseHandle
             )
         )
         XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 0)
@@ -1658,15 +1688,24 @@ final class PreparedProseLayoutTests: XCTestCase {
         let otherSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
         let first = request(source: "first")
         let second = request(source: "second")
+        let firstGeneration = registerAndActivateFabricGeneration(
+            first, surface: surface, registry: registry, leaseHandle: 101
+        )
+        let otherGeneration = registerAndActivateFabricGeneration(
+            second, surface: otherSurface, registry: registry, leaseHandle: 201
+        )
 
-        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface)
-        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: otherSurface)
-        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface)
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: firstGeneration.leaseHandle)
+        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: otherSurface, fabricLeaseHandle: otherGeneration.leaseHandle)
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: firstGeneration.leaseHandle)
         XCTAssertEqual(compilations, 2)
 
         registry.releaseFabricSurface(surface)
         registry.didReceiveMemoryWarning()
-        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface)
+        let restartedGeneration = registerAndActivateFabricGeneration(
+            first, surface: surface, registry: registry, leaseHandle: 102
+        )
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: restartedGeneration.leaseHandle)
         XCTAssertEqual(compilations, 3)
     }
 
@@ -1834,6 +1873,26 @@ final class PreparedProseLayoutTests: XCTestCase {
             nativeFontRevision: request.nativeFontRevision,
             fontEnvironmentRevision: request.fontEnvironmentRevision
         ) as String
+    }
+
+    private func registerAndActivateFabricGeneration(
+        _ request: ProseViewerRequest,
+        surface: FabricSurfaceToken,
+        registry: PreparedProseLayoutRegistry,
+        leaseHandle: UInt64
+    ) -> FabricGenerationToken {
+        let generation = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry),
+            leaseHandle: leaseHandle
+        )
+        registry.registerFabricLease(
+            surfaceId: surface.surfaceId,
+            componentTag: surface.componentTag,
+            leaseHandle: leaseHandle
+        )
+        registry.activateFabricGeneration(generation)
+        return generation
     }
 
     private final class FailureRecordingDelegate: ProseViewerInteractionDelegate {
