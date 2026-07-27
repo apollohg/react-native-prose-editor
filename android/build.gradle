@@ -87,6 +87,10 @@ dependencies {
     implementation "com.squareup.okhttp3:okhttp:4.9.2"
 
     api "net.java.dev.jna:jna:5.18.1@aar"
+    // Robolectric runs generated UniFFI bindings on the host JVM. Keep the
+    // ordinary JNA JAR test-only so it supplies host jnidispatch without
+    // changing the Android AAR's native-library packaging.
+    testRuntimeOnly "net.java.dev.jna:jna:5.18.1"
 
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.robolectric:robolectric:4.14.1"

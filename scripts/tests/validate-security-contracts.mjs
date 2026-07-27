@@ -10,6 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const releaseMode = process.argv.includes('--release');
 const behaviorMode = process.argv.includes('--behavior');
+const pinnedCargo = resolve(root, 'rust', 'toolchain-cargo.sh');
 
 const resourceDefaults = {
     maxInputBytes: 20 * 1024 * 1024,
@@ -256,6 +257,31 @@ for (const domain of ffiV2.domains) assert.ok(ffiTypes.includes(`"${domain}"`));
 for (const code of ffiV2.operationCodes) assert.ok(ffiTypes.includes(`"${code}"`));
 assert.match(ffiTypes, /Some\(true\)/, 'unit success must cross UniFFI as Some(true)');
 
+// Android production keeps JNA in its Android AAR form. The host JVM test
+// runtime needs the ordinary JAR for JNA's platform-specific jnidispatch
+// resource, and must not publish that JAR with the library.
+const androidBuild = read('android/build.gradle');
+assert.match(androidBuild, /^\s*api "net\.java\.dev\.jna:jna:5\.18\.1@aar"\s*$/m);
+assert.match(androidBuild, /^\s*testRuntimeOnly "net\.java\.dev\.jna:jna:5\.18\.1"\s*$/m);
+assert.doesNotMatch(
+    androidBuild,
+    /^\s*(?:api|implementation|runtimeOnly) "net\.java\.dev\.jna:jna:5\.18\.1"\s*$/m,
+    'the ordinary JNA JAR must remain exclusive to the JVM test runtime'
+);
+
+// Behavior validation must resolve the same pinned Cargo binary as every
+// release-facing Rust command; plain PATH cargo can select an older toolchain.
+const securityValidatorSource = read('scripts/tests/validate-security-contracts.mjs');
+assert.match(
+    securityValidatorSource,
+    /const pinnedCargo = resolve\(root, 'rust', 'toolchain-cargo\.sh'\);/
+);
+assert.match(
+    securityValidatorSource,
+    /\[\s*'rust',\s*pinnedCargo,/s,
+    'Rust behavior validation must invoke the pinned Cargo wrapper'
+);
+
 // Task 16C: the legacy UDL and the legacy editor_*/collaboration_session_*
 // exports were deleted; the production surface is the 31 editor_v2_*
 // UniFFI functions plus editor_core_version.
@@ -336,7 +362,7 @@ if (behaviorMode) {
     const commands = [
         [
             'rust',
-            'cargo',
+            pinnedCargo,
             [
                 'test',
                 '--manifest-path',
