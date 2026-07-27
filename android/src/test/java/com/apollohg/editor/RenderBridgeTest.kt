@@ -186,46 +186,6 @@ class RenderBridgeTest {
     private val baseFontSize = 16f
     private val textColor = Color.BLACK
 
-    @Test
-    fun `viewer empty collapse detects documents with only empty top-level paragraphs`() {
-        val json = """
-        [
-            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
-            {"type": "textRun", "text": "\u200B", "marks": []},
-            {"type": "blockEnd"},
-            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
-            {"type": "textRun", "text": "", "marks": []},
-            {"type": "blockEnd"}
-        ]
-        """.trimIndent()
-
-        assertTrue(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
-    }
-
-    @Test
-    fun `viewer empty collapse keeps visible rendered content measurable`() {
-        val json = """
-        [
-            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
-            {"type": "textRun", "text": "Hello", "marks": []},
-            {"type": "blockEnd"}
-        ]
-        """.trimIndent()
-
-        assertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
-    }
-
-    @Test
-    fun `viewer empty collapse keeps non-paragraph rendered blocks measurable`() {
-        val json = """
-        [
-            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {}}
-        ]
-        """.trimIndent()
-
-        assertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
-    }
-
     // ── Plain Text Rendering ────────────────────────────────────────────
 
     /** A single paragraph with unstyled text should produce the text content. */

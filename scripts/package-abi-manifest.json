@@ -1,5 +1,21 @@
 {
   "version": { "name": "editor_core_version", "checksum": 41638 },
+  "preparedProseViewer": {
+    "architecture": "fabric-only",
+    "component": "PreparedProseViewer",
+    "nativeFacade": "ProseViewerSource + ProseViewerConfiguration",
+    "forbidden": [
+      "NativeProseViewerExpoView",
+      "heightCache",
+      "measureContentHeight",
+      "renderDocumentJson",
+      "renderDocumentHtml",
+      "containerWidth",
+      "onContentHeightChange",
+      "renderJson",
+      "Paper registration"
+    ]
+  },
   "functions": [
     { "name": "editor_v2_apply_command", "checksum": 14484 },
     { "name": "editor_v2_apply_input", "checksum": 29912 },

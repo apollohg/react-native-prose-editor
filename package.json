@@ -43,7 +43,7 @@
         "typecheck": "tsc --noEmit",
         "sync:version": "node scripts/sync-version.mjs",
         "security:validate": "node scripts/tests/validate-security-contracts.mjs",
-        "package:validate": "npm run security:validate -- --release --behavior && node scripts/tests/validate-security-contracts-negative.mjs && node scripts/tests/validate-publish-lifecycle.mjs && bash ./scripts/tests/validate-generated-bindings.sh && bash ./scripts/tests/validate-packed-xcframework.sh && node scripts/tests/validate-packed-package.test.mjs && bash ./scripts/validate-packed-package.sh",
+        "package:validate": "node scripts/tests/validate-prepared-prose-viewer-cutover.mjs && npm run security:validate -- --release --behavior && node scripts/tests/validate-security-contracts-negative.mjs && node scripts/tests/validate-publish-lifecycle.mjs && bash ./scripts/tests/validate-generated-bindings.sh && bash ./scripts/tests/validate-packed-xcframework.sh && node scripts/tests/validate-packed-package.test.mjs && bash ./scripts/validate-packed-package.sh",
         "publish:prepare": "bash ./scripts/prepare-publish.sh",
         "version": "node scripts/sync-version.mjs",
         "android:compile": "cd example/android && ./gradlew :apollohg-react-native-prose-editor:compileDebugKotlin",

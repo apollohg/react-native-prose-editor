@@ -1,13 +1,3 @@
-const mockNativeModule = {
-    renderDocumentJson: jest.fn(),
-    measureContentHeight: jest.fn(),
-};
-const mockRequireNativeModule = jest.fn(() => mockNativeModule);
-
-jest.mock('expo-modules-core', () => ({
-    requireNativeModule: mockRequireNativeModule,
-}));
-
 jest.mock('../specs/NativePreparedProseViewer', () => {
     const React = require('react');
     const { View } = require('react-native');
@@ -23,14 +13,6 @@ import { fireEvent, render } from '@testing-library/react-native';
 import { NativeProseViewer } from '../NativeProseViewer';
 
 describe('NativeProseViewer', () => {
-    beforeEach(() => {
-        jest.clearAllMocks();
-    });
-
-    afterEach(() => {
-        expect(mockRequireNativeModule).not.toHaveBeenCalled();
-    });
-
     it('passes JSON directly to the Fabric component with serialized configuration', () => {
         const document = {
             type: 'doc',
@@ -63,8 +45,6 @@ describe('NativeProseViewer', () => {
             initialization: { type: 'localEmpty' },
             limits: { resource: { maxSchemaNodes: 500 } },
         });
-        expect(mockNativeModule.renderDocumentJson).not.toHaveBeenCalled();
-        expect(mockNativeModule.measureContentHeight).not.toHaveBeenCalled();
     });
 
     it('passes HTML directly to the Fabric component', () => {
@@ -156,7 +136,7 @@ describe('NativeProseViewer', () => {
         });
     });
 
-    it('keeps normal ViewProps but has no legacy measurement or bridge props', () => {
+    it('passes normal ViewProps through to the Fabric component', () => {
         const { getByTestId } = render(
             <NativeProseViewer
                 contentJSON={{ type: 'doc', content: [] }}
@@ -168,11 +148,5 @@ describe('NativeProseViewer', () => {
 
         const nativeProps = getByTestId('public-viewer').props;
         expect(nativeProps).toMatchObject({ style: { marginTop: 12 }, accessible: true });
-        expect(nativeProps.containerWidth).toBeUndefined();
-        expect(nativeProps.contentId).toBeUndefined();
-        expect(nativeProps.renderJson).toBeUndefined();
-        expect(nativeProps.onContentHeightChange).toBeUndefined();
-        expect(mockNativeModule.renderDocumentJson).not.toHaveBeenCalled();
-        expect(mockNativeModule.measureContentHeight).not.toHaveBeenCalled();
     });
 });

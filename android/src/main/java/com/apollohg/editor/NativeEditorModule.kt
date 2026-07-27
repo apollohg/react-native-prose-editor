@@ -4,8 +4,6 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import com.apollohg.editor.viewer.PreparedProseInstrumentation
 import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
-import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.editor_core.*
@@ -422,27 +420,6 @@ class NativeEditorModule : Module() {
             )
         }
 
-        // ── Stateless render probes (NativeProseViewer) ────────────────
-        // A transient v2 session applies the content and reports the
-        // flattened render-elements array; the session is always destroyed.
-
-        Function("renderDocumentJson") { configJson: String, json: String ->
-            renderDocumentProbe(configJson) { adapter -> adapter.setContentJson(json) }
-        }
-        Function("measureContentHeight") { renderJson: String, themeJson: String?, width: Double ->
-            val density = appContext.reactContext?.resources?.displayMetrics?.density ?: 1f
-            val height = RenderBridge.measureHeight(
-                json = renderJson,
-                themeJson = themeJson,
-                width = width.toFloat(),
-                density = density
-            )
-            height.toDouble()
-        }
-        Function("renderDocumentHtml") { configJson: String, html: String ->
-            renderDocumentProbe(configJson) { adapter -> adapter.setContentHtml(html) }
-        }
-
         View(NativeEditorExpoView::class) {
             Events(
                 "onEditorUpdate",
@@ -562,116 +539,5 @@ class NativeEditorModule : Module() {
 
         }
 
-        View(NativeProseViewerExpoView::class) {
-            Name("NativeProseViewer")
-            Events("onContentHeightChange", "onPressLink", "onPressMention")
-
-            Prop("renderJson") { view: NativeProseViewerExpoView, renderJson: String? ->
-                view.setRenderJson(renderJson)
-            }
-            Prop("themeJson") { view: NativeProseViewerExpoView, themeJson: String? ->
-                view.setThemeJson(themeJson)
-            }
-            Prop("imageLoadingPolicyJson") { view: NativeProseViewerExpoView, policyJson: String? ->
-                view.setImageLoadingPolicyJson(policyJson)
-            }
-            Prop("collapsesWhenEmpty") {
-                view: NativeProseViewerExpoView,
-                collapsesWhenEmpty: Boolean? ->
-                view.setCollapsesWhenEmpty(collapsesWhenEmpty)
-            }
-            Prop("enableLinkTaps") { view: NativeProseViewerExpoView, enableLinkTaps: Boolean? ->
-                view.setEnableLinkTaps(enableLinkTaps)
-            }
-            Prop("interceptLinkTaps") { view: NativeProseViewerExpoView, interceptLinkTaps: Boolean? ->
-                view.setInterceptLinkTaps(interceptLinkTaps)
-            }
-        }
     }
 }
-
-// ── Render-probe plumbing ────────────────────────────────────────────────
-
-private fun probeErrorJson(error: EditorV2Error): String =
-    JSONObject()
-        .put(
-            "error",
-            JSONObject()
-                .put("domain", error.domain)
-                .put("code", error.code)
-                .put("message", error.message),
-        )
-        .toString()
-
-private fun probeContractErrorJson(message: String): String =
-    probeErrorJson(EditorV2Error(domain = "boundary", code = "FFI_RESULT_INVALID", message = message))
-
-/**
- * The probe contract: a flat JSON array of render elements (what the legacy
- * set-content probes returned). The v2 render accessor emits block form, so
- * blocks are flattened in order; a pre-flattened payload passes through.
- */
-internal fun renderElementsJsonFromUpdate(updateJson: String): String {
-    val update = runCatching { JSONObject(updateJson) }.getOrNull()
-        ?: return probeContractErrorJson("v2 render update is not valid JSON")
-    update.optJSONArray("renderElements")?.let { return it.toString() }
-    val blocks = update.optJSONArray("renderBlocks")
-        ?: return probeContractErrorJson("v2 render update carries no render payload")
-    val elements = JSONArray()
-    for (blockIndex in 0 until blocks.length()) {
-        val block = blocks.optJSONArray(blockIndex) ?: continue
-        for (elementIndex in 0 until block.length()) {
-            elements.put(block.opt(elementIndex))
-        }
-    }
-    return elements.toString()
-}
-
-/**
- * The backend is a parameter, as it is for [EditorV2Adapter.attach], so the
- * probe's error-propagation contract is testable against a fake; production
- * routing always takes the default.
- */
-internal fun renderDocumentProbe(
-    configJson: String,
-    backend: EditorV2Backend = UniffiEditorV2Backend,
-    apply: (EditorV2Adapter) -> String?,
-): String {
-    val adapter = when (val created = backend.create(configJson, snapshotState = null)) {
-        is EditorV2CallResult.Err -> return probeErrorJson(created.error)
-        is EditorV2CallResult.Ok -> {
-            val editorId = runCatching { JSONObject(created.value).getString("editorId") }.getOrNull()
-                ?: return probeContractErrorJson("v2 render probe create carries no editor id")
-            val adapter = EditorV2Adapter.attach(backend, editorId, roomBound = false)
-            if (adapter == null) {
-                backend.destroy(editorId)
-                return probeContractErrorJson("v2 render probe could not bind its created editor")
-            }
-            adapter
-        }
-    }
-    // The probe owns no view, so nothing claims the adapter's autonomous error
-    // channel and a failing apply would drop the engine's own
-    // domain/code/message on the floor — leaving JS with a generic contract
-    // error that names no cause. Claim the channel for the probe's lifetime so
-    // the first real error is what reaches the caller.
-    val probeErrorToken = nextProbeErrorToken.incrementAndGet()
-    val capturedError = AtomicReference<EditorV2Error?>(null)
-    adapter.bindAutonomousErrorOwner(
-        probeErrorToken,
-        callback = { error -> capturedError.compareAndSet(null, error) },
-        onReleased = {},
-    )
-    try {
-        val updateJson = apply(adapter)
-            ?: return capturedError.get()?.let { probeErrorJson(it) }
-                ?: probeContractErrorJson("v2 render probe could not apply content")
-        return renderElementsJsonFromUpdate(updateJson)
-    } finally {
-        adapter.clearAutonomousErrorOwner(probeErrorToken)
-        adapter.destroy()
-    }
-}
-
-/** Owner tokens for the stateless render probes' error-channel claims. */
-private val nextProbeErrorToken = AtomicLong(0)

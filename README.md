@@ -57,7 +57,7 @@ Required peer dependencies:
 Install the package:
 
 ```sh
-npm install @apollohg/react-native-prose-editor@2.0.0
+npm install @apollohg/react-native-prose-editor@3.0.0
 ```
 
 Expo prebuild apps should add the package config plugin so Android excludes
@@ -217,38 +217,72 @@ interaction in this mounted view; it never changes the handle's
 `policy.readOnly`. See the 1.0.0 migration table in the
 [CHANGELOG](./CHANGELOG.md) for pre-cutover names and replacements.
 
-## Native Viewer Embedding
+## Prepared Prose Viewer
 
-The package exposes the display-only prose viewer directly to UIKit and
-Android View hosts. These facades do not depend on Expo view lifecycle types
-and do not create or retain an editor handle.
+`NativeProseViewer` is a New Architecture-only Fabric component. It accepts
+exactly one direct document source: `contentJSON` or `contentHTML`. It does not
+accept a width prop: Yoga supplies the finite host width, and the first native
+measurement returns the exact prepared size. There is no Paper view, Expo
+viewer adapter, render-ops bridge, height callback, or JavaScript height cache.
 
-Both views consume the flattened render-ops JSON produced by the package render
-bridge. This is not raw ProseMirror document JSON. An application-owned native
-module can accept that render JSON as a prop and pass it directly to the
-platform view.
+```tsx
+<NativeProseViewer
+  contentJSON={{ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ready once measured.' }] }] }}
+  schema={prosemirrorSchema}
+  renderImages={false}
+  addons={{ mentions: { trigger: '@', prefix: '@', onPress: ({ label }) => openProfile(label) } }}
+  onError={(error) => reportViewerError(error)}
+/>
+```
+
+`renderImages` defaults to `true`. With `false`, image nodes are omitted before
+layout: they contribute no size, accessibility node, request, metadata lookup,
+or decode work. Mention appearance is declarative through document attributes,
+the serializable `addons.mentions` settings, and theme; JavaScript mention
+render callbacks are not supported.
+
+A viewer host must provide a finite width. It may constrain height to clip the
+result, but that never changes intrinsic content measurement. A mounted source
+stays frozen unless its effective width changes, an enabled unknown-size image
+resolves intrinsic dimensions, a requested font becomes available, or the
+system text scale changes. Image completion without new dimensions only redraws.
+Call `fontEnvironmentRevision` after a React Native font loader registers a
+previously unavailable family; native UIKit and Android hosts expose equivalent
+font invalidation hooks below. Errors create a zero-height error artifact and
+are reported once per generation via `onError`.
+
+### Native embedding
+
+UIKit and Android expose the same direct-source facade for application-owned
+native modules. Both require a complete serialized viewer configuration (the
+same schema/policy configuration used by the React Native component), plus an
+optional serialized theme and image-loading policy. Neither facade creates an
+editor handle or accepts render-ops JSON.
+
+`completeViewerConfigurationJSON` / `completeViewerConfigurationJson` must be
+a serialized `PreparedProseViewerConfiguration`: `initialization` is
+`{ "type": "localEmpty" }`, and `schema` contains the complete node and mark
+definitions accepted for the document. Reuse the configuration serialization
+from your React Native boundary rather than constructing an editor session.
 
 UIKit:
 
 ```swift
 import ReactNativeProseEditor
-import UIKit
+
+let configuration = ProseViewerConfiguration(
+    configJSON: completeViewerConfigurationJSON,
+    themeJSON: themeJSON,
+    imagePolicyJSON: imageLoadingPolicyJSON,
+    imagesEnabled: true,
+    collapsesWhenEmpty: true
+)
 
 final class MessageCell: UICollectionViewCell {
     let proseViewer = ProseViewerView(frame: .zero)
 
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        contentView.addSubview(proseViewer)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("MessageCell does not support NSCoder")
-    }
-
-    func configure(renderJson: String, themeJson: String) {
-        _ = proseViewer.apply(renderJson: renderJson, themeJson: themeJson)
+    func configure(documentJSON: String) {
+        _ = proseViewer.apply(source: .json(documentJSON), configuration: configuration)
     }
 
     override func prepareForReuse() {
@@ -256,32 +290,42 @@ final class MessageCell: UICollectionViewCell {
         proseViewer.prepareForReuse()
     }
 }
+
+// HTML uses the same configuration:
+// proseViewer.apply(source: .html(html), configuration: configuration)
+// Registering a requested font? Call ViewerFontEnvironment.sharedEnvironment.invalidateRegisteredFonts().
 ```
 
 Android:
 
 ```kotlin
-import androidx.recyclerview.widget.RecyclerView
-import com.apollohg.editor.ProseViewerView
+val configuration = ProseViewerConfiguration(
+    configJson = completeViewerConfigurationJson,
+    themeJson = themeJson,
+    imagePolicyJson = imageLoadingPolicyJson,
+    imagesEnabled = true,
+    collapsesWhenEmpty = true,
+)
 
-class MessageViewHolder(
-    val proseViewer: ProseViewerView
-) : RecyclerView.ViewHolder(proseViewer) {
-    fun bind(renderJson: String, themeJson: String) {
-        proseViewer.apply(renderJson, themeJson)
+class MessageViewHolder(val proseViewer: ProseViewerView) : RecyclerView.ViewHolder(proseViewer) {
+    fun bind(documentJson: String) {
+        proseViewer.apply(ProseViewerSource.Json(documentJson), configuration)
     }
 
-    fun recycle() {
-        proseViewer.prepareForReuse()
-    }
+    fun recycle() = proseViewer.prepareForReuse()
 }
+
+// HTML: proseViewer.apply(ProseViewerSource.Html(html), configuration)
+// Registering a requested font? proseViewer.invalidateFontEnvironment()
 ```
 
-`apply` returns `false` and safely clears the view when render JSON is invalid.
-Both facades also expose serialized image-policy configuration, current-content
-height measurement, headless height-for-width measurement, and link/mention
-interaction callbacks. UIKit dimensions are points; Android dimensions are
-pixels.
+The first UIKit `sizeThatFits`/Auto Layout fitting call and Android `onMeasure`
+call require a finite width and prepare the exact layout once for that width.
+Repeated measurements are cache reads; `prepareForReuse()` cancels generation
+work and releases the retained artifact while preserving the interaction
+delegate/listener. `ProseViewerInteractionDelegate` and
+`ProseViewerInteractionListener` receive link, mention, and one-per-generation
+error callbacks. UIKit uses points; Android uses pixels.
 
 ## Customization
 

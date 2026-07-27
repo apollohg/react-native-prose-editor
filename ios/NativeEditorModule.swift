@@ -18,24 +18,6 @@ func createdEditorId(_ resultJson: String) -> String? {
     return editorId
 }
 
-/// Serialize a structured v2 failure into the legacy `{"error":...}` envelope
-/// shape the JS boundary already understands.
-private func v2ErrorJson(_ error: FfiError) -> String {
-    let object: [String: Any] = [
-        "error": [
-            "domain": error.domain,
-            "code": error.code,
-            "message": error.message,
-        ]
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: object),
-          let json = String(data: data, encoding: .utf8)
-    else {
-        return "{\"error\":{\"code\":\"\(error.code)\"}}"
-    }
-    return json
-}
-
 // MARK: - v2 result-record bridging (frozen {value, error} contract)
 
 /// One FfiError as the plain dictionary the TS boundary normalizes
@@ -418,118 +400,6 @@ private func v2ConfigIndicatesRoomBinding(_ configJson: String) -> Bool {
     return initialization["type"] as? String == "room"
 }
 
-private func probeContractErrorJson(_ message: String) -> String {
-    v2ErrorJson(
-        FfiError(
-            domain: "boundary",
-            code: "FFI_RESULT_INVALID",
-            message: message,
-            requestId: nil,
-            operationIndex: nil,
-            limit: nil,
-            actual: nil,
-            detailsJson: nil
-        )
-    )
-}
-
-/// The probe contract: a flat JSON array of render elements (what the legacy
-/// set-content probes returned, and what `ProseViewerView` renders). The v2
-/// render accessor emits block form, so blocks are flattened in order; a
-/// pre-flattened payload passes through.
-///
-/// Module-internal so the flattening contract is testable directly.
-func renderElementsJsonFromUpdate(_ updateJson: String) -> String {
-    guard let data = updateJson.data(using: .utf8),
-          let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else {
-        return probeContractErrorJson("v2 render update is not valid JSON")
-    }
-    let elements: [Any]
-    if let flattened = update["renderElements"] as? [Any] {
-        elements = flattened
-    } else if let blocks = update["renderBlocks"] as? [Any] {
-        elements = blocks.flatMap { block in block as? [Any] ?? [] }
-    } else {
-        return probeContractErrorJson("v2 render update carries no render payload")
-    }
-    guard let data = try? JSONSerialization.data(withJSONObject: elements),
-          let json = String(data: data, encoding: .utf8)
-    else {
-        return probeContractErrorJson("v2 render elements could not be serialized")
-    }
-    return json
-}
-
-/// Stateless viewer rendering still needs a transient engine session, but it
-/// receives the complete v2 create envelope from TypeScript. Pairing only
-/// attaches to that existing session; it never recreates or patches config.
-///
-/// Module-internal rather than private so the error-propagation contract is
-/// testable against the same entry the view functions call.
-func renderDocumentProbe(
-    configJson: String,
-    apply: (EditorV2Adapter) -> String?
-) -> String {
-    let created = editorV2Create(configJson: configJson, snapshotState: nil)
-    let createdHandle: CreatedV2SessionHandle
-    switch (created.value, created.error) {
-    case let (value?, nil):
-        guard let parsed = createdV2SessionHandle(value) else {
-            cleanupCreatedV2Session(value: value, destroy: editorV2Destroy)
-            return probeContractErrorJson("v2 render probe could not bind its created editor")
-        }
-        createdHandle = parsed
-    case let (nil, error?):
-        return v2ErrorJson(error)
-    default:
-        cleanupCreatedV2Session(value: created.value, destroy: editorV2Destroy)
-        return probeContractErrorJson("v2 render probe could not bind its created editor")
-    }
-    guard let adapter = EditorV2Adapter.attach(editorId: createdHandle.handle, roomBound: false) else {
-        _ = editorV2Destroy(editorId: createdHandle.handle)
-        return probeContractErrorJson("v2 render probe could not bind its created editor")
-    }
-    defer { _ = adapter.destroy() }
-    // The probe owns no view, so nothing claims the adapter's autonomous
-    // error channel and a failing apply would drop the engine's own
-    // domain/code/message on the floor — leaving JS with a generic contract
-    // error that names no cause. Claim the channel for the probe's lifetime
-    // so the first real error is what reaches the caller.
-    let probeErrorToken = UUID()
-    let capturedError = ProbeErrorBox()
-    adapter.bindAutonomousErrorOwner(token: probeErrorToken) { error in
-        capturedError.captureFirst(error)
-    }
-    defer { adapter.clearAutonomousErrorOwner(token: probeErrorToken) }
-    if let rendered = apply(adapter) { return renderElementsJsonFromUpdate(rendered) }
-    guard let error = capturedError.error else {
-        return probeContractErrorJson("v2 render probe could not apply content")
-    }
-    return v2ErrorJson(error)
-}
-
-/// The first error the probed adapter reported. The adapter's error channel
-/// takes an escaping callback, so the capture needs a reference the callback
-/// and the probe can share; later errors are cascade, not cause.
-private final class ProbeErrorBox {
-    private let lock = NSLock()
-    private var captured: FfiError?
-
-    func captureFirst(_ error: FfiError) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard captured == nil else { return }
-        captured = error
-    }
-
-    var error: FfiError? {
-        lock.lock()
-        defer { lock.unlock() }
-        return captured
-    }
-}
-
 // `Module` is `BaseModule & AnyModule`; the conformance is spelled out so
 // `AnyModule` can carry `@preconcurrency`. That is what lets `definition()`
 // below be `@MainActor` even though the protocol requirement is nonisolated.
@@ -755,24 +625,6 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             )
         }
 
-        Function("renderDocumentJson") { (configJson: String, json: String) -> String in
-            renderDocumentProbe(configJson: configJson) { adapter in
-                adapter.setContentJson(json)
-            }
-        }
-        Function("measureContentHeight") { (renderJson: String, themeJson: String?, width: Double) -> Double in
-            let height = RenderBridge.measureHeight(
-                forRenderJSON: renderJson,
-                themeJSON: themeJson,
-                width: CGFloat(width)
-            )
-            return Double(height)
-        }
-        Function("renderDocumentHtml") { (configJson: String, html: String) -> String in
-            renderDocumentProbe(configJson: configJson) { adapter in
-                adapter.setContentHtml(html)
-            }
-        }
         View(NativeEditorExpoView.self) {
             Events(
                 "onEditorUpdate",
@@ -871,29 +723,5 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             }
         }
 
-        View(NativeProseViewerExpoView.self) {
-            ViewName("NativeProseViewer")
-            Events("onContentHeightChange", "onPressLink", "onPressMention")
-
-            Prop("renderJson") { (view: NativeProseViewerExpoView, renderJson: String?) in
-                view.setRenderJson(renderJson)
-            }
-            Prop("themeJson") { (view: NativeProseViewerExpoView, themeJson: String?) in
-                view.setThemeJson(themeJson)
-            }
-            Prop("imageLoadingPolicyJson") { (view: NativeProseViewerExpoView, json: String?) in
-                view.setImageLoadingPolicyJson(json)
-            }
-            Prop("collapsesWhenEmpty") {
-                (view: NativeProseViewerExpoView, collapsesWhenEmpty: Bool?) in
-                view.setCollapsesWhenEmpty(collapsesWhenEmpty)
-            }
-            Prop("enableLinkTaps") { (view: NativeProseViewerExpoView, enableLinkTaps: Bool?) in
-                view.setEnableLinkTaps(enableLinkTaps)
-            }
-            Prop("interceptLinkTaps") { (view: NativeProseViewerExpoView, interceptLinkTaps: Bool?) in
-                view.setInterceptLinkTaps(interceptLinkTaps)
-            }
-        }
     }
 }

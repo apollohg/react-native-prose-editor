@@ -50,7 +50,7 @@ public final class ViewerFontEnvironment: NSObject {
 
     static let registeredFontsDidChangeNotification = Notification.Name(kCTFontManagerRegisteredFontsChangedNotification as String)
 
-    func invalidateRegisteredFonts() { invalidate(scale: currentScale()) }
+    public func invalidateRegisteredFonts() { invalidate(scale: currentScale()) }
 
     func fontScale(for revision: UInt64) -> CGFloat {
         lock.lock()

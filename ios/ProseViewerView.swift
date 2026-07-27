@@ -28,27 +28,13 @@ public final class ProseViewerView: UIView {
     private var fontEnvironmentObserver: NSObjectProtocol?
     private lazy var viewerImagePipeline = ViewerImagePipeline(policy: .default)
 
-    // Temporary source compatibility for the legacy Expo adapter. It is deliberately
-    // lazy so direct-content users never create a TextKit view; Task 12 removes it.
-    private lazy var legacyTextView = EditorTextView(frame: .zero, textContainer: nil)
-    private var legacyImageLoadOwner = RenderImageLoadOwner(policy: .default)
-    private var legacyCollapsesWhenEmpty = false
-    private var legacyCollapsed = false
-
     internal var drawingViewForTesting: PreparedProseDrawingView { drawingView }
-    internal var opensLinksAutomatically = false
     internal var linkTapsEnabled = true {
         didSet {
             guard oldValue != linkTapsEnabled else { return }
             drawingView.linkInteractionsEnabled = linkTapsEnabled
         }
     }
-    internal var onContentHeightChange: ((CGFloat) -> Void)?
-    internal var contentInset: UIEdgeInsets = .zero
-    internal var imageLoadingPolicyForHost: ImageLoadingPolicy { legacyImageLoadOwner.policy }
-    internal var isContentCollapsedForHost: Bool { legacyCollapsed }
-    internal var renderedTextForTesting: String { legacyTextView.textStorage.string }
-    internal var textViewForTesting: EditorTextView { legacyTextView }
     /// Mounted host total; the layout cache intentionally excludes this
     /// mutable sidecar because it is not shared immutable layout state.
     internal var preparedSurfaceRetainedBytesForTesting: Int {
@@ -234,12 +220,9 @@ public final class ProseViewerView: UIView {
         installPreparedLayout(nil)
         pendingError = nil
         errorWasReported = false
-        legacyImageLoadOwner.cancelAll()
         viewerImagePipeline.cancel()
         attachmentRevisions.reset()
         drawingView.imagePixels = [:]
-        legacyTextView.removeFromSuperview()
-        legacyCollapsed = false
         invalidateIntrinsicContentSize()
         setNeedsLayout()
     }
@@ -384,62 +367,4 @@ public final class ProseViewerView: UIView {
         interactionDelegate?.proseViewer(self, didFail: .resource)
     }
 
-    // MARK: Temporary legacy adapter compatibility
-
-    @discardableResult
-    public func apply(renderJson: String, themeJson: String) -> Bool {
-        legacyTextView.imageLoadOwner = legacyImageLoadOwner
-        legacyTextView.baseTextContainerInset = contentInset
-        legacyTextView.textContainerInset = contentInset
-        _ = legacyTextView.applyTheme(EditorTheme.from(json: themeJson))
-        let accepted = (try? JSONSerialization.jsonObject(with: Data(renderJson.utf8))) is [[String: Any]]
-        legacyTextView.applyRenderJSON(accepted ? renderJson : "[]")
-        legacyCollapsed = legacyCollapsesWhenEmpty && NativeProseViewerEmptyContent.containsOnlyEmptyParagraphs(renderJson)
-        onContentHeightChange?(legacyCollapsed ? 0 : ceil(legacyTextView.measuredAutoGrowHeightForTesting(width: bounds.width)))
-        return accepted
-    }
-
-    public func setImageLoadingPolicy(json: String?) {
-        legacyImageLoadOwner.updatePolicy(ImageLoadingPolicy.from(json: json))
-    }
-
-    public func measuredHeight(forWidth width: CGFloat) -> CGFloat {
-        guard width > 0 else { return 0 }
-        return ceil(legacyTextView.measuredAutoGrowHeightForTesting(width: width))
-    }
-
-    public static func measureHeight(renderJson: String, themeJson: String, width: CGFloat) -> CGFloat? {
-        guard (try? JSONSerialization.jsonObject(with: Data(renderJson.utf8))) is [[String: Any]] else { return nil }
-        return RenderBridge.measureHeight(forRenderJSON: renderJson, themeJSON: themeJson, width: width)
-    }
-
-    internal func setCollapsesWhenEmpty(_ collapses: Bool) { legacyCollapsesWhenEmpty = collapses }
-    internal static func renderJsonContainsOnlyEmptyParagraphs(_ renderJson: String) -> Bool {
-        NativeProseViewerEmptyContent.containsOnlyEmptyParagraphs(renderJson)
-    }
-}
-
-enum NativeProseViewerEmptyContent {
-    static func containsOnlyEmptyParagraphs(_ renderJson: String) -> Bool {
-        guard let data = renderJson.data(using: .utf8),
-              let elements = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        else { return false }
-        if elements.isEmpty { return true }
-        var openParagraph = false
-        for element in elements {
-            guard let type = element["type"] as? String else { return false }
-            switch type {
-            case "blockStart":
-                guard !openParagraph, element["nodeType"] as? String == "paragraph" else { return false }
-                openParagraph = true
-            case "textRun":
-                guard openParagraph, (element["text"] as? String)?.allSatisfy({ $0 == "\u{200B}" }) == true else { return false }
-            case "blockEnd":
-                guard openParagraph else { return false }
-                openParagraph = false
-            default: return false
-            }
-        }
-        return !openParagraph
-    }
 }

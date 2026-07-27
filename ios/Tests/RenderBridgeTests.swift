@@ -1164,55 +1164,15 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 0)
     }
 
-    func testEditorAndViewerApplyImageLoadingPolicyJson() {
+    func testEditorAppliesImageLoadingPolicyJson() {
         let json = """
         {"maxSourceBytes":1234,"connectTimeoutMs":2500,"readTimeoutMs":3500,"maxConcurrentRequests":4,"maxPendingRequests":8,"maxDecodeDimensionPx":640}
         """
         let editor = NativeEditorExpoView()
-        let viewer = NativeProseViewerExpoView()
 
         editor.setImageLoadingPolicyJson(json)
-        viewer.setImageLoadingPolicyJson(json)
 
         XCTAssertEqual(editor.imageLoadingPolicy.maxSourceBytes, 1234)
-        XCTAssertEqual(viewer.imageLoadingPolicy.maxDecodeDimension, 640)
-    }
-
-    func testViewerEmptyCollapseDetectsDocumentsWithOnlyEmptyTopLevelParagraphs() {
-        let json = """
-        [
-            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
-            {"type": "textRun", "text": "\\u200B", "marks": []},
-            {"type": "blockEnd"},
-            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
-            {"type": "textRun", "text": "", "marks": []},
-            {"type": "blockEnd"}
-        ]
-        """
-
-        XCTAssertTrue(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
-    }
-
-    func testViewerEmptyCollapseKeepsVisibleRenderedContentMeasurable() {
-        let json = """
-        [
-            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
-            {"type": "textRun", "text": "Hello", "marks": []},
-            {"type": "blockEnd"}
-        ]
-        """
-
-        XCTAssertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
-    }
-
-    func testViewerEmptyCollapseKeepsNonParagraphRenderedBlocksMeasurable() {
-        let json = """
-        [
-            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {}}
-        ]
-        """
-
-        XCTAssertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
     }
 
     // MARK: - Plain Text Rendering
