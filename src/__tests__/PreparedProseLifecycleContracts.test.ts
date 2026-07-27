@@ -205,6 +205,18 @@ describe('prepared prose native lifecycle contracts', () => {
         const androidView = readSource('android/src/main/java/com/apollohg/editor/ProseViewerView.kt');
         const iosCache = readSource('ios/Viewer/PreparedProseLayoutCache.swift');
         const androidCache = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseLayoutCache.kt');
+        const androidMeasure = androidView.slice(
+            androidView.indexOf('override fun onMeasure('),
+            androidView.indexOf('override fun onLayout('),
+        );
+        const androidDirectOwnership = androidView.slice(
+            androidView.indexOf('private fun registerDirectMountedArtifactIfAttached('),
+            androidView.indexOf('private fun releaseDirectMountedArtifact()'),
+        );
+        const androidAttach = androidView.slice(
+            androidView.indexOf('override fun onAttachedToWindow()'),
+            androidView.indexOf('override fun onConfigurationChanged('),
+        );
 
         expect(iosView).toContain('releaseDirectMounted(preparedInstrumentationOwner)');
         expect(iosView).toContain('registerDirectMounted(preparedInstrumentationOwner, layout: layout)');
@@ -212,12 +224,33 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(androidView).toContain('override fun onDetachedFromWindow()');
         expect(androidView).toContain('releaseDirectMounted(preparedInstrumentationOwner)');
         expect(androidView).toContain('registerDirectMounted(preparedInstrumentationOwner, artifact)');
+        // A View may be measured but never attached, so measurement must leave
+        // the artifact evictable when memory pressure clears unmounted layouts.
+        expect(androidMeasure).toContain('registerDirectMountedArtifactIfAttached(artifact)');
+        expect(androidDirectOwnership).toContain('if (!isAttachedToWindow) return');
+        expect(androidAttach).toContain('preparedArtifact?.let(::registerDirectMountedArtifactIfAttached)');
+        expect(androidCache).toContain('fun removeAllUnmounted() = synchronized(lock) { completed.clear(); mountIndex.clear();');
         expect(iosCache).toContain('retireUnownedPublicationKeysLocked');
         expect(iosCache).toContain('releaseLease');
         expect(iosCache).toContain('publishOwnerBytesLocked');
         expect(androidCache).toContain('retireUnownedPublicationsLocked');
         expect(androidCache).toContain('releaseLease');
         expect(androidCache).toContain('publishOwnersLocked');
+    });
+
+    it('compiles Android draw instrumentation out of release drawing', () => {
+        const drawing = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseDrawingView.kt');
+        const debugTiming = readSource('android/src/debug/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt');
+        const releaseTiming = readSource('android/src/release/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt');
+
+        expect(drawing).toContain('recordPreparedProseDraw {');
+        expect(drawing).not.toContain('PreparedProseInstrumentation.');
+        expect(debugTiming).toContain('PreparedProseInstrumentation.now()');
+        expect(debugTiming).toContain('PreparedProseInstrumentation.drew(started, draw())');
+        expect(releaseTiming).toContain('internal inline fun recordPreparedProseDraw');
+        expect(releaseTiming).toContain('draw()');
+        expect(releaseTiming).not.toContain('PreparedProseInstrumentation');
+        expect(releaseTiming).not.toContain('BuildConfig');
     });
 
     it('ships iOS instrumentation in the actual test target exactly once', () => {

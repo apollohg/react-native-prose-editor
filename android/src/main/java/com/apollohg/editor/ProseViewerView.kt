@@ -405,7 +405,7 @@ class ProseViewerView @JvmOverloads constructor(
             )
             val artifactChanged = preparedArtifact !== artifact
             preparedArtifact = artifact
-            registerDirectMountedArtifact(artifact)
+            registerDirectMountedArtifactIfAttached(artifact)
             preparedDrawingView.install(artifact)
             if (artifactChanged || preparedAccessibilityGeneration != artifact.key.generationIdentity) {
                 clearVirtualAccessibilityFocus()
@@ -499,7 +499,7 @@ class ProseViewerView @JvmOverloads constructor(
         // remains installed, so a direct host can draw/measure immediately on
         // reattach without a semantic replacement or republish.
         if (preparedRequest != null) {
-            preparedArtifact?.let(::registerDirectMountedArtifact)
+            preparedArtifact?.let(::registerDirectMountedArtifactIfAttached)
             requestLayout()
             preparedDrawingView.invalidate()
         }
@@ -559,7 +559,13 @@ class ProseViewerView @JvmOverloads constructor(
         proseView.visibility = View.VISIBLE
     }
 
-    private fun registerDirectMountedArtifact(artifact: PreparedProseLayout) {
+    /**
+     * Android can measure a View that never enters a window. Keep that
+     * artifact on this View, but do not globally pin it as a direct mount
+     * until attachment gives us a deterministic matching release callback.
+     */
+    private fun registerDirectMountedArtifactIfAttached(artifact: PreparedProseLayout) {
+        if (!isAttachedToWindow) return
         if (directMountedArtifact === artifact) return
         releaseDirectMountedArtifact()
         layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, artifact)
