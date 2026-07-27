@@ -28,16 +28,35 @@ assert_package_entries_rejected() {
 }
 
 package_fixture="$fixture_root/package entries"
-mkdir -p "$package_fixture/dist"
+mkdir -p "$package_fixture/dist" "$package_fixture/ios/Viewer/Fabric"
+cp "$repo_root/package.json" "$package_fixture/package.json"
+cp "$repo_root/expo-module.config.json" "$package_fixture/expo-module.config.json"
+cp "$repo_root/ReactNativeProseEditor.podspec" "$package_fixture/ReactNativeProseEditor.podspec"
+for viewer_source in \
+  "ios/Viewer/CoreTextProseLayoutEngine.swift" \
+  "ios/Viewer/PreparedProseDrawingView.swift" \
+  "ios/Viewer/PreparedProseInstrumentation.swift" \
+  "ios/Viewer/PreparedProseLayout.swift" \
+  "ios/Viewer/PreparedProseLayoutCache.swift" \
+  "ios/Viewer/PreparedProseLayoutRegistry.swift" \
+  "ios/Viewer/ViewerDocument.swift" \
+  "ios/Viewer/ViewerFontEnvironment.swift" \
+  "ios/Viewer/ViewerImagePipeline.swift" \
+  "ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.h" \
+  "ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm" \
+  "ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm"
+do
+  printf '// package entry fixture\n' > "$package_fixture/$viewer_source"
+done
 printf 'module.exports = {};' > "$package_fixture/dist/index.js"
-printf 'export declare class NativeEditorBoundaryError {}\nexport interface EditorProps { resourceLimits?: unknown; requestTimeoutMs?: number }\n' > "$package_fixture/dist/index.d.ts"
+printf 'export declare class NativeEditorBoundaryError {}\nexport interface NativeCollaborationTransportConfig {}\nexport interface NativeCollaborationTransportEvent {}\nexport interface EditorProps { resourceLimits?: unknown; requestTimeoutMs?: number }\n' > "$package_fixture/dist/index.d.ts"
 "$validator" --validate-package-entries "$package_fixture"
 : > "$package_fixture/dist/index.js"
 assert_package_entries_rejected "$package_fixture" "an empty dist/index.js"
 printf 'module.exports = {};' > "$package_fixture/dist/index.js"
 rm "$package_fixture/dist/index.d.ts"
 assert_package_entries_rejected "$package_fixture" "a missing dist/index.d.ts"
-printf 'export declare class NativeEditorBoundaryError {}\nexport interface EditorProps { resourceLimits?: unknown }\n' > "$package_fixture/dist/index.d.ts"
+printf 'export declare class NativeEditorBoundaryError {}\nexport interface NativeCollaborationTransportConfig {}\nexport interface NativeCollaborationTransportEvent {}\nexport interface EditorProps { resourceLimits?: unknown }\n' > "$package_fixture/dist/index.d.ts"
 printf 'module.exports = { requestTimeoutMs: 60000 };' > "$package_fixture/dist/index.js"
 assert_package_entries_rejected "$package_fixture" "a declaration symbol present only in JavaScript"
 

@@ -652,8 +652,8 @@ validate_package_entries() {
     expo = JSON.parse(File.read(File.join(root, "expo-module.config.json")))
     abort "Expo must discover the package-root podspec" unless expo.fetch("ios").fetch("podspecPath") == "./ReactNativeProseEditor.podspec"
     podspec = File.read(File.join(root, "ReactNativeProseEditor.podspec"))
-    pod_name = podspec[/s\.name\s*=\s*'([^']+)'/, 1]
-    pod_module_name = podspec[/s\.module_name\s*=\s*'([^']+)'/, 1]
+    pod_name = podspec[/s\.name\s*=\s*\x27([^\x27]+)\x27/, 1]
+    pod_module_name = podspec[/s\.module_name\s*=\s*\x27([^\x27]+)\x27/, 1]
     abort "Expo-imported pod name must match the public Swift module name" unless pod_name == "ReactNativeProseEditor" && pod_module_name == pod_name
   ' "$root" || fail "packed package codegen discovery contract failed"
   require_file "$root" "dist/index.js"
