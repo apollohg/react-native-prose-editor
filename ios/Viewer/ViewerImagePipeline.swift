@@ -12,7 +12,7 @@ struct ViewerImageAttachment: Hashable {
     static let maximumAdmittedAttachments = 8_192
     /// Ordinal within the immutable prepared artifact. This is the compact
     /// publication-state address; `id` remains source-qualified cache identity.
-    let ordinal: Int = -1
+    let ordinal: Int
     let id: String
     let source: String
     let bounds: CGRect

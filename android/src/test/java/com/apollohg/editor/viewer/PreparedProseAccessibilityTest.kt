@@ -117,7 +117,8 @@ class PreparedProseAccessibilityTest {
         val rtl = visualRuns.single { it.isRtl }
 
         assertEquals(Layout.DIR_RIGHT_TO_LEFT, layout.getParagraphDirection(0))
-        assertTrue(ltr.visualIndex < rtl.visualIndex)
+        assertEquals(listOf(1, 0), visualRuns.map { it.logicalIndex })
+        assertTrue(rtl.visualIndex < ltr.visualIndex)
         assertFallbackVisualRunRect(layout, ltr, width)
     }
 
@@ -155,6 +156,7 @@ class PreparedProseAccessibilityTest {
             text = "\u05d0\u05d1\u05d2 abc",
             textDirection = TextDirectionHeuristics.RTL,
             terminalRunIsRtl = false,
+            expectedVisualLogicalOrder = listOf(1, 0),
         )
     }
 
@@ -164,6 +166,7 @@ class PreparedProseAccessibilityTest {
             text = "abc \u05d0\u05d1\u05d2",
             textDirection = TextDirectionHeuristics.LTR,
             terminalRunIsRtl = true,
+            expectedVisualLogicalOrder = listOf(0, 1),
         )
     }
 
@@ -448,6 +451,7 @@ class PreparedProseAccessibilityTest {
         text: String,
         textDirection: android.text.TextDirectionHeuristic,
         terminalRunIsRtl: Boolean,
+        expectedVisualLogicalOrder: List<Int>,
     ) {
         val width = 300
         val layout = layoutFor(text, width, textDirection)
@@ -457,6 +461,7 @@ class PreparedProseAccessibilityTest {
             Bidi.DIRECTION_LEFT_TO_RIGHT
         }
         val visualRuns = expectedVisualRuns(Bidi(text, bidiDirection), 0)
+        assertEquals(expectedVisualLogicalOrder, visualRuns.map { it.logicalIndex })
         val terminal = visualRuns.single {
             it.documentEnd == text.length && it.isRtl == terminalRunIsRtl
         }
@@ -465,6 +470,10 @@ class PreparedProseAccessibilityTest {
             FallbackVisualEdge.LEFT -> visualRuns[terminal.visualIndex - 1]
             FallbackVisualEdge.RIGHT -> visualRuns[terminal.visualIndex + 1]
         }
+        assertEquals(
+            if (terminalEdge == FallbackVisualEdge.LEFT) terminal.visualIndex - 1 else terminal.visualIndex + 1,
+            neighbor.visualIndex,
+        )
         val neighborEdge = if (terminalEdge == FallbackVisualEdge.LEFT) {
             FallbackVisualEdge.RIGHT
         } else {
@@ -474,7 +483,21 @@ class PreparedProseAccessibilityTest {
             FallbackVisualEdge.LEFT -> if (neighbor.isRtl) neighbor.documentEnd else neighbor.documentStart
             FallbackVisualEdge.RIGHT -> if (neighbor.isRtl) neighbor.documentStart else neighbor.documentEnd
         }
-        val neighborBoundary = visualEdgeBoundary(layout, neighborOffset, neighborEdge)
+        // At this directional boundary the same logical offset has two cursor
+        // positions. The adjacent visual run supplies the terminal edge by
+        // the opposite affinity, not by its physical left/right label alone.
+        assertEquals(terminal.documentStart, neighborOffset)
+        val terminalBoundary = if (terminal.isRtl) {
+            min(
+                layout.getPrimaryHorizontal(neighborOffset),
+                layout.getSecondaryHorizontal(neighborOffset),
+            )
+        } else {
+            max(
+                layout.getPrimaryHorizontal(neighborOffset),
+                layout.getSecondaryHorizontal(neighborOffset),
+            )
+        }
         val rect = requireNotNull(
             fallbackSelectionRectForVisualRun(
                 layout = layout,
@@ -486,7 +509,7 @@ class PreparedProseAccessibilityTest {
                 // Pure visual-run fixture: force the same shared soft-wrap
                 // endpoint branch without relying on Robolectric wrapping.
                 softWrapLineEnd = terminal.documentEnd,
-                softWrapTerminalBoundary = neighborBoundary,
+                softWrapTerminalBoundary = terminalBoundary,
             )
         )
         val expectedStart = visualEdgeBoundary(
@@ -495,9 +518,9 @@ class PreparedProseAccessibilityTest {
             if (terminal.isRtl) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT,
         )
         val expected = Rect(
-            kotlin.math.floor(min(expectedStart, neighborBoundary)).toInt().coerceIn(0, width),
+            kotlin.math.floor(min(expectedStart, terminalBoundary)).toInt().coerceIn(0, width),
             layout.getLineTop(0),
-            ceil(max(expectedStart, neighborBoundary)).toInt().coerceIn(0, width),
+            ceil(max(expectedStart, terminalBoundary)).toInt().coerceIn(0, width),
             layout.getLineBottom(0),
         )
 

@@ -7,6 +7,18 @@ plugins {
 }
 
 def packageJson = new JsonSlurper().parse(file('../package.json'))
+def repositoryRoot = file('..').canonicalFile
+def hostOsName = System.getProperty('os.name').toLowerCase(java.util.Locale.ROOT)
+def hostEditorCoreLibraryName = hostOsName.contains('mac') ? 'libeditor_core.dylib' :
+    hostOsName.contains('linux') ? 'libeditor_core.so' :
+    hostOsName.contains('windows') ? 'editor_core.dll' :
+    'libeditor_core.so'
+def hostRustTargetDirectory = file("$buildDir/host-editor-core")
+def hostEditorCoreLibrary = file("$hostRustTargetDirectory/release/$hostEditorCoreLibraryName")
+def pinnedCargoScript = new File(repositoryRoot, 'rust/toolchain-cargo.sh').absolutePath
+// Native Windows needs a Bash host for the checked-in pinned-Cargo wrapper;
+// macOS and Linux execute that wrapper directly.
+def hostCargoCommand = hostOsName.contains('windows') ? ['bash', pinnedCargoScript] : [pinnedCargoScript]
 
 def newArchEnabled = project.findProperty('newArchEnabled')?.toString() == 'true'
 if (!newArchEnabled) {
@@ -37,6 +49,36 @@ configurations.configureEach {
         // that runtime back to Android-only jnidispatch binaries.
         exclude group: 'net.java.dev.jna', module: 'jna'
     }
+}
+
+// The generated UniFFI Kotlin binding loads a host dynamic library while
+// Robolectric executes. Keep that artifact under Gradle's build directory and
+// outside Android source sets, instrumentation, and publication.
+tasks.register('buildHostEditorCore', Exec) {
+    inputs.files(
+        fileTree(new File(repositoryRoot, 'rust/editor-core')) {
+            include 'Cargo.toml', 'Cargo.lock', 'build.rs', 'src/**/*.rs'
+        },
+        new File(pinnedCargoScript),
+        new File(repositoryRoot, 'rust/toolchain.sh'),
+    )
+    outputs.file(hostEditorCoreLibrary)
+    workingDir repositoryRoot
+    environment 'CARGO_TARGET_DIR', hostRustTargetDirectory.absolutePath
+    commandLine(*(hostCargoCommand + [
+        'build',
+        '--manifest-path', new File(repositoryRoot, 'rust/editor-core/Cargo.toml').absolutePath,
+        '--release',
+    ]))
+}
+
+// Bypass AGP's Android artifact transform: it strips the raw JAR's host
+// jnidispatch resource. These are JVM Test tasks only; neither Android
+// instrumentation nor any production/public configuration receives them.
+tasks.withType(Test).configureEach {
+    dependsOn tasks.named('buildHostEditorCore')
+    classpath = classpath.plus(files(configurations.hostTestJna))
+    systemProperty 'uniffi.component.editor_core.libraryOverride', hostEditorCoreLibrary.absolutePath
 }
 
 android {
@@ -111,7 +153,6 @@ dependencies {
     // Do not add this JAR to any Android or published configuration. The
     // separate artifact request is intentionally consumed only by JVM tests.
     hostTestJna "net.java.dev.jna:jna:5.18.1@jar"
-    testRuntimeOnly files(configurations.hostTestJna)
 
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.robolectric:robolectric:4.14.1"

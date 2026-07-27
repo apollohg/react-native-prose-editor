@@ -274,11 +274,25 @@ assert.match(
     'host JNA must resolve in a non-consumable, non-transitive test-only configuration'
 );
 assert.match(androidBuild, /^\s*hostTestJna "net\.java\.dev\.jna:jna:5\.18\.1@jar"\s*$/m);
-assert.match(androidBuild, /^\s*testRuntimeOnly files\(configurations\.hostTestJna\)\s*$/m);
+assert.doesNotMatch(
+    androidBuild,
+    /^\s*testRuntimeOnly files\(configurations\.hostTestJna\)\s*$/m,
+    'the raw host JNA JAR must bypass AGP dependency transformation'
+);
 assert.match(
     androidBuild,
     /name\.endsWith\('UnitTestRuntimeClasspath'\)[\s\S]*?exclude group:\s*'net\.java\.dev\.jna', module:\s*'jna'/,
-    'JVM unit-test runtime must exclude the Android JNA component before receiving the host JAR'
+    'JVM unit-test runtime must exclude the Android JNA component before receiving the raw host JAR'
+);
+assert.match(
+    androidBuild,
+    /tasks\.register\('buildHostEditorCore', Exec\)[\s\S]*?rust\/toolchain-cargo\.sh[\s\S]*?CARGO_TARGET_DIR/,
+    'JVM tests must build editor_core with the pinned Cargo wrapper into an isolated host target directory'
+);
+assert.match(
+    androidBuild,
+    /tasks\.withType\(Test\)\.configureEach\s*\{[\s\S]*?dependsOn tasks\.named\('buildHostEditorCore'\)[\s\S]*?classpath = classpath\.plus\(files\(configurations\.hostTestJna\)\)[\s\S]*?uniffi\.component\.editor_core\.libraryOverride/,
+    'only JVM Test tasks must receive the raw host JNA JAR and UniFFI host-library override'
 );
 assert.doesNotMatch(
     androidBuild,

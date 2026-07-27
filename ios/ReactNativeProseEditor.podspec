@@ -28,6 +28,9 @@ Pod::Spec.new do |s|
 
   # Swift source files (including generated UniFFI bindings)
   s.source_files = ['*.swift', 'Viewer/**/*.{swift,h,mm}', '../common/cpp/**/*.{h,cpp}']
+  # This Objective-C++ Fabric implementation header imports React C++ headers.
+  # Keeping it private prevents Swift's umbrella module from importing it.
+  s.private_header_files = 'Viewer/Fabric/PREPPreparedProseViewerComponentView.h'
   s.header_dir = 'react/renderer/components/PreparedProseViewer'
 
   # Prebuilt Rust static library as XCFramework. CocoaPods only reliably
