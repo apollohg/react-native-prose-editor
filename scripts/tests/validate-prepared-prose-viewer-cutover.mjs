@@ -217,4 +217,31 @@ assert.doesNotMatch(
     'viewer measurement cache must not use locale-dependent CGFloat formatting',
 );
 
+const androidViewerLayout = read('android/src/main/java/com/apollohg/editor/viewer/AndroidProseLayoutEngine.kt');
+assert.match(
+    androidViewerLayout,
+    /enum class FallbackLogicalCaretAffinity \{ LEADING_NEXT, TRAILING_PREVIOUS \}/,
+    'Android fallback selection must model Layout logical caret affinity explicitly',
+);
+assert.match(
+    androidViewerLayout,
+    /val logicalRuns: List<FallbackLogicalBidiRun>,\s*val outerLineBoundary: \(FallbackVisualEdge\) -> Float,\s*val primaryHorizontal: \(Int\) -> Float,\s*val secondaryHorizontal: \(Int\) -> Float,/s,
+    'Android fallback geometry must retain full logical runs and both public caret providers',
+);
+assert.match(
+    androidViewerLayout,
+    /desiredTrailing == primaryIsTrailingPrevious\(offset, geometry\)/,
+    'Android fallback selection must choose primary or secondary from Layout-equivalent logical affinity',
+);
+assert.match(
+    androidViewerLayout,
+    /logicalCaretHorizontal\(neighborOffset, neighbor\.affinityAt\(neighborEdge\)\)/,
+    'an internal soft-wrap terminal must borrow its visual neighbour using that neighbour\'s logical affinity',
+);
+assert.doesNotMatch(
+    androidViewerLayout,
+    /run\.isRtl\s*==\s*paragraphIsRtl/,
+    'Android fallback selection must not infer primary caret affinity from run/paragraph direction parity',
+);
+
 console.log('Prepared prose viewer hard-cutover source contract passed.');

@@ -121,24 +121,58 @@ private fun fallbackHorizontalAtVisualEdge(
 }
 
 /**
- * Resolves a cursor position for one concrete visual run. At a shared logical
- * offset, [StaticLayout] exposes primary and secondary caret positions. The
- * primary affinity follows the paragraph direction, while the other visual
- * direction owns the secondary affinity; collapsing those positions to a
- * physical edge loses the run identity required by a Bidi selection contour.
+ * The logical side of a cursor position. This mirrors Layout's internal
+ * `getHorizontal(offset, trailing, ...)` calls: a selection starts at the
+ * leading edge of its next logical character and ends at the trailing edge of
+ * its previous logical character. It is deliberately not a visual left/right
+ * concept.
  */
-private fun fallbackHorizontalForVisualRun(
-    layout: StaticLayout,
-    run: FallbackVisualBidiRun,
-    paragraphDirection: Int,
-    offset: Int,
-): Float {
-    val primary = layout.getPrimaryHorizontal(offset)
-    val secondary = layout.getSecondaryHorizontal(offset)
-    if (primary == secondary) return primary
+internal enum class FallbackLogicalCaretAffinity { LEADING_NEXT, TRAILING_PREVIOUS }
 
-    val paragraphIsRtl = paragraphDirection == Layout.DIR_RIGHT_TO_LEFT
-    return if (run.isRtl == paragraphIsRtl) primary else secondary
+internal fun FallbackVisualBidiRun.affinityAt(edge: FallbackVisualEdge): FallbackLogicalCaretAffinity =
+    if (offsetAt(edge) == documentStart) {
+        FallbackLogicalCaretAffinity.LEADING_NEXT
+    } else {
+        FallbackLogicalCaretAffinity.TRAILING_PREVIOUS
+    }
+
+/**
+ * Mirrors Layout's primary-caret decision from the adjacent logical embedding
+ * levels. At a directional boundary the same offset has two valid positions;
+ * which one is primary is determined by the transition, not by the current
+ * run's direction or by the paragraph's base direction alone.
+ */
+internal fun primaryIsTrailingPrevious(offset: Int, geometry: FallbackLineGeometry): Boolean {
+    val paragraphLevel = if (geometry.paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) 1 else 0
+    val current = geometry.logicalRuns.firstOrNull {
+        offset in it.documentStart until it.documentEnd
+    }
+    // Inside a logical run the public primary cursor is the leading-next
+    // position. Only a run boundary needs the preceding-level comparison.
+    if (current != null && offset > current.documentStart) return false
+
+    val levelAt = current?.level?.toInt() ?: paragraphLevel
+    val levelBefore = when {
+        offset == geometry.lineStart -> paragraphLevel
+        else -> geometry.logicalRuns.firstOrNull {
+            offset - 1 in it.documentStart until it.documentEnd
+        }?.level?.toInt() ?: paragraphLevel
+    }
+    return levelBefore < levelAt
+}
+
+/** Resolves one public horizontal API result using Layout-equivalent affinity. */
+internal fun fallbackHorizontalForLogicalCaret(
+    geometry: FallbackLineGeometry,
+    offset: Int,
+    affinity: FallbackLogicalCaretAffinity,
+): Float {
+    val desiredTrailing = affinity == FallbackLogicalCaretAffinity.TRAILING_PREVIOUS
+    return if (desiredTrailing == primaryIsTrailingPrevious(offset, geometry)) {
+        geometry.primaryHorizontal(offset)
+    } else {
+        geometry.secondaryHorizontal(offset)
+    }
 }
 
 /**
@@ -153,7 +187,7 @@ private fun softWrapTerminalBoundary(
     visualRuns: List<FallbackVisualBidiRun>,
     softWrapLineEnd: Int,
     outerLineBoundary: (FallbackVisualEdge) -> Float,
-    visualEdgeBoundary: (run: FallbackVisualBidiRun, offset: Int, edge: FallbackVisualEdge) -> Float,
+    logicalCaretHorizontal: (offset: Int, affinity: FallbackLogicalCaretAffinity) -> Float,
 ): Float? {
     val terminalEdge = terminalRun.edgeForLogicalEnd()
     val isOuter = when (terminalEdge) {
@@ -178,15 +212,13 @@ private fun softWrapTerminalBoundary(
     // malformed/unexpected Bidi result rather than resolving that offset on
     // the next line and expanding this hit rectangle across adjacent content.
     if (neighborOffset == softWrapLineEnd) return null
-    return visualEdgeBoundary(neighbor, neighborOffset, neighborEdge)
+    return logicalCaretHorizontal(neighborOffset, neighbor.affinityAt(neighborEdge))
 }
 
 /**
- * Returns the fallback rectangle for one visual Bidi run when Android exposes
- * no shaped selection contour. At a directional boundary StaticLayout has two
- * valid cursor positions: primary follows the paragraph affinity and secondary
- * follows the other visual run. Selecting the visual edge from the run's
- * direction prevents an RTL run from inheriting its LTR neighbour's boundary.
+ * Test support for direct visual-edge fixtures. Production selection uses
+ * [fallbackSelectionRectsForLine], which resolves both endpoints by logical
+ * caret affinity instead of collapsing them to physical left/right extremes.
  */
 internal fun fallbackSelectionRectForVisualRun(
     layout: StaticLayout,
@@ -240,8 +272,11 @@ internal data class FallbackLineGeometry(
     val top: Int,
     val bottom: Int,
     val width: Int,
+    /** Full drawable-line runs in logical order, including embedding levels. */
+    val logicalRuns: List<FallbackLogicalBidiRun>,
     val outerLineBoundary: (FallbackVisualEdge) -> Float,
-    val visualEdgeBoundary: (run: FallbackVisualBidiRun, offset: Int, edge: FallbackVisualEdge) -> Float,
+    val primaryHorizontal: (Int) -> Float,
+    val secondaryHorizontal: (Int) -> Float,
 )
 
 /**
@@ -275,21 +310,7 @@ internal fun fallbackSelectionRectsForGeometry(
     val selectedEnd = minOf(end, lineEnd).coerceAtLeast(lineStart)
     if (selectedStart >= selectedEnd || lineStart >= lineEnd) return emptyList()
 
-    val direction = if (geometry.paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
-        Bidi.DIRECTION_RIGHT_TO_LEFT
-    } else {
-        Bidi.DIRECTION_LEFT_TO_RIGHT
-    }
-    val bidi = Bidi(geometry.text.subSequence(lineStart, lineEnd).toString(), direction)
-    val logicalRuns = List(bidi.runCount) { logicalIndex ->
-        FallbackLogicalBidiRun(
-            logicalIndex = logicalIndex,
-            documentStart = lineStart + bidi.getRunStart(logicalIndex),
-            documentEnd = lineStart + bidi.getRunLimit(logicalIndex),
-            level = bidi.getRunLevel(logicalIndex).toByte(),
-        )
-    }
-    val visualRuns = visualBidiRuns(logicalRuns)
+    val visualRuns = visualBidiRuns(geometry.logicalRuns)
     val fragments = mutableListOf<Rect>()
     for (visualRun in visualRuns) {
         val intersectedStart = maxOf(selectedStart, visualRun.documentStart)
@@ -303,7 +324,9 @@ internal fun fallbackSelectionRectsForGeometry(
                 visualRuns = visualRuns,
                 softWrapLineEnd = softWrapLineEnd!!,
                 outerLineBoundary = geometry.outerLineBoundary,
-                visualEdgeBoundary = geometry.visualEdgeBoundary,
+                logicalCaretHorizontal = { offset, affinity ->
+                    fallbackHorizontalForLogicalCaret(geometry, offset, affinity)
+                },
             )
         } else {
             null
@@ -318,7 +341,15 @@ internal fun fallbackSelectionRectsForGeometry(
             if (!logicalRunStart && offset == softWrapLineEnd) {
                 return terminalBoundary ?: geometry.outerLineBoundary(edge)
             }
-            return geometry.visualEdgeBoundary(visualRun, offset, edge)
+            return fallbackHorizontalForLogicalCaret(
+                geometry,
+                offset,
+                if (logicalRunStart) {
+                    FallbackLogicalCaretAffinity.LEADING_NEXT
+                } else {
+                    FallbackLogicalCaretAffinity.TRAILING_PREVIOUS
+                },
+            )
         }
         val startBoundary = visualBoundary(intersectedStart, logicalRunStart = true)
         val endBoundary = visualBoundary(intersectedEnd, logicalRunStart = false)
@@ -355,16 +386,44 @@ internal fun fallbackSelectionRectsForLine(
         top = layout.getLineTop(line),
         bottom = layout.getLineBottom(line),
         width = width,
+        logicalRuns = fallbackLogicalBidiRunsForLine(layout, line),
         outerLineBoundary = { edge ->
             if (edge == FallbackVisualEdge.LEFT) layout.getLineLeft(line) else layout.getLineRight(line)
         },
-        visualEdgeBoundary = { run, offset, _ ->
-            fallbackHorizontalForVisualRun(layout, run, layout.getParagraphDirection(line), offset)
-        },
+        primaryHorizontal = layout::getPrimaryHorizontal,
+        secondaryHorizontal = layout::getSecondaryHorizontal,
     ),
     start,
     end,
 )
+
+private fun fallbackLogicalBidiRunsForLine(
+    layout: StaticLayout,
+    line: Int,
+): List<FallbackLogicalBidiRun> {
+    val lineStart = layout.getLineStart(line)
+    val rawLineEnd = layout.getLineEnd(line)
+    val lineEnd = if (rawLineEnd > lineStart && layout.text[rawLineEnd - 1] == '\n') {
+        rawLineEnd - 1
+    } else {
+        rawLineEnd
+    }
+    if (lineStart >= lineEnd) return emptyList()
+    val direction = if (layout.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT) {
+        Bidi.DIRECTION_RIGHT_TO_LEFT
+    } else {
+        Bidi.DIRECTION_LEFT_TO_RIGHT
+    }
+    val bidi = Bidi(layout.text.subSequence(lineStart, lineEnd).toString(), direction)
+    return List(bidi.runCount) { logicalIndex ->
+        FallbackLogicalBidiRun(
+            logicalIndex = logicalIndex,
+            documentStart = lineStart + bidi.getRunStart(logicalIndex),
+            documentEnd = lineStart + bidi.getRunLimit(logicalIndex),
+            level = bidi.getRunLevel(logicalIndex).toByte(),
+        )
+    }
+}
 
 /** Creates immutable StaticLayout fragments without depending on a mounted View. */
 internal interface AndroidProseLayoutEngine {

@@ -47,6 +47,155 @@ class PreparedProseAccessibilityTest {
     }
 
     @Test
+    fun `logical caret affinity selects secondary at nested LTR level boundaries`() {
+        val geometry = affinityGeometry(
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
+            levels = listOf(0, 1, 2, 1, 0),
+        )
+
+        assertTrue(primaryIsTrailingPrevious(2, geometry))
+        assertEquals(
+            102f,
+            fallbackHorizontalForLogicalCaret(
+                geometry,
+                2,
+                FallbackLogicalCaretAffinity.LEADING_NEXT,
+            ),
+        )
+        assertEquals(false, primaryIsTrailingPrevious(3, geometry))
+        assertEquals(
+            103f,
+            fallbackHorizontalForLogicalCaret(
+                geometry,
+                3,
+                FallbackLogicalCaretAffinity.TRAILING_PREVIOUS,
+            ),
+        )
+    }
+
+    @Test
+    fun `logical caret affinity selects secondary for embedded parity transitions`() {
+        val ltr = affinityGeometry(
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
+            levels = listOf(0, 1, 0),
+        )
+        val rtl = affinityGeometry(
+            paragraphDirection = Layout.DIR_RIGHT_TO_LEFT,
+            levels = listOf(1, 2, 3, 2, 1),
+        )
+
+        for ((geometry, start, end) in listOf(Triple(ltr, 1, 2), Triple(rtl, 2, 3))) {
+            assertTrue(primaryIsTrailingPrevious(start, geometry))
+            assertEquals(
+                100f + start,
+                fallbackHorizontalForLogicalCaret(
+                    geometry,
+                    start,
+                    FallbackLogicalCaretAffinity.LEADING_NEXT,
+                ),
+            )
+            assertEquals(false, primaryIsTrailingPrevious(end, geometry))
+            assertEquals(
+                100f + end,
+                fallbackHorizontalForLogicalCaret(
+                    geometry,
+                    end,
+                    FallbackLogicalCaretAffinity.TRAILING_PREVIOUS,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `logical caret affinity preserves coincident interior carets`() {
+        val geometry = affinityGeometry(
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
+            runs = listOf(FallbackLogicalBidiRun(0, 0, 3, 0)),
+            text = "abc",
+            primaryHorizontal = { 17f },
+            secondaryHorizontal = { 17f },
+        )
+
+        assertEquals(false, primaryIsTrailingPrevious(1, geometry))
+        assertEquals(
+            17f,
+            fallbackHorizontalForLogicalCaret(
+                geometry,
+                1,
+                FallbackLogicalCaretAffinity.LEADING_NEXT,
+            ),
+        )
+        assertEquals(
+            17f,
+            fallbackHorizontalForLogicalCaret(
+                geometry,
+                1,
+                FallbackLogicalCaretAffinity.TRAILING_PREVIOUS,
+            ),
+        )
+    }
+
+    @Test
+    fun `fallback uses line boundaries only for outer soft-wrap terminals`() {
+        val ltr = affinityGeometry(
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
+            levels = listOf(0),
+            text = "xy",
+            rawLineEnd = 1,
+            nextLineStart = 1,
+            outerLineBoundary = { edge -> if (edge == FallbackVisualEdge.LEFT) 0f else 40f },
+            primaryHorizontal = { offset ->
+                check(offset != 1) { "outer soft-wrap terminal must not query a public horizontal" }
+                0f
+            },
+            secondaryHorizontal = { error("LTR outer terminal must not query secondary horizontal") },
+        )
+        val rtl = affinityGeometry(
+            paragraphDirection = Layout.DIR_RIGHT_TO_LEFT,
+            levels = listOf(1),
+            text = "xy",
+            rawLineEnd = 1,
+            nextLineStart = 1,
+            outerLineBoundary = { edge -> if (edge == FallbackVisualEdge.LEFT) 0f else 40f },
+            primaryHorizontal = { offset ->
+                check(offset != 1) { "outer soft-wrap terminal must not query a public horizontal" }
+                40f
+            },
+            secondaryHorizontal = { error("RTL outer terminal must not query secondary horizontal") },
+        )
+
+        assertEquals(listOf(Rect(0, 0, 40, 20)), fallbackSelectionRectsForGeometry(ltr, 0, 1))
+        assertEquals(listOf(Rect(0, 0, 40, 20)), fallbackSelectionRectsForGeometry(rtl, 0, 1))
+    }
+
+    @Test
+    fun `fallback final and hard-break line ends do not leak into a next line`() {
+        fun horizontal(offset: Int): Float {
+            check(offset != 2) { "final and hard-break boundaries must not use the next-line offset" }
+            return if (offset == 0) 0f else 10f
+        }
+        val finalLine = affinityGeometry(
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
+            levels = listOf(0),
+            text = "x",
+            primaryHorizontal = ::horizontal,
+            secondaryHorizontal = ::horizontal,
+        )
+        val hardBreak = affinityGeometry(
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
+            levels = listOf(0),
+            text = "x\nnext",
+            rawLineEnd = 2,
+            nextLineStart = 2,
+            primaryHorizontal = ::horizontal,
+            secondaryHorizontal = ::horizontal,
+        )
+
+        assertEquals(listOf(Rect(0, 0, 10, 20)), fallbackSelectionRectsForGeometry(finalLine, 0, 1))
+        assertEquals(listOf(Rect(0, 0, 10, 20)), fallbackSelectionRectsForGeometry(hardBreak, 0, 1))
+    }
+
+    @Test
     fun `empty shaped selection fallback uses matching RTL boundary affinities`() {
         val text = "Latin \u05d0\u05d1\u05d2 Latin"
         val width = 300
@@ -481,8 +630,7 @@ class PreparedProseAccessibilityTest {
             paragraphDirection == Layout.DIR_LEFT_TO_RIGHT,
             bidi.baseIsLeftToRight(),
         )
-        val visualRuns = visualBidiRuns(
-            List(bidi.runCount) { logicalIndex ->
+        val logicalRuns = List(bidi.runCount) { logicalIndex ->
                 FallbackLogicalBidiRun(
                     logicalIndex = logicalIndex,
                     documentStart = bidi.getRunStart(logicalIndex),
@@ -490,7 +638,7 @@ class PreparedProseAccessibilityTest {
                     level = bidi.getRunLevel(logicalIndex).toByte(),
                 )
             }
-        )
+        val visualRuns = visualBidiRuns(logicalRuns)
         assertEquals(
             expectedVisualLogicalOrder,
             visualRuns.map { it.logicalRun.logicalIndex },
@@ -522,14 +670,24 @@ class PreparedProseAccessibilityTest {
         // the opposite affinity, not by its physical left/right label alone.
         assertEquals(terminal.documentStart, neighborOffset)
         val width = visualRuns.size * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
-        val visualEdges = mutableMapOf<FixedVisualCaret, Float>()
+        val logicalCaretPositions = mutableMapOf<FixedLogicalCaret, Float>()
         visualRuns.forEach { run ->
             val left = run.visualIndex * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX.toFloat()
             val right = left + MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
-            visualEdges[FixedVisualCaret(run, run.offsetAt(FallbackVisualEdge.LEFT), FallbackVisualEdge.LEFT)] = left
-            visualEdges[FixedVisualCaret(run, run.offsetAt(FallbackVisualEdge.RIGHT), FallbackVisualEdge.RIGHT)] = right
+            logicalCaretPositions[FixedLogicalCaret(run.logicalRun, run.affinityAt(FallbackVisualEdge.LEFT))] = left
+            logicalCaretPositions[FixedLogicalCaret(run.logicalRun, run.affinityAt(FallbackVisualEdge.RIGHT))] = right
         }
-        val geometry = FallbackLineGeometry(
+        fun positionAt(offset: Int, affinity: FallbackLogicalCaretAffinity): Float {
+            val run = logicalRuns.single {
+                when (affinity) {
+                    FallbackLogicalCaretAffinity.LEADING_NEXT -> it.documentStart == offset
+                    FallbackLogicalCaretAffinity.TRAILING_PREVIOUS -> it.documentEnd == offset
+                }
+            }
+            return requireNotNull(logicalCaretPositions[FixedLogicalCaret(run, affinity)])
+        }
+        lateinit var geometry: FallbackLineGeometry
+        geometry = FallbackLineGeometry(
             text = text,
             lineStart = 0,
             rawLineEnd = lineEnd,
@@ -538,17 +696,42 @@ class PreparedProseAccessibilityTest {
             top = 10,
             bottom = 30,
             width = width,
+            logicalRuns = logicalRuns,
             outerLineBoundary = { edge -> if (edge == FallbackVisualEdge.LEFT) 0f else width.toFloat() },
-            visualEdgeBoundary = { run, offset, edge -> requireNotNull(visualEdges[FixedVisualCaret(run, offset, edge)]) },
+            primaryHorizontal = { offset ->
+                positionAt(
+                    offset,
+                    if (primaryIsTrailingPrevious(offset, geometry)) {
+                        FallbackLogicalCaretAffinity.TRAILING_PREVIOUS
+                    } else {
+                        FallbackLogicalCaretAffinity.LEADING_NEXT
+                    },
+                )
+            },
+            secondaryHorizontal = { offset ->
+                positionAt(
+                    offset,
+                    if (primaryIsTrailingPrevious(offset, geometry)) {
+                        FallbackLogicalCaretAffinity.LEADING_NEXT
+                    } else {
+                        FallbackLogicalCaretAffinity.TRAILING_PREVIOUS
+                    },
+                )
+            },
         )
         val rect = fallbackSelectionRectsForGeometry(
             geometry = geometry,
             start = terminal.documentStart,
             end = terminal.documentEnd,
         ).single()
-        val terminalStartEdge = if (terminal.isRtl) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT
-        val startBoundary = requireNotNull(visualEdges[FixedVisualCaret(terminal, terminal.documentStart, terminalStartEdge)])
-        val terminalBoundary = requireNotNull(visualEdges[FixedVisualCaret(neighbor, neighborOffset, neighborEdge)])
+        val startBoundary = requireNotNull(
+            logicalCaretPositions[
+                FixedLogicalCaret(terminal.logicalRun, FallbackLogicalCaretAffinity.LEADING_NEXT)
+            ]
+        )
+        val terminalBoundary = requireNotNull(
+            logicalCaretPositions[FixedLogicalCaret(neighbor.logicalRun, neighbor.affinityAt(neighborEdge))]
+        )
         assertNotEquals(
             "shared logical offset must retain distinct terminal and adjacent-run caret positions",
             startBoundary,
@@ -566,11 +749,42 @@ class PreparedProseAccessibilityTest {
         assertTrue(rect.left < rect.right)
     }
 
-    private data class FixedVisualCaret(
-        val run: FallbackVisualBidiRun,
-        val offset: Int,
-        val edge: FallbackVisualEdge,
+    private data class FixedLogicalCaret(
+        val run: FallbackLogicalBidiRun,
+        val affinity: FallbackLogicalCaretAffinity,
     )
+
+    private fun affinityGeometry(
+        paragraphDirection: Int,
+        levels: List<Int>? = null,
+        runs: List<FallbackLogicalBidiRun>? = null,
+        text: String = "x".repeat(levels?.size ?: runs!!.maxOf { it.documentEnd }),
+        rawLineEnd: Int = levels?.size ?: runs!!.maxOf { it.documentEnd },
+        nextLineStart: Int? = null,
+        outerLineBoundary: (FallbackVisualEdge) -> Float = { edge ->
+            if (edge == FallbackVisualEdge.LEFT) 0f else 200f
+        },
+        primaryHorizontal: (Int) -> Float = { offset -> 10f + offset },
+        secondaryHorizontal: (Int) -> Float = { offset -> 100f + offset },
+    ): FallbackLineGeometry {
+        val logicalRuns = runs ?: requireNotNull(levels).mapIndexed { index, level ->
+            FallbackLogicalBidiRun(index, index, index + 1, level.toByte())
+        }
+        return FallbackLineGeometry(
+            text = text,
+            lineStart = 0,
+            rawLineEnd = rawLineEnd,
+            nextLineStart = nextLineStart,
+            paragraphDirection = paragraphDirection,
+            top = 0,
+            bottom = 20,
+            width = 200,
+            logicalRuns = logicalRuns,
+            outerLineBoundary = outerLineBoundary,
+            primaryHorizontal = primaryHorizontal,
+            secondaryHorizontal = secondaryHorizontal,
+        )
+    }
 
     private data class ExpectedVisualRun(
         val logicalIndex: Int,
