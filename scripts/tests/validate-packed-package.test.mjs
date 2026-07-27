@@ -61,6 +61,7 @@ function makeFixture(name) {
   mkdirSync(fixture, { recursive: true });
   for (const path of [
     "package.json",
+    "expo-module.config.json",
     "LICENSE",
     "ReactNativeProseEditor.podspec",
     "ios",
@@ -76,7 +77,7 @@ function makeFixture(name) {
 }
 
 function makePackageEntriesFixture(name, legacyText = "") {
-  const fixture = join(workDir, name);
+  const fixture = makeFixture(name);
   mkdirSync(join(fixture, "dist"), { recursive: true });
   writeFileSync(join(fixture, "dist/index.js"), `export const ready = true;\n${legacyText}`);
   writeFileSync(
