@@ -286,7 +286,6 @@ final class PreparedProseLayoutCache {
         accessOrder.removeAll()
         mountIndex.removeAll()
         pendingLeases.removeAll()
-        pendingLeaseAccessOrder.removeAll()
         // Pending handoffs are unmounted owners, so memory pressure retires
         // them with the completed cache. Fabric/direct mounted owners survive
         // until their explicit release paths run. Registry clears compiled

@@ -280,9 +280,9 @@ class PreparedProseRenderingTest {
 
     @Test
     fun `compiler backed fixed line heights cover single final heading code list and density metrics`() {
-        val document = compileHtml(
-            "<p>single</p><p>wrapped final line needs enough words to wrap at this fixed width</p><p>hard<br>break</p>" +
-                "<h1>heading</h1><pre><code>code</code></pre><ul><li>list leaf</li></ul>",
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"single"}]},{"type":"paragraph","content":[{"type":"text","text":"wrapped final line needs enough words to wrap at this fixed width"}]},{"type":"paragraph","content":[{"type":"text","text":"hard"},{"type":"hardBreak"},{"type":"text","text":"break"}]},{"type":"h1","content":[{"type":"text","text":"heading"}]},{"type":"codeBlock","content":[{"type":"text","text":"code"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"list leaf"}]}]}]}]}""",
+            Fixture.structural[1].configJson,
         )
         val densityOneTheme = PreparedProseTheme.resolve(
             """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
@@ -536,8 +536,14 @@ class PreparedProseRenderingTest {
         assertTrue("$diagnostics bottom", kotlin.math.abs(expected.bottom - actual.bottom) <= tolerance)
     }
 
-    private fun textLayout(layout: PreparedProseLayout, blockIndex: Int): StaticLayout =
-        layout.blocks[blockIndex].fragments.single { it.kind == PreparedProseFragmentKind.TEXT }.layout!!
+    private fun textLayout(layout: PreparedProseLayout, blockIndex: Int): StaticLayout {
+        val block = layout.blocks.getOrNull(blockIndex)
+        assertNotNull("Expected prepared text block at index $blockIndex; block count=${layout.blocks.size}", block)
+        val textFragment = block!!.fragments.singleOrNull { it.kind == PreparedProseFragmentKind.TEXT }
+        assertNotNull("Expected exactly one text fragment at block index $blockIndex", textFragment)
+        assertNotNull("Expected text fragment layout at block index $blockIndex", textFragment!!.layout)
+        return textFragment.layout!!
+    }
 
     private fun lineHeight(layout: StaticLayout, line: Int): Int =
         layout.getLineBottom(line) - layout.getLineTop(line)
