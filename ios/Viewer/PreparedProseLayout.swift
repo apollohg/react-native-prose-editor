@@ -72,6 +72,10 @@ struct FabricSurfaceToken: Hashable {
 struct FabricLeaseKey: Hashable {
     let surface: FabricSurfaceToken
     let layout: ProseLayoutKey
+    /// Registry-owned lifecycle epoch. A recycled surface may later reuse the
+    /// same component tag and generation identity; the old measurement must
+    /// never consume or retire that new handoff.
+    let epoch: UInt64
 }
 
 struct FabricGenerationToken: Hashable {

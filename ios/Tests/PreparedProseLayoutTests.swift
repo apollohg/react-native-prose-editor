@@ -752,6 +752,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(mountedView.layout === replacement)
     }
 
+#if DEBUG
     func testConcurrentFabricMeasureRetainsGenerationPinAfterStaleMountMissCleanup() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -794,6 +795,130 @@ final class PreparedProseLayoutTests: XCTestCase {
         let drawingView = PreparedProseDrawingView(frame: .zero)
         XCTAssertTrue(install(request, in: drawingView, surface: surface, registry: registry, width: 140))
         XCTAssertTrue(drawingView.layout === replacement)
+    }
+#endif
+
+    func testReleasedFabricPreparationCannotResurrectItsGenerationAndNewEpochCanMount() {
+        let preparationStarted = DispatchSemaphore(value: 0)
+        let allowPreparation = DispatchSemaphore(value: 0)
+        let staleMeasureFinished = DispatchSemaphore(value: 0)
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                preparationStarted.signal()
+                _ = allowPreparation.wait(timeout: .now() + 1)
+                return PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: Int(width)
+                )
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let generation = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+        )
+
+        DispatchQueue.global().async {
+            _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+            staleMeasureFinished.signal()
+        }
+        XCTAssertEqual(preparationStarted.wait(timeout: .now() + 1), .success)
+
+        registry.releaseFabricGeneration(generation)
+        allowPreparation.signal()
+        XCTAssertEqual(staleMeasureFinished.wait(timeout: .now() + 1), .success)
+
+        XCTAssertEqual(registry.fabricLeaseCountForTesting, 0)
+        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(generation))
+        XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
+
+        let fresh = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        let drawingView = PreparedProseDrawingView(frame: .zero)
+        XCTAssertTrue(install(request, in: drawingView, surface: surface, registry: registry))
+        XCTAssertTrue(drawingView.layout === fresh)
+        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(generation))
+        XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(generation))
+    }
+
+    func testInvalidFabricWidthReleasesOnlyItsGenerationOwnership() {
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: Int(width)
+                )
+            }
+        )
+        let request = request()
+        let otherRequest = request(source: "other")
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let otherSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+        let generation = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+        )
+        let otherGeneration = FabricGenerationToken(
+            surface: otherSurface,
+            generationIdentity: canonicalFabricGenerationIdentity(otherRequest, registry: registry)
+        )
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        _ = registry.measure(request: otherRequest, widthPoints: 120, scale: 2, fabricSurface: otherSurface)
+        let invalid = registry.measure(request: request, widthPoints: 0, scale: 2, fabricSurface: surface)
+
+        XCTAssertEqual(invalid.error?.code, "INVALID_WIDTH")
+        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(generation))
+        XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
+        XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(otherGeneration))
+        XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(otherGeneration))
+        XCTAssertTrue(install(otherRequest, in: PreparedProseDrawingView(frame: .zero), surface: otherSurface, registry: registry, width: 120))
+    }
+
+    func testReleasedFabricCompileFailureCannotResurrectFailureOwnership() {
+        let compilationStarted = DispatchSemaphore(value: 0)
+        let allowCompilation = DispatchSemaphore(value: 0)
+        let staleMeasureFinished = DispatchSemaphore(value: 0)
+        let registry = PreparedProseLayoutRegistry(
+            compile: { _ in
+                compilationStarted.signal()
+                _ = allowCompilation.wait(timeout: .now() + 1)
+                throw ProseViewerError.compiler(
+                    domain: "viewer",
+                    code: "MALFORMED_INPUT",
+                    message: "Malformed content"
+                )
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let generation = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+        )
+
+        DispatchQueue.global().async {
+            _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+            staleMeasureFinished.signal()
+        }
+        XCTAssertEqual(compilationStarted.wait(timeout: .now() + 1), .success)
+
+        registry.releaseFabricGeneration(generation)
+        allowCompilation.signal()
+        XCTAssertEqual(staleMeasureFinished.wait(timeout: .now() + 1), .success)
+
+        XCTAssertEqual(registry.fabricLeaseCountForTesting, 0)
+        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(generation))
+        XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
     }
 
     func testExactFabricMountMissCleanupPreservesOtherSurfaceAndGenerationLeases() {
