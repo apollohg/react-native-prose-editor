@@ -163,6 +163,22 @@ class PreparedProseAccessibilityTest {
     }
 
     @Test
+    fun `fallback keeps an internal LTR terminal in an RTL paragraph out of adjacent visual text`() {
+        assertInternalMixedSoftWrapTerminalBoundary(
+            paragraphDirection = Layout.DIR_RIGHT_TO_LEFT,
+            terminalRunIsRtl = false,
+        )
+    }
+
+    @Test
+    fun `fallback keeps an internal RTL terminal in an LTR paragraph out of adjacent visual text`() {
+        assertInternalMixedSoftWrapTerminalBoundary(
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
+            terminalRunIsRtl = true,
+        )
+    }
+
+    @Test
     fun `Fabric-equivalent prepared replacement announces one subtree change and preserves focus clear`() {
         val context = RuntimeEnvironment.getApplication()
         val view = PreparedProseDrawingView(context)
@@ -390,6 +406,126 @@ class PreparedProseAccessibilityTest {
         assertEquals(expected, fallbackSelectionRectsForLine(layout, start, end, line, width))
         assertTrue(expected.size >= 2)
         assertTrue(expected.all { it.left in 0..width && it.right in 0..width && it.left < it.right })
+    }
+
+    private fun assertInternalMixedSoftWrapTerminalBoundary(
+        paragraphDirection: Int,
+        terminalRunIsRtl: Boolean,
+    ) {
+        val fixture = findInternalMixedSoftWrapTerminalFixture(paragraphDirection, terminalRunIsRtl)
+        val rect = fallbackSelectionRectsForLine(
+            layout = fixture.layout,
+            start = fixture.terminalStart,
+            end = fixture.terminalEnd,
+            line = fixture.line,
+            width = fixture.width,
+        ).single()
+
+        val expectedStart = visualEdgeBoundary(
+            fixture.layout,
+            fixture.terminalStart,
+            if (fixture.terminalRunIsRtl) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT,
+        )
+        val expectedTerminal = visualEdgeBoundary(
+            fixture.layout,
+            fixture.neighborBoundaryOffset,
+            fixture.neighborBoundaryEdge,
+        )
+        val expected = Rect(
+            kotlin.math.floor(min(expectedStart, expectedTerminal)).toInt().coerceIn(0, fixture.width),
+            fixture.layout.getLineTop(fixture.line),
+            ceil(max(expectedStart, expectedTerminal)).toInt().coerceIn(0, fixture.width),
+            fixture.layout.getLineBottom(fixture.line),
+        )
+
+        assertEquals(expected, rect)
+        if (fixture.terminalRunIsRtl) {
+            assertTrue(rect.left > kotlin.math.floor(fixture.layout.getLineLeft(fixture.line)).toInt())
+        } else {
+            assertTrue(rect.right < ceil(fixture.layout.getLineRight(fixture.line)).toInt())
+        }
+    }
+
+    private data class InternalMixedSoftWrapFixture(
+        val layout: StaticLayout,
+        val width: Int,
+        val line: Int,
+        val terminalStart: Int,
+        val terminalEnd: Int,
+        val terminalRunIsRtl: Boolean,
+        val neighborBoundaryOffset: Int,
+        val neighborBoundaryEdge: FallbackVisualEdge,
+    )
+
+    private fun findInternalMixedSoftWrapTerminalFixture(
+        paragraphDirection: Int,
+        terminalRunIsRtl: Boolean,
+    ): InternalMixedSoftWrapFixture {
+        val candidates = listOf(
+            "\u05d0\u05d1\u05d2 Latin words \u05d3\u05d4\u05d5 more Latin words \u05d5\u05d6\u05d7 trailing",
+            "Latin words \u05d0\u05d1\u05d2 more Latin \u05d3\u05d4\u05d5 words trailing",
+            "\u05d0\u05d1\u05d2 abc \u05d3\u05d4\u05d5 def \u05d6\u05d7\u05d8 ghi \u05d9\u05db\u05dc mno",
+            "abc \u05d0\u05d1\u05d2 def \u05d3\u05d4\u05d5 ghi \u05d6\u05d7\u05d8 jkl \u05d9\u05db\u05dc",
+        )
+        for (text in candidates) for (width in 42..132 step 3) {
+            val layout = layoutFor(text, width)
+            for (line in 0 until layout.lineCount - 1) {
+                val lineStart = layout.getLineStart(line)
+                val lineEnd = layout.getLineEnd(line)
+                if (lineEnd >= text.length || layout.getLineStart(line + 1) != lineEnd) continue
+                if (layout.getParagraphDirection(line) != paragraphDirection) continue
+                val bidiDirection = if (paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
+                    Bidi.DIRECTION_RIGHT_TO_LEFT
+                } else {
+                    Bidi.DIRECTION_LEFT_TO_RIGHT
+                }
+                val bidi = Bidi(text.substring(lineStart, lineEnd), bidiDirection)
+                for (visualIndex in 0 until bidi.runCount) {
+                    val runStart = lineStart + bidi.getRunStart(visualIndex)
+                    val runEnd = lineStart + bidi.getRunLimit(visualIndex)
+                    val isRtl = (bidi.getRunLevel(visualIndex) and 1) == 1
+                    val terminalEdge = if (isRtl) FallbackVisualEdge.LEFT else FallbackVisualEdge.RIGHT
+                    val isInternal = (terminalEdge == FallbackVisualEdge.LEFT && visualIndex > 0) ||
+                        (terminalEdge == FallbackVisualEdge.RIGHT && visualIndex < bidi.runCount - 1)
+                    if (runEnd != lineEnd || isRtl != terminalRunIsRtl || !isInternal) continue
+                    val neighborIndex = if (terminalEdge == FallbackVisualEdge.LEFT) visualIndex - 1 else visualIndex + 1
+                    val neighborIsRtl = (bidi.getRunLevel(neighborIndex) and 1) == 1
+                    val neighborEdge = if (terminalEdge == FallbackVisualEdge.LEFT) {
+                        FallbackVisualEdge.RIGHT
+                    } else {
+                        FallbackVisualEdge.LEFT
+                    }
+                    val neighborStart = lineStart + bidi.getRunStart(neighborIndex)
+                    val neighborEnd = lineStart + bidi.getRunLimit(neighborIndex)
+                    val neighborOffset = when (neighborEdge) {
+                        FallbackVisualEdge.LEFT -> if (neighborIsRtl) neighborEnd else neighborStart
+                        FallbackVisualEdge.RIGHT -> if (neighborIsRtl) neighborStart else neighborEnd
+                    }
+                    if (neighborOffset == lineEnd) continue
+                    return InternalMixedSoftWrapFixture(
+                        layout,
+                        width,
+                        line,
+                        runStart,
+                        runEnd,
+                        isRtl,
+                        neighborOffset,
+                        neighborEdge,
+                    )
+                }
+            }
+        }
+        throw AssertionError("No internal mixed-Bidi soft-wrap terminal fixture was constructed")
+    }
+
+    private fun visualEdgeBoundary(
+        layout: StaticLayout,
+        offset: Int,
+        edge: FallbackVisualEdge,
+    ): Float {
+        val primary = layout.getPrimaryHorizontal(offset)
+        val secondary = layout.getSecondaryHorizontal(offset)
+        return if (edge == FallbackVisualEdge.RIGHT) max(primary, secondary) else min(primary, secondary)
     }
 
     private fun preparedArtifact(generation: String): PreparedProseLayout = PreparedProseLayout(

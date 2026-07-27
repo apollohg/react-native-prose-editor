@@ -61,6 +61,79 @@ internal fun mergeAdjacentSameLineSelectionFragments(fragments: List<Rect>): Lis
 
 private const val SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX = 1
 
+internal enum class FallbackVisualEdge { LEFT, RIGHT }
+
+/**
+ * [Bidi] exposes runs in visual order while its offsets remain relative to the
+ * logical line. Keep both identities together so a soft-wrap terminal can use
+ * the adjacent visual run without accidentally asking [Layout] about the next
+ * line that shares the same logical offset.
+ */
+private data class FallbackVisualBidiRun(
+    val visualIndex: Int,
+    val documentStart: Int,
+    val documentEnd: Int,
+    val isRtl: Boolean,
+) {
+    fun offsetAt(edge: FallbackVisualEdge): Int = when (edge) {
+        FallbackVisualEdge.LEFT -> if (isRtl) documentEnd else documentStart
+        FallbackVisualEdge.RIGHT -> if (isRtl) documentStart else documentEnd
+    }
+
+    fun edgeForLogicalEnd(): FallbackVisualEdge =
+        if (isRtl) FallbackVisualEdge.LEFT else FallbackVisualEdge.RIGHT
+}
+
+private fun fallbackHorizontalAtVisualEdge(
+    layout: StaticLayout,
+    offset: Int,
+    edge: FallbackVisualEdge,
+): Float {
+    val primary = layout.getPrimaryHorizontal(offset)
+    val secondary = layout.getSecondaryHorizontal(offset)
+    return if (edge == FallbackVisualEdge.RIGHT) max(primary, secondary) else min(primary, secondary)
+}
+
+/**
+ * Emulates Layout's private current-line trailing lookup at a soft-wrap end.
+ * The public horizontal APIs resolve that shared offset as the next line's
+ * start, so an internal terminal run instead borrows the same visual boundary
+ * from its adjacent run. Only a run which owns the outer visual edge may use
+ * the current line's left/right extent.
+ */
+private fun softWrapTerminalBoundary(
+    layout: StaticLayout,
+    terminalRun: FallbackVisualBidiRun,
+    visualRuns: List<FallbackVisualBidiRun>,
+    line: Int,
+    softWrapLineEnd: Int,
+): Float? {
+    val terminalEdge = terminalRun.edgeForLogicalEnd()
+    val isOuter = when (terminalEdge) {
+        FallbackVisualEdge.LEFT -> terminalRun.visualIndex == 0
+        FallbackVisualEdge.RIGHT -> terminalRun.visualIndex == visualRuns.lastIndex
+    }
+    if (isOuter) {
+        return if (terminalEdge == FallbackVisualEdge.LEFT) layout.getLineLeft(line) else layout.getLineRight(line)
+    }
+
+    val neighbor = when (terminalEdge) {
+        FallbackVisualEdge.LEFT -> visualRuns.getOrNull(terminalRun.visualIndex - 1)
+        FallbackVisualEdge.RIGHT -> visualRuns.getOrNull(terminalRun.visualIndex + 1)
+    } ?: return null
+    val neighborEdge = if (terminalEdge == FallbackVisualEdge.LEFT) {
+        FallbackVisualEdge.RIGHT
+    } else {
+        FallbackVisualEdge.LEFT
+    }
+    val neighborOffset = neighbor.offsetAt(neighborEdge)
+    // A distinct visual run cannot own the terminal line-end offset. Refuse a
+    // malformed/unexpected Bidi result rather than resolving that offset on
+    // the next line and expanding this hit rectangle across adjacent content.
+    if (neighborOffset == softWrapLineEnd) return null
+    return fallbackHorizontalAtVisualEdge(layout, neighborOffset, neighborEdge)
+}
+
 /**
  * Returns the fallback rectangle for one visual Bidi run when Android exposes
  * no shaped selection contour. At a directional boundary StaticLayout has two
@@ -76,6 +149,7 @@ internal fun fallbackSelectionRectForVisualRun(
     line: Int,
     width: Int,
     softWrapLineEnd: Int? = null,
+    softWrapTerminalBoundary: Float? = null,
 ): Rect? {
     if (runStart >= runEnd) return null
 
@@ -88,11 +162,14 @@ internal fun fallbackSelectionRectForVisualRun(
         // affinity lookup for a current-line start and for the final document
         // boundary, neither of which has this ambiguous line ownership.
         if (!logicalRunStart && offset == softWrapLineEnd) {
+            softWrapTerminalBoundary?.let { return it }
             return if (visualRightEdge) layout.getLineRight(line) else layout.getLineLeft(line)
         }
-        val primary = layout.getPrimaryHorizontal(offset)
-        val secondary = layout.getSecondaryHorizontal(offset)
-        return if (visualRightEdge) max(primary, secondary) else min(primary, secondary)
+        return fallbackHorizontalAtVisualEdge(
+            layout,
+            offset,
+            if (visualRightEdge) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT,
+        )
     }
 
     val start = visualBoundary(runStart, logicalRunStart = true)
@@ -141,20 +218,38 @@ internal fun fallbackSelectionRectsForLine(
         Bidi.DIRECTION_LEFT_TO_RIGHT
     }
     val bidi = Bidi(layout.text.subSequence(lineStart, lineEnd).toString(), direction)
+    val visualRuns = List(bidi.runCount) { visualIndex ->
+        FallbackVisualBidiRun(
+            visualIndex = visualIndex,
+            documentStart = lineStart + bidi.getRunStart(visualIndex),
+            documentEnd = lineStart + bidi.getRunLimit(visualIndex),
+            isRtl = (bidi.getRunLevel(visualIndex) and 1) == 1,
+        )
+    }
     val fragments = mutableListOf<Rect>()
-    for (run in 0 until bidi.runCount) {
-        val runStart = lineStart + bidi.getRunStart(run)
-        val runEnd = lineStart + bidi.getRunLimit(run)
-        val intersectedStart = maxOf(selectedStart, runStart)
-        val intersectedEnd = minOf(selectedEnd, runEnd)
+    for (visualRun in visualRuns) {
+        val intersectedStart = maxOf(selectedStart, visualRun.documentStart)
+        val intersectedEnd = minOf(selectedEnd, visualRun.documentEnd)
+        val resolvesSoftWrapTerminal = softWrapLineEnd != null &&
+            visualRun.documentEnd == softWrapLineEnd &&
+            intersectedEnd == softWrapLineEnd
+        val terminalBoundary = if (resolvesSoftWrapTerminal) {
+            softWrapTerminalBoundary(layout, visualRun, visualRuns, line, softWrapLineEnd!!)
+        } else {
+            null
+        }
+        // Do not allow an internal terminal boundary to fall through to the
+        // generic whole-line shortcut: that would over-expand the rectangle.
+        if (resolvesSoftWrapTerminal && terminalBoundary == null) continue
         fallbackSelectionRectForVisualRun(
             layout = layout,
             runStart = intersectedStart,
             runEnd = intersectedEnd,
-            runIsRtl = (bidi.getRunLevel(run) and 1) == 1,
+            runIsRtl = visualRun.isRtl,
             line = line,
             width = width,
             softWrapLineEnd = softWrapLineEnd,
+            softWrapTerminalBoundary = terminalBoundary,
         )?.let(fragments::add)
     }
     return fragments
