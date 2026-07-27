@@ -67,6 +67,10 @@ CGFloat NativeFontScale(const PreparedProseViewerShadowNode::ConcreteState::Shar
   return std::isfinite(value) && value > 0 ? static_cast<CGFloat>(value) : 1;
 }
 
+uint64_t LeaseHandle(const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
+  return state ? state->getData().leaseHandle : 0;
+}
+
 uint64_t ScaleBits(CGFloat scale) {
   const double value = scale;
   uint64_t bits = 0;
@@ -103,12 +107,13 @@ uint64_t FontEnvironmentRevision(const PreparedProseViewerProps &props) {
       : 0;
 }
 
-NSString *MeasurementIdentity(NSString *generation, CGFloat width, CGFloat scale) {
+NSString *MeasurementIdentity(NSString *generation, CGFloat width, CGFloat scale, uint64_t leaseHandle) {
   const auto widthPixels = RoundedWidthPixels(width, scale);
-  return [NSString stringWithFormat:@"%@\x1f%@\x1f%llu",
+  return [NSString stringWithFormat:@"%@\x1f%@\x1f%llu\x1f%llu",
                                     generation,
                                     widthPixels ? [NSString stringWithFormat:@"%lld", *widthPixels] : @"invalid",
-                                    static_cast<unsigned long long>(ScaleBits(scale))];
+                                    static_cast<unsigned long long>(ScaleBits(scale)),
+                                    static_cast<unsigned long long>(leaseHandle)];
 }
 
 bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
@@ -142,12 +147,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   NSString *_ownedSemanticGeneration;
   int64_t _ownedSurfaceId;
   int64_t _ownedComponentTag;
+  uint64_t _ownedLeaseHandle;
   BOOL _hasOwnedSurface;
-  // The image sidecar has a longer lifetime than a per-generation lease:
-  // semantic replacement can clear the latter before Yoga measures again.
-  int64_t _ownedSidecarSurfaceId;
-  int64_t _ownedSidecarComponentTag;
-  BOOL _hasOwnedSidecar;
   id _imageMetadataObserver;
   id _imageResourceObserver;
   id _fontEnvironmentObserver;
@@ -317,6 +318,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   _installedMeasurementIdentity = nil;
   _ownedGeneration = nil;
   _ownedSemanticGeneration = nil;
+  _ownedLeaseHandle = 0;
 }
 
 - (void)beginNewGeneration
@@ -353,31 +355,31 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   if (!_hasOwnedSurface || !_ownedGeneration) {
     return;
   }
+  const auto leaseHandle = _ownedLeaseHandle;
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
       releaseFabricGenerationSurfaceId:_ownedSurfaceId
                           componentTag:_ownedComponentTag
-                    generationIdentity:_ownedGeneration];
+                    generationIdentity:_ownedGeneration
+                        leaseHandle:leaseHandle];
+  if (_viewerState && leaseHandle != 0) {
+    _viewerState->updateState(
+        [leaseHandle](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
+            -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
+          if (oldData.leaseHandle != leaseHandle) return nullptr;
+          auto nextData = oldData;
+          nextData.leaseHandle = 0;
+          return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
+        });
+  }
   _hasOwnedSurface = NO;
   _ownedGeneration = nil;
+  _ownedLeaseHandle = 0;
 }
 
 - (void)releaseAllFabricOwnership
 {
-  // Recycling is terminal for this component token: clear its measurement
-  // sidecar as well as its lease/compiler pin. A normal semantic replacement
-  // uses releaseFabricOwnership instead, preserving the token until Yoga has
-  // accepted the next semantic generation.
+  // Recycling is terminal for this exact state-carried lease incarnation.
   [self releaseFabricOwnership];
-  [self releaseFabricSidecarOwnership];
-}
-
-- (void)releaseFabricSidecarOwnership
-{
-  if (!_hasOwnedSidecar) return;
-  [[PREPPreparedProseLayoutRegistry sharedRegistry]
-      releaseFabricSurfaceId:_ownedSidecarSurfaceId
-                 componentTag:_ownedSidecarComponentTag];
-  _hasOwnedSidecar = NO;
 }
 
 - (void)installMeasuredArtifactIfAttached
@@ -398,6 +400,12 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     return;
   }
   const auto componentTag = static_cast<int64_t>(self.tag);
+  const auto leaseHandle = LeaseHandle(_viewerState);
+  // State is the Fabric handoff. Until the shadow node has committed its
+  // opaque handle this view has no authority to acquire or release anything.
+  if (leaseHandle == 0) {
+    return;
+  }
   const auto generation = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       fabricGenerationIdentitySourceKind:SourceKind(props)
                               source:StringFromStdString(props.source)
@@ -410,7 +418,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
             fontEnvironmentRevision:FontEnvironmentRevision(props)];
-  const auto measurementIdentityString = MeasurementIdentity(generation, width, scale);
+  const auto measurementIdentityString = MeasurementIdentity(generation, width, scale, leaseHandle);
   const auto semanticGeneration = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       fabricSemanticGenerationIdentitySourceKind:SourceKind(props)
                               source:StringFromStdString(props.source)
@@ -426,27 +434,23 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
       _ownedComponentTag == componentTag &&
       [_ownedGeneration isEqualToString:generation] &&
+      _ownedLeaseHandle == leaseHandle &&
       [_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
     return;
   }
   if (_hasOwnedSurface &&
       (_ownedSurfaceId != *surfaceId || _ownedComponentTag != componentTag ||
-       ![_ownedGeneration isEqualToString:generation])) {
+       ![_ownedGeneration isEqualToString:generation] || _ownedLeaseHandle != leaseHandle)) {
     // A reused view may have a different root/token before the previous
     // lifecycle callback finishes. Release only the persisted owner, never
     // the current UIView tag, which React Native may already have reset.
     [self releaseFabricOwnership];
   }
-  if (_hasOwnedSidecar &&
-      (_ownedSidecarSurfaceId != *surfaceId || _ownedSidecarComponentTag != componentTag)) {
-    // A recycled UIView must never remove a new component's sidecar: only
-    // release the stable token it recorded when it bound the old sidecar.
-    [self releaseFabricSidecarOwnership];
-  }
   const BOOL preservesMountedArtifactForWidthReplacement =
       _hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
       _ownedComponentTag == componentTag &&
       [_ownedGeneration isEqualToString:generation] &&
+      _ownedLeaseHandle == leaseHandle &&
       _installedMeasurementIdentity != nil;
   if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
     // Width-only replacement is two-phase: retain the currently installed
@@ -464,19 +468,17 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // component to release it.
   _ownedSurfaceId = *surfaceId;
   _ownedComponentTag = componentTag;
+  _ownedLeaseHandle = leaseHandle;
   _hasOwnedSurface = YES;
   _ownedGeneration = generation;
-  if (!_hasOwnedSidecar) {
-    _ownedSidecarSurfaceId = _ownedSurfaceId;
-    _ownedSidecarComponentTag = _ownedComponentTag;
-    _hasOwnedSidecar = YES;
-  }
   [_drawingView bindFabricAttachmentStateSurfaceId:_ownedSurfaceId
-                                      componentTag:_ownedComponentTag];
+                                      componentTag:_ownedComponentTag
+                                      leaseHandle:leaseHandle];
   const BOOL installed = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       installCachedLayoutInDrawingView:_drawingView
                              surfaceId:_ownedSurfaceId
                           componentTag:_ownedComponentTag
+                           leaseHandle:leaseHandle
                             sourceKind:SourceKind(props)
                                 source:StringFromStdString(props.source)
                             configJSON:StringFromStdString(props.configJson)
@@ -501,10 +503,12 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
         releaseFabricMountMissSurfaceId:_ownedSurfaceId
                            componentTag:_ownedComponentTag
                      generationIdentity:_ownedGeneration
+                           leaseHandle:_ownedLeaseHandle
                            widthPoints:width
                                   scale:scale];
     _hasOwnedSurface = NO;
     _ownedGeneration = nil;
+    _ownedLeaseHandle = 0;
     return;
   }
   _ownedSemanticGeneration = semanticGeneration;

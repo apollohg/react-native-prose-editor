@@ -38,11 +38,13 @@ Size PreparedProseMeasurementsManager::measure(
     uint64_t attachmentRevision,
     uint64_t nativeFontRevision,
     double nativeFontScale,
-    uint64_t fontEnvironmentRevision) const {
+    uint64_t fontEnvironmentRevision,
+    uint64_t leaseHandle) const {
   @autoreleasepool {
     const auto size = [[PREPPreparedProseLayoutRegistry sharedRegistry]
         measureSurfaceId:static_cast<int64_t>(surfaceId)
           componentTag:static_cast<int64_t>(componentTag)
+           leaseHandle:leaseHandle
             sourceKind:SourceKind(props)
                     source:StringFromStdString(props.source)
                 configJSON:StringFromStdString(props.configJson)

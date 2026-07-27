@@ -99,9 +99,12 @@ public final class PreparedProseDrawingView: UIView {
     /// Fabric has already reset this sidecar during Yoga preparation. Mount
     /// only transfers the stable surface owner; it must not reopen metadata or
     /// error publication by resetting a second time.
-    @objc(bindFabricAttachmentStateSurfaceId:componentTag:)
-    public func bindFabricAttachmentState(surfaceId: Int64, componentTag: Int64) {
-        guard let state = FabricAttachmentSidecars.state(for: .init(surfaceId: surfaceId, componentTag: componentTag)) else { return }
+    @objc(bindFabricAttachmentStateSurfaceId:componentTag:leaseHandle:)
+    public func bindFabricAttachmentState(surfaceId: Int64, componentTag: Int64, leaseHandle: UInt64) {
+        guard let state = FabricAttachmentSidecars.state(
+            for: .init(surfaceId: surfaceId, componentTag: componentTag),
+            leaseHandle: leaseHandle
+        ) else { return }
         imageRevisions = state
     }
 

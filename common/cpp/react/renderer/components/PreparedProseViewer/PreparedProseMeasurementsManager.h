@@ -25,7 +25,8 @@ class PreparedProseMeasurementsManager {
       uint64_t attachmentRevision,
       uint64_t nativeFontRevision,
       double nativeFontScale,
-      uint64_t fontEnvironmentRevision) const;
+      uint64_t fontEnvironmentRevision,
+      uint64_t leaseHandle) const;
 
  private:
   const ContextContainer::Shared contextContainer_;

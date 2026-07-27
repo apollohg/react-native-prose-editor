@@ -15,15 +15,6 @@ public final class PreparedProseLayoutRegistry: NSObject {
         var result: Result<ViewerDocument, Error>?
     }
 
-    private struct FabricMeasureEpoch: Hashable {
-        let value: UInt64
-    }
-
-    private struct FabricMeasurementToken: Hashable {
-        let generation: FabricGenerationToken
-        let epoch: FabricMeasureEpoch
-    }
-
     private struct FabricMeasurementCancelled: Error {}
 
     private let lock = NSLock()
@@ -39,17 +30,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private var themeAccessOrder: [String] = []
     private var themeOwners: [FabricGenerationToken: String] = [:]
     private var themeOwnerCounts: [String: Int] = [:]
-    /// A Fabric token can be recycled with the same surface, tag, and
-    /// generation identity. The epoch is the lifetime boundary that keeps an
-    /// old compile/prepare from republishing into that new incarnation.
-    private var fabricMeasureEpochs: [FabricGenerationToken: FabricMeasureEpoch] = [:]
-    /// Includes every epoch that may still own a mounted or pending cache
-    /// lease. It outlives the active epoch through memory pressure so the
-    /// eventual Fabric release can retire the surviving mounted artifact.
-    private var fabricLeaseEpochs: [FabricGenerationToken: Set<UInt64>] = [:]
-    private var fabricMeasurementsInFlight: [FabricMeasurementToken: Int] = [:]
+    /// A handle is minted in the Fabric shadow-node state and never reused.
+    /// Retiring it makes every delayed measure/mount/release a no-op without
+    /// consulting whichever incarnation happens to be current.
+    private var retiredFabricLeaseHandles = Set<UInt64>()
+    private var fabricMeasurementsInFlight: [FabricGenerationToken: Int] = [:]
     private var fabricOwnershipRevisions: [FabricGenerationToken: UInt64] = [:]
-    private var nextFabricMeasureEpoch: UInt64 = 0
     private var themesRetainedBytes = 0
     private var compiledRetainedBytes = 0
     private let compiledByteBudget: Int
@@ -190,10 +176,16 @@ public final class PreparedProseLayoutRegistry: NSObject {
         scale: CGFloat,
         compiledDocument: ViewerDocument? = nil,
         fabricSurface: FabricSurfaceToken? = nil,
+        fabricLeaseHandle: UInt64 = 1,
         measurementImageState: ViewerAttachmentRevisionState? = nil
     ) -> PreparedProseLayout {
-        let generation = fabricSurface.map {
-            FabricGenerationToken(surface: $0, generationIdentity: request.generationIdentity)
+        let generation = fabricSurface.flatMap { surface in
+            guard fabricLeaseHandle != 0 else { return nil }
+            FabricGenerationToken(
+                surface: surface,
+                generationIdentity: request.generationIdentity,
+                leaseHandle: fabricLeaseHandle
+            )
         }
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
             if let generation { releaseFabricGeneration(generation) }
@@ -203,34 +195,44 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 error: .hostContract(message: "A finite positive width is required for prose measurement.")
             )
         }
-        let fabricEpoch = generation.map { beginFabricMeasure($0) }
+        guard generation.map(isFabricLeaseActive) ?? true else {
+            return invalidWidthArtifact(
+                request: request,
+                scale: scale,
+                error: .layout(message: "A retired Fabric lease handle attempted another measurement.")
+            )
+        }
+        let beganFabricMeasure = generation.map(beginFabricMeasure) ?? false
         defer {
-            if let generation, let fabricEpoch { endFabricMeasure(generation, epoch: fabricEpoch) }
+            if let generation, beganFabricMeasure { endFabricMeasure(generation) }
         }
         let canonicalWidth = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
         // Yoga can prepare before a component view exists. Reset the matching
         // surface sidecar before Core Text asks for intrinsic fallback.
         let imageMeasurementState = fabricSurface.map {
-            FabricAttachmentSidecars.begin($0, semanticIdentity: request.semanticGenerationIdentity)
+            FabricAttachmentSidecars.begin(
+                $0,
+                leaseHandle: fabricLeaseHandle,
+                semanticIdentity: request.semanticGenerationIdentity
+            )
         } ?? measurementImageState
         do {
             let document = try preparedDocument(
                 request: request,
                 compiledDocument: compiledDocument,
-                fabricGeneration: generation,
-                epoch: fabricEpoch
+                fabricGeneration: generation
             )
             let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
-            if let generation, let fabricEpoch, !isCurrentFabricMeasure(generation, epoch: fabricEpoch) {
+            if let generation, !isFabricLeaseActive(generation) {
                 throw FabricMeasurementCancelled()
             }
             let layout = try layoutCache.value(
                 for: key,
                 fabricSurface: fabricSurface,
-                fabricEpoch: fabricEpoch?.value,
+                fabricLeaseHandle: generation?.leaseHandle,
                 shouldCreateFabricLease: {
-                    guard let generation, let fabricEpoch else { return true }
-                    return self.isCurrentFabricMeasure(generation, epoch: fabricEpoch)
+                    guard let generation else { return true }
+                    return self.isFabricLeaseActive(generation)
                 }
             ) {
                 let layoutStarted = PreparedProseInstrumentation.now()
@@ -258,18 +260,16 @@ public final class PreparedProseLayoutRegistry: NSObject {
                     )
                 }
             }
-            if let generation, let fabricEpoch,
+            if let generation,
                !retainFabricGenerationOwnership(
                     generation,
-                    epoch: fabricEpoch,
                     document: document,
                     request: request
                ) {
                 retireStaleFabricLease(
                     generation,
                     widthPixels: widthPixels,
-                    scale: scale,
-                    epoch: fabricEpoch
+                    scale: scale
                 )
             }
             return layout
@@ -287,15 +287,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 error: error,
                 fabricSurface: fabricSurface,
                 fabricGeneration: generation,
-                fabricEpoch: fabricEpoch
+                fabricLeaseHandle: generation?.leaseHandle
             )
-            if let generation, let fabricEpoch,
-               !retainFabricGenerationFailure(generation, epoch: fabricEpoch, error: error) {
+            if let generation,
+               !retainFabricGenerationFailure(generation, error: error) {
                 retireStaleFabricLease(
                     generation,
                     widthPixels: widthPixels,
-                    scale: scale,
-                    epoch: fabricEpoch
+                    scale: scale
                 )
             }
             return layout
@@ -307,25 +306,25 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 error: .layout(message: String(describing: error)),
                 fabricSurface: fabricSurface,
                 fabricGeneration: generation,
-                fabricEpoch: fabricEpoch
+                fabricLeaseHandle: generation?.leaseHandle
             )
-            if let generation, let fabricEpoch,
-               !retainFabricGenerationFailure(generation, epoch: fabricEpoch, error: error) {
+            if let generation,
+               !retainFabricGenerationFailure(generation, error: error) {
                 retireStaleFabricLease(
                     generation,
                     widthPixels: widthPixels,
-                    scale: scale,
-                    epoch: fabricEpoch
+                    scale: scale
                 )
             }
             return layout
         }
     }
 
-    @objc(measureSurfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(measureSurfaceId:componentTag:leaseHandle:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
     public func measure(
         surfaceId: Int64,
         componentTag: Int64,
+        leaseHandle: UInt64,
         sourceKind: NSString,
         source: NSString,
         configJSON: NSString,
@@ -357,7 +356,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             request: request,
             widthPoints: widthPoints,
             scale: scale,
-            fabricSurface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag)
+            fabricSurface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
+            fabricLeaseHandle: leaseHandle
         ).size
     }
 
@@ -425,11 +425,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
         ).semanticGenerationIdentity as NSString
     }
 
-    @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:leaseHandle:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
     public func installCachedLayout(
         in drawingView: PreparedProseDrawingView,
         surfaceId: Int64,
         componentTag: Int64,
+        leaseHandle: UInt64,
         sourceKind: NSString,
         source: NSString,
         configJSON: NSString,
@@ -465,7 +466,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             surface: fabricSurface,
             generationIdentity: request.generationIdentity,
             widthPixels: widthPixels,
-            displayScale: scale
+            displayScale: scale,
+            leaseHandle: leaseHandle
         ) {
             drawingView.install(layout: artifact)
             return true
@@ -495,6 +497,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             in: drawingView,
             surfaceId: 0,
             componentTag: 0,
+            leaseHandle: 0,
             sourceKind: sourceKind,
             source: source,
             configJSON: configJSON,
@@ -513,13 +516,15 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     func releaseFabricSurface(_ surface: FabricSurfaceToken) {
         compiledCondition.lock()
-        let releasedEpochs = Set(
-            fabricLeaseEpochs
-                .filter { $0.key.surface == surface }
-                .flatMap(\.value)
-        )
-        fabricMeasureEpochs = fabricMeasureEpochs.filter { $0.key.surface != surface }
-        fabricLeaseEpochs = fabricLeaseEpochs.filter { $0.key.surface != surface }
+        let generations = Set(fabricMeasurementsInFlight.keys)
+            .union(fabricOwnershipRevisions.keys)
+            .union(documentsByFabricGeneration.keys)
+            .union(failuresByFabricGeneration.keys)
+            .filter { $0.surface == surface }
+        for generation in generations where generation.leaseHandle != 0 {
+            retiredFabricLeaseHandles.insert(generation.leaseHandle)
+        }
+        fabricMeasurementsInFlight = fabricMeasurementsInFlight.filter { $0.key.surface != surface }
         fabricOwnershipRevisions = fabricOwnershipRevisions.filter { $0.key.surface != surface }
         documentsByFabricGeneration = documentsByFabricGeneration.filter { $0.key.surface != surface }
         failuresByFabricGeneration = failuresByFabricGeneration.filter { $0.key.surface != surface }
@@ -527,26 +532,27 @@ public final class PreparedProseLayoutRegistry: NSObject {
             releaseThemeOwnership(for: generation)
         }
         compiledCondition.unlock()
-        layoutCache.releaseLease(for: surface, epochs: releasedEpochs)
+        layoutCache.releaseLease(for: surface)
         FabricAttachmentSidecars.remove(surface)
     }
 
     func releaseFabricGeneration(_ generation: FabricGenerationToken) {
         compiledCondition.lock()
-        fabricMeasureEpochs.removeValue(forKey: generation)
-        let releasedEpochs = fabricLeaseEpochs.removeValue(forKey: generation) ?? []
+        if generation.leaseHandle != 0 {
+            retiredFabricLeaseHandles.insert(generation.leaseHandle)
+        }
+        fabricMeasurementsInFlight.removeValue(forKey: generation)
         fabricOwnershipRevisions.removeValue(forKey: generation)
         documentsByFabricGeneration.removeValue(forKey: generation)
         failuresByFabricGeneration.removeValue(forKey: generation)
         releaseThemeOwnership(for: generation)
         compiledCondition.unlock()
-        if !releasedEpochs.isEmpty {
-            layoutCache.releaseLease(
-                for: generation.surface,
-                generationIdentity: generation.generationIdentity,
-                epochs: releasedEpochs
-            )
-        }
+        layoutCache.releaseLease(
+            for: generation.surface,
+            generationIdentity: generation.generationIdentity,
+            leaseHandle: generation.leaseHandle
+        )
+        FabricAttachmentSidecars.remove(generation.surface, leaseHandle: generation.leaseHandle)
     }
 
     /// Fabric records an owner before it tries to consume Yoga's lease. A
@@ -561,7 +567,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     ) {
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else { return }
         compiledCondition.lock()
-        guard let epoch = fabricMeasureEpochs[generation] else {
+        guard isFabricLeaseActiveLocked(generation) else {
             compiledCondition.unlock()
             return
         }
@@ -572,7 +578,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             generationIdentity: generation.generationIdentity,
             widthPixels: widthPixels,
             displayScale: scale,
-            epoch: epoch.value
+            leaseHandle: generation.leaseHandle
         )
 #if DEBUG
         fabricMountMissAfterExactLeaseCleanupForTesting?()
@@ -585,10 +591,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.lock()
         guard !hasSurvivingLease,
               fabricMeasurementsInFlight[
-                  FabricMeasurementToken(generation: generation, epoch: epoch),
+                  generation,
                   default: 0
               ] == 0,
-              fabricOwnershipRevisions[generation, default: 0] == ownershipRevision
+              fabricOwnershipRevisions[generation, default: 0] == ownershipRevision,
+              isFabricLeaseActiveLocked(generation)
         else {
             compiledCondition.unlock()
             return
@@ -612,32 +619,36 @@ public final class PreparedProseLayoutRegistry: NSObject {
         releaseFabricSurface(FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag))
     }
 
-    @objc(releaseFabricGenerationSurfaceId:componentTag:generationIdentity:)
+    @objc(releaseFabricGenerationSurfaceId:componentTag:generationIdentity:leaseHandle:)
     public func releaseFabricGeneration(
         surfaceId: Int64,
         componentTag: Int64,
-        generationIdentity: NSString
+        generationIdentity: NSString,
+        leaseHandle: UInt64
     ) {
         releaseFabricGeneration(
             FabricGenerationToken(
                 surface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
-                generationIdentity: generationIdentity as String
+                generationIdentity: generationIdentity as String,
+                leaseHandle: leaseHandle
             )
         )
     }
 
-    @objc(releaseFabricMountMissSurfaceId:componentTag:generationIdentity:widthPoints:scale:)
+    @objc(releaseFabricMountMissSurfaceId:componentTag:generationIdentity:leaseHandle:widthPoints:scale:)
     public func releaseFabricMountMiss(
         surfaceId: Int64,
         componentTag: Int64,
         generationIdentity: NSString,
+        leaseHandle: UInt64,
         widthPoints: CGFloat,
         scale: CGFloat
     ) {
         releaseFabricMountMiss(
             FabricGenerationToken(
                 surface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
-                generationIdentity: generationIdentity as String
+                generationIdentity: generationIdentity as String,
+                leaseHandle: leaseHandle
             ),
             widthPoints: widthPoints,
             scale: scale
@@ -648,7 +659,6 @@ public final class PreparedProseLayoutRegistry: NSObject {
         PreparedProseInstrumentation.invalidated(.memoryPressure)
         layoutCache.removeAllUnmounted()
         compiledCondition.lock()
-        fabricMeasureEpochs.removeAll()
         fabricOwnershipRevisions.removeAll()
         compiledDocuments.removeAll()
         compiledAccessOrder.removeAll()
@@ -666,76 +676,50 @@ public final class PreparedProseLayoutRegistry: NSObject {
         PreparedProseInstrumentation.retained(.compiled, scope: "registry", bytes: 0)
     }
 
-    private func beginFabricMeasure(_ generation: FabricGenerationToken) -> FabricMeasureEpoch {
+    private func beginFabricMeasure(_ generation: FabricGenerationToken) -> Bool {
         compiledCondition.lock()
-        // A semantic replacement makes prior generation work stale even if
-        // Fabric's release callback arrives later on a different queue.
-        for staleGeneration in fabricMeasureEpochs.keys.filter({
-            $0.surface == generation.surface && $0 != generation
-        }) {
-            fabricMeasureEpochs.removeValue(forKey: staleGeneration)
-            fabricOwnershipRevisions.removeValue(forKey: staleGeneration)
-            documentsByFabricGeneration.removeValue(forKey: staleGeneration)
-            failuresByFabricGeneration.removeValue(forKey: staleGeneration)
-            releaseThemeOwnership(for: staleGeneration)
+        guard isFabricLeaseActiveLocked(generation) else {
+            compiledCondition.unlock()
+            return false
         }
-        let epoch: FabricMeasureEpoch
-        if let current = fabricMeasureEpochs[generation] {
-            epoch = current
-        } else {
-            nextFabricMeasureEpoch &+= 1
-            if nextFabricMeasureEpoch == 0 { nextFabricMeasureEpoch = 1 }
-            epoch = FabricMeasureEpoch(value: nextFabricMeasureEpoch)
-            fabricMeasureEpochs[generation] = epoch
-            fabricLeaseEpochs[generation, default: []].insert(epoch.value)
-        }
-        let measurement = FabricMeasurementToken(generation: generation, epoch: epoch)
-        fabricMeasurementsInFlight[measurement, default: 0] += 1
+        fabricMeasurementsInFlight[generation, default: 0] += 1
         compiledCondition.unlock()
-        return epoch
+        return true
     }
 
-    private func endFabricMeasure(_ generation: FabricGenerationToken, epoch: FabricMeasureEpoch) {
+    private func endFabricMeasure(_ generation: FabricGenerationToken) {
         compiledCondition.lock()
-        let measurement = FabricMeasurementToken(generation: generation, epoch: epoch)
-        let remaining = max(0, fabricMeasurementsInFlight[measurement, default: 1] - 1)
+        let remaining = max(0, fabricMeasurementsInFlight[generation, default: 1] - 1)
         if remaining == 0 {
-            fabricMeasurementsInFlight.removeValue(forKey: measurement)
+            fabricMeasurementsInFlight.removeValue(forKey: generation)
         } else {
-            fabricMeasurementsInFlight[measurement] = remaining
+            fabricMeasurementsInFlight[generation] = remaining
         }
         compiledCondition.unlock()
     }
 
-    private func isCurrentFabricMeasure(
-        _ generation: FabricGenerationToken,
-        epoch: FabricMeasureEpoch
-    ) -> Bool {
+    private func isFabricLeaseActive(_ generation: FabricGenerationToken) -> Bool {
         compiledCondition.lock()
         defer { compiledCondition.unlock() }
-        return isCurrentFabricMeasureLocked(generation, epoch: epoch)
+        return isFabricLeaseActiveLocked(generation)
     }
 
     /// Caller must hold `compiledCondition`.
-    private func isCurrentFabricMeasureLocked(
-        _ generation: FabricGenerationToken,
-        epoch: FabricMeasureEpoch
-    ) -> Bool {
-        fabricMeasureEpochs[generation] == epoch
+    private func isFabricLeaseActiveLocked(_ generation: FabricGenerationToken) -> Bool {
+        generation.leaseHandle != 0 && !retiredFabricLeaseHandles.contains(generation.leaseHandle)
     }
 
     private func retireStaleFabricLease(
         _ generation: FabricGenerationToken,
         widthPixels: Int,
-        scale: CGFloat,
-        epoch: FabricMeasureEpoch
+        scale: CGFloat
     ) {
         _ = layoutCache.releasePendingLease(
             for: generation.surface,
             generationIdentity: generation.generationIdentity,
             widthPixels: widthPixels,
             displayScale: scale,
-            epoch: epoch.value
+            leaseHandle: generation.leaseHandle
         )
     }
 
@@ -773,17 +757,17 @@ public final class PreparedProseLayoutRegistry: NSObject {
         error: ProseViewerError,
         fabricSurface: FabricSurfaceToken?,
         fabricGeneration: FabricGenerationToken?,
-        fabricEpoch: FabricMeasureEpoch?
+        fabricLeaseHandle: UInt64?
     ) -> PreparedProseLayout {
         let key = errorLayoutKey(request: request, widthPixels: widthPixels, scale: scale)
         let width = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
         return (try? layoutCache.value(
             for: key,
             fabricSurface: fabricSurface,
-            fabricEpoch: fabricEpoch?.value,
+            fabricLeaseHandle: fabricLeaseHandle,
             shouldCreateFabricLease: {
-                guard let fabricGeneration, let fabricEpoch else { return true }
-                return self.isCurrentFabricMeasure(fabricGeneration, epoch: fabricEpoch)
+                guard let fabricGeneration else { return true }
+                return self.isFabricLeaseActive(fabricGeneration)
             }
         ) {
             self.errorArtifact(key: key, width: width, error: error)
@@ -824,19 +808,18 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private func preparedDocument(
         request: ProseViewerRequest,
         compiledDocument: ViewerDocument?,
-        fabricGeneration: FabricGenerationToken?,
-        epoch: FabricMeasureEpoch?
+        fabricGeneration: FabricGenerationToken?
     ) throws -> ViewerDocument {
         compiledCondition.lock()
-        if let fabricGeneration, let epoch,
-           !isCurrentFabricMeasureLocked(fabricGeneration, epoch: epoch) {
+        if let fabricGeneration,
+           !isFabricLeaseActiveLocked(fabricGeneration) {
             compiledCondition.unlock()
             throw FabricMeasurementCancelled()
         }
         if let fabricGeneration, let document = documentsByFabricGeneration[fabricGeneration] {
             compiledCondition.unlock()
             return documentForEmptyContentPolicy(document, request: request)
-                .withPreparedTheme(try preparedTheme(for: request, generation: fabricGeneration, epoch: epoch))
+                .withPreparedTheme(try preparedTheme(for: request, generation: fabricGeneration))
         }
         if let fabricGeneration, let failure = failuresByFabricGeneration[fabricGeneration] {
             compiledCondition.unlock()
@@ -851,9 +834,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
             } else {
                 document = try compileDocument(request: request)
             }
-            if let fabricGeneration, let epoch {
+            if let fabricGeneration {
                 compiledCondition.lock()
-                guard isCurrentFabricMeasureLocked(fabricGeneration, epoch: epoch) else {
+                guard isFabricLeaseActiveLocked(fabricGeneration) else {
                     compiledCondition.unlock()
                     throw FabricMeasurementCancelled()
                 }
@@ -861,14 +844,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 compiledCondition.unlock()
             }
             return documentForEmptyContentPolicy(document, request: request)
-                .withPreparedTheme(try preparedTheme(for: request, generation: fabricGeneration, epoch: epoch))
+                .withPreparedTheme(try preparedTheme(for: request, generation: fabricGeneration))
         } catch {
             if error is FabricMeasurementCancelled {
                 throw error
             }
-            if let fabricGeneration, let epoch {
+            if let fabricGeneration {
                 compiledCondition.lock()
-                if isCurrentFabricMeasureLocked(fabricGeneration, epoch: epoch) {
+                if isFabricLeaseActiveLocked(fabricGeneration) {
                     failuresByFabricGeneration[fabricGeneration] = error
                 }
                 compiledCondition.unlock()
@@ -897,13 +880,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
     /// layouts for the same semantic generation.
     private func preparedTheme(
         for request: ProseViewerRequest,
-        generation: FabricGenerationToken?,
-        epoch: FabricMeasureEpoch?
+        generation: FabricGenerationToken?
     ) throws -> PreparedProseTheme {
         compiledCondition.lock()
         defer { compiledCondition.unlock() }
-        if let generation, let epoch,
-           !isCurrentFabricMeasureLocked(generation, epoch: epoch) {
+        if let generation,
+           !isFabricLeaseActiveLocked(generation) {
             throw FabricMeasurementCancelled()
         }
         return preparedThemeLocked(for: request, generation: generation)
@@ -911,12 +893,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     private func retainFabricGenerationOwnership(
         _ generation: FabricGenerationToken,
-        epoch: FabricMeasureEpoch,
         document: ViewerDocument,
         request: ProseViewerRequest
     ) -> Bool {
         compiledCondition.lock()
-        guard isCurrentFabricMeasureLocked(generation, epoch: epoch) else {
+        guard isFabricLeaseActiveLocked(generation) else {
             compiledCondition.unlock()
             return false
         }
@@ -930,11 +911,10 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     private func retainFabricGenerationFailure(
         _ generation: FabricGenerationToken,
-        epoch: FabricMeasureEpoch,
         error: Error
     ) -> Bool {
         compiledCondition.lock()
-        guard isCurrentFabricMeasureLocked(generation, epoch: epoch) else {
+        guard isFabricLeaseActiveLocked(generation) else {
             compiledCondition.unlock()
             return false
         }

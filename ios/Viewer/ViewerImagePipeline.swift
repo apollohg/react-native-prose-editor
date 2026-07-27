@@ -250,17 +250,26 @@ final class ViewerAttachmentRevisionState {
 /// thread-local measurement scope before Core Text can inspect intrinsic data.
 final class FabricAttachmentSidecars {
     private static let lock = NSLock()
-    private static var states: [FabricSurfaceToken: ViewerAttachmentRevisionState] = [:]
+    private struct Owner: Hashable {
+        let surface: FabricSurfaceToken
+        let leaseHandle: UInt64
+    }
+    private static var states: [Owner: ViewerAttachmentRevisionState] = [:]
     private static let measurementStateKey = "com.apollohg.editor.viewer.fabricImageMeasurementState"
 
     static var currentMeasurementState: ViewerAttachmentRevisionState? {
         Thread.current.threadDictionary[measurementStateKey] as? ViewerAttachmentRevisionState
     }
 
-    static func begin(_ surface: FabricSurfaceToken, semanticIdentity: String) -> ViewerAttachmentRevisionState {
+    static func begin(
+        _ surface: FabricSurfaceToken,
+        leaseHandle: UInt64 = 0,
+        semanticIdentity: String
+    ) -> ViewerAttachmentRevisionState {
         lock.withLock {
-            let state = states[surface] ?? ViewerAttachmentRevisionState()
-            states[surface] = state
+            let owner = Owner(surface: surface, leaseHandle: leaseHandle)
+            let state = states[owner] ?? ViewerAttachmentRevisionState()
+            states[owner] = state
             _ = state.beginSemanticGeneration(semanticIdentity)
             return state
         }
@@ -277,13 +286,25 @@ final class FabricAttachmentSidecars {
         return try body()
     }
 
-    static func state(for surface: FabricSurfaceToken) -> ViewerAttachmentRevisionState? { lock.withLock { states[surface] } }
+    static func state(
+        for surface: FabricSurfaceToken,
+        leaseHandle: UInt64 = 0
+    ) -> ViewerAttachmentRevisionState? {
+        lock.withLock { states[Owner(surface: surface, leaseHandle: leaseHandle)] }
+    }
 
-    static func remove(_ surface: FabricSurfaceToken) { lock.withLock { states.removeValue(forKey: surface)?.reset() } }
+    static func remove(_ surface: FabricSurfaceToken, leaseHandle: UInt64? = nil) {
+        lock.withLock {
+            let owners = states.keys.filter {
+                $0.surface == surface && (leaseHandle == nil || $0.leaseHandle == leaseHandle)
+            }
+            owners.forEach { states.removeValue(forKey: $0)?.reset() }
+        }
+    }
 
     static func remove(surfaceId: Int64) {
         lock.withLock {
-            states.keys.filter { $0.surfaceId == surfaceId }.forEach { states.removeValue(forKey: $0)?.reset() }
+            states.keys.filter { $0.surface.surfaceId == surfaceId }.forEach { states.removeValue(forKey: $0)?.reset() }
         }
     }
 }

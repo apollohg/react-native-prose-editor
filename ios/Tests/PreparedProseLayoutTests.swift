@@ -752,6 +752,81 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(mountedView.layout === replacement)
     }
 
+    func testFabricLeaseHandlePreventsStaleLifecycleFromTouchingReplacement() {
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: Int(width)
+                )
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let generationIdentity = canonicalFabricGenerationIdentity(request, registry: registry)
+        let h1 = FabricGenerationToken(surface: surface, generationIdentity: generationIdentity, leaseHandle: 101)
+        let h2 = FabricGenerationToken(surface: surface, generationIdentity: generationIdentity, leaseHandle: 202)
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: h1.leaseHandle)
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface, fabricLeaseHandle: h2.leaseHandle)
+
+        // A delayed H1 mount can consume only H1; it cannot select H2 by
+        // surface/generation or by any newest-epoch policy.
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry, leaseHandle: h1.leaseHandle))
+        registry.releaseFabricMountMiss(h1, widthPoints: 160, scale: 2)
+        registry.releaseFabricGeneration(h1)
+        _ = registry.measure(request: request, widthPoints: 0, scale: 2, fabricSurface: surface, fabricLeaseHandle: h1.leaseHandle)
+
+        let replacement = PreparedProseDrawingView(frame: .zero)
+        XCTAssertTrue(install(request, in: replacement, surface: surface, registry: registry, leaseHandle: h2.leaseHandle))
+        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(h2))
+
+        // Width replacement stays within H2 and atomically replaces only H2's
+        // mounted ownership.
+        let replacementLayout = registry.measure(
+            request: request,
+            widthPoints: 140,
+            scale: 2,
+            fabricSurface: surface,
+            fabricLeaseHandle: h2.leaseHandle
+        )
+        XCTAssertTrue(install(request, in: replacement, surface: surface, registry: registry, width: 140, leaseHandle: h2.leaseHandle))
+        XCTAssertTrue(replacement.layout === replacementLayout)
+    }
+
+    func testFabricLeaseHandleBridgeStaticContract() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+
+        let state = try source("common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h")
+        let shadow = try source("common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.cpp")
+        let manager = try source("ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm")
+        let registry = try source("ios/Viewer/PreparedProseLayoutRegistry.swift")
+        let component = try source("ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm")
+        let cache = try source("ios/Viewer/PreparedProseLayoutCache.swift")
+
+        XCTAssertTrue(state.contains("uint64_t leaseHandle{0}"))
+        XCTAssertTrue(shadow.contains("NextFabricLeaseHandle"))
+        XCTAssertTrue(shadow.contains("leaseHandle);"))
+        XCTAssertTrue(manager.contains("leaseHandle:leaseHandle"))
+        XCTAssertTrue(registry.contains("leaseHandle: UInt64"))
+        XCTAssertTrue(component.contains("installCachedLayoutInDrawingView"))
+        XCTAssertTrue(component.contains("leaseHandle:leaseHandle"))
+        XCTAssertTrue(component.contains("releaseFabricMountMissSurfaceId"))
+        XCTAssertTrue(component.contains("leaseHandle:_ownedLeaseHandle"))
+        XCTAssertTrue(cache.contains("$0.leaseHandle == leaseHandle"))
+        XCTAssertFalse(cache.contains(".max(by: { $0.epoch < $1.epoch })"))
+    }
+
 #if DEBUG
     func testConcurrentFabricMeasureRetainsGenerationPinAfterStaleMountMissCleanup() {
         let registry = PreparedProseLayoutRegistry(
@@ -798,7 +873,7 @@ final class PreparedProseLayoutTests: XCTestCase {
     }
 #endif
 
-    func testReleasedFabricPreparationCannotResurrectItsGenerationAndNewEpochCanMount() {
+    func testReleasedFabricPreparationCannotResurrectItsGenerationAndNewHandleCanMount() {
         let preparationStarted = DispatchSemaphore(value: 0)
         let allowPreparation = DispatchSemaphore(value: 0)
         let staleMeasureFinished = DispatchSemaphore(value: 0)
@@ -820,7 +895,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
         let generation = FabricGenerationToken(
             surface: surface,
-            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry),
+            leaseHandle: 1
         )
 
         DispatchQueue.global().async {
@@ -837,12 +913,23 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(generation))
         XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
 
-        let fresh = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        let fresh = registry.measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2,
+            fabricSurface: surface,
+            fabricLeaseHandle: 2
+        )
         let drawingView = PreparedProseDrawingView(frame: .zero)
-        XCTAssertTrue(install(request, in: drawingView, surface: surface, registry: registry))
+        XCTAssertTrue(install(request, in: drawingView, surface: surface, registry: registry, leaseHandle: 2))
         XCTAssertTrue(drawingView.layout === fresh)
-        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(generation))
-        XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(generation))
+        let freshGeneration = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: generation.generationIdentity,
+            leaseHandle: 2
+        )
+        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(freshGeneration))
+        XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(freshGeneration))
     }
 
     func testInvalidFabricWidthReleasesOnlyItsGenerationOwnership() {
@@ -1152,12 +1239,19 @@ final class PreparedProseLayoutTests: XCTestCase {
         registry.releaseFabricGeneration(
             FabricGenerationToken(
                 surface: surface,
-                generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+                generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry),
+                leaseHandle: 1
             )
         )
 
         XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
-        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        _ = registry.measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2,
+            fabricSurface: surface,
+            fabricLeaseHandle: 2
+        )
         XCTAssertEqual(compilations, 2)
     }
 
@@ -1338,12 +1432,14 @@ final class PreparedProseLayoutTests: XCTestCase {
         in drawingView: PreparedProseDrawingView,
         surface: FabricSurfaceToken,
         registry: PreparedProseLayoutRegistry,
-        width: CGFloat = 160
+        width: CGFloat = 160,
+        leaseHandle: UInt64 = 1
     ) -> Bool {
         registry.installCachedLayout(
             in: drawingView,
             surfaceId: surface.surfaceId,
             componentTag: surface.componentTag,
+            leaseHandle: leaseHandle,
             sourceKind: "json",
             source: request.source.value as NSString,
             configJSON: request.configuration.configJSON as NSString,

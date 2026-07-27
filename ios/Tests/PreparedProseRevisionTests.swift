@@ -582,14 +582,14 @@ final class PreparedProseRevisionTests: XCTestCase {
         )
         let registry = PreparedProseLayoutRegistry(compile: { _ in document })
         let base = registry.measure(
-            surfaceId: 42, componentTag: 7,
+            surfaceId: 42, componentTag: 7, leaseHandle: 1,
             sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil, imagePolicyJSON: nil,
             imagesEnabled: true, collapsesWhenEmpty: true,
             attachmentRevision: 0, nativeFontRevision: 1, nativeFontScale: 1,
             fontEnvironmentRevision: 0, widthPoints: 120, scale: 2
         )
         let replacement = registry.measure(
-            surfaceId: 42, componentTag: 7,
+            surfaceId: 42, componentTag: 7, leaseHandle: 2,
             sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil, imagePolicyJSON: nil,
             imagesEnabled: true, collapsesWhenEmpty: true,
             attachmentRevision: 0, nativeFontRevision: 2, nativeFontScale: 1.6,

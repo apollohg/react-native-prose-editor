@@ -36,10 +36,12 @@ folly::dynamic toDynamic(const PreparedProseViewerProps& props) {
 
 folly::dynamic toState(
     uint64_t attachmentRevision,
-    uint64_t nativeFontRevision) {
+    uint64_t nativeFontRevision,
+    uint64_t leaseHandle) {
   return folly::dynamic::object
       ("attachmentRevision", static_cast<int64_t>(attachmentRevision))
-      ("nativeFontRevision", static_cast<int64_t>(nativeFontRevision));
+      ("nativeFontRevision", static_cast<int64_t>(nativeFontRevision))
+      ("leaseHandle", static_cast<int64_t>(leaseHandle));
 }
 
 } // namespace
@@ -53,7 +55,8 @@ Size PreparedProseMeasurementsManager::measure(
     uint64_t attachmentRevision,
     uint64_t nativeFontRevision,
     double nativeFontScale,
-    uint64_t /*fontEnvironmentRevision*/) const {
+    uint64_t /*fontEnvironmentRevision*/,
+    uint64_t leaseHandle) const {
   const auto& fabricUIManager =
       contextContainer_->at<jni::global_ref<jobject>>("FabricUIManager");
   static auto measure = facebook::jni::findClassStatic(
@@ -71,9 +74,10 @@ Size PreparedProseMeasurementsManager::measure(
 
   const auto localData = folly::dynamic::object
       ("surfaceId", static_cast<int64_t>(surfaceId))
-      ("componentTag", static_cast<int64_t>(componentTag));
+      ("componentTag", static_cast<int64_t>(componentTag))
+      ("leaseHandle", static_cast<int64_t>(leaseHandle));
   const auto propsDynamic = toDynamic(props);
-  const auto stateDynamic = toState(attachmentRevision, nativeFontRevision)
+  const auto stateDynamic = toState(attachmentRevision, nativeFontRevision, leaseHandle)
       ("nativeFontScale", nativeFontScale);
   const auto localDataNative = ReadableNativeMap::newObjectCxxArgs(localData);
   const auto propsNative = ReadableNativeMap::newObjectCxxArgs(propsDynamic);

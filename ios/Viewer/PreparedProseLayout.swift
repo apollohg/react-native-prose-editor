@@ -72,15 +72,28 @@ struct FabricSurfaceToken: Hashable {
 struct FabricLeaseKey: Hashable {
     let surface: FabricSurfaceToken
     let layout: ProseLayoutKey
-    /// Registry-owned lifecycle epoch. A recycled surface may later reuse the
-    /// same component tag and generation identity; the old measurement must
-    /// never consume or retire that new handoff.
-    let epoch: UInt64
+    /// Opaque Fabric-state incarnation handle. A recycled surface may later
+    /// reuse the same component tag and generation identity; only this exact
+    /// handle may consume or retire its Yoga handoff.
+    let leaseHandle: UInt64
 }
 
 struct FabricGenerationToken: Hashable {
     let surface: FabricSurfaceToken
     let generationIdentity: String
+    /// This is carried by custom Fabric state from the shadow-node measurement
+    /// to the component view. It is never inferred from registry state.
+    let leaseHandle: UInt64
+
+    init(
+        surface: FabricSurfaceToken,
+        generationIdentity: String,
+        leaseHandle: UInt64 = 1
+    ) {
+        self.surface = surface
+        self.generationIdentity = generationIdentity
+        self.leaseHandle = leaseHandle
+    }
 }
 
 /// This identity intentionally excludes the surface owner: completed immutable

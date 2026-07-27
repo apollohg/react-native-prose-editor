@@ -15,6 +15,9 @@ struct PreparedProseViewerState final {
   // A native Dynamic Type invalidation carries the scale that caused it.
   // The JS revision can remain unchanged, so it cannot select this snapshot.
   double nativeFontScale{1.0};
+  // Opaque, native-owned Fabric handoff incarnation. The shadow node mints it
+  // once and component views must pass this exact value back to the registry.
+  uint64_t leaseHandle{0};
 
 #ifdef ANDROID
   PreparedProseViewerState() = default;
@@ -24,12 +27,14 @@ struct PreparedProseViewerState final {
       const folly::dynamic& data)
       : attachmentRevision(revisionValue(data, "attachmentRevision")),
         nativeFontRevision(revisionValue(data, "nativeFontRevision")),
-        nativeFontScale(scaleValue(data, "nativeFontScale")) {}
+        nativeFontScale(scaleValue(data, "nativeFontScale")),
+        leaseHandle(handleValue(data, "leaseHandle")) {}
 
   folly::dynamic getDynamic() const {
     return folly::dynamic::object("attachmentRevision", attachmentRevision)(
         "nativeFontRevision", nativeFontRevision)(
-        "nativeFontScale", nativeFontScale);
+        "nativeFontScale", nativeFontScale)(
+        "leaseHandle", static_cast<int64_t>(leaseHandle));
   }
 
  private:
@@ -41,6 +46,11 @@ struct PreparedProseViewerState final {
   static double scaleValue(const folly::dynamic& data, const char* key) {
     const auto value = data.getDefault(key, 1.0).asDouble();
     return std::isfinite(value) && value > 0.0 ? value : 1.0;
+  }
+
+  static uint64_t handleValue(const folly::dynamic& data, const char* key) {
+    const auto value = data.getDefault(key, 0).asInt();
+    return value < 0 ? 0 : static_cast<uint64_t>(value);
   }
 #endif
 };

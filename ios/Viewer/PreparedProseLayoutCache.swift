@@ -36,11 +36,11 @@ final class PreparedProseLayoutCache {
     func value(
         for key: ProseLayoutKey,
         fabricSurface: FabricSurfaceToken? = nil,
-        fabricEpoch: UInt64? = nil,
+        fabricLeaseHandle: UInt64? = nil,
         shouldCreateFabricLease: (() -> Bool)? = nil,
         build: () throws -> PreparedProseLayout
     ) throws -> PreparedProseLayout {
-        precondition(fabricSurface == nil || fabricEpoch != nil)
+        precondition(fabricSurface == nil || fabricLeaseHandle != nil)
         let lookupStarted = PreparedProseInstrumentation.now()
         condition.lock()
         // Mounted ownership is the most authoritative exact-key cache entry:
@@ -51,7 +51,7 @@ final class PreparedProseLayoutCache {
         if let layout = mountedLayoutLocked(
             for: key,
             fabricSurface: fabricSurface,
-            fabricEpoch: fabricEpoch
+            fabricLeaseHandle: fabricLeaseHandle
         ) {
             condition.unlock()
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
@@ -59,8 +59,8 @@ final class PreparedProseLayoutCache {
         }
         if let layout = completed[key] {
             touch(key)
-            if let fabricSurface, let fabricEpoch, (shouldCreateFabricLease?() ?? true) {
-                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, epoch: fabricEpoch)
+            if let fabricSurface, let fabricLeaseHandle, (shouldCreateFabricLease?() ?? true) {
+                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, leaseHandle: fabricLeaseHandle)
             }
             condition.unlock()
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
@@ -73,8 +73,8 @@ final class PreparedProseLayoutCache {
         // lease; UIKit simply reuses the immutable value without inventing a
         // Fabric owner.
         if let layout = liveLayoutLocked(for: key) {
-            if let fabricSurface, let fabricEpoch, (shouldCreateFabricLease?() ?? true) {
-                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, epoch: fabricEpoch)
+            if let fabricSurface, let fabricLeaseHandle, (shouldCreateFabricLease?() ?? true) {
+                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, leaseHandle: fabricLeaseHandle)
             }
             condition.unlock()
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
@@ -83,9 +83,9 @@ final class PreparedProseLayoutCache {
         if let preparation = inFlight[key] {
             while preparation.result == nil { condition.wait() }
             let result = preparation.result!
-            if case let .success(layout) = result, let fabricSurface, let fabricEpoch,
+            if case let .success(layout) = result, let fabricSurface, let fabricLeaseHandle,
                (shouldCreateFabricLease?() ?? true) {
-                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, epoch: fabricEpoch)
+                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, leaseHandle: fabricLeaseHandle)
             }
             condition.unlock()
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true, waited: true)
@@ -111,8 +111,8 @@ final class PreparedProseLayoutCache {
                 mountIndex[mountKey(for: key)] = key
                 touch(key)
             }
-            if let fabricSurface, let fabricEpoch, (shouldCreateFabricLease?() ?? true) {
-                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, epoch: fabricEpoch)
+            if let fabricSurface, let fabricLeaseHandle, (shouldCreateFabricLease?() ?? true) {
+                createPendingLeaseLocked(layout, for: key, surface: fabricSurface, leaseHandle: fabricLeaseHandle)
             } else {
                 enforceBudgetLocked()
             }
@@ -129,7 +129,8 @@ final class PreparedProseLayoutCache {
         surface: FabricSurfaceToken,
         generationIdentity: String,
         widthPixels: Int,
-        displayScale: CGFloat
+        displayScale: CGFloat,
+        leaseHandle: UInt64
     ) -> PreparedProseLayout? {
         condition.lock()
         defer { condition.unlock() }
@@ -147,20 +148,19 @@ final class PreparedProseLayoutCache {
             touch(key)
             return layout
         }
-        guard let leaseKey = pendingLeases.keys
-            .filter({
+        guard let leaseKey = pendingLeases.keys.first(where: {
             $0.surface == surface &&
                 $0.layout.generationIdentity == mountKey.generationIdentity &&
                 $0.layout.widthPixels == mountKey.widthPixels &&
-                $0.layout.displayScaleBits == mountKey.displayScaleBits
-            })
-            .max(by: { $0.epoch < $1.epoch }), let layout = pendingLeases[leaseKey] else { return nil }
+                $0.layout.displayScaleBits == mountKey.displayScaleBits &&
+                $0.leaseHandle == leaseHandle
+        }), let layout = pendingLeases[leaseKey] else { return nil }
 
         // A Fabric mount can only consume the Yoga handoff once. Do not fall
         // back to completed here: that would let a second/recycled component
         // mount an artifact that was never measured for its own owner. Move
         // the pending handoff to mounted ownership under this lock, retiring
-        // only older widths for the same surface/generation in the same
+        // only other widths for the same surface/generation/handle in the same
         // critical section. A replacement that never reaches this point
         // therefore cannot disturb the currently mounted artifact.
         removePendingLeaseLocked(leaseKey)
@@ -176,18 +176,18 @@ final class PreparedProseLayoutCache {
     func releaseLease(
         for surface: FabricSurfaceToken,
         generationIdentity: String? = nil,
-        epochs: Set<UInt64>? = nil
+        leaseHandle: UInt64? = nil
     ) {
         condition.lock()
         let pending = pendingLeases.keys.filter {
             $0.surface == surface &&
                 (generationIdentity == nil || $0.layout.generationIdentity == generationIdentity) &&
-                (epochs?.contains($0.epoch) ?? true)
+                (leaseHandle == nil || $0.leaseHandle == leaseHandle)
         }
         let mounted = mountedLeases.keys.filter {
             $0.surface == surface &&
                 (generationIdentity == nil || $0.layout.generationIdentity == generationIdentity) &&
-                (epochs?.contains($0.epoch) ?? true)
+                (leaseHandle == nil || $0.leaseHandle == leaseHandle)
         }
         pending.forEach(removePendingLeaseLocked)
         mounted.forEach { mountedLeases.removeValue(forKey: $0) }
@@ -207,7 +207,7 @@ final class PreparedProseLayoutCache {
         generationIdentity: String,
         widthPixels: Int,
         displayScale: CGFloat,
-        epoch: UInt64? = nil
+        leaseHandle: UInt64
     ) -> Bool {
         condition.lock()
         defer { condition.unlock() }
@@ -220,7 +220,7 @@ final class PreparedProseLayoutCache {
         if let leaseKey = pendingLeases.keys.first(where: {
             $0.surface == surface &&
                 mountKey(for: $0.layout) == requested &&
-                (epoch == nil || $0.epoch == epoch)
+                $0.leaseHandle == leaseHandle
         }) {
             removePendingLeaseLocked(leaseKey)
             retireUnownedPublicationKeysLocked()
@@ -229,23 +229,12 @@ final class PreparedProseLayoutCache {
         return pendingLeases.keys.contains {
             $0.surface == surface &&
                 $0.layout.generationIdentity == generationIdentity &&
-                (epoch == nil || $0.epoch == epoch)
+                $0.leaseHandle == leaseHandle
         } || mountedLeases.keys.contains {
             $0.surface == surface &&
                 $0.layout.generationIdentity == generationIdentity &&
-                (epoch == nil || $0.epoch == epoch)
+                $0.leaseHandle == leaseHandle
         }
-    }
-
-    /// Used by the registry while holding its compiler/theme condition to
-    /// decide whether a mount-miss may retire generation-scoped ownership.
-    /// This is intentionally a query only; the exact pending cleanup above is
-    /// always completed first.
-    func hasLease(for surface: FabricSurfaceToken, generationIdentity: String) -> Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return pendingLeases.keys.contains { $0.surface == surface && $0.layout.generationIdentity == generationIdentity }
-            || mountedLeases.keys.contains { $0.surface == surface && $0.layout.generationIdentity == generationIdentity }
     }
 
     func registerDirectMount(_ owner: String, layout: PreparedProseLayout) {
@@ -314,20 +303,9 @@ final class PreparedProseLayoutCache {
         _ layout: PreparedProseLayout,
         for key: ProseLayoutKey,
         surface: FabricSurfaceToken,
-        epoch: UInt64
+        leaseHandle: UInt64
     ) {
-        let leaseKey = FabricLeaseKey(surface: surface, layout: key, epoch: epoch)
-        // A delayed prepare from a released lifecycle epoch may finish after
-        // a newer incarnation has measured the same owner. It may reuse the
-        // immutable artifact, but it must not replace or manufacture an old
-        // handoff for that owner.
-        if pendingLeases.keys.contains(where: {
-            sameFabricOwner($0, as: leaseKey) && $0.epoch > epoch
-        }) || mountedLeases.keys.contains(where: {
-            sameFabricOwner($0, as: leaseKey) && $0.epoch > epoch
-        }) {
-            return
-        }
+        let leaseKey = FabricLeaseKey(surface: surface, layout: key, leaseHandle: leaseHandle)
         // A new measurement supersedes only unmounted handoffs for this
         // Fabric surface and generation. Keep a mounted artifact alive until
         // the replacement is actually acquired by a component view.
@@ -364,13 +342,15 @@ final class PreparedProseLayoutCache {
     }
 
     private func sameFabricOwner(_ lhs: FabricLeaseKey, as rhs: FabricLeaseKey) -> Bool {
-        lhs.surface == rhs.surface && lhs.layout.generationIdentity == rhs.layout.generationIdentity
+        lhs.surface == rhs.surface &&
+            lhs.layout.generationIdentity == rhs.layout.generationIdentity &&
+            lhs.leaseHandle == rhs.leaseHandle
     }
 
     private func mountedLayoutLocked(
         for key: ProseLayoutKey,
         fabricSurface: FabricSurfaceToken?,
-        fabricEpoch: UInt64?
+        fabricLeaseHandle: UInt64?
     ) -> PreparedProseLayout? {
         if let fabricSurface {
             // Fabric handoffs are owner-isolated: an artifact mounted by one
@@ -378,7 +358,7 @@ final class PreparedProseLayoutCache {
             return mountedLeases.first(where: {
                 $0.key.surface == fabricSurface &&
                     $0.key.layout == key &&
-                    $0.key.epoch == fabricEpoch
+                    $0.key.leaseHandle == fabricLeaseHandle
             })?.value
         }
         // UIKit has no Fabric lease owner. A direct mounted view is still an
