@@ -40,6 +40,16 @@ final class PreparedProseLayoutCache {
     ) throws -> PreparedProseLayout {
         let lookupStarted = PreparedProseInstrumentation.now()
         condition.lock()
+        // Mounted ownership is the most authoritative exact-key cache entry:
+        // it survives unmounted-cache eviction and memory warnings. Consult it
+        // before completed entries, because creating a same-width pending lease
+        // would otherwise prune a different-width replacement already pending
+        // for this Fabric surface and generation.
+        if let layout = mountedLayoutLocked(for: key, fabricSurface: fabricSurface) {
+            condition.unlock()
+            PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
+            return layout
+        }
         if let layout = completed[key] {
             touch(key)
             if let fabricSurface { createPendingLeaseLocked(layout, for: key, surface: fabricSurface) }
@@ -257,6 +267,21 @@ final class PreparedProseLayoutCache {
 
     private func sameFabricOwner(_ lhs: FabricLeaseKey, as rhs: FabricLeaseKey) -> Bool {
         lhs.surface == rhs.surface && lhs.layout.generationIdentity == rhs.layout.generationIdentity
+    }
+
+    private func mountedLayoutLocked(
+        for key: ProseLayoutKey,
+        fabricSurface: FabricSurfaceToken?
+    ) -> PreparedProseLayout? {
+        if let fabricSurface {
+            // Fabric handoffs are owner-isolated: an artifact mounted by one
+            // surface must never satisfy another surface's measurement.
+            return mountedLeases[FabricLeaseKey(surface: fabricSurface, layout: key)]
+        }
+        // UIKit has no Fabric lease owner. A direct mounted view is still an
+        // exact immutable artifact for this semantic/physical key and remains
+        // valid after unmounted cache eviction.
+        return directMounted.values.first { $0.key == key }
     }
 
     private func mountKey(for layoutKey: ProseLayoutKey) -> ProseMountKey {
