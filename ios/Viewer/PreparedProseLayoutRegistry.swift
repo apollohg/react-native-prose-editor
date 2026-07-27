@@ -203,13 +203,15 @@ public final class PreparedProseLayoutRegistry: NSObject {
         fabricLeaseHandle: UInt64 = 1,
         measurementImageState: ViewerAttachmentRevisionState? = nil
     ) -> PreparedProseLayout {
-        let generation = fabricSurface.flatMap { surface in
-            guard fabricLeaseHandle != 0 else { return nil }
-            FabricGenerationToken(
-                surface: surface,
+        let generation: FabricGenerationToken?
+        if let fabricSurface, fabricLeaseHandle != 0 {
+            generation = FabricGenerationToken(
+                surface: fabricSurface,
                 generationIdentity: request.generationIdentity,
                 leaseHandle: fabricLeaseHandle
             )
+        } else {
+            generation = nil
         }
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
             if let generation {
@@ -904,7 +906,6 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     private func beginFabricMeasure(_ generation: FabricGenerationToken) -> Bool {
         compiledCondition.lock()
-        let owner = FabricLeaseOwner(surface: generation.surface, leaseHandle: generation.leaseHandle)
         guard isFabricLeaseActiveLocked(generation) else {
             compiledCondition.unlock()
             return false
