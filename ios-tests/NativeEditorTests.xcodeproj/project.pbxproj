@@ -39,6 +39,7 @@
 		B9D001010000000000000011 /* PreparedProseRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000001 /* PreparedProseRevisionTests.swift */; };
 		B9D001010000000000000012 /* ViewerImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000002 /* ViewerImagePipeline.swift */; };
 		B9D001010000000000000013 /* ViewerFontEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000003 /* ViewerFontEnvironment.swift */; };
+		B9D001010000000000000014 /* SharedNativeImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000004 /* SharedNativeImagePipeline.swift */; };
 		A3B6C71D4E5F60718293A4C1 /* ViewerDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4C2 /* ViewerDocument.swift */; };
 		76A5F03FB7D4C124E29F13F1 /* NativeCollaborationSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DB0694C3EBB885F034F0B30 /* NativeCollaborationSocket.swift */; };
 		9A956ACF25320EA8F4016A05 /* RenderBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */; };
@@ -88,6 +89,7 @@
 		B9D001010000000000000001 /* PreparedProseRevisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRevisionTests.swift; sourceTree = "<group>"; };
 		B9D001010000000000000002 /* ViewerImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerImagePipeline.swift; sourceTree = "<group>"; };
 		B9D001010000000000000003 /* ViewerFontEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerFontEnvironment.swift; sourceTree = "<group>"; };
+		B9D001010000000000000004 /* SharedNativeImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedNativeImagePipeline.swift; sourceTree = "<group>"; };
 		A3B6C71D4E5F60718293A4C2 /* ViewerDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerDocument.swift; sourceTree = "<group>"; };
 		B91D20B361A5426DA59B6C43 /* ProseViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProseViewerView.swift; sourceTree = "<group>"; };
 		AAFA4DB42F32DDE95171E72A /* NativeEditorTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NativeEditorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -142,6 +144,7 @@
 				F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */,
 				516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */,
 				1561A9AC095AC3464D02B016 /* RichTextEditorView.swift */,
+				B9D001010000000000000004 /* SharedNativeImagePipeline.swift */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -524,6 +527,7 @@
 				B9D001010000000000000011 /* PreparedProseRevisionTests.swift in Sources */,
 				B9D001010000000000000012 /* ViewerImagePipeline.swift in Sources */,
 				B9D001010000000000000013 /* ViewerFontEnvironment.swift in Sources */,
+				B9D001010000000000000014 /* SharedNativeImagePipeline.swift in Sources */,
 				A3B6C71D4E5F60718293A4C1 /* ViewerDocument.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -10,10 +10,15 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class PreparedProseRevisionTest {
     @Test fun disabledImagesDoNotCreateRequests() {
         val pipeline = ViewerImagePipeline()
@@ -384,14 +389,19 @@ class PreparedProseRevisionTest {
 
     @Test fun registeredCustomFamilyNeverFalseWarnsAndOrdinaryPlatformFallbackWarnsOnce() {
         ViewerFontEnvironment.resetFamilyRegistryForTesting()
-        ViewerFontEnvironment.registerAvailableFamily("viewer-test-font", Typeface.DEFAULT)
-        assertFalse(ViewerFontEnvironment.resolveFamily("viewer-test-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
-        ViewerFontEnvironment.setPlatformFamilyResolverForTesting { false }
-        assertTrue(ViewerFontEnvironment.resolveFamily("ordinary-missing-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
-        assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic"))
-        assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic"))
-        assertFalse(ViewerFontEnvironment.resolveFamily("sans-serif", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
-        ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        ViewerFontEnvironment.resetMissingWarningsForTesting()
+        try {
+            ViewerFontEnvironment.registerAvailableFamily("viewer-test-font", Typeface.DEFAULT)
+            assertFalse(ViewerFontEnvironment.resolveFamily("viewer-test-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+            ViewerFontEnvironment.setPlatformFamilyResolverForTesting { false }
+            assertTrue(ViewerFontEnvironment.resolveFamily("ordinary-missing-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+            assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic"))
+            assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic"))
+            assertFalse(ViewerFontEnvironment.resolveFamily("sans-serif", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
+        } finally {
+            ViewerFontEnvironment.resetMissingWarningsForTesting()
+            ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        }
     }
 
     @Test fun familyRegistrationInvalidatesMountedDirectAndFabricObserversOnceAndTeardownRemovesObserver() {

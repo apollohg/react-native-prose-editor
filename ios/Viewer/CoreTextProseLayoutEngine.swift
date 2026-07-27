@@ -741,8 +741,9 @@ final class CoreTextProseLayoutEngine {
         return (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).compactMap { run in
             let attributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
             guard (attributes[preparedStrikeAttribute] as? NSNumber)?.boolValue == true,
-                  let color = attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] as? CGColor
+                  let colorValue = attributes[kCTForegroundColorAttributeName as NSAttributedString.Key]
             else { return nil }
+            let color = colorValue as! CGColor
 
             var ascent: CGFloat = 0
             var descent: CGFloat = 0

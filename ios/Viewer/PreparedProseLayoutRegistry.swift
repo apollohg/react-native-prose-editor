@@ -64,7 +64,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         themeByteBudget: Int = 512 * 1024,
         themeEntryBudget: Int = 128,
         compile: @escaping DocumentCompiler,
-        prepare: @escaping LayoutPreparation = Self.prepareWithCoreText
+        prepare: @escaping LayoutPreparation = PreparedProseLayoutRegistry.prepareWithCoreText
     ) {
         self.compile = compile
         self.prepare = prepare
@@ -603,7 +603,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledCondition.unlock()
 
         do {
-            let document = compiledDocument ?? (try compileDocument(request: request))
+            let document: ViewerDocument
+            if let compiledDocument {
+                document = compiledDocument
+            } else {
+                document = try compileDocument(request: request)
+            }
             if let generation {
                 compiledCondition.lock()
                 documentsByFabricGeneration[generation] = document

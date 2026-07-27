@@ -108,8 +108,8 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         let layout = try prepare(document, width: 180)
 
         XCTAssertEqual(layout.interactions.filter { $0.kind == .link }.count, 1)
-        XCTAssertEqual(layout.accessibilityNodes.filter { $0.kind == .link }.count, 1)
-        XCTAssertEqual(layout.accessibilityNodes.filter { $0.kind == .mention }.count, 1)
+        XCTAssertEqual(layout.accessibilityNodes.filter { $0.role == .link }.count, 1)
+        XCTAssertEqual(layout.accessibilityNodes.filter { $0.role == .mention }.count, 1)
     }
 
     func testAccessibleDrawingViewLazilyMaterializesPermittedNodesAndRecycles() throws {

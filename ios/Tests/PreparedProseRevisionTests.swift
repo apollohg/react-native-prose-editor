@@ -179,7 +179,7 @@ final class PreparedProseRevisionTests: XCTestCase {
         })
     }
 
-    func testConcurrentFabricMeasurementScopesKeepEvictedIntrinsicMetadataSurfaceLocalAndCleanUp() {
+    func testConcurrentFabricMeasurementScopesKeepEvictedIntrinsicMetadataSurfaceLocalAndCleanUp() throws {
         let first = FabricSurfaceToken(surfaceId: 91, componentTag: 1)
         let second = FabricSurfaceToken(surfaceId: 92, componentTag: 1)
         // This deliberately collides an attachment identity across semantic
@@ -241,7 +241,7 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertEqual(firstResult, CGSize(width: 80, height: 40))
         XCTAssertEqual(secondResult, CGSize(width: 30, height: 60))
 
-        FabricAttachmentSidecars.withMeasurementState(firstState) {
+        try FabricAttachmentSidecars.withMeasurementState(firstState) {
             XCTAssertThrowsError(try FabricAttachmentSidecars.withMeasurementState(secondState) {
                 throw FixtureError.expected
             })

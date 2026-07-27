@@ -235,7 +235,7 @@ class PreparedProseLayoutTest {
     }
 
     @Test
-    fun `oversized Fabric artifacts do not bypass the retained byte budget`() {
+    fun `oversized Fabric artifacts bypass only the unmounted retained byte budget`() {
         val registry = PreparedProseLayoutRegistry(
             compiler = CountingDocumentCompiler(::testDocument),
             layoutEngine = CountingLayoutEngine(),
@@ -245,11 +245,11 @@ class PreparedProseLayoutTest {
         registry.measure(request, 320, 1f, FabricSurfaceToken(9, 91))
 
         assertEquals(0, registry.layoutRetainedBytesForTesting)
-        assertEquals(0, registry.fabricLeaseCountForTesting)
+        assertEquals(1, registry.fabricLeaseCountForTesting)
     }
 
     @Test
-    fun `Fabric leases stay within their bounded handoff count`() {
+    fun `Fabric leases retain mounted handoffs until their surface releases them`() {
         val registry = testRegistry(CountingLayoutEngine())
         repeat(33) { index ->
             registry.measure(
@@ -260,7 +260,9 @@ class PreparedProseLayoutTest {
             )
         }
 
-        assertEquals(32, registry.fabricLeaseCountForTesting)
+        assertEquals(33, registry.fabricLeaseCountForTesting)
+        registry.releaseFabricSurfaceId(10)
+        assertEquals(0, registry.fabricLeaseCountForTesting)
     }
 
     @Test

@@ -19,7 +19,7 @@ public final class ViewerFontEnvironment: NSObject {
     private var missingWarningGenerationOrder: [String] = []
     private let missingWarningGenerationLimit = 128
     private var lastContentSizeCategory: UIContentSizeCategory?
-    private var scaleByRevision: [UInt64: CGFloat] = [0: Self.scale(for: UIApplication.shared.preferredContentSizeCategory)]
+    private var scaleByRevision: [UInt64: CGFloat] = [0: ViewerFontEnvironment.scale(for: UIApplication.shared.preferredContentSizeCategory)]
     private(set) var revision: UInt64 = 0
     var onInvalidated: ((UInt64) -> Void)?
 

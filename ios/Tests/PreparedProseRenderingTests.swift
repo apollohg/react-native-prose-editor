@@ -29,9 +29,10 @@ final class PreparedProseRenderingTests: XCTestCase {
 
     func testCompilerBackedMultiBlockAndNestedListItemsHaveIndependentBoundaries() throws {
         try withCompiledDocument(source: Fixture.multiBlockList.source, configJSON: Fixture.multiBlockList.configJSON) { document in
-            let itemLeaves = Dictionary(grouping: document.blocks.compactMap { block in
+            let itemEntries: [(Int, ViewerBlock)] = document.blocks.compactMap { block in
                 block.listItemBoundary.map { ($0.identity, block) }
-            }, by: \.0)
+            }
+            let itemLeaves = Dictionary(grouping: itemEntries, by: { $0.0 })
             XCTAssertEqual(itemLeaves.count, 3, "outer two items and nested item must remain distinct")
             for (_, leaves) in itemLeaves {
                 XCTAssertEqual(leaves.filter { $0.1.listItemBoundary!.isFirstRenderableLeaf }.count, 1)
@@ -40,10 +41,11 @@ final class PreparedProseRenderingTests: XCTestCase {
 
             let theme = PreparedProseTheme.resolve(themeJSON: Fixture.themeJSON)
             let layout = try prepare(document, themeJSON: Fixture.themeJSON)
-            let layoutByItem = Dictionary(grouping: zip(document.blocks, layout.blocks).compactMap { pair in
+            let layoutEntries: [(Int, (ViewerBlock, PreparedProseBlock))] = zip(document.blocks, layout.blocks).compactMap { pair in
                 let (block, prepared) = pair
                 block.listItemBoundary.map { ($0.identity, (block, prepared)) }
-            }, by: \.0)
+            }
+            let layoutByItem = Dictionary(grouping: layoutEntries, by: { $0.0 })
             for (_, leaves) in layoutByItem {
                 let contentAnchors = leaves.compactMap { block, prepared -> CGFloat? in
                     guard let content = prepared.fragments.first(where: { $0.kind == .text || $0.kind == .atom }) else {
@@ -85,7 +87,7 @@ final class PreparedProseRenderingTests: XCTestCase {
             XCTAssertEqual(code.bounds.minX, sharedContentAnchor + theme.codePaddingHorizontal, accuracy: 0.001)
             XCTAssertEqual(outerLeaves[0].1.bounds.maxY, outerLeaves[1].1.bounds.minY, accuracy: 0.001)
             XCTAssertEqual(outerLeaves[1].1.bounds.maxY, outerLeaves[2].1.bounds.minY, accuracy: 0.001)
-            let nestedFirstY = nestedOrdered!.map(\.1.bounds.minY).min()!
+            let nestedFirstY = nestedOrdered!.map { $0.1.bounds.minY }.min()!
             XCTAssertEqual(nestedFirstY - outerLeaves[2].1.bounds.maxY, 4, accuracy: 0.001)
         }
     }
@@ -294,7 +296,8 @@ final class PreparedProseRenderingTests: XCTestCase {
     }
 
     private func background(_ run: CTRun) -> CGColor? {
-        attributes(run)[kCTBackgroundColorAttributeName as NSAttributedString.Key] as? CGColor
+        guard let value = attributes(run)[kCTBackgroundColorAttributeName as NSAttributedString.Key] else { return nil }
+        return (value as! CGColor)
     }
 
     private func underlineStyle(_ run: CTRun) -> Int32? {

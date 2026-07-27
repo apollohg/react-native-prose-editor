@@ -24,6 +24,7 @@ import com.apollohg.editor.EditorMentionTheme
 import com.apollohg.editor.EditorTextStyle
 import com.apollohg.editor.EditorTheme
 import com.apollohg.editor.ProseViewerError
+import java.text.Bidi
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -512,7 +513,39 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             )
             if (piece.intersect(lineClip) && !piece.isEmpty) result += piece
         } while (measure.nextContour())
+        if (result.isEmpty()) {
+            // Robolectric and a small number of OEM text implementations can
+            // return an empty selection path for an otherwise valid range.
+            // Preserve shaped contours whenever they exist; only then derive
+            // per-direction visual runs from StaticLayout's own positions.
+            result += fallbackSelectionRectsForLine(layout, start, end, line)
+        }
         return result.sortedWith(compareBy<Rect> { it.top }.thenBy { it.left })
+    }
+
+    private fun fallbackSelectionRectsForLine(
+        layout: StaticLayout,
+        start: Int,
+        end: Int,
+        line: Int,
+    ): List<Rect> {
+        val fragments = mutableListOf<Rect>()
+        fun appendRun(runStart: Int, runEnd: Int) {
+            if (runStart >= runEnd) return
+            val first = layout.getPrimaryHorizontal(runStart)
+            val last = layout.getPrimaryHorizontal(runEnd)
+            val left = kotlin.math.floor(min(first, last)).toInt()
+            val right = ceil(max(first, last)).toInt()
+            if (right > left) {
+                fragments += Rect(left, layout.getLineTop(line), right, layout.getLineBottom(line))
+            }
+        }
+
+        val bidi = Bidi(layout.text.subSequence(start, end).toString(), Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT)
+        for (run in 0 until bidi.runCount) {
+            appendRun(start + bidi.getRunStart(run), start + bidi.getRunLimit(run))
+        }
+        return fragments
     }
 
     private data class AttributedBlock(val text: SpannableString, val atoms: List<PreparedAtomSpec>, val semanticRanges: List<PreparedSemanticRange>, val retainedBytes: Long)

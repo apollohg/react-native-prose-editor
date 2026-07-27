@@ -302,7 +302,8 @@ public final class PreparedProseDrawingView: UIView {
         guard fragment.kind == .background || fragment.kind == .atom || fragment.kind == .image else { return }
         let rect = drawingRect(for: fragment)
         context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
-        context.fill(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
+        context.addPath(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
+        context.drawPath(using: .fill)
     }
 
     private func drawBorderOrRule(_ fragment: PreparedProseFragment, in context: CGContext, scale: CGFloat) {
@@ -320,7 +321,13 @@ public final class PreparedProseDrawingView: UIView {
             context.setStrokeColor(fragment.borderColor ?? fragment.color ?? UIColor.clear.cgColor)
             context.setLineWidth(fragment.strokeWidth)
             let inset = fragment.strokeWidth / 2
-            context.stroke(UIBezierPath(roundedRect: rect.insetBy(dx: inset, dy: inset), cornerRadius: max(0, fragment.cornerRadius - inset)).cgPath)
+            context.addPath(
+                UIBezierPath(
+                    roundedRect: rect.insetBy(dx: inset, dy: inset),
+                    cornerRadius: max(0, fragment.cornerRadius - inset)
+                ).cgPath
+            )
+            context.drawPath(using: .stroke)
         default:
             break
         }
@@ -343,7 +350,8 @@ public final class PreparedProseDrawingView: UIView {
             context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
             CTLineDraw(line, context)
         case .image:
-            guard let attachment = layout.imageAttachments.first(where: { $0.bounds == fragment.bounds }),
+            guard let layout,
+                  let attachment = layout.imageAttachments.first(where: { $0.bounds == fragment.bounds }),
                   let image = imagePixels[attachment.id] else { return }
             image.draw(in: drawingRect(for: fragment))
         case .marker:
@@ -392,14 +400,23 @@ private final class PreparedProseDrawingAccessibilityElement: UIAccessibilityEle
     }
 
     private var node: PreparedProseAccessibilityNode? { drawingView?.accessibilityNode(at: index) }
-    override var accessibilityLabel: String? { node?.label }
+    override var accessibilityLabel: String? {
+        get { node?.label }
+        set { }
+    }
     override var accessibilityTraits: UIAccessibilityTraits {
-        guard let node else { return .none }
-        return node.role == .link ? .link : .button
+        get {
+            guard let node else { return .none }
+            return node.role == .link ? .link : .button
+        }
+        set { }
     }
     override var accessibilityFrame: CGRect {
-        guard let drawingView, let node else { return .zero }
-        return drawingView.accessibilityFrame(for: node)
+        get {
+            guard let drawingView, let node else { return .zero }
+            return drawingView.accessibilityFrame(for: node)
+        }
+        set { }
     }
     override func accessibilityActivate() -> Bool { drawingView?.activateAccessibilityNode(at: index) ?? false }
 }
