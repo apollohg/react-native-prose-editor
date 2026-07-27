@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { requireNativeModule } from 'expo-modules-core';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
@@ -43,15 +44,13 @@ const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
 const OUTPUT_PANEL_UPDATE_DEBOUNCE_MS = 120;
 
-const preparedProseBenchmarkBridge = NativeModules.NativeEditor as
-    | {
-          preparedProseBenchmarkBegin?: () => void;
-          preparedProseBenchmarkBeginPhase?: (phase: 'cold' | 'warm' | 'imagesDisabled') => void;
-          preparedProseBenchmarkEndPhase?: () => void;
-          preparedProseBenchmarkReset?: () => void;
-          preparedProseBenchmarkExport?: () => string;
-      }
-    | undefined;
+type PreparedProseBenchmarkBridge = {
+    preparedProseBenchmarkBegin(): void;
+    preparedProseBenchmarkBeginPhase(phase: 'cold' | 'warm' | 'imagesDisabled'): void;
+    preparedProseBenchmarkEndPhase(): void;
+    preparedProseBenchmarkReset(): void;
+    preparedProseBenchmarkExport(): string;
+};
 
 function buildCollaborationSocketUrl(endpoint: string, documentId: string): string {
     const trimmedEndpoint = endpoint.trim();
@@ -548,6 +547,10 @@ const preparedViewerConfiguration = preparedProseBenchmarkConfiguration as {
 
 /** Deterministic FlatList harness; it consumes the checked-in corpus verbatim. */
 function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
+    // This screen produces benchmark evidence. Resolving the Expo module here
+    // leaves normal editor/viewer use independent of the benchmark harness,
+    // while a missing required bridge fails visibly when the harness opens.
+    const benchmarkBridge = requireNativeModule<PreparedProseBenchmarkBridge>('NativeEditor');
     const [traversal, setTraversal] = useState<'cold' | 'warm'>('cold');
     const [imagesEnabled, setImagesEnabled] = useState(true);
     const [cacheEpoch, setCacheEpoch] = useState(0);
@@ -558,8 +561,8 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
     const viewportHeightRef = useRef(0);
     const traversalInFlightRef = useRef(false);
     useEffect(() => {
-        preparedProseBenchmarkBridge?.preparedProseBenchmarkBegin?.();
-    }, []);
+        benchmarkBridge.preparedProseBenchmarkBegin();
+    }, [benchmarkBridge]);
     const byId = useMemo(
         () => new Map(preparedViewerCorpus.documents.map((entry) => [entry.id, entry])),
         []
@@ -595,7 +598,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 setTraversal(nextTraversal);
                 setImagesEnabled(nextImagesEnabled);
                 await waitForDrawSettle();
-                preparedProseBenchmarkBridge?.preparedProseBenchmarkBeginPhase?.(phase);
+                benchmarkBridge.preparedProseBenchmarkBeginPhase(phase);
 
                 const viewportHeight = Math.max(1, viewportHeightRef.current);
                 const finalOffset = Math.max(0, contentHeightRef.current - viewportHeight);
@@ -608,7 +611,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 await waitForDrawSettle();
                 // Completed-phase exports include this final settled native
                 // draw/frame sample, never an in-progress phase.
-                preparedProseBenchmarkBridge?.preparedProseBenchmarkEndPhase?.();
+                benchmarkBridge.preparedProseBenchmarkEndPhase();
             } finally {
                 traversalInFlightRef.current = false;
                 setIsTraversing(false);
@@ -641,7 +644,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                     disabled={isTraversing}
                     onPress={() => {
                         // Reset is intentionally not a traversal phase.
-                        preparedProseBenchmarkBridge?.preparedProseBenchmarkReset?.();
+                        benchmarkBridge.preparedProseBenchmarkReset();
                         setCacheEpoch((epoch) => epoch + 1);
                     }}
                     style={styles.benchmarkButton}>
@@ -655,7 +658,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 </Pressable>
                 <Pressable
                     disabled={isTraversing}
-                    onPress={() => setExportedCounters(preparedProseBenchmarkBridge?.preparedProseBenchmarkExport?.() ?? '{}')}
+                    onPress={() => setExportedCounters(benchmarkBridge.preparedProseBenchmarkExport())}
                     style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Export counters</Text>
                 </Pressable>

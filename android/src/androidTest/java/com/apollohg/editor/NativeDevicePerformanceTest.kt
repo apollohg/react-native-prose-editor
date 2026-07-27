@@ -8,7 +8,6 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
@@ -28,15 +27,18 @@ import org.junit.runner.RunWith
 @LargeTest
 class NativeDevicePerformanceTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
-    private val context = ApplicationProvider.getApplicationContext<Context>()
+    // androidTest assets are packaged with the instrumentation APK. Production
+    // views and their display metrics must continue to use the target APK.
+    private val testContext: Context = instrumentation.context
+    private val targetContext: Context = instrumentation.targetContext
     private val baseFontSize = 16f
     private val textColor = Color.BLACK
 
     /** Pixel 7 Task 14 gate; no caller-supplied counter JSON is accepted. */
     @Test
     fun performance_preparedProseCorpusGates_pixel7() {
-        val corpus = JSONObject(context.assets.open("viewer-performance-corpus.json").bufferedReader().use(BufferedReader::readText))
-        val configuration = PreparedProseBenchmarkConfiguration.load(context)
+        val corpus = JSONObject(testContext.assets.open("viewer-performance-corpus.json").bufferedReader().use(BufferedReader::readText))
+        val configuration = PreparedProseBenchmarkConfiguration.load(testContext)
         val byId = buildMap {
             val documents = corpus.getJSONArray("documents")
             for (index in 0 until documents.length()) {
@@ -73,7 +75,7 @@ class NativeDevicePerformanceTest {
                     renderJson,
                     baseFontSize,
                     textColor,
-                    density = context.resources.displayMetrics.density
+                    density = targetContext.resources.displayMetrics.density
                 )
             }
 
@@ -93,7 +95,7 @@ class NativeDevicePerformanceTest {
     fun performance_applyUpdateJsonLargeDocument() {
         val updateJson = NativePerformanceFixtureFactory.largeUpdateJson()
         val editText = runOnMainSyncWithResult {
-            EditorEditText(context).apply {
+            EditorEditText(targetContext).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -123,7 +125,7 @@ class NativeDevicePerformanceTest {
         val initialUpdateJson = NativePerformanceFixtureFactory.largeUpdateJson()
         val patchedUpdateJson = NativePerformanceFixtureFactory.largePatchedUpdateJson()
         val editText = runOnMainSyncWithResult {
-            EditorEditText(context).apply {
+            EditorEditText(targetContext).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -159,7 +161,7 @@ class NativeDevicePerformanceTest {
         try {
             NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(adapter)
             val editText = runOnMainSyncWithResult {
-                EditorEditText(context).apply {
+                EditorEditText(targetContext).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT
@@ -197,7 +199,7 @@ class NativeDevicePerformanceTest {
             val largeDocumentJson = NativePerformanceFixtureFactory.largeDocumentJson()
             NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(adapter)
             val editText = runOnMainSyncWithResult {
-                EditorEditText(context).apply {
+                EditorEditText(targetContext).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT
@@ -242,7 +244,7 @@ class NativeDevicePerformanceTest {
         try {
             NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(adapter)
             val editText = runOnMainSyncWithResult {
-                EditorEditText(context).apply {
+                EditorEditText(targetContext).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT
@@ -282,7 +284,7 @@ class NativeDevicePerformanceTest {
     fun performance_remoteSelectionOverlayRefreshMultiPeerLargeDocument() {
         val updateJson = NativePerformanceFixtureFactory.largeUpdateJson()
         val richTextView = runOnMainSyncWithResult {
-            RichTextEditorView(context).apply {
+            RichTextEditorView(targetContext).apply {
                 configure(textSizePx = baseFontSize, textColor = textColor, backgroundColor = Color.WHITE)
                 setRemoteSelectionEditorIdForTesting(1L)
                 setRemoteSelectionScalarResolverForTesting { _, docPos -> docPos }

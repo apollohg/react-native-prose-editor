@@ -326,4 +326,21 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(fixtures.differingHeights.requirement).toContain('taller');
         expect(fixtures.drawEvidence.requirement).toContain('final settled frame');
     });
+
+    it('loads Android benchmark fixtures from the instrumentation package and requires the Expo bridge', () => {
+        const androidDevice = readSource('android/src/androidTest/java/com/apollohg/editor/NativeDevicePerformanceTest.kt');
+        const example = readSource('example/App.tsx');
+
+        expect(androidDevice).toContain('private val testContext: Context = instrumentation.context');
+        expect(androidDevice).toContain('private val targetContext: Context = instrumentation.targetContext');
+        expect(androidDevice).toContain('testContext.assets.open("viewer-performance-corpus.json")');
+        expect(androidDevice).toContain('PreparedProseBenchmarkConfiguration.load(testContext)');
+        expect(androidDevice).not.toContain('ApplicationProvider.getApplicationContext');
+
+        expect(example).toContain("import { requireNativeModule } from 'expo-modules-core';");
+        expect(example).toContain("requireNativeModule<PreparedProseBenchmarkBridge>('NativeEditor')");
+        expect(example).not.toContain('NativeModules');
+        expect(example).not.toContain('preparedProseBenchmarkBridge?.');
+        expect(example).not.toContain("?? '{}'");
+    });
 });
