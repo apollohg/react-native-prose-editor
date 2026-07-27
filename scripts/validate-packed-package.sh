@@ -302,6 +302,7 @@ validate_ios_consumer() {
   local root="$1"
   local ios_consumer="$work_dir/ios-consumer"
   local ios_project="$ios_consumer/ios"
+  local packed_editor_dir="$ios_consumer/node_modules/@apollohg/react-native-prose-editor"
   local react_native_dir="$repo_root/example/node_modules/react-native"
   local expo_dir="$repo_root/example/node_modules/expo"
   local react_native_dependencies_archive="$repo_root/example/ios/Pods/ReactNativeDependencies-artifacts/reactnative-dependencies-0.81.5-debug.tar.gz"
@@ -318,11 +319,19 @@ validate_ios_consumer() {
   [[ -s "$hermes_archive" ]] || fail "local Hermes artifact is missing from example/ios/Pods"
 
   mkdir -p "$ios_consumer"
-  # Expo autolinking resolves dependencies through the temporary consumer's
-  # node_modules. Point it to the known local install without declaring this
-  # package itself, so ReactNativeProseEditor can only enter through its
-  # explicit extracted-pod path below.
-  ln -s "$repo_root/example/node_modules" "$ios_consumer/node_modules"
+  # Model a real package consumer: Expo discovers this extracted npm artifact
+  # through package.json and node_modules, never through a source-tree pod
+  # declaration. Symlink the known-good Expo/RN peer installations, then copy
+  # the already-extracted npm artifact into the scoped dependency location.
+  mkdir -p "$ios_consumer/node_modules/@apollohg"
+  ln -s "$expo_dir" "$ios_consumer/node_modules/expo"
+  ln -s "$react_native_dir" "$ios_consumer/node_modules/react-native"
+  ln -s "$repo_root/example/node_modules/react" "$ios_consumer/node_modules/react"
+  cp -R "$root" "$packed_editor_dir"
+  [[ "$(cd "$packed_editor_dir" && pwd -P)" != "$repo_root" ]] || \
+    fail "iOS packed consumer must not discover the source-tree package"
+  [[ -f "$packed_editor_dir/ReactNativeProseEditor.podspec" ]] || \
+    fail "iOS packed consumer dependency is missing the root podspec"
   # This is intentionally a fresh UIKit target. Reusing the Expo example
   # project pulls app-only bundle and Hermes build phases into this package
   # consumer instead of proving the pod's own integration boundary.
@@ -371,7 +380,9 @@ PBXPROJ
   "name": "packed-tarball-ios-consumer",
   "private": true,
   "dependencies": {
+    "@apollohg/react-native-prose-editor": "file:./node_modules/@apollohg/react-native-prose-editor",
     "expo": "~54.0.0",
+    "react": "19.1.0",
     "react-native": "0.81.5"
   }
 }
@@ -431,8 +442,6 @@ target 'PackedConsumer' do
   ]
   config = use_native_modules!(config_command)
 
-  pod 'ReactNativeProseEditor', :path => ENV.fetch('PACKED_EDITOR_DIR')
-
   # Use Expo's supported autolinking configuration for the complete RN and
   # Expo pod graph. The target remains a fresh UIKit app and does not inherit
   # the example's app phases.
@@ -478,7 +487,6 @@ end
 RUBY
   (
     cd "$ios_project"
-      PACKED_EDITOR_DIR="$root" \
       PACKED_REACT_NATIVE_DIR="$react_native_dir" \
       RCT_USE_LOCAL_RN_DEP="$ios_project/react-native-dependencies.tar.gz" \
       RCT_TESTONLY_RNCORE_TARBALL_PATH="$ios_project/react-native-core.tar.gz" \
@@ -488,6 +496,15 @@ RUBY
       pod install --no-repo-update
   ) || fail "iOS consumer pod install failed"
   [[ -f "$ios_project/Podfile.lock" ]] || fail "CocoaPods did not produce Podfile.lock"
+  require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/Props.h"
+  require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/EventEmitters.h"
+  require_file "$ios_project/build/generated/ios" "RCTThirdPartyComponentsProvider.mm"
+  grep -Fq '@"PreparedProseViewer": NSClassFromString(@"PREPPreparedProseViewerComponentView")' \
+    "$ios_project/build/generated/ios/RCTThirdPartyComponentsProvider.mm" || \
+    fail "iOS packed consumer codegen is missing the PreparedProseViewer third-party provider entry"
+  grep -Fq '@apollohg/react-native-prose-editor' \
+    "$ios_project/build/generated/ios/RCTThirdPartyComponentsProvider.mm" || \
+    fail "iOS packed consumer provider entry is not attributed to the packed dependency"
   workspace_path="$ios_project/PackedConsumer.xcworkspace"
   [[ -f "$workspace_path/contents.xcworkspacedata" ]] || \
     fail "CocoaPods did not generate a valid iOS consumer workspace"

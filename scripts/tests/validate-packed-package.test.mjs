@@ -393,10 +393,20 @@ try {
     );
 
     const linklessPod = makeFixture("linkless-pod");
+    const linklessPodspec = join(linklessPod, "ReactNativeProseEditor.podspec");
     replace(
-      join(linklessPod, "ReactNativeProseEditor.podspec"),
-      "s.vendored_frameworks = 'EditorCore.xcframework'",
-      "# fixture intentionally omits the linked EditorCore.xcframework",
+      linklessPodspec,
+      "s.vendored_frameworks = 'ios/EditorCore.xcframework'",
+      "# fixture intentionally omits the linked ios/EditorCore.xcframework",
+    );
+    const linklessPodspecSource = readFileSync(linklessPodspec, "utf8");
+    assert.ok(
+      linklessPodspecSource.includes("# fixture intentionally omits the linked ios/EditorCore.xcframework"),
+      "linkless pod fixture must replace the relocated root-podspec framework declaration",
+    );
+    assert.ok(
+      !linklessPodspecSource.includes("s.vendored_frameworks = 'ios/EditorCore.xcframework'"),
+      "linkless pod fixture must remove the relocated framework declaration",
     );
     expectFailure(
       "CocoaPods installs but cannot link",

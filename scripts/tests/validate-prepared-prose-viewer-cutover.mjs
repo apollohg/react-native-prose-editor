@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const requireFromRoot = createRequire(resolve(root, 'package.json'));
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const exists = (path) => existsSync(resolve(root, path));
 const manifest = JSON.parse(read('scripts/package-abi-manifest.json')).preparedProseViewer;
@@ -103,10 +105,15 @@ for (const path of manifest.removedPaths) {
 }
 assert.match(read('package.json'), /"type": "components"/);
 assert.match(read('react-native.config.js'), /PreparedProseViewerComponentDescriptor/);
-assert.match(
-    read('react-native.config.js'),
-    /ReactNativeProseEditor\.podspec[\s\S]*ReactNativeProseEditorSpec\/provider/,
-    'React Native config must keep package-root podspec discovery documented with the codegen provider',
+const reactNativeConfig = requireFromRoot('./react-native.config.js');
+assert.ok(
+    reactNativeConfig?.dependency?.platforms?.ios && typeof reactNativeConfig.dependency.platforms.ios === 'object',
+    'React Native config must enable iOS autolinking with an ios platform object',
+);
+assert.deepEqual(
+    reactNativeConfig.dependency.platforms.ios,
+    {},
+    'React Native config must not disable or redirect package-root iOS autolinking',
 );
 assert.doesNotMatch(read('expo-module.config.json'), /NativeProseViewer/);
 

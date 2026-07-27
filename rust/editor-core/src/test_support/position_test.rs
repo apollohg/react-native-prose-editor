@@ -1494,8 +1494,8 @@ fn checked_attr_in_ordered_list_keeps_positionmap_in_sync_with_render() {
         position_map.doc_to_scalar(task_b_doc_start, &document),
         scalar_before_task_b,
         "position map must reserve exactly the marker length the renderer emitted \
-         for item A (a task marker, because it has a `checked` attr, even though \
-         the list is an orderedList) — doc position of \"Task B\"'s first char \
+         for item A (an ordinary ordered-list marker despite its default `checked` \
+         attr) — doc position of \"Task B\"'s first char \
          should map back to scalar {}",
         scalar_before_task_b
     );

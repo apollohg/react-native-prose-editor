@@ -127,7 +127,7 @@ private fun fallbackHorizontalAtVisualEdge(
  * from its adjacent run. Only a run which owns the outer visual edge may use
  * the current line's left/right extent.
  */
-internal fun softWrapTerminalBoundary(
+private fun softWrapTerminalBoundary(
     terminalRun: FallbackVisualBidiRun,
     visualRuns: List<FallbackVisualBidiRun>,
     softWrapLineEnd: Int,
