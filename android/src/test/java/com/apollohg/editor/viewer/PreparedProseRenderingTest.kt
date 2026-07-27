@@ -35,11 +35,15 @@ class PreparedProseRenderingTest {
         val first = prepare(document)
         val second = prepare(document)
         val expected = requireNotNull(Fixture.finalAndroidEdge.expectedGeometry)
+        assertDocumentProjection(Fixture.finalAndroidEdge, document)
 
         // These constants are the supported API-34/Robolectric geometry contract
         // for this compiler-backed source at density 1. One pixel permits only
         // integer rounding at StaticLayout's visual replacement-slot boundary.
-        assertTrue("artifact height", kotlin.math.abs(expected.heightPx - first.heightPx) <= expected.tolerancePx)
+        assertTrue(
+            "fixture=${Fixture.finalAndroidEdge.name} artifact height expected=${expected.heightPx} actual=${first.heightPx} tolerance=${expected.tolerancePx} ${layoutProjection(document, first)}",
+            kotlin.math.abs(expected.heightPx - first.heightPx) <= expected.tolerancePx,
+        )
         expected.blockBounds.forEachIndexed { index, bounds ->
             assertRectEquals("block $index", bounds, first.blocks[index].bounds, expected.tolerancePx)
         }
@@ -82,7 +86,7 @@ class PreparedProseRenderingTest {
             val layout = prepare(document)
 
             assertTrue(fixture.name, fixture.expectedKinds.all { it in layout.fragmentKinds })
-            assertTrue(fixture.name, fixture.assertDocument(document))
+            assertDocumentProjection(fixture, document)
         }
     }
 
@@ -95,7 +99,7 @@ class PreparedProseRenderingTest {
 
             assertPreparedLayoutsEqual(first, second, fixture.name)
             assertTrue(fixture.name, fixture.expectedKinds.all { it in first.fragmentKinds })
-            assertTrue(fixture.name, fixture.assertDocument(document))
+            assertDocumentProjection(fixture, document)
             assertGeometryContained(first, fixture.name)
             assertGeometryContained(second, fixture.name)
         }
@@ -289,7 +293,7 @@ class PreparedProseRenderingTest {
         assertEquals(2, paragraphs.size)
         val single = textLayout(densityOne, paragraphs[0].index)
         val naturalSingle = textLayout(natural, paragraphs[0].index)
-        assertEquals(30, lineHeight(single, 0))
+        assertEquals("single paragraph ${metricProjection(document, densityOne)}", 30, lineHeight(single, 0))
         assertEquals(
             (30 - lineHeight(naturalSingle, 0)) / 2,
             single.getLineBaseline(0) - naturalSingle.getLineBaseline(0),
@@ -297,11 +301,11 @@ class PreparedProseRenderingTest {
         assertEquals(1, (single.text as android.text.Spanned).getSpans(0, single.text.length, FixedLineHeightMetricSpan::class.java).size)
         val wrapped = textLayout(densityOne, paragraphs[1].index)
         assertTrue("wrapped fixture must have a final line", wrapped.lineCount >= 2)
-        assertEquals(30, lineHeight(wrapped, wrapped.lineCount - 1))
-        assertEquals(46, lineHeight(textLayout(densityOne, heading), 0))
-        assertEquals(26, lineHeight(textLayout(densityOne, code), 0))
-        assertEquals(30, lineHeight(textLayout(densityOne, list), 0))
-        assertEquals(30, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
+        assertEquals("wrapped paragraph ${metricProjection(document, densityOne)}", 30, lineHeight(wrapped, wrapped.lineCount - 1))
+        assertEquals("heading ${metricProjection(document, densityOne)}", 46, lineHeight(textLayout(densityOne, heading), 0))
+        assertEquals("code ${metricProjection(document, densityOne)}", 26, lineHeight(textLayout(densityOne, code), 0))
+        assertEquals("list text ${metricProjection(document, densityOne)}", 30, lineHeight(textLayout(densityOne, list), 0))
+        assertEquals("list marker ${metricProjection(document, densityOne)}", 30, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
 
         val densityTwo = prepare(
             document,
@@ -311,10 +315,10 @@ class PreparedProseRenderingTest {
             ),
             320,
         )
-        assertEquals(60, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0))
-        assertEquals(92, lineHeight(textLayout(densityTwo, heading), 0))
-        assertEquals(52, lineHeight(textLayout(densityTwo, code), 0))
-        assertEquals(60, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
+        assertEquals("density-two paragraph ${metricProjection(document, densityTwo)}", 60, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0))
+        assertEquals("density-two heading ${metricProjection(document, densityTwo)}", 92, lineHeight(textLayout(densityTwo, heading), 0))
+        assertEquals("density-two code ${metricProjection(document, densityTwo)}", 52, lineHeight(textLayout(densityTwo, code), 0))
+        assertEquals("density-two list marker ${metricProjection(document, densityTwo)}", 60, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height())
     }
 
     @Test
@@ -428,6 +432,32 @@ class PreparedProseRenderingTest {
         }
     }
 
+    private fun assertDocumentProjection(fixture: Fixture, document: ViewerDocument) {
+        assertTrue(
+            "fixture=${fixture.name} expectedDocument=${fixture.documentExpectation} actualDocument=${documentProjection(document)}",
+            fixture.assertDocument(document),
+        )
+    }
+
+    private fun documentProjection(document: ViewerDocument): String = document.blocks.mapIndexed { index, block ->
+        "block[$index]{type=${block.nodeType},blockquote=${block.inBlockquote},list=${block.listContext},ancestors=${block.listItemAncestors},boundary=${block.listItemBoundary},inlines=${block.inlines}}"
+    }.joinToString(prefix = "[", postfix = "]")
+
+    private fun layoutProjection(document: ViewerDocument, layout: PreparedProseLayout): String =
+        "document=${documentProjection(document)} layout=${metricProjection(document, layout)}"
+
+    private fun metricProjection(document: ViewerDocument, layout: PreparedProseLayout): String =
+        layout.blocks.mapIndexed { index, block ->
+            val nodeType = document.blocks.getOrNull(index)?.nodeType ?: "missing"
+            val fragments = block.fragments.joinToString(prefix = "[", postfix = "]") { fragment ->
+                val lineHeights = fragment.layout?.let { staticLayout ->
+                    (0 until staticLayout.lineCount).joinToString(prefix = "(", postfix = ")") { line -> lineHeight(staticLayout, line).toString() }
+                } ?: "-"
+                "{kind=${fragment.kind},bounds=${fragment.bounds},label=${fragment.label},lines=$lineHeights}"
+            }
+            "block[$index]{type=$nodeType,bounds=${block.bounds},fragments=$fragments}"
+        }.joinToString(prefix = "[", postfix = "]")
+
     private fun assertPreparedLayoutsEqual(first: PreparedProseLayout, second: PreparedProseLayout, name: String) {
         assertEquals("height: $name", first.heightPx, second.heightPx)
         assertEquals("block count: $name", first.blocks.size, second.blocks.size)
@@ -445,10 +475,11 @@ class PreparedProseRenderingTest {
     }
 
     private fun assertRectEquals(name: String, expected: Rect, actual: Rect, tolerance: Int) {
-        assertTrue("$name left", kotlin.math.abs(expected.left - actual.left) <= tolerance)
-        assertTrue("$name top", kotlin.math.abs(expected.top - actual.top) <= tolerance)
-        assertTrue("$name right", kotlin.math.abs(expected.right - actual.right) <= tolerance)
-        assertTrue("$name bottom", kotlin.math.abs(expected.bottom - actual.bottom) <= tolerance)
+        val diagnostics = "$name expected=$expected actual=$actual tolerance=$tolerance"
+        assertTrue("$diagnostics left", kotlin.math.abs(expected.left - actual.left) <= tolerance)
+        assertTrue("$diagnostics top", kotlin.math.abs(expected.top - actual.top) <= tolerance)
+        assertTrue("$diagnostics right", kotlin.math.abs(expected.right - actual.right) <= tolerance)
+        assertTrue("$diagnostics bottom", kotlin.math.abs(expected.bottom - actual.bottom) <= tolerance)
     }
 
     private fun textLayout(layout: PreparedProseLayout, blockIndex: Int): StaticLayout =
@@ -478,6 +509,7 @@ private data class Fixture(
     val configJson: String,
     val expectedKinds: Set<PreparedProseFragmentKind>,
     val expectedGeometry: ExpectedGeometry? = null,
+    val documentExpectation: String,
     val assertDocument: (ViewerDocument) -> Boolean,
 ) {
     companion object {
@@ -489,18 +521,19 @@ private data class Fixture(
         private const val customConfig = """{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"opaqueBlock","content":"","group":"block","role":"block","isVoid":true,"allowUndeclaredAttrs":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"""
 
         val structural: List<Fixture> = listOf(
-            Fixture("nested JSON list and blockquote inheritance", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"""), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER)) { it.blocks.any { block -> block.inBlockquote && block.listContext?.index == 12L } },
-            Fixture("HTML headings marks rules and hard breaks", ProseViewerSource.Html("<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6><blockquote><p><strong>bold</strong><br>quote</p></blockquote><ol start=\"3\"><li>third</li></ol><hr>"), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE)) { document -> (1..6).all { document.blocks.any { it.nodeType == "h$it" } } },
-            Fixture("custom atoms task list and snake rule", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"""), customConfig, setOf(PreparedProseFragmentKind.ATOM, PreparedProseFragmentKind.RULE)) { document -> document.blocks.any { it.listContext?.kind == "task" && it.listContext.checked } }
+            Fixture("nested JSON list and blockquote inheritance", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"""), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER), documentExpectation = "a blockquote nested ordered-list block with list index 12") { it.blocks.any { block -> block.inBlockquote && block.listContext?.index == 12L } },
+            Fixture("HTML headings marks rules and hard breaks", ProseViewerSource.Html("<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6><blockquote><p><strong>bold</strong><br>quote</p></blockquote><ol start=\"3\"><li>third</li></ol><hr>"), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE), documentExpectation = "one compiler block for each heading h1 through h6") { document -> (1..6).all { document.blocks.any { it.nodeType == "h$it" } } },
+            Fixture("custom atoms task list and snake rule", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"""), customConfig, setOf(PreparedProseFragmentKind.ATOM, PreparedProseFragmentKind.RULE), documentExpectation = "a checked task-list block") { document -> document.blocks.any { it.listContext?.kind == "task" && it.listContext.checked } }
         )
-        val marks = Fixture("all marks", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"monospace","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT)) { true }
-        val multiBlockList = Fixture("multi block nested ordered list boundaries", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":7},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"codeBlock","content":[{"type":"text","text":"second"}]},{"type":"opaqueBlock","attrs":{"label":"third"}},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph"}]}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.ATOM)) { it.blocks.any { block -> block.listContext?.index == 12L } }
-        val unicode = Fixture("unicode emoji bidi hard break and opaque atoms", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"שלום 🚀"},{"type":"hardBreak"},{"type":"opaque","attrs":{"label":"inline"}},{"type":"text","text":" café"}]},{"type":"opaqueBlock","attrs":{"label":"block"}}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.ATOM)) { it.blocks.any { block -> block.nodeType == "opaqueBlock" } }
+        val marks = Fixture("all marks", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"monospace","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT), documentExpectation = "any compiler document") { true }
+        val multiBlockList = Fixture("multi block nested ordered list boundaries", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":7},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"codeBlock","content":[{"type":"text","text":"second"}]},{"type":"opaqueBlock","attrs":{"label":"third"}},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph"}]}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.ATOM), documentExpectation = "a nested ordered-list block with list index 12") { it.blocks.any { block -> block.listContext?.index == 12L } }
+        val unicode = Fixture("unicode emoji bidi hard break and opaque atoms", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"שלום 🚀"},{"type":"hardBreak"},{"type":"opaque","attrs":{"label":"inline"}},{"type":"text","text":" café"}]},{"type":"opaqueBlock","attrs":{"label":"block"}}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.ATOM), documentExpectation = "an opaqueBlock compiler block") { it.blocks.any { block -> block.nodeType == "opaqueBlock" } }
         val finalAndroidEdge = Fixture(
             name = "fixed density max u32 nested quote code rule and RTL atom",
             source = ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"אב"},{"type":"opaque","attrs":{"label":"atom"}},{"type":"text","text":" tail"}]},{"type":"codeBlock","content":[{"type":"text","text":"code"}]},{"type":"horizontal_rule"},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]}]}]}]}"""),
             configJson = customConfig,
             expectedKinds = setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE, PreparedProseFragmentKind.ATOM),
+            documentExpectation = "four blocks, a nested-list final block, and a max-u32 ordered-list index",
             assertDocument = { document ->
                 document.blocks.size == 4
                     && document.blocks.last().listItemAncestors.size == 2

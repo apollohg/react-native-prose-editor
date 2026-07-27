@@ -69,35 +69,35 @@ final class PreparedProseRenderingTests: XCTestCase {
                         XCTAssertEqual(contentAnchor, sharedContentAnchor, accuracy: 0.001, "all leaves in one item reserve the same list content/gutter anchor")
                     }
                 }
-                XCTAssertEqual(leaves.flatMap { $0.1.fragments }.filter { $0.kind == .marker }.count, 1)
+                XCTAssertEqual(leaves.flatMap { $0.1.1.fragments }.filter { $0.kind == .marker }.count, 1)
             }
 
             let outerOrdered = layoutByItem.values.first { leaves in
-                leaves.contains { $0.0.listContext?.ordered == true && $0.0.listContext?.index == 7 }
+                leaves.contains { $0.1.0.listContext?.ordered == true && $0.1.0.listContext?.index == 7 }
             }
             let nestedOrdered = layoutByItem.values.first { leaves in
-                leaves.contains { $0.0.listContext?.ordered == true && $0.0.listContext?.index == 12 }
+                leaves.contains { $0.1.0.listContext?.ordered == true && $0.1.0.listContext?.index == 12 }
             }
-            XCTAssertEqual(outerOrdered?.flatMap { $0.1.fragments }.first(where: { $0.kind == .marker })?.label, "7.")
-            XCTAssertEqual(nestedOrdered?.flatMap { $0.1.fragments }.first(where: { $0.kind == .marker })?.label, "12.")
+            XCTAssertEqual(outerOrdered?.flatMap { $0.1.1.fragments }.first(where: { $0.kind == .marker })?.label, "7.")
+            XCTAssertEqual(nestedOrdered?.flatMap { $0.1.1.fragments }.first(where: { $0.kind == .marker })?.label, "12.")
             let emptyOrdered = layoutByItem.values.first { leaves in
-                leaves.contains { $0.0.listContext?.ordered == true && $0.0.listContext?.index == 8 }
+                leaves.contains { $0.1.0.listContext?.ordered == true && $0.1.0.listContext?.index == 8 }
             }
-            XCTAssertEqual(emptyOrdered?.flatMap { $0.1.fragments }.first(where: { $0.kind == .marker })?.label, "8.")
+            XCTAssertEqual(emptyOrdered?.flatMap { $0.1.1.fragments }.first(where: { $0.kind == .marker })?.label, "8.")
             XCTAssertTrue(document.blocks.filter { $0.listContext != nil }.allSatisfy(\.inBlockquote))
 
-            let outerLeaves = outerOrdered!.sorted { $0.1.bounds.minY < $1.1.bounds.minY }
+            let outerLeaves = outerOrdered!.sorted { $0.1.1.bounds.minY < $1.1.1.bounds.minY }
             XCTAssertEqual(outerLeaves.count, 3, "paragraph, code, and opaque block must share one outer item")
-            let paragraph = try XCTUnwrap(outerLeaves[0].1.fragments.first(where: { $0.kind == .text }))
-            let code = try XCTUnwrap(outerLeaves[1].1.fragments.first(where: { $0.kind == .text }))
-            let opaque = try XCTUnwrap(outerLeaves[2].1.fragments.first(where: { $0.kind == .atom }))
+            let paragraph = try XCTUnwrap(outerLeaves[0].1.1.fragments.first(where: { $0.kind == .text }))
+            let code = try XCTUnwrap(outerLeaves[1].1.1.fragments.first(where: { $0.kind == .text }))
+            let opaque = try XCTUnwrap(outerLeaves[2].1.1.fragments.first(where: { $0.kind == .atom }))
             let sharedContentAnchor = paragraph.bounds.minX
             XCTAssertEqual(opaque.bounds.minX, sharedContentAnchor, accuracy: 0.001)
             XCTAssertEqual(code.bounds.minX, sharedContentAnchor + theme.codePaddingHorizontal, accuracy: 0.001)
-            XCTAssertEqual(outerLeaves[0].1.bounds.maxY, outerLeaves[1].1.bounds.minY, accuracy: 0.001)
-            XCTAssertEqual(outerLeaves[1].1.bounds.maxY, outerLeaves[2].1.bounds.minY, accuracy: 0.001)
-            let nestedFirstY = nestedOrdered!.map { $0.1.bounds.minY }.min()!
-            XCTAssertEqual(nestedFirstY - outerLeaves[2].1.bounds.maxY, 4, accuracy: 0.001)
+            XCTAssertEqual(outerLeaves[0].1.1.bounds.maxY, outerLeaves[1].1.1.bounds.minY, accuracy: 0.001)
+            XCTAssertEqual(outerLeaves[1].1.1.bounds.maxY, outerLeaves[2].1.1.bounds.minY, accuracy: 0.001)
+            let nestedFirstY = nestedOrdered!.map { $0.1.1.bounds.minY }.min()!
+            XCTAssertEqual(nestedFirstY - outerLeaves[2].1.1.bounds.maxY, 4, accuracy: 0.001)
         }
     }
 

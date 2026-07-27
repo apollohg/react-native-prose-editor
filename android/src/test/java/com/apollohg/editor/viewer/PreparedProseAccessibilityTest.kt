@@ -459,6 +459,7 @@ class PreparedProseAccessibilityTest {
         terminalRunIsRtl: Boolean,
         expectedVisualLogicalOrder: List<Int>,
     ) {
+        val width = firstLine.length * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX
         val layout = deterministicMixedSoftWrapLayout(
             firstLine = firstLine,
             continuation = continuation,
@@ -525,16 +526,16 @@ class PreparedProseAccessibilityTest {
             start = terminal.documentStart,
             end = terminal.documentEnd,
             line = 0,
-            width = MIXED_SOFT_WRAP_WIDTH_PX,
+            width = width,
         ).single()
         val terminalStartEdge = if (terminal.isRtl) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT
         val startBoundary = visualEdgeBoundary(layout, terminal.documentStart, terminalStartEdge)
         val terminalBoundary = visualEdgeBoundary(layout, neighborOffset, neighborEdge)
         assertEquals(
             Rect(
-                kotlin.math.floor(min(startBoundary, terminalBoundary)).toInt().coerceIn(0, MIXED_SOFT_WRAP_WIDTH_PX),
+                kotlin.math.floor(min(startBoundary, terminalBoundary)).toInt().coerceIn(0, width),
                 layout.getLineTop(0),
-                ceil(max(startBoundary, terminalBoundary)).toInt().coerceIn(0, MIXED_SOFT_WRAP_WIDTH_PX),
+                ceil(max(startBoundary, terminalBoundary)).toInt().coerceIn(0, width),
                 layout.getLineBottom(0),
             ),
             rect,
@@ -556,10 +557,9 @@ class PreparedProseAccessibilityTest {
         continuation: String,
         paragraphDirection: Int,
     ): StaticLayout {
-        val text = "$firstLine\u200B$continuation"
+        val text = firstLine + continuation
         val spanned = SpannableString(text)
         text.indices
-            .filter { text[it] != ' ' && text[it] != '\u200B' }
             .forEach { index ->
                 spanned.setSpan(
                     FixedWidthCharacterSpan(),
@@ -573,7 +573,7 @@ class PreparedProseAccessibilityTest {
             0,
             spanned.length,
             TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 16f },
-            MIXED_SOFT_WRAP_WIDTH_PX,
+            firstLine.length * MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX,
         ).setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
             .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
             .setTextDirection(
@@ -644,7 +644,6 @@ class PreparedProseAccessibilityTest {
 
     private companion object {
         const val MIXED_SOFT_WRAP_CHARACTER_WIDTH_PX = 20
-        const val MIXED_SOFT_WRAP_WIDTH_PX = 128
     }
 
     private fun preparedArtifact(generation: String): PreparedProseLayout = PreparedProseLayout(

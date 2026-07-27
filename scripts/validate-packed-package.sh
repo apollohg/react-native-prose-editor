@@ -509,6 +509,11 @@ RUBY
       pod install --no-repo-update
   ) || fail "iOS consumer pod install failed"
   [[ -f "$ios_project/Podfile.lock" ]] || fail "CocoaPods did not produce Podfile.lock"
+  editor_pod_xcconfig="$ios_project/Pods/Target Support Files/ReactNativeProseEditor/ReactNativeProseEditor.debug.xcconfig"
+  [[ -f "$editor_pod_xcconfig" ]] || \
+    fail "iOS packed consumer did not generate ReactNativeProseEditor build settings"
+  grep -Fq '$(PODS_ROOT)/Headers/Private/Yoga' "$editor_pod_xcconfig" || \
+    fail "React Native dependency helper did not retain ReactNativeProseEditor's private Yoga compile path"
   require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/Props.h"
   require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/EventEmitters.h"
   require_file "$ios_project/build/generated/ios" "RCTThirdPartyComponentsProvider.mm"

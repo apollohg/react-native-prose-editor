@@ -153,6 +153,23 @@ assert.match(
     /s\.header_dir\s*=\s*'react\/renderer\/components\/PreparedProseViewer'/,
     'Fabric implementation headers must remain available to the pod compiler',
 );
+const moduleDependencyCalls = viewerPodspec.match(/install_modules_dependencies\(s\)/g) ?? [];
+assert.equal(
+    moduleDependencyCalls.length,
+    1,
+    'React Native module dependencies must be installed exactly once',
+);
+const podTargetXcconfigOffset = viewerPodspec.indexOf('s.pod_target_xcconfig =');
+const moduleDependencyOffset = viewerPodspec.indexOf('install_modules_dependencies(s)');
+assert.ok(
+    podTargetXcconfigOffset >= 0 && moduleDependencyOffset > podTargetXcconfigOffset,
+    'React Native dependency installation must follow the package pod_target_xcconfig so its generated Fabric/Yoga settings are retained',
+);
+assert.doesNotMatch(
+    viewerPodspec,
+    /s\.dependency\s+['"](?:Yoga|React-Core-prebuilt)['"]|Headers\/Private\/Yoga|ReactNativeDependencies-artifacts|ReactNativeCore-artifacts/,
+    'the podspec must rely on install_modules_dependencies(s), not hard-coded Yoga or prebuilt React Native paths',
+);
 for (const path of [
     'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseMeasurementsManager.h',
     'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerComponentDescriptor.h',

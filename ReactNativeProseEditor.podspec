@@ -24,7 +24,6 @@ Pod::Spec.new do |s|
   s.static_framework = false
 
   s.dependency 'ExpoModulesCore'
-  install_modules_dependencies(s)
 
   # Swift source files (including generated UniFFI bindings).
   s.source_files = ['ios/*.swift', 'ios/Viewer/**/*.{swift,h,mm}', 'common/cpp/**/*.{h,cpp}']
@@ -52,4 +51,9 @@ Pod::Spec.new do |s|
     'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/ios/editor_coreFFI',
     'HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/ios/editor_coreFFI $(PODS_TARGET_SRCROOT)/common/cpp',
   }
+
+  # React Native must merge its Fabric and Yoga dependency settings after this
+  # package-owned configuration. In particular, do not replace the helper's
+  # generated private Yoga search path with a hand-maintained equivalent.
+  install_modules_dependencies(s)
 end
