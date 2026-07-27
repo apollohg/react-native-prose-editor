@@ -105,4 +105,27 @@ assert.match(read('package.json'), /"type": "components"/);
 assert.match(read('react-native.config.js'), /PreparedProseViewerComponentDescriptor/);
 assert.doesNotMatch(read('expo-module.config.json'), /NativeProseViewer/);
 
+const viewerPodspec = read('ios/ReactNativeProseEditor.podspec');
+assert.match(
+    viewerPodspec,
+    /s\.module_name\s*=\s*'ReactNativeProseEditor'/,
+    'the pod module must match Objective-C++ imports of ReactNativeProseEditor-Swift.h',
+);
+assert.match(
+    viewerPodspec,
+    /s\.private_header_files\s*=\s*'Viewer\/Fabric\/PREPPreparedProseViewerComponentView\.h'/,
+    'the Fabric C++ component header must remain private to the pod implementation',
+);
+const viewerPerformanceTests = read('ios/Tests/NativePerformanceTests.swift');
+assert.match(
+    viewerPerformanceTests,
+    /String\(Double\(width\)\.bitPattern, radix: 16\)/,
+    'viewer measurement cache identity must preserve the exact width bit pattern',
+);
+assert.doesNotMatch(
+    viewerPerformanceTests,
+    /String\(width\)/,
+    'viewer measurement cache must not use locale-dependent CGFloat formatting',
+);
+
 console.log('Prepared prose viewer hard-cutover source contract passed.');

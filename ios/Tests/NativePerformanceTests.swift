@@ -566,7 +566,10 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(entry.id)"); return .zero }
         do {
             let viewerConfiguration = try configuration.viewerConfiguration(imagesEnabled: activeImagesEnabled)
-            let key = [source, viewerConfiguration.configJSON, viewerConfiguration.imagePolicyJSON ?? "", viewerConfiguration.imagesEnabled ? "1" : "0", String(width)].joined(separator: "\u{1F}")
+            // A formatted CGFloat is locale-dependent and can merge distinct
+            // widths. The IEEE-754 payload is the exact measurement identity.
+            let widthIdentity = String(Double(width).bitPattern, radix: 16)
+            let key = [source, viewerConfiguration.configJSON, viewerConfiguration.imagePolicyJSON ?? "", viewerConfiguration.imagesEnabled ? "1" : "0", widthIdentity].joined(separator: "\u{1F}")
             if let height = measuredHeights[key] { return CGSize(width: width, height: height) }
             let measurementView = ProseViewerView(frame: CGRect(x: 0, y: 0, width: width, height: 0))
             XCTAssertTrue(measurementView.apply(source: .json(source), configuration: viewerConfiguration))

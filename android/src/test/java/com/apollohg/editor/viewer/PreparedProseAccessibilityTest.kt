@@ -1,11 +1,15 @@
 package com.apollohg.editor.viewer
 
-import android.graphics.Rect
+import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Rect
 import android.text.Layout
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextDirectionHeuristics
+import android.text.style.ReplacementSpan
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
@@ -153,7 +157,8 @@ class PreparedProseAccessibilityTest {
     @Test
     fun `fallback keeps an internal LTR terminal in an RTL paragraph out of adjacent visual text`() {
         assertInternalMixedSoftWrapTerminalBoundary(
-            text = "\u05d0\u05d1\u05d2 abc",
+            firstLine = "\u05d0\u05d1\u05d2 abc",
+            continuation = "next",
             textDirection = TextDirectionHeuristics.RTL,
             terminalRunIsRtl = false,
             expectedVisualLogicalOrder = listOf(1, 0),
@@ -163,7 +168,8 @@ class PreparedProseAccessibilityTest {
     @Test
     fun `fallback keeps an internal RTL terminal in an LTR paragraph out of adjacent visual text`() {
         assertInternalMixedSoftWrapTerminalBoundary(
-            text = "abc \u05d0\u05d1\u05d2",
+            firstLine = "abc \u05d0\u05d1\u05d2",
+            continuation = "next",
             textDirection = TextDirectionHeuristics.LTR,
             terminalRunIsRtl = true,
             expectedVisualLogicalOrder = listOf(0, 1),
@@ -448,22 +454,38 @@ class PreparedProseAccessibilityTest {
     }
 
     private fun assertInternalMixedSoftWrapTerminalBoundary(
-        text: String,
+        firstLine: String,
+        continuation: String,
         textDirection: android.text.TextDirectionHeuristic,
         terminalRunIsRtl: Boolean,
         expectedVisualLogicalOrder: List<Int>,
     ) {
-        val width = 300
-        val layout = layoutFor(text, width, textDirection)
+        val text = firstLine + continuation
+        val layout = fixedWidthSoftWrapLayout(text, firstLine.length, textDirection)
+        val width = layout.width
+        val rawLineEnd = layout.getLineEnd(0)
+        assertTrue(layout.lineCount >= 2)
+        assertEquals(firstLine.length, rawLineEnd)
+        assertTrue(rawLineEnd < text.length)
+        assertEquals(rawLineEnd, layout.getLineStart(1))
+        assertTrue(text[rawLineEnd - 1] != '\n')
+        assertEquals(
+            if (textDirection == TextDirectionHeuristics.RTL) {
+                Layout.DIR_RIGHT_TO_LEFT
+            } else {
+                Layout.DIR_LEFT_TO_RIGHT
+            },
+            layout.getParagraphDirection(0),
+        )
         val bidiDirection = if (textDirection == TextDirectionHeuristics.RTL) {
             Bidi.DIRECTION_RIGHT_TO_LEFT
         } else {
             Bidi.DIRECTION_LEFT_TO_RIGHT
         }
-        val visualRuns = expectedVisualRuns(Bidi(text, bidiDirection), 0)
+        val visualRuns = expectedVisualRuns(Bidi(firstLine, bidiDirection), 0)
         assertEquals(expectedVisualLogicalOrder, visualRuns.map { it.logicalIndex })
         val terminal = visualRuns.single {
-            it.documentEnd == text.length && it.isRtl == terminalRunIsRtl
+            it.documentEnd == rawLineEnd && it.isRtl == terminalRunIsRtl
         }
         val terminalEdge = if (terminal.isRtl) FallbackVisualEdge.LEFT else FallbackVisualEdge.RIGHT
         val neighbor = when (terminalEdge) {
@@ -497,20 +519,15 @@ class PreparedProseAccessibilityTest {
                 layout.getSecondaryHorizontal(neighborOffset),
             )
         }
-        val rect = requireNotNull(
-            fallbackSelectionRectForVisualRun(
-                layout = layout,
-                runStart = terminal.documentStart,
-                runEnd = terminal.documentEnd,
-                runIsRtl = terminal.isRtl,
-                line = 0,
-                width = width,
-                // Pure visual-run fixture: force the same shared soft-wrap
-                // endpoint branch without relying on Robolectric wrapping.
-                softWrapLineEnd = terminal.documentEnd,
-                softWrapTerminalBoundary = terminalBoundary,
-            )
-        )
+        // Exercise the production line-level path: it must detect this real
+        // continuation boundary and obtain the terminal edge from `neighbor`.
+        val rect = fallbackSelectionRectsForLine(
+            layout = layout,
+            start = terminal.documentStart,
+            end = terminal.documentEnd,
+            line = 0,
+            width = width,
+        ).single()
         val expectedStart = visualEdgeBoundary(
             layout,
             terminal.documentStart,
@@ -529,6 +546,63 @@ class PreparedProseAccessibilityTest {
         } else {
             assertTrue(rect.right < ceil(layout.getLineRight(0)).toInt())
         }
+    }
+
+    /**
+     * A fixed-metric actual wrap: every source character occupies exactly ten
+     * pixels, so the first line ends at [wrapAfter] without a font or width
+     * search. The following source character starts the continuation line.
+     */
+    private fun fixedWidthSoftWrapLayout(
+        text: String,
+        wrapAfter: Int,
+        textDirection: android.text.TextDirectionHeuristic,
+    ): StaticLayout {
+        val spanned = SpannableString(text)
+        text.indices.forEach { index ->
+            spanned.setSpan(
+                FixedWidthCharacterSpan,
+                index,
+                index + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        return StaticLayout.Builder.obtain(
+            spanned,
+            0,
+            spanned.length,
+            TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 18f },
+            wrapAfter * FIXED_CHARACTER_WIDTH_PX,
+        ).setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+            .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+            .setTextDirection(textDirection)
+            .build()
+    }
+
+    private object FixedWidthCharacterSpan : ReplacementSpan() {
+        override fun getSize(
+            paint: Paint,
+            text: CharSequence?,
+            start: Int,
+            end: Int,
+            fm: Paint.FontMetricsInt?,
+        ): Int = FIXED_CHARACTER_WIDTH_PX
+
+        override fun draw(
+            canvas: Canvas,
+            text: CharSequence?,
+            start: Int,
+            end: Int,
+            x: Float,
+            top: Int,
+            y: Int,
+            bottom: Int,
+            paint: Paint,
+        ) = Unit
+    }
+
+    private companion object {
+        const val FIXED_CHARACTER_WIDTH_PX = 10
     }
 
     private data class ExpectedVisualRun(

@@ -75,10 +75,19 @@ tasks.register('buildHostEditorCore', Exec) {
 // Bypass AGP's Android artifact transform: it strips the raw JAR's host
 // jnidispatch resource. These are JVM Test tasks only; neither Android
 // instrumentation nor any production/public configuration receives them.
+//
+// AGP finalizes each unit-test runtime classpath after task configuration. Add
+// the raw JAR in a doFirst action so it is the first entry seen by the forked
+// JVM, after AGP has completed that construction, rather than being replaced
+// by a transformed Android artifact.
+def hostTestJnaClasspath = files(configurations.hostTestJna)
 tasks.withType(Test).configureEach {
     dependsOn tasks.named('buildHostEditorCore')
-    classpath = classpath.plus(files(configurations.hostTestJna))
+    inputs.files(hostTestJnaClasspath).withPropertyName('hostTestJnaClasspath')
     systemProperty 'uniffi.component.editor_core.libraryOverride', hostEditorCoreLibrary.absolutePath
+    doFirst {
+        classpath = hostTestJnaClasspath.plus(classpath)
+    }
 }
 
 android {

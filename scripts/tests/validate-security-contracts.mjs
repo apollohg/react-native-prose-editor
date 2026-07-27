@@ -301,8 +301,8 @@ assert.match(
 );
 assert.match(
     androidBuild,
-    /tasks\.withType\(Test\)\.configureEach\s*\{[\s\S]*?dependsOn tasks\.named\('buildHostEditorCore'\)[\s\S]*?classpath = classpath\.plus\(files\(configurations\.hostTestJna\)\)[\s\S]*?uniffi\.component\.editor_core\.libraryOverride/,
-    'only JVM Test tasks must receive the raw host JNA JAR and UniFFI host-library override'
+    /def hostTestJnaClasspath = files\(configurations\.hostTestJna\)[\s\S]*?tasks\.withType\(Test\)\.configureEach\s*\{[\s\S]*?dependsOn tasks\.named\('buildHostEditorCore'\)[\s\S]*?inputs\.files\(hostTestJnaClasspath\)\.withPropertyName\('hostTestJnaClasspath'\)[\s\S]*?uniffi\.component\.editor_core\.libraryOverride[\s\S]*?doFirst\s*\{\s*classpath = hostTestJnaClasspath\.plus\(classpath\)/,
+    'only JVM Test tasks must prepend the raw host JNA JAR after AGP creates the runtime classpath and set the UniFFI host-library override'
 );
 assert.doesNotMatch(
     androidBuild,
