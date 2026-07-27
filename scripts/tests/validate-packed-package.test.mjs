@@ -25,6 +25,7 @@ function makeFixture(name) {
   for (const path of [
     "package.json",
     "LICENSE",
+    "ReactNativeProseEditor.podspec",
     "ios",
     "android",
     "rust/android",
@@ -393,7 +394,7 @@ try {
 
     const linklessPod = makeFixture("linkless-pod");
     replace(
-      join(linklessPod, "ios/ReactNativeProseEditor.podspec"),
+      join(linklessPod, "ReactNativeProseEditor.podspec"),
       "s.vendored_frameworks = 'EditorCore.xcframework'",
       "# fixture intentionally omits the linked EditorCore.xcframework",
     );

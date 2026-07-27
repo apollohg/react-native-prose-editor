@@ -106,7 +106,7 @@
         "common/cpp",
         "ios/*.swift",
         "ios/Viewer/**/*",
-        "ios/*.podspec",
+        "ReactNativeProseEditor.podspec",
         "ios/editor_coreFFI",
         "ios/EditorCore.xcframework",
         "rust/android",

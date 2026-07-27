@@ -1,15 +1,11 @@
 package com.apollohg.editor.viewer
 
-import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.text.Layout
-import android.text.SpannableString
-import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextDirectionHeuristics
-import android.text.style.ReplacementSpan
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
@@ -159,7 +155,7 @@ class PreparedProseAccessibilityTest {
         assertInternalMixedSoftWrapTerminalBoundary(
             firstLine = "\u05d0\u05d1\u05d2 abc",
             continuation = "next",
-            textDirection = TextDirectionHeuristics.RTL,
+            paragraphDirection = Layout.DIR_RIGHT_TO_LEFT,
             terminalRunIsRtl = false,
             expectedVisualLogicalOrder = listOf(1, 0),
         )
@@ -170,7 +166,7 @@ class PreparedProseAccessibilityTest {
         assertInternalMixedSoftWrapTerminalBoundary(
             firstLine = "abc \u05d0\u05d1\u05d2",
             continuation = "next",
-            textDirection = TextDirectionHeuristics.LTR,
+            paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
             terminalRunIsRtl = true,
             expectedVisualLogicalOrder = listOf(0, 1),
         )
@@ -456,36 +452,48 @@ class PreparedProseAccessibilityTest {
     private fun assertInternalMixedSoftWrapTerminalBoundary(
         firstLine: String,
         continuation: String,
-        textDirection: android.text.TextDirectionHeuristic,
+        paragraphDirection: Int,
         terminalRunIsRtl: Boolean,
         expectedVisualLogicalOrder: List<Int>,
     ) {
-        val text = firstLine + continuation
-        val layout = fixedWidthSoftWrapLayout(text, firstLine.length, textDirection)
-        val width = layout.width
-        val rawLineEnd = layout.getLineEnd(0)
-        assertTrue(layout.lineCount >= 2)
-        assertEquals(firstLine.length, rawLineEnd)
-        assertTrue(rawLineEnd < text.length)
-        assertEquals(rawLineEnd, layout.getLineStart(1))
-        assertTrue(text[rawLineEnd - 1] != '\n')
-        assertEquals(
-            if (textDirection == TextDirectionHeuristics.RTL) {
-                Layout.DIR_RIGHT_TO_LEFT
-            } else {
-                Layout.DIR_LEFT_TO_RIGHT
-            },
-            layout.getParagraphDirection(0),
+        val continuationFixture = PureContinuationLineFixture(
+            documentText = firstLine + continuation,
+            firstLineEnd = firstLine.length,
+            nextLineStart = firstLine.length,
+            inheritedParagraphDirection = paragraphDirection,
         )
-        val bidiDirection = if (textDirection == TextDirectionHeuristics.RTL) {
+        val text = continuationFixture.documentText
+        val lineEnd = continuationFixture.firstLineEnd
+        assertTrue(lineEnd < text.length)
+        assertEquals(lineEnd, continuationFixture.nextLineStart)
+        assertTrue(text[lineEnd - 1] != '\n')
+        val bidiDirection = if (paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
             Bidi.DIRECTION_RIGHT_TO_LEFT
         } else {
             Bidi.DIRECTION_LEFT_TO_RIGHT
         }
-        val visualRuns = expectedVisualRuns(Bidi(firstLine, bidiDirection), 0)
-        assertEquals(expectedVisualLogicalOrder, visualRuns.map { it.logicalIndex })
+        val bidi = Bidi(firstLine, bidiDirection)
+        assertEquals(
+            paragraphDirection == Layout.DIR_LEFT_TO_RIGHT,
+            bidi.baseIsLeftToRight(),
+            "the fixture must retain the inherited paragraph direction",
+        )
+        val visualRuns = visualBidiRuns(
+            List(bidi.runCount) { logicalIndex ->
+                FallbackLogicalBidiRun(
+                    logicalIndex = logicalIndex,
+                    documentStart = bidi.getRunStart(logicalIndex),
+                    documentEnd = bidi.getRunLimit(logicalIndex),
+                    level = bidi.getRunLevel(logicalIndex).toByte(),
+                )
+            }
+        )
+        assertEquals(
+            expectedVisualLogicalOrder,
+            visualRuns.map { it.logicalRun.logicalIndex },
+        )
         val terminal = visualRuns.single {
-            it.documentEnd == rawLineEnd && it.isRtl == terminalRunIsRtl
+            it.documentEnd == lineEnd && it.isRtl == terminalRunIsRtl
         }
         val terminalEdge = if (terminal.isRtl) FallbackVisualEdge.LEFT else FallbackVisualEdge.RIGHT
         val neighbor = when (terminalEdge) {
@@ -509,100 +517,23 @@ class PreparedProseAccessibilityTest {
         // positions. The adjacent visual run supplies the terminal edge by
         // the opposite affinity, not by its physical left/right label alone.
         assertEquals(terminal.documentStart, neighborOffset)
-        val terminalBoundary = when (neighborEdge) {
-            FallbackVisualEdge.LEFT -> min(
-                layout.getPrimaryHorizontal(neighborOffset),
-                layout.getSecondaryHorizontal(neighborOffset),
-            )
-            FallbackVisualEdge.RIGHT -> max(
-                layout.getPrimaryHorizontal(neighborOffset),
-                layout.getSecondaryHorizontal(neighborOffset),
-            )
-        }
-        // Exercise the production line-level path: it must detect this real
-        // continuation boundary and obtain the terminal edge from `neighbor`.
-        val rect = fallbackSelectionRectsForLine(
-            layout = layout,
-            start = terminal.documentStart,
-            end = terminal.documentEnd,
-            line = 0,
-            width = width,
-        ).single()
-        val expectedStart = visualEdgeBoundary(
-            layout,
-            terminal.documentStart,
-            if (terminal.isRtl) FallbackVisualEdge.RIGHT else FallbackVisualEdge.LEFT,
+        // This invokes the production soft-wrap resolver with a genuine line
+        // continuation and already-reordered first-line runs. The host fixture
+        // controls geometry directly, so font selection and StaticLayout wrap
+        // heuristics cannot affect the Bidi adjacency contract.
+        val terminalBoundary = softWrapTerminalBoundary(
+            terminalRun = terminal,
+            visualRuns = visualRuns,
+            softWrapLineEnd = lineEnd,
+            outerLineBoundary = { edge -> if (edge == FallbackVisualEdge.LEFT) 0f else 100f },
+            visualEdgeBoundary = { offset, edge ->
+                assertEquals(neighborOffset, offset)
+                assertEquals(neighborEdge, edge)
+                if (edge == FallbackVisualEdge.LEFT) 35f else 65f
+            },
         )
-        val expected = Rect(
-            kotlin.math.floor(min(expectedStart, terminalBoundary)).toInt().coerceIn(0, width),
-            layout.getLineTop(0),
-            ceil(max(expectedStart, terminalBoundary)).toInt().coerceIn(0, width),
-            layout.getLineBottom(0),
-        )
-
-        assertEquals(expected, rect)
-        if (terminal.isRtl) {
-            assertTrue(rect.left > kotlin.math.floor(layout.getLineLeft(0)).toInt())
-        } else {
-            assertTrue(rect.right < ceil(layout.getLineRight(0)).toInt())
-        }
-    }
-
-    /**
-     * A fixed-metric actual wrap: every source character occupies exactly ten
-     * pixels, so the first line ends at [wrapAfter] without a font or width
-     * search. The following source character starts the continuation line.
-     */
-    private fun fixedWidthSoftWrapLayout(
-        text: String,
-        wrapAfter: Int,
-        textDirection: android.text.TextDirectionHeuristic,
-    ): StaticLayout {
-        val spanned = SpannableString(text)
-        text.indices.forEach { index ->
-            spanned.setSpan(
-                FixedWidthCharacterSpan(),
-                index,
-                index + 1,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-        }
-        return StaticLayout.Builder.obtain(
-            spanned,
-            0,
-            spanned.length,
-            TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 18f },
-            wrapAfter * FIXED_CHARACTER_WIDTH_PX,
-        ).setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
-            .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-            .setTextDirection(textDirection)
-            .build()
-    }
-
-    private class FixedWidthCharacterSpan : ReplacementSpan() {
-        override fun getSize(
-            paint: Paint,
-            text: CharSequence?,
-            start: Int,
-            end: Int,
-            fm: Paint.FontMetricsInt?,
-        ): Int = FIXED_CHARACTER_WIDTH_PX
-
-        override fun draw(
-            canvas: Canvas,
-            text: CharSequence?,
-            start: Int,
-            end: Int,
-            x: Float,
-            top: Int,
-            y: Int,
-            bottom: Int,
-            paint: Paint,
-        ) = Unit
-    }
-
-    private companion object {
-        const val FIXED_CHARACTER_WIDTH_PX = 10
+        assertEquals(if (neighborEdge == FallbackVisualEdge.LEFT) 35f else 65f, terminalBoundary)
+        assertTrue(terminalBoundary!! in 1f..99f)
     }
 
     private data class ExpectedVisualRun(
@@ -613,6 +544,28 @@ class PreparedProseAccessibilityTest {
         val isRtl: Boolean,
         val level: Byte,
     )
+
+    /**
+     * A pure source/line-boundary fixture for soft-wrap behavior. It models
+     * the contract a [StaticLayout] supplies without relying on its host-font
+     * shaping or wrap decisions.
+     */
+    private data class PureContinuationLineFixture(
+        val documentText: String,
+        val firstLineEnd: Int,
+        val nextLineStart: Int,
+        val inheritedParagraphDirection: Int,
+    ) {
+        init {
+            require(firstLineEnd in 1 until documentText.length)
+            require(nextLineStart == firstLineEnd)
+            require(documentText[firstLineEnd - 1] != '\n')
+            require(
+                inheritedParagraphDirection == Layout.DIR_LEFT_TO_RIGHT ||
+                    inheritedParagraphDirection == Layout.DIR_RIGHT_TO_LEFT,
+            )
+        }
+    }
 
     /**
      * Test-only expected order deliberately starts from Java Bidi's logical

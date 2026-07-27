@@ -8,6 +8,9 @@ ENV['NODE_PATH'] = [
 
 platform :ios, '15.1'
 
+root_podspec = File.join(__dir__, '..', 'ReactNativeProseEditor.podspec')
+raise "ReactNativeProseEditor root podspec is required for React Native codegen" unless File.file?(root_podspec)
+
 project 'NativeEditorTests.xcodeproj'
 
 install! 'cocoapods', deterministic_uuids: false

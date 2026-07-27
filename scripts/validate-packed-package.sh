@@ -431,7 +431,7 @@ target 'PackedConsumer' do
   ]
   config = use_native_modules!(config_command)
 
-  pod 'ReactNativeProseEditor', :path => ENV.fetch('PACKED_EDITOR_IOS_DIR')
+  pod 'ReactNativeProseEditor', :path => ENV.fetch('PACKED_EDITOR_DIR')
 
   # Use Expo's supported autolinking configuration for the complete RN and
   # Expo pod graph. The target remains a fresh UIKit app and does not inherit
@@ -478,7 +478,7 @@ end
 RUBY
   (
     cd "$ios_project"
-      PACKED_EDITOR_IOS_DIR="$root/ios" \
+      PACKED_EDITOR_DIR="$root" \
       PACKED_REACT_NATIVE_DIR="$react_native_dir" \
       RCT_USE_LOCAL_RN_DEP="$ios_project/react-native-dependencies.tar.gz" \
       RCT_TESTONLY_RNCORE_TARBALL_PATH="$ios_project/react-native-core.tar.gz" \
@@ -582,6 +582,25 @@ KOTLIN
 
 validate_package_entries() {
   local root="$1"
+  require_file "$root" "ReactNativeProseEditor.podspec"
+  [[ ! -e "$root/ios/ReactNativeProseEditor.podspec" ]] || \
+    fail "packed npm package must not contain the legacy nested podspec"
+  [[ ! -e "$root/ios/build/generated" ]] || \
+    fail "packed npm package must not contain consumer-generated iOS codegen output"
+  ruby -rjson -e '
+    root = ARGV.fetch(0)
+    package = JSON.parse(File.read(File.join(root, "package.json")))
+    files = package.fetch("files")
+    abort "packed package must publish the root podspec" unless files.include?("ReactNativeProseEditor.podspec")
+    abort "packed package must not publish a nested podspec glob" if files.include?("ios/*.podspec")
+    codegen = package.fetch("codegenConfig")
+    abort "codegen name drift" unless codegen.fetch("name") == "ReactNativeProseEditorSpec"
+    abort "codegen must expose components" unless codegen.fetch("type") == "components"
+    provider = codegen.fetch("ios").fetch("componentProvider")
+    abort "PreparedProseViewer provider entry is missing" unless provider == { "PreparedProseViewer" => "PREPPreparedProseViewerComponentView" }
+    expo = JSON.parse(File.read(File.join(root, "expo-module.config.json")))
+    abort "Expo must discover the package-root podspec" unless expo.fetch("ios").fetch("podspecPath") == "./ReactNativeProseEditor.podspec"
+  ' "$root" || fail "packed package codegen discovery contract failed"
   require_file "$root" "dist/index.js"
   require_file "$root" "dist/index.d.ts"
   require_declaration_symbol "$root" "NativeEditorBoundaryError"
@@ -713,13 +732,13 @@ modulemap_count="$(find "$package_dir" -type f \( -name 'module.modulemap' -o -n
 
 echo "==> Parsing the podspec from the extracted package..."
 podspec_json="$work_dir/podspec.json"
-pod ipc spec "$package_dir/ios/ReactNativeProseEditor.podspec" > "$podspec_json"
+pod ipc spec "$package_dir/ReactNativeProseEditor.podspec" > "$podspec_json"
 ruby -rjson -e '
   spec = JSON.parse(File.read(ARGV.fetch(0)))
   license = spec.fetch("license")
   abort "podspec license type must be Apache-2.0" unless license.fetch("type") == "Apache-2.0"
-  abort "podspec license file must resolve to ../LICENSE" unless license.fetch("file") == "../LICENSE"
-  abort "podspec must vend exactly EditorCore.xcframework" unless Array(spec.fetch("vendored_frameworks")) == ["EditorCore.xcframework"]
+  abort "podspec license file must resolve to LICENSE" unless license.fetch("file") == "LICENSE"
+  abort "podspec must vend exactly ios/EditorCore.xcframework" unless Array(spec.fetch("vendored_frameworks")) == ["ios/EditorCore.xcframework"]
 ' "$podspec_json" || fail "packed podspec does not unconditionally vend EditorCore.xcframework"
 
 validate_ios_consumer "$package_dir"

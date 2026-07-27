@@ -1,7 +1,8 @@
 {
   "platforms": ["ios", "android"],
   "ios": {
-    "modules": ["NativeEditorModule"]
+    "modules": ["NativeEditorModule"],
+    "podspecPath": "./ReactNativeProseEditor.podspec"
   },
   "android": {
     "modules": ["com.apollohg.editor.NativeEditorModule"]

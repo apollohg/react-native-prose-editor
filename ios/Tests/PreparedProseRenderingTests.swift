@@ -48,7 +48,15 @@ final class PreparedProseRenderingTests: XCTestCase {
             let layoutByItem = Dictionary(grouping: layoutEntries, by: { $0.0 })
             for (_, leaves) in layoutByItem {
                 let contentAnchors = leaves.compactMap { block, prepared -> CGFloat? in
-                    guard let content = prepared.fragments.first(where: { $0.kind == .text || $0.kind == .atom }) else {
+                    let content = prepared.fragments.first { fragment in
+                        switch fragment.kind {
+                        case .text, .atom:
+                            return true
+                        default:
+                            return false
+                        }
+                    }
+                    guard let content else {
                         return nil
                     }
                     let internalPadding = block.nodeType == "codeBlock" ? theme.codePaddingHorizontal : 0

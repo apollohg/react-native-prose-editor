@@ -277,9 +277,11 @@ pub fn task_list_marker_metadata(
     list_node_type: &str,
     item: &Node,
 ) -> (Option<String>, Option<bool>) {
-    let is_task = list_node_type.to_ascii_lowercase().contains("task")
-        || item.node_type().to_ascii_lowercase().contains("task")
-        || item.attrs().contains_key("checked");
+    // Schemas may give every list item a default `checked: false` attribute.
+    // Marker semantics belong to the containing list, not to the presence of a
+    // child attribute, so ordinary bullet and ordered lists never become task
+    // lists merely because their item schema shares that attribute.
+    let is_task = list_node_type.to_ascii_lowercase().contains("task");
     if !is_task {
         return (None, None);
     }
@@ -293,6 +295,46 @@ pub fn task_list_marker_metadata(
                 .unwrap_or(false),
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use serde_json::Value;
+
+    use super::task_list_marker_metadata;
+    use crate::model::Node;
+
+    fn list_item_with_checked(checked: bool) -> Node {
+        Node::void(
+            "listItem".to_string(),
+            HashMap::from([("checked".to_string(), Value::Bool(checked))]),
+        )
+    }
+
+    #[test]
+    fn default_checked_items_remain_ordinary_in_bullet_and_ordered_lists() {
+        for list_type in ["bulletList", "orderedList"] {
+            assert_eq!(
+                task_list_marker_metadata(list_type, &list_item_with_checked(false)),
+                (None, None),
+                "{list_type} must not infer taskness from a default checked attribute",
+            );
+        }
+    }
+
+    #[test]
+    fn containing_task_list_preserves_item_checked_state() {
+        assert_eq!(
+            task_list_marker_metadata("taskList", &list_item_with_checked(false)),
+            (Some("task".to_string()), Some(false)),
+        );
+        assert_eq!(
+            task_list_marker_metadata("taskList", &list_item_with_checked(true)),
+            (Some("task".to_string()), Some(true)),
+        );
+    }
 }
 
 /// Visible text used for opaque inline and block atoms.

@@ -52,7 +52,7 @@ const viewerBoundary = [
     'android/src/main/java/com/apollohg/editor/ProseViewerView.kt',
     'expo-module.config.json',
     'react-native.config.js',
-    'ios/ReactNativeProseEditor.podspec',
+    'ReactNativeProseEditor.podspec',
     'android/build.gradle',
     'ios-tests/project.yml',
     'ios-tests/NativeEditorTests.xcodeproj/project.pbxproj',
@@ -84,7 +84,7 @@ const registrationSources = [
     read('android/src/main/java/com/apollohg/editor/NativeEditorModule.kt'),
     read('expo-module.config.json'),
     read('react-native.config.js'),
-    read('ios/ReactNativeProseEditor.podspec'),
+    read('ReactNativeProseEditor.podspec'),
     read('android/build.gradle'),
     read('ios-tests/project.yml'),
     read('ios-tests/NativeEditorTests.xcodeproj/project.pbxproj'),
@@ -103,9 +103,33 @@ for (const path of manifest.removedPaths) {
 }
 assert.match(read('package.json'), /"type": "components"/);
 assert.match(read('react-native.config.js'), /PreparedProseViewerComponentDescriptor/);
+assert.match(
+    read('react-native.config.js'),
+    /ReactNativeProseEditor\.podspec[\s\S]*ReactNativeProseEditorSpec\/provider/,
+    'React Native config must keep package-root podspec discovery documented with the codegen provider',
+);
 assert.doesNotMatch(read('expo-module.config.json'), /NativeProseViewer/);
 
-const viewerPodspec = read('ios/ReactNativeProseEditor.podspec');
+assert.ok(exists('ReactNativeProseEditor.podspec'), 'package-root podspec is required for Expo/RN codegen discovery');
+assert.ok(!exists('ios/ReactNativeProseEditor.podspec'), 'legacy nested podspec must not shadow package-root codegen discovery');
+assert.ok(!exists('ios/build/generated'), 'consumer-generated iOS codegen output must not be checked into the package');
+const packageJson = JSON.parse(read('package.json'));
+assert.ok(packageJson.files.includes('ReactNativeProseEditor.podspec'), 'npm package must include the root podspec');
+assert.ok(!packageJson.files.includes('ios/*.podspec'), 'npm package must not publish a nested podspec');
+assert.match(
+    read('expo-module.config.json'),
+    /"podspecPath"\s*:\s*"\.\/ReactNativeProseEditor\.podspec"/,
+    'Expo autolinking must point to the package-root podspec',
+);
+assert.deepEqual(packageJson.codegenConfig, {
+    name: 'ReactNativeProseEditorSpec',
+    type: 'components',
+    jsSrcsDir: 'src/specs',
+    android: { javaPackageName: 'com.apollohg.editor.viewer' },
+    ios: { componentProvider: { PreparedProseViewer: 'PREPPreparedProseViewerComponentView' } },
+});
+
+const viewerPodspec = read('ReactNativeProseEditor.podspec');
 assert.doesNotMatch(
     viewerPodspec,
     /s\.module_name\s*=/,
@@ -113,9 +137,10 @@ assert.doesNotMatch(
 );
 assert.match(
     viewerPodspec,
-    /s\.private_header_files\s*=\s*'Viewer\/Fabric\/PREPPreparedProseViewerComponentView\.h'/,
+    /s\.private_header_files\s*=\s*'ios\/Viewer\/Fabric\/PREPPreparedProseViewerComponentView\.h'/,
     'the Fabric C++ component header must remain private to the pod implementation',
 );
+assert.match(viewerPodspec, /s\.source_files\s*=\s*\['ios\/\*\.swift', 'ios\/Viewer\/\*\*\/\*\.\{swift,h,mm\}', 'common\/cpp\/\*\*\/\*\.\{h,cpp\}'\]/);
 for (const path of [
     'ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm',
     'ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm',

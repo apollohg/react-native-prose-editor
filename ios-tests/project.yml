@@ -58,7 +58,6 @@ targets:
       - path: ../ios
         excludes:
           - Tests
-          - ReactNativeProseEditor.podspec
           - EditorCore.xcframework
           - editor_coreFFI
           - editor_coreFFI.h

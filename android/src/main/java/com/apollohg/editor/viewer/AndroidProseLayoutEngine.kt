@@ -68,7 +68,7 @@ internal enum class FallbackVisualEdge { LEFT, RIGHT }
  * identity immutable, then explicitly project it into visual order before any
  * geometry asks about neighbours or line-edge ownership.
  */
-private data class FallbackLogicalBidiRun(
+internal data class FallbackLogicalBidiRun(
     val logicalIndex: Int,
     val documentStart: Int,
     val documentEnd: Int,
@@ -77,7 +77,7 @@ private data class FallbackLogicalBidiRun(
     val isRtl: Boolean get() = (level.toInt() and 1) == 1
 }
 
-private data class FallbackVisualBidiRun(
+internal data class FallbackVisualBidiRun(
     val visualIndex: Int,
     val logicalRun: FallbackLogicalBidiRun,
 ) {
@@ -99,7 +99,7 @@ private data class FallbackVisualBidiRun(
  * logical run index. [Bidi.reorderVisually] is the public Unicode Bidi API
  * that turns those immutable logical records into left-to-right visual order.
  */
-private fun visualBidiRuns(logicalRuns: List<FallbackLogicalBidiRun>): List<FallbackVisualBidiRun> {
+internal fun visualBidiRuns(logicalRuns: List<FallbackLogicalBidiRun>): List<FallbackVisualBidiRun> {
     if (logicalRuns.isEmpty()) return emptyList()
 
     val levels = ByteArray(logicalRuns.size) { logicalRuns[it].level }
@@ -127,12 +127,12 @@ private fun fallbackHorizontalAtVisualEdge(
  * from its adjacent run. Only a run which owns the outer visual edge may use
  * the current line's left/right extent.
  */
-private fun softWrapTerminalBoundary(
-    layout: StaticLayout,
+internal fun softWrapTerminalBoundary(
     terminalRun: FallbackVisualBidiRun,
     visualRuns: List<FallbackVisualBidiRun>,
-    line: Int,
     softWrapLineEnd: Int,
+    outerLineBoundary: (FallbackVisualEdge) -> Float,
+    visualEdgeBoundary: (offset: Int, edge: FallbackVisualEdge) -> Float,
 ): Float? {
     val terminalEdge = terminalRun.edgeForLogicalEnd()
     val isOuter = when (terminalEdge) {
@@ -140,7 +140,7 @@ private fun softWrapTerminalBoundary(
         FallbackVisualEdge.RIGHT -> terminalRun.visualIndex == visualRuns.lastIndex
     }
     if (isOuter) {
-        return if (terminalEdge == FallbackVisualEdge.LEFT) layout.getLineLeft(line) else layout.getLineRight(line)
+        return outerLineBoundary(terminalEdge)
     }
 
     val neighbor = when (terminalEdge) {
@@ -157,7 +157,7 @@ private fun softWrapTerminalBoundary(
     // malformed/unexpected Bidi result rather than resolving that offset on
     // the next line and expanding this hit rectangle across adjacent content.
     if (neighborOffset == softWrapLineEnd) return null
-    return fallbackHorizontalAtVisualEdge(layout, neighborOffset, neighborEdge)
+    return visualEdgeBoundary(neighborOffset, neighborEdge)
 }
 
 /**
@@ -261,7 +261,17 @@ internal fun fallbackSelectionRectsForLine(
             visualRun.documentEnd == softWrapLineEnd &&
             intersectedEnd == softWrapLineEnd
         val terminalBoundary = if (resolvesSoftWrapTerminal) {
-            softWrapTerminalBoundary(layout, visualRun, visualRuns, line, softWrapLineEnd!!)
+            softWrapTerminalBoundary(
+                terminalRun = visualRun,
+                visualRuns = visualRuns,
+                softWrapLineEnd = softWrapLineEnd!!,
+                outerLineBoundary = { edge ->
+                    if (edge == FallbackVisualEdge.LEFT) layout.getLineLeft(line) else layout.getLineRight(line)
+                },
+                visualEdgeBoundary = { offset, edge ->
+                    fallbackHorizontalAtVisualEdge(layout, offset, edge)
+                },
+            )
         } else {
             null
         }
