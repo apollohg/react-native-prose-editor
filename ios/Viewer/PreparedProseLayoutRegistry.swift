@@ -39,6 +39,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private let prepare: LayoutPreparation
     private(set) var layoutPreparationCount = 0
 
+    // XCTest-only lock-step hook for the mount-miss/measure ownership race.
+    // Production never assigns this, and it is invoked after cache cleanup
+    // but before the compiler/theme ownership decision.
+    var fabricMountMissAfterExactLeaseCleanupForTesting: (() -> Void)?
+
     var preparedLayoutCacheCountForTesting: Int { layoutCache.countForTesting }
     var compiledDocumentBytesForTesting: Int {
         compiledCondition.lock()
@@ -50,6 +55,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
     var pendingFabricLeaseCountForTesting: Int { layoutCache.pendingLeaseCountForTesting }
     var mountedFabricLeaseCountForTesting: Int { layoutCache.mountedLeaseCountForTesting }
     var fabricLeaseCountForTesting: Int { layoutCache.leaseCountForTesting }
+    func hasFabricGenerationOwnershipForTesting(_ generation: FabricGenerationToken) -> Bool {
+        compiledCondition.lock()
+        defer { compiledCondition.unlock() }
+        if documentsByFabricGeneration[generation] != nil {
+            return themeOwners[generation] != nil
+        }
+        return failuresByFabricGeneration[generation] != nil
+    }
     var preparedThemeCountForTesting: Int {
         compiledCondition.lock()
         defer { compiledCondition.unlock() }
@@ -201,6 +214,13 @@ public final class PreparedProseLayoutRegistry: NSObject {
                     )
                 }
             }
+            if let fabricSurface {
+                retainFabricGenerationOwnership(
+                    FabricGenerationToken(surface: fabricSurface, generationIdentity: request.generationIdentity),
+                    document: document,
+                    request: request
+                )
+            }
             return layout
         } catch let error as ProseViewerError {
             let layout = cachedErrorArtifact(
@@ -210,6 +230,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 error: error,
                 fabricSurface: fabricSurface
             )
+            if let fabricSurface {
+                retainFabricGenerationFailure(
+                    FabricGenerationToken(surface: fabricSurface, generationIdentity: request.generationIdentity),
+                    error: error
+                )
+            }
             return layout
         } catch {
             let layout = cachedErrorArtifact(
@@ -219,6 +245,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 error: .layout(message: String(describing: error)),
                 fabricSurface: fabricSurface
             )
+            if let fabricSurface {
+                retainFabricGenerationFailure(
+                    FabricGenerationToken(surface: fabricSurface, generationIdentity: request.generationIdentity),
+                    error: error
+                )
+            }
             return layout
         }
     }
@@ -451,7 +483,22 @@ public final class PreparedProseLayoutRegistry: NSObject {
                   displayScale: scale
               )
         else { return }
+        fabricMountMissAfterExactLeaseCleanupForTesting?()
+
+        // The registry has no other nested compiled/cache lock path: normal
+        // measures and lifecycle releases fully release one lock before
+        // touching the other. Hold compiler/theme ownership while rechecking
+        // the cache so a newer Yoga lease preserves its pin. If a measure
+        // creates its lease after this recheck, its post-cache retain below
+        // restores the same ownership before returning to Fabric.
         compiledCondition.lock()
+        guard !layoutCache.hasLease(
+            for: generation.surface,
+            generationIdentity: generation.generationIdentity
+        ) else {
+            compiledCondition.unlock()
+            return
+        }
         documentsByFabricGeneration.removeValue(forKey: generation)
         failuresByFabricGeneration.removeValue(forKey: generation)
         releaseThemeOwnership(for: generation)
@@ -674,6 +721,36 @@ public final class PreparedProseLayoutRegistry: NSObject {
     ) -> PreparedProseTheme {
         compiledCondition.lock()
         defer { compiledCondition.unlock() }
+        return preparedThemeLocked(for: request, generation: generation)
+    }
+
+    private func retainFabricGenerationOwnership(
+        _ generation: FabricGenerationToken,
+        document: ViewerDocument,
+        request: ProseViewerRequest
+    ) {
+        compiledCondition.lock()
+        documentsByFabricGeneration[generation] = document
+        failuresByFabricGeneration.removeValue(forKey: generation)
+        _ = preparedThemeLocked(for: request, generation: generation)
+        compiledCondition.unlock()
+    }
+
+    private func retainFabricGenerationFailure(
+        _ generation: FabricGenerationToken,
+        error: Error
+    ) {
+        compiledCondition.lock()
+        failuresByFabricGeneration[generation] = error
+        documentsByFabricGeneration.removeValue(forKey: generation)
+        compiledCondition.unlock()
+    }
+
+    /// Caller must hold `compiledCondition`.
+    private func preparedThemeLocked(
+        for request: ProseViewerRequest,
+        generation: FabricGenerationToken?
+    ) -> PreparedProseTheme {
         if let generation, themeOwners[generation] == nil {
             themeOwners[generation] = request.generationIdentity
             themeOwnerCounts[request.generationIdentity, default: 0] += 1

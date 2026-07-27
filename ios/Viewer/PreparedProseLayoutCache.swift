@@ -58,13 +58,13 @@ final class PreparedProseLayoutCache {
             return layout
         }
         // Immutable prepared layouts are global to their complete layout key,
-        // while Fabric ownership is intentionally surface-scoped. A mounted
-        // artifact therefore remains a valid source for another surface's
-        // pending handoff after completed and pending entries are evicted.
-        // The new owner still receives its own exact-once lease below.
-        if let fabricSurface,
-           let layout = mountedLeases.values.first(where: { $0.key == key }) {
-            createPendingLeaseLocked(layout, for: key, surface: fabricSurface)
+        // while Fabric ownership is intentionally surface-scoped. Any live
+        // owner can therefore satisfy another caller without preparing a
+        // duplicate artifact. Fabric receives its own exact-once pending
+        // lease; UIKit simply reuses the immutable value without inventing a
+        // Fabric owner.
+        if let layout = liveLayoutLocked(for: key) {
+            if let fabricSurface { createPendingLeaseLocked(layout, for: key, surface: fabricSurface) }
             condition.unlock()
             PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
             return layout
@@ -205,6 +205,17 @@ final class PreparedProseLayoutCache {
             || mountedLeases.keys.contains { $0.surface == surface && $0.layout.generationIdentity == generationIdentity }
     }
 
+    /// Used by the registry while holding its compiler/theme condition to
+    /// decide whether a mount-miss may retire generation-scoped ownership.
+    /// This is intentionally a query only; the exact pending cleanup above is
+    /// always completed first.
+    func hasLease(for surface: FabricSurfaceToken, generationIdentity: String) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return pendingLeases.keys.contains { $0.surface == surface && $0.layout.generationIdentity == generationIdentity }
+            || mountedLeases.keys.contains { $0.surface == surface && $0.layout.generationIdentity == generationIdentity }
+    }
+
     func registerDirectMount(_ owner: String, layout: PreparedProseLayout) {
         condition.lock(); directMounted[owner] = layout; retireUnownedPublicationKeysLocked(); publishOwnerBytesLocked(); condition.unlock()
     }
@@ -327,6 +338,15 @@ final class PreparedProseLayoutCache {
         return directMounted.values.first { $0.key == key }
     }
 
+    /// Lookup after same-owner mounted and completed entries. Pending, mounted,
+    /// and direct owners all retain the same immutable artifact contract even
+    /// if the completed cache was evicted or cleared under memory pressure.
+    private func liveLayoutLocked(for key: ProseLayoutKey) -> PreparedProseLayout? {
+        pendingLeases.values.first { $0.key == key }
+            ?? mountedLeases.values.first { $0.key == key }
+            ?? directMounted.values.first { $0.key == key }
+    }
+
     private func mountKey(for layoutKey: ProseLayoutKey) -> ProseMountKey {
         ProseMountKey(generationIdentity: layoutKey.generationIdentity, widthPixels: layoutKey.widthPixels, displayScaleBits: layoutKey.displayScaleBits)
     }
@@ -350,7 +370,9 @@ final class PreparedProseLayoutCache {
                 removeCompletedLocked(oldest)
                 continue
             }
-            if let oldest = pendingLeaseAccessOrder.first(where: { $0 != preferredPendingLease }) {
+            if let oldest = pendingLeaseAccessOrder.first(where: {
+                $0 != preferredPendingLease && pendingLeaseRemovalLowersBudgetedBytesLocked($0)
+            }) {
                 removePendingLeaseLocked(oldest)
                 continue
             }
@@ -358,6 +380,23 @@ final class PreparedProseLayoutCache {
         }
         retireUnownedPublicationKeysLocked()
         publishOwnerBytesLocked()
+    }
+
+    /// Removing a duplicate pending reference must not evict another
+    /// surface's handoff: it does not lower retained bytes. This matters for
+    /// oversized artifacts, which intentionally retain one immutable object
+    /// shared by every live owner rather than rebuilding it per surface.
+    private func pendingLeaseRemovalLowersBudgetedBytesLocked(_ leaseKey: FabricLeaseKey) -> Bool {
+        guard let layout = pendingLeases[leaseKey] else { return false }
+        let identifier = ObjectIdentifier(layout)
+        let mountedIdentifiers = Set(
+            (Array(mountedLeases.values) + Array(directMounted.values)).map(ObjectIdentifier.init)
+        )
+        guard !mountedIdentifiers.contains(identifier) else { return false }
+        guard !completed.values.contains(where: { ObjectIdentifier($0) == identifier }) else { return false }
+        return !pendingLeases.contains { candidate, value in
+            candidate != leaseKey && ObjectIdentifier(value) == identifier
+        }
     }
 
     /// Cache and lease references commonly point at the same immutable layout.

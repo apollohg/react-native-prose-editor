@@ -1,4 +1,5 @@
 import CoreText
+import Foundation
 import XCTest
 
 final class PreparedProseLayoutTests: XCTestCase {
@@ -649,6 +650,71 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.layoutRetainedBytesForTesting, 160)
     }
 
+    func testFabricSurfaceReusesLivePendingArtifactAfterCompletedEviction() {
+        var preparations = 0
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                preparations += 1
+                return PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: 2
+                )
+            }
+        )
+        let request = request()
+        let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+
+        let first = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+        let second = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: secondSurface)
+
+        XCTAssertTrue(second === first)
+        XCTAssertEqual(preparations, 1)
+        XCTAssertEqual(registry.preparedLayoutCacheCountForTesting, 0)
+        XCTAssertEqual(registry.pendingFabricLeaseCountForTesting, 2)
+        XCTAssertEqual(registry.layoutRetainedBytesForTesting, 2)
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry))
+    }
+
+    func testDirectMountedArtifactReusesAfterCompletedEvictionAndMemoryWarning() {
+        var preparations = 0
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                preparations += 1
+                return PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: 2
+                )
+            }
+        )
+        let first = ProseViewerView(layoutRegistry: registry)
+        let second = ProseViewerView(layoutRegistry: registry)
+
+        XCTAssertTrue(first.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
+        _ = first.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
+        guard let mounted = first.drawingViewForTesting.layout else {
+            return XCTFail("The first direct viewer should retain its prepared artifact.")
+        }
+        registry.didReceiveMemoryWarning()
+
+        XCTAssertTrue(second.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
+        _ = second.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
+
+        XCTAssertTrue(second.drawingViewForTesting.layout === mounted)
+        XCTAssertEqual(preparations, 1)
+        XCTAssertEqual(registry.preparedLayoutCacheCountForTesting, 0)
+        XCTAssertEqual(registry.layoutRetainedBytesForTesting, 2)
+    }
+
     func testStaleFabricMountMissPreservesNewerPendingWidthAndMountedArtifact() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
@@ -684,6 +750,50 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.mountedFabricLeaseCountForTesting, 1)
         XCTAssertTrue(install(request, in: mountedView, surface: surface, registry: registry, width: 140))
         XCTAssertTrue(mountedView.layout === replacement)
+    }
+
+    func testConcurrentFabricMeasureRetainsGenerationPinAfterStaleMountMissCleanup() {
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 1,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: Int(width)
+                )
+            }
+        )
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let generation = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+        )
+        let exactCleanupReached = DispatchSemaphore(value: 0)
+        let allowPinDecision = DispatchSemaphore(value: 0)
+        let mountMissFinished = DispatchSemaphore(value: 0)
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        registry.fabricMountMissAfterExactLeaseCleanupForTesting = {
+            exactCleanupReached.signal()
+            _ = allowPinDecision.wait(timeout: .now() + 1)
+        }
+        DispatchQueue.global().async {
+            registry.releaseFabricMountMiss(generation, widthPoints: 160, scale: 2)
+            mountMissFinished.signal()
+        }
+
+        XCTAssertEqual(exactCleanupReached.wait(timeout: .now() + 1), .success)
+        let replacement = registry.measure(request: request, widthPoints: 140, scale: 2, fabricSurface: surface)
+        allowPinDecision.signal()
+        XCTAssertEqual(mountMissFinished.wait(timeout: .now() + 1), .success)
+
+        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(generation))
+        let drawingView = PreparedProseDrawingView(frame: .zero)
+        XCTAssertTrue(install(request, in: drawingView, surface: surface, registry: registry, width: 140))
+        XCTAssertTrue(drawingView.layout === replacement)
     }
 
     func testExactFabricMountMissCleanupPreservesOtherSurfaceAndGenerationLeases() {
