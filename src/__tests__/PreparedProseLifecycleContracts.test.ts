@@ -346,10 +346,12 @@ describe('prepared prose native lifecycle contracts', () => {
         const localExport = 'let benchmarkExport = PreparedProseInstrumentation.exportJSON()';
         const diagnostic = 'print("[PreparedProseBenchmarkExport]\\(benchmarkExport)")';
         const gate = 'exportJSON: benchmarkExport,';
+        const exportCalls = benchmark.match(/PreparedProseInstrumentation\.exportJSON\(\)/g) ?? [];
 
         expect(benchmark).toContain(localExport);
         expect(benchmark).toContain(diagnostic);
         expect(benchmark).toContain(gate);
+        expect(exportCalls).toHaveLength(1);
         expect(benchmark.indexOf(localExport)).toBeLessThan(benchmark.indexOf(diagnostic));
         expect(benchmark.indexOf(diagnostic)).toBeLessThan(benchmark.indexOf(gate));
     });
