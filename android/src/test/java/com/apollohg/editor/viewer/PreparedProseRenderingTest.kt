@@ -289,13 +289,13 @@ class PreparedProseRenderingTest {
             Fixture.multiBlockList.configJson,
         )
         val densityOneTheme = PreparedProseTheme.resolve(
-            """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
+            """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"text":{"fontSize":14,"lineHeight":48}}}""",
             1f,
         )
         val densityOne = prepare(document, densityOneTheme, 160)
         val densityOneCode = prepare(codeDocument, densityOneTheme, 160)
         val naturalTheme = PreparedProseTheme.resolve(
-            """{"paragraph":{"fontSize":16},"codeBlock":{"fontSize":14}}""",
+            """{"paragraph":{"fontSize":16},"codeBlock":{"text":{"fontSize":14}}}""",
             1f,
         )
         val natural = prepare(document, naturalTheme, 160)
@@ -334,7 +334,7 @@ class PreparedProseRenderingTest {
         assertEqualsLazy(48, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "list marker ${metricProjection(document, densityOne)}" }
 
         val densityTwoTheme = PreparedProseTheme.resolve(
-            """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
+            """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"text":{"fontSize":14,"lineHeight":48}}}""",
             2f,
         )
         val densityTwo = prepare(document, densityTwoTheme, 320)

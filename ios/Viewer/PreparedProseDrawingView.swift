@@ -16,7 +16,7 @@ internal enum PreparedProseImagePixelMapAccounting {
     }
 
     private static func saturatingAdd(_ left: Int, _ right: Int) -> Int {
-        guard left > Int.max - right else { return Int.max }
+        guard left <= Int.max - right else { return Int.max }
         return left + right
     }
 
@@ -191,7 +191,7 @@ public final class PreparedProseDrawingView: UIView {
     }
 
     internal static func saturatingAdd(_ left: Int, _ right: Int) -> Int {
-        guard left > Int.max - right else { return Int.max }
+        guard left <= Int.max - right else { return Int.max }
         return left + right
     }
 
