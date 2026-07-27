@@ -29,39 +29,61 @@ require_file() {
   [[ -s "$root/$relative_path" ]] || fail "missing or empty $relative_path under $root"
 }
 
-manifest_rows() {
+manifest_entries() {
   ruby -rjson -e '
     manifest = JSON.parse(File.read(ARGV.fetch(0)))
-    entries = manifest.fetch("functions")
-    abort "package ABI manifest must contain exactly 31 editor_v2 functions" unless entries.length == 31
-    names = entries.map { |entry| entry.fetch("name") }
-    abort "package ABI manifest contains duplicate function names" unless names.uniq.length == names.length
-    abort "package ABI manifest contains a non-v2 function" unless names.all? { |name| name.start_with?("editor_v2_") }
+    editor_functions = manifest.fetch("functions")
+    abort "package ABI manifest must contain exactly 31 editor_v2 functions" unless editor_functions.length == 31
+    editor_names = editor_functions.map { |entry| entry.fetch("name") }
+    abort "package ABI manifest contains duplicate editor function names" unless editor_names.uniq.length == editor_names.length
+    abort "package ABI manifest contains a non-v2 editor function" unless editor_names.all? { |name| name.start_with?("editor_v2_") }
+
+    viewer = manifest.fetch("viewer")
+    viewer_functions = viewer.fetch("functions")
+    viewer_objects = viewer.fetch("objects")
+    abort "package ABI manifest must contain exactly one viewer function" unless viewer_functions.length == 1
+    abort "package ABI manifest must contain viewer_compile" unless viewer_functions.fetch(0).fetch("name") == "viewer_compile"
+    abort "package ABI manifest must contain exactly one ViewerCompiledDocument object" unless viewer_objects.length == 1
+    viewer_object = viewer_objects.fetch(0)
+    abort "package ABI manifest must contain viewercompileddocument" unless viewer_object.fetch("name") == "viewercompileddocument"
+    lifecycle = viewer_object.fetch("lifecycle")
+    abort "package ABI manifest ViewerCompiledDocument lifecycle must be clone/free" unless lifecycle.sort == ["clone", "free"]
+    methods = viewer_object.fetch("methods")
+    method_names = methods.map { |entry| entry.fetch("name") }
+    abort "package ABI manifest ViewerCompiledDocument methods are duplicate" unless method_names.uniq.length == method_names.length
+    abort "package ABI manifest ViewerCompiledDocument methods are incomplete" unless method_names.sort == %w[elements is_empty retained_bytes_decimal semantic_key]
+
     version = manifest.fetch("version")
-    puts [version.fetch("name"), version.fetch("checksum")].join("\t")
-    entries.sort_by { |entry| entry.fetch("name") }.each do |entry|
-      puts [entry.fetch("name"), entry.fetch("checksum")].join("\t")
+    puts ["function", version.fetch("name"), version.fetch("checksum")].join("\t")
+    editor_functions.sort_by { |entry| entry.fetch("name") }.each do |entry|
+      puts ["function", entry.fetch("name"), entry.fetch("checksum")].join("\t")
+    end
+    viewer_functions.each do |entry|
+      puts ["function", entry.fetch("name"), entry.fetch("checksum")].join("\t")
+    end
+    lifecycle.sort.each do |operation|
+      puts ["lifecycle", "#{operation}_#{viewer_object.fetch("name")}", ""].join("\t")
+    end
+    methods.sort_by { |entry| entry.fetch("name") }.each do |entry|
+      puts ["method", "#{viewer_object.fetch("name")}_#{entry.fetch("name")}", entry.fetch("checksum")].join("\t")
     end
   ' "$manifest_path"
 }
 
 expected_symbol_names() {
-  manifest_rows | cut -f1 | sort
+  local kind="$1"
+  manifest_entries | awk -F '\t' -v kind="$kind" '$1 == kind { print $2 }' | sort
 }
 
 compare_exact_symbol_set() {
   local label="$1"
   local actual_file="$2"
-  local expected_file="$work_dir/expected-symbols.txt"
-  local missing_file unexpected_file legacy
+  local kind="$3"
+  local expected_file="$work_dir/expected-${kind}-symbols.txt"
+  local missing_file unexpected_file
 
-  expected_symbol_names > "$expected_file"
+  expected_symbol_names "$kind" > "$expected_file"
   sort -u "$actual_file" -o "$actual_file"
-
-  legacy="$(grep -E '^(editor_|collaboration_)' "$actual_file" | grep -Ev '^editor_v2_|^editor_core_version$' || true)"
-  if [[ -n "$legacy" ]]; then
-    fail "$label exposes legacy UniFFI function symbol: $(printf '%s\n' "$legacy" | head -n 1)"
-  fi
 
   missing_file="$(mktemp "$work_dir/missing-symbols.XXXXXX")"
   unexpected_file="$(mktemp "$work_dir/unexpected-symbols.XXXXXX")"
@@ -71,20 +93,29 @@ compare_exact_symbol_set() {
     fail "$label is missing expected function symbol: $(head -n 1 "$missing_file")"
   fi
   if [[ -s "$unexpected_file" ]]; then
-    fail "$label exposes unexpected UniFFI function symbol: $(head -n 1 "$unexpected_file")"
+    fail "$label exposes unexpected UniFFI ${kind} symbol: $(head -n 1 "$unexpected_file")"
   fi
 }
 
 validate_symbol_text() {
   local label="$1"
   local text="$2"
-  local functions checksums
+  local functions methods lifecycle checksum_functions checksum_methods
   functions="$(mktemp "$work_dir/function-symbols.XXXXXX")"
-  checksums="$(mktemp "$work_dir/checksum-symbols.XXXXXX")"
+  methods="$(mktemp "$work_dir/method-symbols.XXXXXX")"
+  lifecycle="$(mktemp "$work_dir/lifecycle-symbols.XXXXXX")"
+  checksum_functions="$(mktemp "$work_dir/checksum-function-symbols.XXXXXX")"
+  checksum_methods="$(mktemp "$work_dir/checksum-method-symbols.XXXXXX")"
   printf '%s\n' "$text" | sed -nE 's/.*uniffi_editor_core_fn_func_([a-z0-9_]+).*/\1/p' > "$functions"
-  printf '%s\n' "$text" | sed -nE 's/.*uniffi_editor_core_checksum_func_([a-z0-9_]+).*/\1/p' > "$checksums"
-  compare_exact_symbol_set "$label" "$functions"
-  compare_exact_symbol_set "$label checksum surface" "$checksums"
+  printf '%s\n' "$text" | sed -nE 's/.*uniffi_editor_core_fn_method_([a-z0-9_]+).*/\1/p' > "$methods"
+  printf '%s\n' "$text" | sed -nE 's/.*uniffi_editor_core_fn_(clone|free)_([a-z0-9_]+).*/\1_\2/p' > "$lifecycle"
+  printf '%s\n' "$text" | sed -nE 's/.*uniffi_editor_core_checksum_func_([a-z0-9_]+).*/\1/p' > "$checksum_functions"
+  printf '%s\n' "$text" | sed -nE 's/.*uniffi_editor_core_checksum_method_([a-z0-9_]+).*/\1/p' > "$checksum_methods"
+  compare_exact_symbol_set "$label" "$functions" function
+  compare_exact_symbol_set "$label object methods" "$methods" method
+  compare_exact_symbol_set "$label object lifecycle" "$lifecycle" lifecycle
+  compare_exact_symbol_set "$label checksum surface" "$checksum_functions" function
+  compare_exact_symbol_set "$label object-method checksum surface" "$checksum_methods" method
 }
 
 validate_checksum_guards() {
@@ -94,11 +125,17 @@ validate_checksum_guards() {
     manifest = JSON.parse(File.read(ARGV.fetch(0)))
     language = ARGV.fetch(1)
     text = File.read(ARGV.fetch(2))
+    viewer = manifest.fetch("viewer")
+    viewer_object = viewer.fetch("objects").fetch(0)
     expected = { manifest.fetch("version").fetch("name") => manifest.fetch("version").fetch("checksum") }
     manifest.fetch("functions").each { |entry| expected[entry.fetch("name")] = entry.fetch("checksum") }
+    viewer.fetch("functions").each { |entry| expected[entry.fetch("name")] = entry.fetch("checksum") }
+    viewer_object.fetch("methods").each do |entry|
+      expected["#{viewer_object.fetch("name")}_#{entry.fetch("name")}"] = entry.fetch("checksum")
+    end
     pattern = language == "Swift" ?
-      /uniffi_editor_core_checksum_func_([a-z0-9_]+)\(\) != ([0-9]+)/ :
-      /uniffi_editor_core_checksum_func_([a-z0-9_]+)\(\) != ([0-9]+)\.toShort\(\)/
+      /uniffi_editor_core_checksum_(?:func|method)_([a-z0-9_]+)\(\) != ([0-9]+)/ :
+      /uniffi_editor_core_checksum_(?:func|method)_([a-z0-9_]+)\(\) != ([0-9]+)\.toShort\(\)/
     matches = text.scan(pattern).map { |name, checksum| [name, Integer(checksum)] }
     names = matches.map(&:first)
     abort "#{language} has duplicate checksum guards" unless names.uniq.length == names.length
@@ -120,6 +157,8 @@ validate_abi_root() {
   require_file "$root" "ios/Generated_editor_core.swift"
   require_file "$root" "rust/bindings/kotlin/uniffi/editor_core/editor_core.kt"
   validate_symbol_text "ABI header" "$(<"$header")"
+  validate_symbol_text "Swift binding" "$(<"$swift")"
+  validate_symbol_text "Kotlin binding" "$(<"$kotlin")"
   validate_checksum_guards "$swift" Swift
   validate_checksum_guards "$kotlin" Kotlin
 }
@@ -562,6 +601,26 @@ validate_package_entries() {
   do
     reject_dist_symbol "$root" "$obsolete"
   done
+
+  for viewer_source in \
+    "ios/Viewer/CoreTextProseLayoutEngine.swift" \
+    "ios/Viewer/PreparedProseDrawingView.swift" \
+    "ios/Viewer/PreparedProseInstrumentation.swift" \
+    "ios/Viewer/PreparedProseLayout.swift" \
+    "ios/Viewer/PreparedProseLayoutCache.swift" \
+    "ios/Viewer/PreparedProseLayoutRegistry.swift" \
+    "ios/Viewer/ViewerDocument.swift" \
+    "ios/Viewer/ViewerFontEnvironment.swift" \
+    "ios/Viewer/ViewerImagePipeline.swift" \
+    "ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.h" \
+    "ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm" \
+    "ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm"
+  do
+    require_file "$root" "$viewer_source"
+  done
+
+  [[ ! -e "$root/ios/NativeProseViewerExpoView.swift" ]] || \
+    fail "packed npm package contains removed NativeProseViewerExpoView.swift"
 }
 
 case "${1:-}" in

@@ -31,12 +31,42 @@ expected_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_editor_v2_[[:alnu
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
 expected_checksum_symbols="$(rg -o 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
+expected_viewer_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_viewer_compile' \
+  "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
+expected_viewer_function_checksums="$(rg -o 'uniffi_editor_core_checksum_func_viewer_compile' \
+  "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
+expected_viewer_method_symbols="$(rg -o 'uniffi_editor_core_fn_method_viewercompileddocument_[[:alnum:]_]+' \
+  "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
+expected_viewer_method_checksums="$(rg -o 'uniffi_editor_core_checksum_method_viewercompileddocument_[[:alnum:]_]+' \
+  "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
+expected_viewer_lifecycle_symbols="$(rg -o 'uniffi_editor_core_fn_(clone|free)_viewercompileddocument' \
+  "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
 [[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "31" ]] || {
   echo "ERROR: generated FFI header must expose exactly 31 editor_v2 functions" >&2
   exit 1
 }
 [[ "$(printf '%s\n' "$expected_checksum_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "31" ]] || {
   echo "ERROR: generated FFI header must expose exactly 31 editor_v2 checksums" >&2
+  exit 1
+}
+[[ "$expected_viewer_function_symbols" == "uniffi_editor_core_fn_func_viewer_compile" ]] || {
+  echo "ERROR: generated FFI header must expose exactly viewer_compile" >&2
+  exit 1
+}
+[[ "$expected_viewer_function_checksums" == "uniffi_editor_core_checksum_func_viewer_compile" ]] || {
+  echo "ERROR: generated FFI header must expose the viewer_compile checksum" >&2
+  exit 1
+}
+[[ "$(printf '%s\n' "$expected_viewer_method_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "4" ]] || {
+  echo "ERROR: generated FFI header must expose exactly four ViewerCompiledDocument methods" >&2
+  exit 1
+}
+[[ "$(printf '%s\n' "$expected_viewer_method_checksums" | sed '/^$/d' | wc -l | tr -d ' ')" == "4" ]] || {
+  echo "ERROR: generated FFI header must expose exactly four ViewerCompiledDocument checksums" >&2
+  exit 1
+}
+[[ "$(printf '%s\n' "$expected_viewer_lifecycle_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "2" ]] || {
+  echo "ERROR: generated FFI header must expose ViewerCompiledDocument clone/free lifecycle symbols" >&2
   exit 1
 }
 
@@ -47,12 +77,37 @@ for artifact in \
   "$repo_root/ios/editor_coreFFI/editor_coreFFI.h"; do
   actual_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_editor_v2_[[:alnum:]_]+' "$artifact" | sort -u)"
   actual_checksum_symbols="$(rg -o 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' "$artifact" | sort -u)"
+  actual_viewer_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_viewer_compile' "$artifact" | sort -u)"
+  actual_viewer_function_checksums="$(rg -o 'uniffi_editor_core_checksum_func_viewer_compile' "$artifact" | sort -u)"
+  actual_viewer_method_symbols="$(rg -o 'uniffi_editor_core_fn_method_viewercompileddocument_[[:alnum:]_]+' "$artifact" | sort -u)"
+  actual_viewer_method_checksums="$(rg -o 'uniffi_editor_core_checksum_method_viewercompileddocument_[[:alnum:]_]+' "$artifact" | sort -u)"
+  actual_viewer_lifecycle_symbols="$(rg -o 'uniffi_editor_core_fn_(clone|free)_viewercompileddocument' "$artifact" | sort -u)"
   [[ "$actual_function_symbols" == "$expected_function_symbols" ]] || {
     echo "ERROR: generated function symbols differ in $artifact" >&2
     exit 1
   }
   [[ "$actual_checksum_symbols" == "$expected_checksum_symbols" ]] || {
     echo "ERROR: generated checksum symbols differ in $artifact" >&2
+    exit 1
+  }
+  [[ "$actual_viewer_function_symbols" == "$expected_viewer_function_symbols" ]] || {
+    echo "ERROR: generated viewer function symbols differ in $artifact" >&2
+    exit 1
+  }
+  [[ "$actual_viewer_function_checksums" == "$expected_viewer_function_checksums" ]] || {
+    echo "ERROR: generated viewer function checksums differ in $artifact" >&2
+    exit 1
+  }
+  [[ "$actual_viewer_method_symbols" == "$expected_viewer_method_symbols" ]] || {
+    echo "ERROR: generated ViewerCompiledDocument methods differ in $artifact" >&2
+    exit 1
+  }
+  [[ "$actual_viewer_method_checksums" == "$expected_viewer_method_checksums" ]] || {
+    echo "ERROR: generated ViewerCompiledDocument checksums differ in $artifact" >&2
+    exit 1
+  }
+  [[ "$actual_viewer_lifecycle_symbols" == "$expected_viewer_lifecycle_symbols" ]] || {
+    echo "ERROR: generated ViewerCompiledDocument lifecycle symbols differ in $artifact" >&2
     exit 1
   }
 done
@@ -84,4 +139,4 @@ if rg -n '[[:blank:]]+$' \
   exit 1
 fi
 
-echo "Generated binding normalization, 30-symbol, checksum, and copy validation passed."
+echo "Generated binding normalization, 31 editor-v2 symbol, viewer ABI, checksum, and copy validation passed."

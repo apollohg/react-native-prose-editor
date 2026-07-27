@@ -65,7 +65,12 @@ end
 
 def expected_checksums(manifest_path)
   manifest = JSON.parse(File.read(manifest_path))
-  entries = [manifest.fetch("version")] + manifest.fetch("functions")
+  viewer = manifest.fetch("viewer")
+  viewer_object = viewer.fetch("objects").fetch(0)
+  entries = [manifest.fetch("version")] + manifest.fetch("functions") + viewer.fetch("functions")
+  entries += viewer_object.fetch("methods").map do |entry|
+    { "name" => "#{viewer_object.fetch("name")}_#{entry.fetch("name")}", "checksum" => entry.fetch("checksum") }
+  end
   values = entries.to_h { |entry| [entry.fetch("name"), Integer(entry.fetch("checksum"))] }
   fail_closed("manifest has duplicate checksum names") unless values.length == entries.length
   values.each do |name, value|
@@ -150,9 +155,10 @@ def elf_symbol_values(data, elf_class, sections, expected, label)
     require_range(data, offset, symbols[:entry_size], label)
     name_offset = u32le(data, offset, label)
     name = c_string(data, string_table[:offset] + name_offset, string_table[:offset] + string_table[:size], label)
-    next unless name.start_with?("uniffi_editor_core_checksum_func_")
-    name = name.delete_prefix("uniffi_editor_core_checksum_func_")
-    next unless expected.key?(name)
+    next unless name.start_with?("uniffi_editor_core_checksum_")
+    name = name.delete_prefix("uniffi_editor_core_checksum_func_") if name.start_with?("uniffi_editor_core_checksum_func_")
+    name = name.delete_prefix("uniffi_editor_core_checksum_method_") if name.start_with?("uniffi_editor_core_checksum_method_")
+    fail_closed("#{label} exposes unexpected checksum symbol #{name}") unless expected.key?(name)
 
     if elf_class == 1
       info = data.getbyte(offset + 12)
@@ -276,9 +282,10 @@ def macho_object_symbols(data, architecture, expected, label, remaining_symbol_w
   symbol_table[:count].times do |index|
     offset = symbol_table[:offset] + index * 16
     name = c_string(data, symbol_table[:strings] + u32le(data, offset, label), symbol_table[:strings] + symbol_table[:string_size], label)
-    next unless name.start_with?("_uniffi_editor_core_checksum_func_")
-    name = name.delete_prefix("_uniffi_editor_core_checksum_func_")
-    next unless expected.key?(name)
+    next unless name.start_with?("_uniffi_editor_core_checksum_")
+    name = name.delete_prefix("_uniffi_editor_core_checksum_func_") if name.start_with?("_uniffi_editor_core_checksum_func_")
+    name = name.delete_prefix("_uniffi_editor_core_checksum_method_") if name.start_with?("_uniffi_editor_core_checksum_method_")
+    fail_closed("#{label} exposes unexpected checksum symbol #{name}") unless expected.key?(name)
 
     type = data.getbyte(offset + 4)
     section_index = data.getbyte(offset + 5)

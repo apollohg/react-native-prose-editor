@@ -57,5 +57,22 @@
     { "name": "editor_v2_snapshot_export", "checksum": 2193 },
     { "name": "editor_v2_snapshot_restore", "checksum": 47504 },
     { "name": "editor_v2_undo", "checksum": 2492 }
-  ]
+  ],
+  "viewer": {
+    "functions": [
+      { "name": "viewer_compile", "checksum": 60070 }
+    ],
+    "objects": [
+      {
+        "name": "viewercompileddocument",
+        "lifecycle": ["clone", "free"],
+        "methods": [
+          { "name": "elements", "checksum": 50589 },
+          { "name": "is_empty", "checksum": 2370 },
+          { "name": "retained_bytes_decimal", "checksum": 13333 },
+          { "name": "semantic_key", "checksum": 2241 }
+        ]
+      }
+    ]
+  }
 }

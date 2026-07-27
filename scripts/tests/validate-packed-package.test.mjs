@@ -320,7 +320,19 @@ try {
     expectFailure(
       "legacy function",
       run("--validate-abi-root", legacyFunction),
-      /legacy UniFFI function symbol: editor_create/,
+      /unexpected UniFFI function symbol: editor_create/,
+    );
+
+    const missingViewerMethod = makeFixture("missing-viewer-method");
+    replace(
+      join(missingViewerMethod, "ios/editor_coreFFI/editor_coreFFI.h"),
+      "uniffi_editor_core_fn_method_viewercompileddocument_semantic_key",
+      "uniffi_editor_core_fn_method_viewercompileddocument_semantic_key_removed",
+    );
+    expectFailure(
+      "missing ViewerCompiledDocument method",
+      run("--validate-abi-root", missingViewerMethod),
+      /object methods is missing expected function symbol: viewercompileddocument_semantic_key/,
     );
 
     const wrongChecksum = makeFixture("wrong-checksum");
