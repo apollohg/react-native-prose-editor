@@ -142,16 +142,16 @@ final class PreparedProseRevisionTests: XCTestCase {
 
     func testMountedPixelOwnershipCountsOnlySurfaceMapEntries() {
         XCTAssertEqual(
-            PreparedProseDrawingView.imagePixelMapRetainedBytes
-                + PreparedProseDrawingView.imagePixelEntryRetainedBytes * 2,
-            PreparedProseDrawingView.retainedImagePixelMappingBytes(entryCount: 2)
+            PreparedProseImagePixelMapAccounting.mapRetainedBytes
+                + PreparedProseImagePixelMapAccounting.entryRetainedBytes * 2,
+            PreparedProseImagePixelMapAccounting.retainedBytes(entryCount: 2)
         )
         XCTAssertEqual(
-            PreparedProseDrawingView.imagePixelMapRetainedBytes
-                + PreparedProseDrawingView.imagePixelEntryRetainedBytes,
-            PreparedProseDrawingView.retainedImagePixelMappingBytes(entryCount: 1)
+            PreparedProseImagePixelMapAccounting.mapRetainedBytes
+                + PreparedProseImagePixelMapAccounting.entryRetainedBytes,
+            PreparedProseImagePixelMapAccounting.retainedBytes(entryCount: 1)
         )
-        XCTAssertEqual(PreparedProseDrawingView.retainedImagePixelMappingBytes(entryCount: 0), 0)
+        XCTAssertEqual(PreparedProseImagePixelMapAccounting.retainedBytes(entryCount: 0), 0)
     }
 
     func testFabricMeasurementScopeCannotConsultAnotherSurfaceSidecar() {

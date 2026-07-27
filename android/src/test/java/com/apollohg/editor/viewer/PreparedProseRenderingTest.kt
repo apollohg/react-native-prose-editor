@@ -281,19 +281,25 @@ class PreparedProseRenderingTest {
     @Test
     fun `compiler backed fixed line heights cover single final heading code list and density metrics`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"single"}]},{"type":"paragraph","content":[{"type":"text","text":"wrapped final line needs enough words to wrap at this fixed width"}]},{"type":"paragraph","content":[{"type":"text","text":"hard"},{"type":"hardBreak"},{"type":"text","text":"break"}]},{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"heading"}]},{"type":"codeBlock","content":[{"type":"text","text":"code"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"list leaf"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"single"}]},{"type":"paragraph","content":[{"type":"text","text":"wrapped final line needs enough words to wrap at this fixed width"}]},{"type":"paragraph","content":[{"type":"text","text":"hard"},{"type":"hardBreak"},{"type":"text","text":"break"}]},{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"heading"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"list leaf"}]}]}]}]}""",
             Fixture.structural[1].configJson,
+        )
+        val codeDocument = compileSource(
+            """{"type":"doc","content":[{"type":"codeBlock","content":[{"type":"text","text":"code"}]}]}""",
+            Fixture.multiBlockList.configJson,
         )
         val densityOneTheme = PreparedProseTheme.resolve(
             """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
             1f,
         )
         val densityOne = prepare(document, densityOneTheme, 160)
-        val natural = prepare(
-            document,
-            PreparedProseTheme.resolve("""{"paragraph":{"fontSize":16},"codeBlock":{"fontSize":14}}""", 1f),
-            160,
+        val densityOneCode = prepare(codeDocument, densityOneTheme, 160)
+        val naturalTheme = PreparedProseTheme.resolve(
+            """{"paragraph":{"fontSize":16},"codeBlock":{"fontSize":14}}""",
+            1f,
         )
+        val natural = prepare(document, naturalTheme, 160)
+        val naturalCode = prepare(codeDocument, naturalTheme, 160)
         val naturalAtomDocument = compileSource(
             """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"opaque","attrs":{"label":"atom"}}]}]}""",
             Fixture.structural[2].configJson,
@@ -305,7 +311,6 @@ class PreparedProseRenderingTest {
         ).blocks.single().fragments.single { it.kind == PreparedProseFragmentKind.ATOM }.labelLayout!!
         val paragraphs = document.blocks.withIndex().filter { it.value.nodeType == "paragraph" && it.value.listContext == null }
         val heading = document.blocks.indexOfFirst { it.nodeType == "h1" }
-        val code = document.blocks.indexOfFirst { it.nodeType == "codeBlock" }
         val list = document.blocks.indexOfLast { it.listContext != null }
 
         assertEquals(3, paragraphs.size)
@@ -324,24 +329,22 @@ class PreparedProseRenderingTest {
         assertTrue("hard-break fixture must have a final line", hardBreak.lineCount >= 2)
         assertEqualsLazy(48, lineHeight(hardBreak, hardBreak.lineCount - 1)) { "hard-break final paragraph ${metricProjection(document, densityOne)}" }
         assertEqualsLazy(64, lineHeight(textLayout(densityOne, heading), 0)) { "heading ${metricProjection(document, densityOne)}" }
-        assertEqualsLazy(48, lineHeight(textLayout(densityOne, code), 0)) { "code ${metricProjection(document, densityOne)}" }
+        assertEqualsLazy(48, lineHeight(textLayout(densityOneCode, 0), 0)) { "code ${metricProjection(codeDocument, densityOneCode)}" }
         assertEqualsLazy(48, lineHeight(textLayout(densityOne, list), 0)) { "list text ${metricProjection(document, densityOne)}" }
         assertEqualsLazy(48, densityOne.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "list marker ${metricProjection(document, densityOne)}" }
 
-        val densityTwo = prepare(
-            document,
-            PreparedProseTheme.resolve(
-                """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
-                2f,
-            ),
-            320,
+        val densityTwoTheme = PreparedProseTheme.resolve(
+            """{"paragraph":{"fontSize":16,"lineHeight":48},"headings":{"h1":{"lineHeight":64}},"codeBlock":{"fontSize":14,"lineHeight":48}}""",
+            2f,
         )
+        val densityTwo = prepare(document, densityTwoTheme, 320)
+        val densityTwoCode = prepare(codeDocument, densityTwoTheme, 320)
         assertEqualsLazy(96, lineHeight(textLayout(densityTwo, paragraphs[0].index), 0)) { "density-two paragraph ${metricProjection(document, densityTwo)}" }
         val densityTwoHardBreak = textLayout(densityTwo, paragraphs[2].index)
         assertTrue("density-two hard-break fixture must have a final line", densityTwoHardBreak.lineCount >= 2)
         assertEqualsLazy(96, lineHeight(densityTwoHardBreak, densityTwoHardBreak.lineCount - 1)) { "density-two hard-break final paragraph ${metricProjection(document, densityTwo)}" }
         assertEqualsLazy(128, lineHeight(textLayout(densityTwo, heading), 0)) { "density-two heading ${metricProjection(document, densityTwo)}" }
-        assertEqualsLazy(96, lineHeight(textLayout(densityTwo, code), 0)) { "density-two code ${metricProjection(document, densityTwo)}" }
+        assertEqualsLazy(96, lineHeight(textLayout(densityTwoCode, 0), 0)) { "density-two code ${metricProjection(codeDocument, densityTwoCode)}" }
         assertEqualsLazy(96, densityTwo.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.height()) { "density-two list marker ${metricProjection(document, densityTwo)}" }
         assertTrueLazy(
             natural.blocks.flatMap { it.fragments }
@@ -354,6 +357,17 @@ class PreparedProseRenderingTest {
                     }
                 },
         ) { "natural text line-height spans ${metricProjection(document, natural)}" }
+        assertTrueLazy(
+            naturalCode.blocks.flatMap { it.fragments }
+                .filter { it.kind == PreparedProseFragmentKind.TEXT }
+                .all { fragment ->
+                    fragment.layout!!.let { layout ->
+                        (layout.text as android.text.Spanned)
+                            .getSpans(0, layout.text.length, FixedLineHeightMetricSpan::class.java)
+                            .isEmpty()
+                    }
+                },
+        ) { "natural code line-height spans ${metricProjection(codeDocument, naturalCode)}" }
         val naturalMarker = natural.blocks[list].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.layout!!
         assertNaturalStaticLayoutMetrics(naturalMarker) { "natural list marker ${metricProjection(document, natural)}" }
         assertNaturalStaticLayoutMetrics(naturalAtom) { "natural atom label layout=$naturalAtom" }

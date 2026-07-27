@@ -1,6 +1,32 @@
 import CoreText
 import UIKit
 
+/// Mapping/reference overhead only. Decoded image allocations are owned and
+/// accounted for by the shared native image cache.
+internal enum PreparedProseImagePixelMapAccounting {
+    static let mapRetainedBytes = 48
+    static let entryRetainedBytes = 48
+
+    static func retainedBytes(entryCount: Int) -> Int {
+        guard entryCount > 0 else { return 0 }
+        return saturatingAdd(
+            mapRetainedBytes,
+            saturatingMultiply(entryCount, entryRetainedBytes)
+        )
+    }
+
+    private static func saturatingAdd(_ left: Int, _ right: Int) -> Int {
+        guard left > Int.max - right else { return Int.max }
+        return left + right
+    }
+
+    private static func saturatingMultiply(_ left: Int, _ right: Int) -> Int {
+        guard left > 0, right > 0 else { return 0 }
+        guard left <= Int.max / right else { return Int.max }
+        return left * right
+    }
+}
+
 @objc public protocol PreparedProseDrawingViewInteractionDelegate: AnyObject {
     func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateLink href: String, text: String) -> Bool
     func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateMention docPos: UInt32, label: String) -> Bool
@@ -18,21 +44,12 @@ public final class PreparedProseDrawingView: UIView {
     /// This map owns only mapping/reference overhead. The shared native image
     /// cache is the sole owner charged for a decoded CGImage allocation.
     internal var retainedImagePixelsBytesForTesting: Int {
-        Self.retainedImagePixelMappingBytes(entryCount: imagePixels.count)
+        PreparedProseImagePixelMapAccounting.retainedBytes(entryCount: imagePixels.count)
     }
     internal var preparedSurfaceRetainedBytesForTesting: Int {
         Self.saturatingAdd(
             Self.saturatingAdd(layout?.retainedBytes ?? 0, imageRevisions.retainedPublicationBytesForTesting),
             retainedImagePixelsBytesForTesting
-        )
-    }
-    internal static let imagePixelMapRetainedBytes = 48
-    internal static let imagePixelEntryRetainedBytes = 48
-    internal static func retainedImagePixelMappingBytes(entryCount: Int) -> Int {
-        guard entryCount > 0 else { return 0 }
-        return saturatingAdd(
-            imagePixelMapRetainedBytes,
-            saturatingMultiply(entryCount, imagePixelEntryRetainedBytes)
         )
     }
     @objc public static let imageMetadataDidResolve = Notification.Name("com.apollohg.editor.viewer.imageMetadataDidResolve")
