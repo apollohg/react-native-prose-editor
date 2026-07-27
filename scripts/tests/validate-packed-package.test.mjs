@@ -451,7 +451,7 @@ try {
     expectFailure(
       "CocoaPods installs but cannot link",
       run("--validate-ios-consumer", linklessPod),
-      /iOS consumer xcodebuild failed[\s\S]*(?:Undefined symbols for architecture arm64|symbol\(s\) not found)/,
+      /iOS consumer xcodebuild failed(?=[\s\S]*(?:Undefined symbols(?: for architecture [^\n]+)?|symbol\(s\) not found))(?=[\s\S]*(?:_?uniffi_editor_core(?:\b|_)|_?editor_core(?:\b|_)|editorV2(?:Create|RenderUpdate|CollaborationDrive|CollaborationLeaseOutbound|CollaborationAckOutbound|CollaborationNackOutbound|CollaborationDetach|CollaborationReattach)\b))/,
     );
 
     const unpackagedAndroid = makeFixture("unpackaged-android");
