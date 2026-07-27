@@ -156,6 +156,10 @@ internal class PreparedProseViewerManager :
         val fontScale = context.resources.configuration.fontScale
         val surface = localData?.let(::surfaceToken)
         val leaseHandle = FabricLeaseHandleBridge.currentHandle()
+        // A state snapshot can outlive its C++ family. Only the synchronous
+        // native thread-local handle proves this Yoga callback still belongs
+        // to an active exact state incarnation.
+        if (surface != null && leaseHandle <= 0L) return YogaMeasureOutput.make(0f, 0f)
         val request = requestFrom(props, state, leaseHandle)
         if (request == null) {
             // An incomplete/stale Yoga callback has not named an exact
@@ -334,7 +338,9 @@ internal class PreparedProseViewerManager :
         // State's optional decimal representation is exact. The hot native
         // measurement path receives this same handle as a JNI jlong above.
         val stateHandle = stringOrNull("leaseHandle")?.toLongOrNull()?.takeIf { it > 0 } ?: 0L
-        return FabricStateRevisions(attachmentRevision, nativeFontRevision, stateHandle.takeIf { it > 0 } ?: nativeLeaseHandle)
+        val handle = stateHandle.takeIf { it > 0 } ?: nativeLeaseHandle
+        if (nativeLeaseHandle > 0 && stateHandle > 0 && stateHandle != nativeLeaseHandle) return null
+        return FabricStateRevisions(attachmentRevision, nativeFontRevision, handle)
     }
 
     private fun ReadableMap.longOrNull(key: String): Long? =

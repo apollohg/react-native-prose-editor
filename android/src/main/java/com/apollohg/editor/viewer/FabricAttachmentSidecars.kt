@@ -14,11 +14,20 @@ internal object FabricAttachmentSidecars {
     val currentMeasurementState: ViewerAttachmentRevisionState?
         get() = measurementState.get()
 
-    fun begin(generation: FabricGenerationToken, semanticIdentity: String): ViewerAttachmentRevisionState = synchronized(lock) {
+    fun beginIfActive(
+        generation: FabricGenerationToken,
+        semanticIdentity: String,
+        isActive: () -> Boolean,
+    ): ViewerAttachmentRevisionState? = synchronized(lock) {
+        if (!isActive()) return@synchronized null
         states.getOrPut(generation, ::ViewerAttachmentRevisionState).also {
             it.beginSemanticGeneration(semanticIdentity)
         }
     }
+
+    fun begin(generation: FabricGenerationToken, semanticIdentity: String): ViewerAttachmentRevisionState =
+        beginIfActive(generation, semanticIdentity) { true }
+            ?: error("Unconditionally active sidecar unexpectedly rejected.")
 
     fun state(generation: FabricGenerationToken): ViewerAttachmentRevisionState? = synchronized(lock) { states[generation] }
 
@@ -41,5 +50,11 @@ internal object FabricAttachmentSidecars {
 
     fun removeSurface(surfaceId: Int) = synchronized(lock) {
         states.keys.filter { it.surface.surfaceId == surfaceId }.forEach { token -> states.remove(token)?.reset() }
+    }
+
+    fun remove(owner: FabricLeaseOwner) = synchronized(lock) {
+        states.keys
+            .filter { it.surface == owner.surface && it.leaseHandle == owner.leaseHandle }
+            .forEach { states.remove(it)?.reset() }
     }
 }

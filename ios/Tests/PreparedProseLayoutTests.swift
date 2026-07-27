@@ -872,6 +872,9 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(component.contains("beginNewGenerationTerminatingCurrentLease:leaseChanged"))
         XCTAssertTrue(component.contains("releaseFabricOwnershipTerminatingLease:YES"))
         XCTAssertTrue(shadow.contains("std::numeric_limits<int64_t>::max()"))
+        XCTAssertTrue(shadow.contains("for (;;)"))
+        XCTAssertTrue(shadow.contains("compare_exchange_weak"))
+        XCTAssertTrue(shadow.contains("Restart from that value"))
         XCTAssertTrue(shadow.contains("return 0;"))
     }
 
@@ -917,6 +920,9 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(cache.contains("mountedLeases"))
         XCTAssertFalse(cache.contains("completed[mountIndex"))
         XCTAssertTrue(jni.contains("getStaticMethod<void(jlong)>(\"beginNativeMeasure\")"))
+        XCTAssertTrue(jni.contains("registerNativeLease"))
+        XCTAssertTrue(jni.contains("releaseNativeLease"))
+        XCTAssertTrue(jni.contains("facebook::jni::ThreadScope"))
         XCTAssertTrue(jni.contains("std::to_string(static_cast<int64_t>(leaseHandle))"))
     }
 

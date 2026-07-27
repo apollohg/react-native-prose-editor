@@ -45,15 +45,75 @@ folly::dynamic toState(
       ("leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
 }
 
+// The class reference is deliberately process-lifetime. Terminal callbacks
+// may run on the final C++ state release rather than a Java-created thread;
+// retaining one global class (not a manager or view) gives that callback a
+// valid application class loader without creating a lifecycle cycle or a
+// per-family global-reference leak.
+class AndroidLeaseLifecycleBridge final {
+ public:
+  AndroidLeaseLifecycleBridge()
+      : bridgeClass_(facebook::jni::findClassStatic(
+            "com/apollohg/editor/viewer/FabricLeaseHandleBridge")),
+        registerLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
+            "registerNativeLease")),
+        releaseLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
+            "releaseNativeLease")) {}
+
+  void registerLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const {
+    registerLease_(bridgeClass_, static_cast<jint>(surfaceId),
+                   static_cast<jint>(componentTag),
+                   static_cast<jlong>(leaseHandle));
+  }
+
+  void releaseLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const noexcept {
+    if (!facebook::jni::Environment::isGlobalJvmAvailable()) {
+      return;
+    }
+    try {
+      facebook::jni::ThreadScope threadScope;
+      releaseLease_(bridgeClass_, static_cast<jint>(surfaceId),
+                    static_cast<jint>(componentTag),
+                    static_cast<jlong>(leaseHandle));
+    } catch (...) {
+      // Process/runtime teardown can invalidate the Java callback after the
+      // registry itself has disappeared. A terminal C++ destructor must never
+      // throw or dereference a view/manager in that case.
+    }
+  }
+
+ private:
+  facebook::jni::alias_ref<facebook::jni::JClass> bridgeClass_;
+  facebook::jni::JStaticMethod<void(jint, jint, jlong)> registerLease_;
+  facebook::jni::JStaticMethod<void(jint, jint, jlong)> releaseLease_;
+};
+
+AndroidLeaseLifecycleBridge& androidLeaseLifecycleBridge() {
+  // Never destruct the global class reference after the VM has begun
+  // unloading. This is a single bounded process-lifetime bridge.
+  static auto* bridge = new AndroidLeaseLifecycleBridge();
+  return *bridge;
+}
+
 } // namespace
 
 void PreparedProseMeasurementsManager::bindLeaseLifecycle(
-    SurfaceId /*surfaceId*/,
-    Tag /*componentTag*/,
-    uint64_t /*leaseHandle*/,
-    const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& /*leaseLifecycle*/) const {
-  // Android's ViewManager receives an explicit onSurfaceStopped callback.
-  // The handle still scopes every per-view registry operation below.
+    SurfaceId surfaceId,
+    Tag componentTag,
+    uint64_t leaseHandle,
+    const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const {
+  if (leaseHandle == 0 || !leaseLifecycle || !leaseLifecycle->isActive()) {
+    return;
+  }
+  // Yoga may run on a native worker rather than directly beneath a JNI entry
+  // point. ThreadScope gives the one-time class lookup an attached env and
+  // caches it for this native call without retaining the thread afterward.
+  facebook::jni::ThreadScope threadScope;
+  auto& bridge = androidLeaseLifecycleBridge();
+  bridge.registerLease(surfaceId, componentTag, leaseHandle);
+  leaseLifecycle->bindTerminalCleanup([surfaceId, componentTag, leaseHandle] {
+    androidLeaseLifecycleBridge().releaseLease(surfaceId, componentTag, leaseHandle);
+  });
 }
 
 Size PreparedProseMeasurementsManager::measure(

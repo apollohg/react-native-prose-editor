@@ -32,6 +32,12 @@ internal data class FabricGenerationToken(
         require(leaseHandle > 0) { "Fabric lease handles must be signed, non-zero Int64 values." }
     }
 }
+
+/** State-lifetime identity shared by all semantic/width revisions of a family. */
+internal data class FabricLeaseOwner(
+    val surface: FabricSurfaceToken,
+    val leaseHandle: Long,
+)
 internal data class FabricLeaseKey(val generation: FabricGenerationToken, val layout: ProseLayoutKey)
 internal data class ProseMountKey(val generationIdentity: String, val widthPx: Int, val densityBits: Long)
 

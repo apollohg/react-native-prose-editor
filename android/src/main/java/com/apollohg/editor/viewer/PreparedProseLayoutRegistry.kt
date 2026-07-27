@@ -3,6 +3,7 @@ package com.apollohg.editor.viewer
 import com.apollohg.editor.ProseViewerError
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Shared, thread-safe compiler and prepared-layout registry for View and Fabric hosts. */
 internal class PreparedProseLayoutRegistry(
@@ -26,6 +27,12 @@ internal class PreparedProseLayoutRegistry(
     private val compilationInFlight = ConcurrentHashMap<String, CompletableFuture<Compilation>>()
     private val documentsByFabricGeneration = mutableMapOf<FabricGenerationToken, ViewerDocument>()
     private val failuresByFabricGeneration = mutableMapOf<FabricGenerationToken, ProseViewerError>()
+    /**
+     * Active C++ state-family guards. Entries exist only while Fabric holds a
+     * state snapshot; terminal JNI cleanup removes them rather than leaving
+     * process-lifetime cancellation tombstones behind.
+     */
+    private val activeFabricLeases = ConcurrentHashMap<FabricLeaseOwner, AtomicBoolean>()
     private val layoutCache = PreparedProseLayoutCache(byteBudget = byteBudget)
     private var compiledRetainedBytes = 0L
     private var themeRetainedBytes = 0L
@@ -93,24 +100,34 @@ internal class PreparedProseLayoutRegistry(
     ): PreparedProseLayout {
         val generation = fabricSurface?.takeIf { fabricLeaseHandle > 0 }
             ?.let { FabricGenerationToken(it, request.generationIdentity, fabricLeaseHandle) }
+        val leaseActive = generation?.let(::activeLeaseFor)
+        // Every Android Fabric measurement is state-owned. A late H1 callback
+        // cannot resurrect its sidecar, compiler pin, or exact cache lease.
+        if (generation != null && leaseActive == null) return invalidWidthArtifact(request)
         if (!isValidMeasurement(widthPx, density)) {
             // An old zero-width pass is not a lifecycle event.  Retire only
             // this handle's pending handoffs and leave every mounted layout,
             // including a newer H2, untouched.
-            generation?.let { layoutCache.releasePendingLease(it) }
+            generation?.takeIf { isLeaseActive(it, leaseActive) }?.let { layoutCache.releasePendingLease(it) }
             return invalidWidthArtifact(request)
         }
         val densityBits = density.toRawBits().toLong()
         // Fabric resolves exactly its stable surface/component sidecar; direct
         // hosts pass their own mounted state. Neither path scans other hosts.
         val imageMeasurementState = generation?.let {
-            FabricAttachmentSidecars.begin(it, request.semanticGenerationIdentity)
+            FabricAttachmentSidecars.beginIfActive(it, request.semanticGenerationIdentity) {
+                isLeaseActive(it, leaseActive)
+            }
         } ?: measurementImageState
         return try {
-            val document = preparedDocument(request, generation, compiledDocument)
+            if (generation != null && !isLeaseActive(generation, leaseActive)) return invalidWidthArtifact(request)
+            val document = preparedDocument(request, generation, compiledDocument, leaseActive)
+            if (generation != null && !isLeaseActive(generation, leaseActive)) return invalidWidthArtifact(request)
             val theme = resolveTheme(request, density, fontScale)
             val key = layoutKey(document, request, widthPx, densityBits)
-            layoutCache.value(key, generation) {
+            layoutCache.value(key, generation, shouldCreateFabricLease = {
+                generation == null || isLeaseActive(generation, leaseActive)
+            }) {
                 val layoutStarted = PreparedProseInstrumentation.now()
                 layoutPreparationCount += 1
                 try {
@@ -137,7 +154,7 @@ internal class PreparedProseLayoutRegistry(
                 }
             }
         } catch (error: ProseViewerError) {
-            cachedErrorArtifact(request, widthPx, densityBits, error, generation)
+            cachedErrorArtifact(request, widthPx, densityBits, error, generation, leaseActive)
         }
     }
 
@@ -148,7 +165,7 @@ internal class PreparedProseLayoutRegistry(
         widthPx: Int,
         density: Float,
     ): PreparedProseLayout? {
-        if (!isValidMeasurement(widthPx, density)) return null
+        if (!isValidMeasurement(widthPx, density) || !isLeaseActive(generation, activeLeaseFor(generation))) return null
         return layoutCache.acquireForFabricMount(
             generation,
             widthPx,
@@ -165,7 +182,28 @@ internal class PreparedProseLayoutRegistry(
         }
     }
 
+    /** Called from the C++ state-family terminal callback; exact-handle only. */
+    fun registerFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
+        if (leaseHandle <= 0) return
+        activeFabricLeases.computeIfAbsent(FabricLeaseOwner(surface, leaseHandle)) { AtomicBoolean(true) }.set(true)
+    }
+
+    fun releaseFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
+        if (leaseHandle <= 0) return
+        val owner = FabricLeaseOwner(surface, leaseHandle)
+        // Mark inactive before releasing containers so a delayed Yoga worker
+        // sees cancellation even if it races this cleanup.
+        activeFabricLeases.remove(owner)?.set(false)
+        layoutCache.releaseOwner(owner)
+        FabricAttachmentSidecars.remove(owner)
+        synchronized(compilerLock) {
+            documentsByFabricGeneration.keys.removeAll { it.surface == surface && it.leaseHandle == leaseHandle }
+            failuresByFabricGeneration.keys.removeAll { it.surface == surface && it.leaseHandle == leaseHandle }
+        }
+    }
+
     fun releaseFabricSurface(surface: FabricSurfaceToken) {
+        activeFabricLeases.keys.filter { it.surface == surface }.forEach { activeFabricLeases.remove(it)?.set(false) }
         layoutCache.releaseSurface(surface)
         FabricAttachmentSidecars.remove(surface)
         synchronized(compilerLock) {
@@ -181,6 +219,7 @@ internal class PreparedProseLayoutRegistry(
      * this Fabric surface unconditionally.
      */
     fun releaseFabricSurfaceId(surfaceId: Int) {
+        activeFabricLeases.keys.filter { it.surface.surfaceId == surfaceId }.forEach { activeFabricLeases.remove(it)?.set(false) }
         layoutCache.releaseSurfaceId(surfaceId)
         FabricAttachmentSidecars.removeSurface(surfaceId)
         synchronized(compilerLock) {
@@ -226,12 +265,14 @@ internal class PreparedProseLayoutRegistry(
         documentsByFabricGeneration.size + failuresByFabricGeneration.size
     }
     internal val preparedThemeCountForTesting: Int get() = synchronized(compilerLock) { themes.size }
+    internal val activeFabricLeaseCountForTesting: Int get() = activeFabricLeases.size
     private fun hasFabricLease(generation: FabricGenerationToken): Boolean = layoutCache.hasLease(generation)
 
     private fun preparedDocument(
         request: ProseViewerRequest,
         generation: FabricGenerationToken?,
         suppliedDocument: ViewerDocument?,
+        leaseActive: AtomicBoolean?,
     ): ViewerDocument {
         if (generation != null) synchronized(compilerLock) {
             documentsByFabricGeneration[generation]?.let { return it }
@@ -241,10 +282,14 @@ internal class PreparedProseLayoutRegistry(
             // Pins deliberately retain only compiler semantics. Theme paints are
             // density-local measurement inputs and must never cross a density change.
             val semanticDocument = suppliedDocument ?: compileDocument(request)
-            if (generation != null) synchronized(compilerLock) { documentsByFabricGeneration[generation] = semanticDocument }
+            if (generation != null) synchronized(compilerLock) {
+                if (isLeaseActive(generation, leaseActive)) documentsByFabricGeneration[generation] = semanticDocument
+            }
             semanticDocument
         } catch (error: ProseViewerError) {
-            if (generation != null) synchronized(compilerLock) { failuresByFabricGeneration[generation] = error }
+            if (generation != null) synchronized(compilerLock) {
+                if (isLeaseActive(generation, leaseActive)) failuresByFabricGeneration[generation] = error
+            }
             throw error
         }
     }
@@ -255,6 +300,7 @@ internal class PreparedProseLayoutRegistry(
         densityBits: Long,
         error: ProseViewerError,
         fabricGeneration: FabricGenerationToken?,
+        leaseActive: AtomicBoolean?,
     ): PreparedProseLayout {
         val key = ProseLayoutKey(
             semanticKey = "error:${request.compiledCacheKey}",
@@ -267,7 +313,9 @@ internal class PreparedProseLayoutRegistry(
             generationIdentity = request.generationIdentity,
             semanticGenerationIdentity = request.semanticGenerationIdentity,
         )
-        return layoutCache.value(key, fabricGeneration) { PreparedProseLayout.error(key, widthPx, error) }
+        return layoutCache.value(key, fabricGeneration, shouldCreateFabricLease = {
+            fabricGeneration == null || isLeaseActive(fabricGeneration, leaseActive)
+        }) { PreparedProseLayout.error(key, widthPx, error) }
     }
 
     private fun invalidWidthArtifact(request: ProseViewerRequest): PreparedProseLayout {
@@ -334,6 +382,12 @@ internal class PreparedProseLayoutRegistry(
 
     private fun isValidMeasurement(widthPx: Int, density: Float): Boolean =
         widthPx > 0 && density.isFinite() && density > 0f
+
+    private fun activeLeaseFor(generation: FabricGenerationToken): AtomicBoolean? =
+        activeFabricLeases[FabricLeaseOwner(generation.surface, generation.leaseHandle)]
+
+    private fun isLeaseActive(generation: FabricGenerationToken, lease: AtomicBoolean?): Boolean =
+        lease?.get() == true && activeFabricLeases[FabricLeaseOwner(generation.surface, generation.leaseHandle)] === lease
 
     companion object {
         val shared = PreparedProseLayoutRegistry()

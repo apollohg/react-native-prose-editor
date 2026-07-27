@@ -181,6 +181,7 @@ class PreparedProseLayoutTest {
         val surface = FabricSurfaceToken(surfaceId = 41, componentTag = 420)
 
         val generation = FabricGenerationToken(surface, request.generationIdentity, 1)
+        registry.registerFabricLease(surface, generation.leaseHandle)
         registry.measure(request, widthPx = 320, density = 1f, fabricSurface = surface, fabricLeaseHandle = generation.leaseHandle)
         val artifact = registry.acquireForFabricMount(generation, request, widthPx = 320, density = 1f)
         val drawingView = PreparedProseDrawingView(context)
@@ -212,8 +213,12 @@ class PreparedProseLayoutTest {
     @Test
     fun `Fabric surface stop clears every measured generation pin and lease`() {
         val registry = testRegistry(CountingLayoutEngine())
-        registry.measure(request("first"), 320, 1f, FabricSurfaceToken(7, 71), fabricLeaseHandle = 1)
-        registry.measure(request("second"), 320, 1f, FabricSurfaceToken(7, 72), fabricLeaseHandle = 2)
+        val first = FabricSurfaceToken(7, 71)
+        val second = FabricSurfaceToken(7, 72)
+        registry.registerFabricLease(first, 1)
+        registry.registerFabricLease(second, 2)
+        registry.measure(request("first"), 320, 1f, first, fabricLeaseHandle = 1)
+        registry.measure(request("second"), 320, 1f, second, fabricLeaseHandle = 2)
 
         registry.releaseFabricSurfaceId(7)
 
@@ -227,6 +232,7 @@ class PreparedProseLayoutTest {
         val request = request("mount miss")
         val surface = FabricSurfaceToken(8, 81)
         val generation = FabricGenerationToken(surface, request.generationIdentity, 1)
+        registry.registerFabricLease(surface, generation.leaseHandle)
         registry.measure(request, 320, 1f, surface, fabricLeaseHandle = generation.leaseHandle)
 
         assertEquals(null, registry.acquireForFabricMount(generation, request, 321, 1f))
@@ -244,7 +250,9 @@ class PreparedProseLayoutTest {
             byteBudget = 1,
         )
         val request = request("too large to retain")
-        registry.measure(request, 320, 1f, FabricSurfaceToken(9, 91), fabricLeaseHandle = 1)
+        val surface = FabricSurfaceToken(9, 91)
+        registry.registerFabricLease(surface, 1)
+        registry.measure(request, 320, 1f, surface, fabricLeaseHandle = 1)
 
         assertEquals(0, registry.layoutRetainedBytesForTesting)
         assertEquals(1, registry.fabricLeaseCountForTesting)
@@ -254,11 +262,13 @@ class PreparedProseLayoutTest {
     fun `Fabric leases retain mounted handoffs until their surface releases them`() {
         val registry = testRegistry(CountingLayoutEngine())
         repeat(33) { index ->
+            val surface = FabricSurfaceToken(10, 100 + index)
+            registry.registerFabricLease(surface, index + 1L)
             registry.measure(
                 request("lease $index"),
                 320,
                 1f,
-                FabricSurfaceToken(10, 100 + index),
+                surface,
                 fabricLeaseHandle = index + 1L,
             )
         }
@@ -276,6 +286,8 @@ class PreparedProseLayoutTest {
         val h1 = FabricGenerationToken(surface, request.generationIdentity, 1)
         val h2 = FabricGenerationToken(surface, request.generationIdentity, 2)
 
+        registry.registerFabricLease(surface, h1.leaseHandle)
+        registry.registerFabricLease(surface, h2.leaseHandle)
         registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h1.leaseHandle)
         registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h2.leaseHandle)
 
@@ -295,11 +307,82 @@ class PreparedProseLayoutTest {
         val h1 = FabricGenerationToken(surface, request.generationIdentity, 1)
         val h2 = FabricGenerationToken(surface, request.generationIdentity, 2)
 
+        registry.registerFabricLease(surface, h1.leaseHandle)
+        registry.registerFabricLease(surface, h2.leaseHandle)
         registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h1.leaseHandle)
         registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h2.leaseHandle)
         registry.measure(request, 0, 1f, surface, fabricLeaseHandle = h1.leaseHandle)
 
         assertNotNull(registry.acquireForFabricMount(h2, request, 320, 1f))
+    }
+
+    @Test
+    fun `released never-mounted H1 cannot recreate Android sidecars pins or leases`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val request = request("terminal H1")
+        val surface = FabricSurfaceToken(14, 140)
+        val h1 = FabricGenerationToken(surface, request.generationIdentity, 1)
+        val h2 = FabricGenerationToken(surface, request.generationIdentity, 2)
+
+        registry.registerFabricLease(surface, h1.leaseHandle)
+        registry.measure(request, 320, 1f, surface, h1.leaseHandle)
+        assertNotNull(FabricAttachmentSidecars.state(h1))
+        assertEquals(1, registry.fabricLeaseCountForTesting)
+        assertEquals(1, registry.fabricGenerationPinCountForTesting)
+
+        registry.releaseFabricLease(surface, h1.leaseHandle)
+        assertEquals(null, FabricAttachmentSidecars.state(h1))
+        assertEquals(0, registry.fabricLeaseCountForTesting)
+        assertEquals(0, registry.fabricGenerationPinCountForTesting)
+        assertEquals(0, registry.activeFabricLeaseCountForTesting)
+
+        registry.measure(request, 320, 1f, surface, h1.leaseHandle)
+        assertEquals(0, registry.fabricLeaseCountForTesting)
+        assertEquals(0, registry.fabricGenerationPinCountForTesting)
+        assertEquals(null, FabricAttachmentSidecars.state(h1))
+
+        registry.registerFabricLease(surface, h2.leaseHandle)
+        registry.measure(request, 320, 1f, surface, h2.leaseHandle)
+        assertNotNull(registry.acquireForFabricMount(h2, request, 320, 1f))
+    }
+
+    @Test
+    fun `live exact artifact is shared across Fabric owners after cache eviction`() {
+        val cache = PreparedProseLayoutCache(byteBudget = 100, pendingLeaseBudget = 2)
+        val key = testLayoutKey("shared")
+        val artifact = testArtifact(key, retainedBytes = 80)
+        val first = FabricGenerationToken(FabricSurfaceToken(15, 151), key.generationIdentity, 1)
+        val second = FabricGenerationToken(FabricSurfaceToken(15, 152), key.generationIdentity, 2)
+
+        assertTrue(cache.value(key, first) { artifact } === artifact)
+        assertTrue(cache.acquireForFabricMount(first, key.widthPx, key.densityBits) === artifact)
+        cache.removeAllUnmounted()
+
+        assertTrue(cache.value(key, second) { error("live owner must be reused") } === artifact)
+        assertEquals(80, cache.retainedLeaseBytesForTesting)
+        assertTrue(cache.acquireForFabricMount(second, key.widthPx, key.densityBits) === artifact)
+        assertEquals(80, cache.retainedLeaseBytesForTesting)
+
+        cache.releaseLease(first)
+        cache.releaseLease(second)
+        cache.registerDirectMount("direct", artifact)
+        assertTrue(cache.value(key) { error("direct owner must be reused") } === artifact)
+    }
+
+    @Test
+    fun `pending Fabric leases are bounded without evicting the current handoff`() {
+        val cache = PreparedProseLayoutCache(byteBudget = 100, pendingLeaseBudget = 2)
+        val generations = (1L..3L).map { handle ->
+            FabricGenerationToken(FabricSurfaceToken(16, 160 + handle.toInt()), "pending-$handle", handle)
+        }
+        val keys = generations.map { generation -> testLayoutKey(generation.generationIdentity) }
+
+        keys.zip(generations).forEach { (key, generation) ->
+            cache.value(key, generation) { testArtifact(key, retainedBytes = 50) }
+        }
+
+        assertEquals(2, cache.pendingLeaseCountForTesting)
+        assertTrue(cache.acquireForFabricMount(generations.last(), keys.last().widthPx, keys.last().densityBits) != null)
     }
 
     @Test
@@ -369,6 +452,25 @@ class PreparedProseLayoutTest {
     private fun configuration() = ProseViewerConfiguration(configJson = "{}")
 
     private fun request(value: String) = ProseViewerRequest(jsonSource(value), configuration())
+
+    private fun testLayoutKey(generation: String) = ProseLayoutKey(
+        semanticKey = generation,
+        widthPx = 320,
+        themeDigest = "theme",
+        nativeFontRevision = 0,
+        fontEnvironmentRevision = 0,
+        densityBits = 1f.toRawBits().toLong(),
+        attachmentRevision = 0,
+        generationIdentity = generation,
+    )
+
+    private fun testArtifact(key: ProseLayoutKey, retainedBytes: Long) = PreparedProseLayout(
+        key = key,
+        widthPx = key.widthPx,
+        heightPx = 1,
+        blocks = emptyList(),
+        retainedBytes = retainedBytes,
+    )
 
     private fun exactWidth(width: Int) = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
 

@@ -40,19 +40,20 @@ uint64_t NextFabricLeaseHandle() {
   // aliasing a still-live owner would be worse than declining a theoretical
   // 9e18th viewer incarnation.
   static std::atomic<int64_t> next{0};
-  auto current = next.load(std::memory_order_relaxed);
-  while (current > 0 && current < std::numeric_limits<int64_t>::max()) {
+  for (;;) {
+    auto current = next.load(std::memory_order_relaxed);
+    if (current < 0 || current == std::numeric_limits<int64_t>::max()) {
+      return 0;
+    }
+    // compare_exchange_weak writes the observed value back to `current` on a
+    // collision. Restart from that value: falling through after a failed
+    // zero-to-one race would hand the losing family an invalid zero handle.
     if (next.compare_exchange_weak(
             current, current + 1, std::memory_order_relaxed,
             std::memory_order_relaxed)) {
       return static_cast<uint64_t>(current + 1);
     }
   }
-  if (current == 0 && next.compare_exchange_strong(
-          current, 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
-    return 1;
-  }
-  return 0;
 }
 
 } // namespace
