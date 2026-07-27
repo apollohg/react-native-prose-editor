@@ -16,6 +16,25 @@ import kotlin.math.sqrt
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Shared literal used by RecyclerView and FlatList benchmarks. It is the
+ * same complete compiler configuration that the public viewer builder receives. */
+internal data class PreparedProseBenchmarkConfiguration(
+    val configJson: String,
+    val imagePolicyJson: String,
+) {
+    companion object {
+        fun load(context: Context): PreparedProseBenchmarkConfiguration {
+            val root = context.assets.open("prepared-prose-benchmark-config.json")
+                .bufferedReader()
+                .use { JSONObject(it.readText()) }
+            return PreparedProseBenchmarkConfiguration(
+                configJson = root.getJSONObject("configuration").toString(),
+                imagePolicyJson = root.getJSONObject("imageLoadingPolicy").toString(),
+            )
+        }
+    }
+}
+
 internal data class TimingStats(
     val name: String,
     val samplesNanos: List<Long>
@@ -93,12 +112,15 @@ internal object PreparedProsePerformanceGates {
 }
 
 /** Actual RecyclerView traversal: holders host the shipped ProseViewerView. */
-internal class PreparedProseRecyclerHarness(context: Context) : RecyclerView(context) {
+internal class PreparedProseRecyclerHarness(
+    context: Context,
+    private val configuration: PreparedProseBenchmarkConfiguration,
+) : RecyclerView(context) {
     data class Entry(val id: String, val contentJson: String)
     private val benchmarkAdapter = object : RecyclerView.Adapter<Holder>() {
         var entries: List<Entry> = emptyList()
         var imagesEnabled = true
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(ProseViewerView(parent.context))
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(ProseViewerView(parent.context), configuration)
         override fun onBindViewHolder(holder: Holder, position: Int) { holder.bind(entries[position], imagesEnabled) }
         override fun onViewRecycled(holder: Holder) { holder.viewer.prepareForReuse(); super.onViewRecycled(holder) }
         override fun getItemCount() = entries.size
@@ -111,7 +133,7 @@ internal class PreparedProseRecyclerHarness(context: Context) : RecyclerView(con
     fun traverseFromInstrumentationThread(instrumentation: Instrumentation, order: List<Entry>, phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Boolean) {
         instrumentation.runOnMainSync {
             check(isAttachedToWindow) { "RecyclerView must be attached before traversal" }
-            PreparedProseInstrumentation.beginTraversal(phase)
+            PreparedProseInstrumentation.beginPhase(phase)
             benchmarkAdapter.entries = order; benchmarkAdapter.imagesEnabled = imagesEnabled; benchmarkAdapter.notifyDataSetChanged()
             measuring = true; Choreographer.getInstance().postFrameCallback(frameCallback)
             requestLayout(); postInvalidateOnAnimation()
@@ -124,7 +146,13 @@ internal class PreparedProseRecyclerHarness(context: Context) : RecyclerView(con
         // Keep the callback through a final rendered frame so frame evidence
         // belongs to the current surface before its phase closes.
         settle(instrumentation)
-        instrumentation.runOnMainSync { measuring = false; Choreographer.getInstance().removeFrameCallback(frameCallback); PreparedProseInstrumentation.endTraversal() }
+        instrumentation.runOnMainSync {
+            measuring = false
+            Choreographer.getInstance().removeFrameCallback(frameCallback)
+            // This final settled frame is part of the phase evidence; export
+            // exposes it only after the phase is explicitly closed.
+            PreparedProseInstrumentation.endPhase()
+        }
     }
     private fun settle(instrumentation: Instrumentation) {
         instrumentation.waitForIdleSync()
@@ -134,8 +162,22 @@ internal class PreparedProseRecyclerHarness(context: Context) : RecyclerView(con
         instrumentation.waitForIdleSync()
     }
     fun resetCache() { PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning() }
-    private class Holder(val viewer: ProseViewerView) : RecyclerView.ViewHolder(viewer) {
-        fun bind(entry: Entry, imagesEnabled: Boolean) { viewer.contentDescription = entry.id; viewer.apply(ProseViewerSource.Json(entry.contentJson), ProseViewerConfiguration(configJson = "{}", imagesEnabled = imagesEnabled)) }
+    private class Holder(
+        val viewer: ProseViewerView,
+        private val configuration: PreparedProseBenchmarkConfiguration,
+    ) : RecyclerView.ViewHolder(viewer) {
+        fun bind(entry: Entry, imagesEnabled: Boolean) {
+            viewer.contentDescription = entry.id
+            viewer.apply(
+                ProseViewerSource.Json(entry.contentJson),
+                ProseViewerConfiguration(
+                    configJson = configuration.configJson,
+                    imagePolicyJson = configuration.imagePolicyJson,
+                    imagesEnabled = imagesEnabled,
+                    collapsesWhenEmpty = true,
+                ),
+            )
+        }
     }
 }
 

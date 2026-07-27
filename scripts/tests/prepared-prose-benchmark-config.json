@@ -1,0 +1,50 @@
+{
+  "configuration": {
+    "initialization": { "type": "localEmpty" },
+    "schema": {
+      "nodes": [
+        { "name": "doc", "content": "block+", "role": "doc" },
+        { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+        { "name": "h1", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "h1" },
+        { "name": "h2", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "h2" },
+        { "name": "h3", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "h3" },
+        { "name": "h4", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "h4" },
+        { "name": "h5", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "h5" },
+        { "name": "h6", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "h6" },
+        { "name": "blockquote", "content": "block+", "group": "block", "role": "block", "htmlTag": "blockquote" },
+        { "name": "codeBlock", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "pre" },
+        { "name": "bulletList", "content": "listItem+", "group": "block", "role": "list", "htmlTag": "ul" },
+        { "name": "orderedList", "content": "listItem+", "group": "block", "role": "list", "htmlTag": "ol", "attrs": { "start": { "default": 1 } } },
+        { "name": "taskList", "content": "listItem+", "group": "block", "role": "list", "htmlTag": "ul" },
+        { "name": "listItem", "content": "paragraph block*", "role": "listItem", "htmlTag": "li", "attrs": { "checked": { "default": false } } },
+        { "name": "horizontalRule", "content": "", "group": "block", "role": "block", "htmlTag": "hr", "isVoid": true },
+        { "name": "image", "content": "", "group": "block", "role": "block", "htmlTag": "img", "isVoid": true, "attrs": { "src": {}, "alt": { "default": null }, "title": { "default": null }, "width": { "default": null }, "height": { "default": null } } },
+        { "name": "opaqueBlock", "content": "", "group": "block", "role": "block", "isVoid": true, "allowUndeclaredAttrs": true },
+        { "name": "hardBreak", "content": "", "group": "inline", "role": "hardBreak", "htmlTag": "br", "isVoid": true },
+        { "name": "mention", "content": "", "group": "inline", "role": "inline", "isVoid": true, "allowUndeclaredAttrs": true, "attrs": { "label": { "default": null } } },
+        { "name": "opaque", "content": "", "group": "inline", "role": "inline", "isVoid": true, "allowUndeclaredAttrs": true },
+        { "name": "text", "content": "", "group": "inline", "role": "text" }
+      ],
+      "marks": [
+        { "name": "bold", "htmlTag": "strong" },
+        { "name": "italic", "htmlTag": "em" },
+        { "name": "underline", "htmlTag": "u" },
+        { "name": "strike", "htmlTag": "s" },
+        { "name": "code", "htmlTag": "code" },
+        { "name": "link", "htmlTag": "a", "attrs": { "href": {} } },
+        { "name": "textColor", "htmlTag": "span", "attrs": { "color": {} } },
+        { "name": "highlight", "htmlTag": "mark", "attrs": { "color": {} } },
+        { "name": "textStyle", "htmlTag": "span", "attrs": { "fontFamily": {}, "fontSize": {} } }
+      ]
+    }
+  },
+  "imageLoadingPolicy": {
+    "maxSourceBytes": 10485760,
+    "connectTimeoutMs": 10000,
+    "readTimeoutMs": 20000,
+    "requestTimeoutMs": 60000,
+    "maxConcurrentRequests": 2,
+    "maxPendingRequests": 64,
+    "maxDecodeDimensionPx": 2048
+  }
+}

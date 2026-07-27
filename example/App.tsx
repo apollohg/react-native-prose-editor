@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,6 +20,7 @@ import {
     type NativeRichTextEditorRef,
 } from '@apollohg/react-native-prose-editor';
 import performanceCorpus from '../scripts/tests/viewer-performance-corpus.json';
+import preparedProseBenchmarkConfiguration from '../scripts/tests/prepared-prose-benchmark-config.json';
 
 import {
     buildExampleEditorTheme,
@@ -45,6 +46,8 @@ const OUTPUT_PANEL_UPDATE_DEBOUNCE_MS = 120;
 const preparedProseBenchmarkBridge = NativeModules.NativeEditor as
     | {
           preparedProseBenchmarkBegin?: () => void;
+          preparedProseBenchmarkBeginPhase?: (phase: 'cold' | 'warm' | 'imagesDisabled') => void;
+          preparedProseBenchmarkEndPhase?: () => void;
           preparedProseBenchmarkReset?: () => void;
           preparedProseBenchmarkExport?: () => string;
       }
@@ -538,6 +541,10 @@ type PerformanceCorpus = {
 };
 
 const preparedViewerCorpus = performanceCorpus as PerformanceCorpus;
+const preparedViewerConfiguration = preparedProseBenchmarkConfiguration as {
+    configuration: { schema: Parameters<typeof NativeProseViewer>[0]['schema'] };
+    imageLoadingPolicy: Parameters<typeof NativeProseViewer>[0]['imageLoadingPolicy'];
+};
 
 /** Deterministic FlatList harness; it consumes the checked-in corpus verbatim. */
 function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
@@ -545,6 +552,11 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
     const [imagesEnabled, setImagesEnabled] = useState(true);
     const [cacheEpoch, setCacheEpoch] = useState(0);
     const [exportedCounters, setExportedCounters] = useState('Counters not exported yet.');
+    const [isTraversing, setIsTraversing] = useState(false);
+    const listRef = useRef<FlatList<CorpusEntry>>(null);
+    const contentHeightRef = useRef(0);
+    const viewportHeightRef = useRef(0);
+    const traversalInFlightRef = useRef(false);
     useEffect(() => {
         preparedProseBenchmarkBridge?.preparedProseBenchmarkBegin?.();
     }, []);
@@ -560,6 +572,50 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             ).map((id) => byId.get(id)).filter((entry): entry is CorpusEntry => entry != null),
         [byId, traversal]
     );
+    const waitForDrawSettle = useCallback(
+        () =>
+            new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+            }),
+        []
+    );
+    const runTraversal = useCallback(
+        async (
+            phase: 'cold' | 'warm' | 'imagesDisabled',
+            nextTraversal: 'cold' | 'warm',
+            nextImagesEnabled: boolean
+        ) => {
+            if (traversalInFlightRef.current) return;
+            traversalInFlightRef.current = true;
+            setIsTraversing(true);
+            try {
+                // Changing controls is deliberately outside the phase. The
+                // images-disabled control keeps this exact schema/config and
+                // image loading policy; only renderImages changes.
+                setTraversal(nextTraversal);
+                setImagesEnabled(nextImagesEnabled);
+                await waitForDrawSettle();
+                preparedProseBenchmarkBridge?.preparedProseBenchmarkBeginPhase?.(phase);
+
+                const viewportHeight = Math.max(1, viewportHeightRef.current);
+                const finalOffset = Math.max(0, contentHeightRef.current - viewportHeight);
+                const step = Math.max(1, Math.min(320, Math.floor(viewportHeight / 2)));
+                for (let offset = 0; offset < finalOffset; offset += step) {
+                    listRef.current?.scrollToOffset({ offset, animated: false });
+                    await waitForDrawSettle();
+                }
+                listRef.current?.scrollToOffset({ offset: finalOffset, animated: false });
+                await waitForDrawSettle();
+                // Completed-phase exports include this final settled native
+                // draw/frame sample, never an in-progress phase.
+                preparedProseBenchmarkBridge?.preparedProseBenchmarkEndPhase?.();
+            } finally {
+                traversalInFlightRef.current = false;
+                setIsTraversing(false);
+            }
+        },
+        [waitForDrawSettle]
+    );
 
     return (
         <View style={styles.benchmarkScreen}>
@@ -569,24 +625,36 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 {imagesEnabled ? 'enabled' : 'disabled'}
             </Text>
             <View style={styles.benchmarkControls}>
-                <Pressable onPress={() => setTraversal('cold')} style={styles.benchmarkButton}>
+                <Pressable
+                    disabled={isTraversing}
+                    onPress={() => void runTraversal('cold', 'cold', true)}
+                    style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Cold traversal</Text>
                 </Pressable>
-                <Pressable onPress={() => setTraversal('warm')} style={styles.benchmarkButton}>
+                <Pressable
+                    disabled={isTraversing}
+                    onPress={() => void runTraversal('warm', 'warm', true)}
+                    style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Warm traversal</Text>
                 </Pressable>
                 <Pressable
+                    disabled={isTraversing}
                     onPress={() => {
+                        // Reset is intentionally not a traversal phase.
                         preparedProseBenchmarkBridge?.preparedProseBenchmarkReset?.();
                         setCacheEpoch((epoch) => epoch + 1);
                     }}
                     style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Reset cache</Text>
                 </Pressable>
-                <Pressable onPress={() => setImagesEnabled((enabled) => !enabled)} style={styles.benchmarkButton}>
+                <Pressable
+                    disabled={isTraversing}
+                    onPress={() => void runTraversal('imagesDisabled', 'cold', false)}
+                    style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Images disabled traversal</Text>
                 </Pressable>
                 <Pressable
+                    disabled={isTraversing}
                     onPress={() => setExportedCounters(preparedProseBenchmarkBridge?.preparedProseBenchmarkExport?.() ?? '{}')}
                     style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Export counters</Text>
@@ -597,15 +665,20 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             </View>
             <Text numberOfLines={3} style={styles.benchmarkCounters}>{exportedCounters}</Text>
             <FlatList
+                ref={listRef}
                 data={entries}
                 extraData={`${traversal}:${imagesEnabled}:${cacheEpoch}`}
                 keyExtractor={(item) => `${cacheEpoch}:${item.id}`}
                 initialNumToRender={12}
                 maxToRenderPerBatch={12}
                 windowSize={9}
+                onContentSizeChange={(_width, height) => { contentHeightRef.current = height; }}
+                onLayout={(event) => { viewportHeightRef.current = event.nativeEvent.layout.height; }}
                 renderItem={({ item }) => (
                     <NativeProseViewer
                         contentJSON={item.contentJSON}
+                        schema={preparedViewerConfiguration.configuration.schema}
+                        imageLoadingPolicy={preparedViewerConfiguration.imageLoadingPolicy}
                         renderImages={imagesEnabled}
                         style={styles.benchmarkViewer}
                     />

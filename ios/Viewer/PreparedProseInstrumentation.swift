@@ -23,6 +23,9 @@ enum PreparedProseInstrumentation {
     private static let lock = NSLock(); private static let sampleLimit = 20_000
     private static var enabled = false; private static var phase: TraversalPhase?
     private static var samples: [TraversalPhase: PhaseSamples] = [:]
+    /// Exports must never observe a traversal while it is still collecting
+    /// draw/frame evidence. A phase becomes visible only at `endPhase()`.
+    private static var completedPhases: Set<TraversalPhase> = []
     /// Compile durations are associated by immutable generation, never by a
     /// positional zip of unrelated arrays.
     private static var pendingCompileNanos: [TraversalPhase: [String: UInt64]] = [:]
@@ -39,16 +42,31 @@ enum PreparedProseInstrumentation {
         lock.lock(); resetLocked(); lock.unlock()
 #endif
     }
-    static func beginTraversal(_ value: TraversalPhase) {
+    static func beginPhase(_ value: TraversalPhase) {
 #if DEBUG
-        lock.lock(); phase = value; previousDisplayTimestamp = 0; surfaceDrawnSinceFrame = false; lock.unlock()
+        lock.lock()
+        guard enabled else { lock.unlock(); return }
+        phase = value
+        completedPhases.remove(value)
+        previousDisplayTimestamp = 0
+        surfaceDrawnSinceFrame = false
+        lock.unlock()
 #endif
     }
-    static func endTraversal() {
+    static func endPhase() {
 #if DEBUG
-        lock.lock(); phase = nil; previousDisplayTimestamp = 0; surfaceDrawnSinceFrame = false; lock.unlock()
+        lock.lock()
+        if let phase { completedPhases.insert(phase) }
+        phase = nil
+        previousDisplayTimestamp = 0
+        surfaceDrawnSinceFrame = false
+        lock.unlock()
 #endif
     }
+    /// Native device harness compatibility; new bridges use the explicit
+    /// begin/end phase names so cache reset cannot be mistaken for traversal.
+    static func beginTraversal(_ value: TraversalPhase) { beginPhase(value) }
+    static func endTraversal() { endPhase() }
 
     /// Called by CADisplayLink only while the collection traversal owns a
     /// mounted viewer surface. Frame evidence requires a preceding draw.
@@ -74,7 +92,10 @@ enum PreparedProseInstrumentation {
         let owners = Dictionary(uniqueKeysWithValues: Owner.allCases.map { owner in
             (owner.rawValue, retainedByScope.filter { $0.key.hasPrefix(owner.rawValue + ":") }.reduce(0) { $0 + $1.value })
         })
-        let snapshot = Snapshot(percentileDefinition: "nearest-rank: sorted[ceil(p*n)-1]", phaseSamples: Dictionary(uniqueKeysWithValues: samples.map { ($0.key.rawValue, $0.value) }), duplicatePublications: duplicatePublications, retainedBytes: owners)
+        let completedSamples = Dictionary(uniqueKeysWithValues: samples.compactMap { phase, samples in
+            completedPhases.contains(phase) ? (phase.rawValue, samples) : nil
+        })
+        let snapshot = Snapshot(percentileDefinition: "nearest-rank: sorted[ceil(p*n)-1]", phaseSamples: completedSamples, duplicatePublications: duplicatePublications, retainedBytes: owners)
         lock.unlock()
         return String(data: (try? JSONEncoder().encode(snapshot)) ?? Data("{}".utf8), encoding: .utf8) ?? "{}"
 #else
@@ -123,5 +144,5 @@ enum PreparedProseInstrumentation {
     }
     private static func mutate(_ phase: TraversalPhase, _ body: (inout PhaseSamples) -> Void) { var value = samples[phase] ?? PhaseSamples(); body(&value); samples[phase] = value }
     private static func append(_ value: UInt64, to samples: inout [UInt64]) { if samples.count < sampleLimit { samples.append(value) } }
-    private static func resetLocked() { phase = nil; samples = [:]; pendingCompileNanos = [:]; retainedByScope = [:]; duplicatePublications = 0; previousDisplayTimestamp = 0; surfaceDrawnSinceFrame = false }
+    private static func resetLocked() { phase = nil; samples = [:]; completedPhases = []; pendingCompileNanos = [:]; retainedByScope = [:]; duplicatePublications = 0; previousDisplayTimestamp = 0; surfaceDrawnSinceFrame = false }
 }

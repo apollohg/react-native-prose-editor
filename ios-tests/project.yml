@@ -75,6 +75,10 @@ targets:
       # Device benchmarks load the checked-in literal through Bundle APIs.
       - path: ../scripts/tests/viewer-performance-corpus.json
         buildPhase: resources
+      - path: ../scripts/tests/prepared-prose-benchmark-config.json
+        buildPhase: resources
+      - path: ../scripts/tests/prepared-prose-harness-static-fixtures.json
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: NativeEditorTests

@@ -36,6 +36,7 @@ class NativeDevicePerformanceTest {
     @Test
     fun performance_preparedProseCorpusGates_pixel7() {
         val corpus = JSONObject(context.assets.open("viewer-performance-corpus.json").bufferedReader().use(BufferedReader::readText))
+        val configuration = PreparedProseBenchmarkConfiguration.load(context)
         val byId = buildMap {
             val documents = corpus.getJSONArray("documents")
             for (index in 0 until documents.length()) {
@@ -46,7 +47,9 @@ class NativeDevicePerformanceTest {
         fun ordered(name: String) = corpus.getJSONArray(name).let { ids -> List(ids.length()) { byId.getValue(ids.getString(it)) } }
         ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
             lateinit var harness: PreparedProseRecyclerHarness
-            scenario.onActivity { activity -> activity.setContentView(PreparedProseRecyclerHarness(activity).also { harness = it }) }
+            scenario.onActivity { activity ->
+                activity.setContentView(PreparedProseRecyclerHarness(activity, configuration).also { harness = it })
+            }
             instrumentation.waitForIdleSync()
             PreparedProseInstrumentation.beginBenchmark()
             // ActivityScenario is used only to bind a real window. The test

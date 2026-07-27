@@ -278,6 +278,15 @@ class NativeEditorModule : Module() {
         Function("preparedProseBenchmarkBegin") {
             PreparedProseInstrumentation.beginBenchmark()
         }
+        Function("preparedProseBenchmarkBeginPhase") { phase: String ->
+            val normalizedPhase = phase.replace("imagesDisabled", "images_disabled")
+            PreparedProseInstrumentation.TraversalPhase.values()
+                .firstOrNull { it.name.equals(normalizedPhase, ignoreCase = true) }
+                ?.let(PreparedProseInstrumentation::beginPhase)
+        }
+        Function("preparedProseBenchmarkEndPhase") {
+            PreparedProseInstrumentation.endPhase()
+        }
         Function("preparedProseBenchmarkReset") {
             PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning()
             PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.CACHE_RESET)

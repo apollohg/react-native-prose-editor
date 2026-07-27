@@ -14,6 +14,8 @@
 		25A847DC895BEC66CFACC067 /* EditorV2Shadow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */; };
 		2D4DE27F01FB5A5C12DD4366 /* security-contract-fixtures.json in Resources */ = {isa = PBXBuildFile; fileRef = 609456B67A174C7062F4C3C9 /* security-contract-fixtures.json */; };
 		D91100110000000000000001 /* viewer-performance-corpus.json in Resources */ = {isa = PBXBuildFile; fileRef = D91100110000000000000002 /* viewer-performance-corpus.json */; };
+		E11100110000000000000001 /* prepared-prose-benchmark-config.json in Resources */ = {isa = PBXBuildFile; fileRef = E11100110000000000000002 /* prepared-prose-benchmark-config.json */; };
+		E11100110000000000000003 /* prepared-prose-harness-static-fixtures.json in Resources */ = {isa = PBXBuildFile; fileRef = E11100110000000000000004 /* prepared-prose-harness-static-fixtures.json */; };
 		3A6AEEFA6827371E8015A30F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6225248E2F347AD95F31C25 /* AppDelegate.swift */; };
 		3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */; };
 		408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */; };
@@ -68,6 +70,8 @@
 		516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridge.swift; sourceTree = "<group>"; };
 		609456B67A174C7062F4C3C9 /* security-contract-fixtures.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "security-contract-fixtures.json"; sourceTree = "<group>"; };
 		D91100110000000000000002 /* viewer-performance-corpus.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "viewer-performance-corpus.json"; sourceTree = "<group>"; };
+		E11100110000000000000002 /* prepared-prose-benchmark-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "prepared-prose-benchmark-config.json"; sourceTree = "<group>"; };
+		E11100110000000000000004 /* prepared-prose-harness-static-fixtures.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "prepared-prose-harness-static-fixtures.json"; sourceTree = "<group>"; };
 		619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePerformanceTests.swift; sourceTree = "<group>"; };
 		786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEditorExpoView.swift; sourceTree = "<group>"; };
 		80892297FFD41613BE083EF1 /* EditorV2AdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2AdapterTests.swift; sourceTree = "<group>"; };
@@ -254,6 +258,8 @@
 			children = (
 				609456B67A174C7062F4C3C9 /* security-contract-fixtures.json */,
 				D91100110000000000000002 /* viewer-performance-corpus.json */,
+				E11100110000000000000002 /* prepared-prose-benchmark-config.json */,
+				E11100110000000000000004 /* prepared-prose-harness-static-fixtures.json */,
 			);
 			path = tests;
 			sourceTree = "<group>";
@@ -356,6 +362,8 @@
 			files = (
 				2D4DE27F01FB5A5C12DD4366 /* security-contract-fixtures.json in Resources */,
 				D91100110000000000000001 /* viewer-performance-corpus.json in Resources */,
+				E11100110000000000000001 /* prepared-prose-benchmark-config.json in Resources */,
+				E11100110000000000000003 /* prepared-prose-harness-static-fixtures.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

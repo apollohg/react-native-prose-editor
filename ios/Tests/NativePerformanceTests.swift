@@ -352,7 +352,8 @@ final class NativePerformanceTests: XCTestCase {
             "Runs only on the iPhone 13 device benchmark lane."
         )
         let corpus = try PreparedProseBenchmarkCorpus.load()
-        let harness = PreparedProseCollectionHarness(corpus: corpus, imagesEnabled: true)
+        let configuration = try PreparedProseBenchmarkConfiguration.load()
+        let harness = PreparedProseCollectionHarness(corpus: corpus, configuration: configuration, imagesEnabled: true)
         PreparedProseInstrumentation.beginBenchmark()
         harness.traverse(corpus.coldTraversal, phase: .cold)
         harness.traverse(corpus.warmTraversal, phase: .warm)
@@ -362,6 +363,41 @@ final class NativePerformanceTests: XCTestCase {
             exportJSON: PreparedProseInstrumentation.exportJSON(),
             expectedDocuments: corpus.documents.count
         )
+    }
+
+    /// Fixture-only device contract for Task 11 integration. It is separately
+    /// gated so routine suites do not execute preparation or scroll work.
+    func testPreparedProseHarnessStaticFixtures() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["PREPARED_PROSE_STATIC_HARNESS_FIXTURES"] == "1",
+            "Runs only when Task 14 explicitly requests static harness fixtures."
+        )
+        let corpus = try PreparedProseBenchmarkCorpus.load()
+        let configuration = try PreparedProseBenchmarkConfiguration.load()
+        let fixtures = try PreparedProseHarnessStaticFixtures.load()
+        let harness = PreparedProseCollectionHarness(corpus: corpus, configuration: configuration, imagesEnabled: true)
+        let preparedHeight = try harness.measuredHeight(
+            for: fixtures.preparation.entryId,
+            width: fixtures.preparation.widthPoints,
+            imagesEnabled: true
+        )
+        let shortHeight = try harness.measuredHeight(
+            for: fixtures.differingHeights.shortEntryId,
+            width: fixtures.differingHeights.widthPoints,
+            imagesEnabled: true
+        )
+        let longHeight = try harness.measuredHeight(
+            for: fixtures.differingHeights.longEntryId,
+            width: fixtures.differingHeights.widthPoints,
+            imagesEnabled: true
+        )
+        XCTAssertGreaterThan(preparedHeight, 0)
+        XCTAssertGreaterThan(longHeight, shortHeight)
+        PreparedProseInstrumentation.beginBenchmark()
+        harness.traverse([fixtures.preparation.entryId], phase: .warm)
+        let export = try JSONSerialization.jsonObject(with: Data(PreparedProseInstrumentation.exportJSON().utf8)) as? [String: Any]
+        let warm = ((export?["phaseSamples"] as? [String: Any])?[fixtures.drawEvidence.phase] as? [String: Any])
+        XCTAssertGreaterThan(warm?["drawCount"] as? Int ?? 0, 0)
     }
 
     private func measureOptions() -> XCTMeasureOptions {
@@ -391,6 +427,46 @@ private struct PreparedProseBenchmarkCorpus: Decodable {
     }
 }
 
+/// This fixture is the one complete configuration shared by the iOS,
+/// Android, and FlatList harnesses. The corpus intentionally contains node
+/// kinds beyond the default schema, so an empty configuration is invalid.
+private struct PreparedProseBenchmarkConfiguration: Decodable {
+    let configuration: JSONValue
+    let imageLoadingPolicy: JSONValue
+
+    static func load() throws -> Self {
+        guard let url = Bundle(for: NativePerformanceTests.self).url(
+            forResource: "prepared-prose-benchmark-config", withExtension: "json"
+        ) else { throw NSError(domain: "PreparedProseBenchmarkConfiguration", code: 1, userInfo: [NSLocalizedDescriptionKey: "Bundled prepared prose benchmark configuration is missing."]) }
+        return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+    }
+
+    func viewerConfiguration(imagesEnabled: Bool) throws -> ProseViewerConfiguration {
+        ProseViewerConfiguration(
+            configJSON: String(data: try JSONEncoder().encode(configuration), encoding: .utf8) ?? "{}",
+            imagePolicyJSON: String(data: try JSONEncoder().encode(imageLoadingPolicy), encoding: .utf8),
+            imagesEnabled: imagesEnabled,
+            collapsesWhenEmpty: true
+        )
+    }
+}
+
+private struct PreparedProseHarnessStaticFixtures: Decodable {
+    struct Preparation: Decodable { let entryId: String; let widthPoints: CGFloat }
+    struct DifferingHeights: Decodable { let shortEntryId: String; let longEntryId: String; let widthPoints: CGFloat }
+    struct DrawEvidence: Decodable { let phase: String }
+    let preparation: Preparation
+    let differingHeights: DifferingHeights
+    let drawEvidence: DrawEvidence
+
+    static func load() throws -> Self {
+        guard let url = Bundle(for: NativePerformanceTests.self).url(
+            forResource: "prepared-prose-harness-static-fixtures", withExtension: "json"
+        ) else { throw NSError(domain: "PreparedProseHarnessStaticFixtures", code: 1, userInfo: [NSLocalizedDescriptionKey: "Bundled prepared prose harness fixtures are missing."]) }
+        return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+    }
+}
+
 private enum JSONValue: Codable {
     case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
     init(from decoder: Decoder) throws {
@@ -412,6 +488,7 @@ private enum JSONValue: Codable {
 
 private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
     private let corpus: PreparedProseBenchmarkCorpus
+    private let configuration: PreparedProseBenchmarkConfiguration
     private let defaultImagesEnabled: Bool
     private let byID: [String: PreparedProseBenchmarkCorpus.Entry]
     private let collectionView: UICollectionView
@@ -419,9 +496,13 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
     private var orderedEntries: [PreparedProseBenchmarkCorpus.Entry] = []
     private var activeImagesEnabled = true
     private var displayLink: CADisplayLink?
+    /// The registry enforces the actual one-preparation invariant. This cache
+    /// preserves the matching dynamic UICollectionView height for each
+    /// semantic/configuration/width/revision identity during one traversal.
+    private var measuredHeights: [String: CGFloat] = [:]
 
-    init(corpus: PreparedProseBenchmarkCorpus, imagesEnabled: Bool) {
-        self.corpus = corpus; self.defaultImagesEnabled = imagesEnabled
+    init(corpus: PreparedProseBenchmarkCorpus, configuration: PreparedProseBenchmarkConfiguration, imagesEnabled: Bool) {
+        self.corpus = corpus; self.configuration = configuration; self.defaultImagesEnabled = imagesEnabled
         byID = Dictionary(uniqueKeysWithValues: corpus.documents.map { ($0.id, $0) })
         let layout = UICollectionViewFlowLayout(); layout.estimatedItemSize = .zero; layout.minimumLineSpacing = 8
         collectionView = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), collectionViewLayout: layout)
@@ -433,19 +514,37 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
     }
     deinit { displayLink?.invalidate(); window.isHidden = true }
     func resetCache() { PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning() }
+    func measuredHeight(for id: String, width: CGFloat, imagesEnabled: Bool) throws -> CGFloat {
+        guard let entry = byID[id] else {
+            throw NSError(domain: "PreparedProseCollectionHarness", code: 1, userInfo: [NSLocalizedDescriptionKey: "unknown corpus entry \(id)"])
+        }
+        guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: "PreparedProseCollectionHarness", code: 2, userInfo: [NSLocalizedDescriptionKey: "invalid corpus entry \(id)"])
+        }
+        let viewer = ProseViewerView(frame: CGRect(x: 0, y: 0, width: width, height: 0))
+        guard viewer.apply(source: .json(source), configuration: try configuration.viewerConfiguration(imagesEnabled: imagesEnabled)) else {
+            throw NSError(domain: "PreparedProseCollectionHarness", code: 3, userInfo: [NSLocalizedDescriptionKey: "corpus entry \(id) was rejected"])
+        }
+        return max(1, ceil(viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+    }
     func traverse(_ ids: [String], phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Bool? = nil) {
         activeImagesEnabled = imagesEnabled ?? defaultImagesEnabled
         orderedEntries = ids.compactMap { byID[$0] }
         XCTAssertEqual(orderedEntries.count, ids.count)
-        PreparedProseInstrumentation.beginTraversal(phase)
+        measuredHeights.removeAll(keepingCapacity: true)
+        PreparedProseInstrumentation.beginPhase(phase)
         let link = CADisplayLink(target: self, selector: #selector(displayLinkTick(_:))); displayLink = link; link.add(to: .main, forMode: .common)
-        collectionView.setContentOffset(.zero, animated: false); collectionView.reloadData(); collectionView.layoutIfNeeded()
+        collectionView.setContentOffset(.zero, animated: false); collectionView.collectionViewLayout.invalidateLayout(); collectionView.reloadData(); collectionView.layoutIfNeeded()
         for index in orderedEntries.indices {
             collectionView.scrollToItem(at: IndexPath(item: index, section: 0), at: .centeredVertically, animated: false)
             collectionView.layoutIfNeeded()
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.001))
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
         }
-        link.invalidate(); displayLink = nil; PreparedProseInstrumentation.endTraversal()
+        // Keep the display link through a final settled draw so draw and frame
+        // evidence are complete before this phase becomes exportable.
+        collectionView.setNeedsDisplay(); collectionView.layoutIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        link.invalidate(); displayLink = nil; PreparedProseInstrumentation.endPhase()
     }
     @objc private func displayLinkTick(_ link: CADisplayLink) { PreparedProseInstrumentation.displayLinkDidTick(link) }
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { orderedEntries.count }
@@ -453,18 +552,57 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "prepared", for: indexPath) as! PreparedProseCollectionCell
         let entry = orderedEntries[indexPath.item]
         guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(entry.id)"); return cell }
-        cell.configure(source: source, imagesEnabled: activeImagesEnabled); return cell
+        do {
+            try cell.configure(source: source, configuration: configuration.viewerConfiguration(imagesEnabled: activeImagesEnabled))
+            _ = cell.prepareAndMeasure(width: collectionView.bounds.width)
+        } catch {
+            XCTFail("invalid benchmark configuration: \(error)")
+        }
+        return cell
     }
-    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize { CGSize(width: collectionView.bounds.width, height: 180) }
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
+        let width = collectionView.bounds.width
+        let entry = orderedEntries[indexPath.item]
+        guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(entry.id)"); return .zero }
+        do {
+            let viewerConfiguration = try configuration.viewerConfiguration(imagesEnabled: activeImagesEnabled)
+            let key = [source, viewerConfiguration.configJSON, viewerConfiguration.imagePolicyJSON ?? "", viewerConfiguration.imagesEnabled ? "1" : "0", String(width)].joined(separator: "\u{1F}")
+            if let height = measuredHeights[key] { return CGSize(width: width, height: height) }
+            let measurementView = ProseViewerView(frame: CGRect(x: 0, y: 0, width: width, height: 0))
+            XCTAssertTrue(measurementView.apply(source: .json(source), configuration: viewerConfiguration))
+            let height = max(1, ceil(measurementView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+            measuredHeights[key] = height
+            return CGSize(width: width, height: height)
+        } catch {
+            XCTFail("invalid benchmark configuration: \(error)")
+            return .zero
+        }
+    }
 }
 
 private final class PreparedProseCollectionCell: UICollectionViewCell {
     private let viewer = ProseViewerView()
     override init(frame: CGRect) { super.init(frame: frame); contentView.addSubview(viewer) }
     required init?(coder: NSCoder) { fatalError("PreparedProseCollectionCell is programmatic") }
-    override func layoutSubviews() { super.layoutSubviews(); viewer.frame = contentView.bounds; viewer.setNeedsLayout(); viewer.layoutIfNeeded() }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let height = prepareAndMeasure(width: contentView.bounds.width)
+        viewer.frame = CGRect(x: 0, y: 0, width: contentView.bounds.width, height: height)
+        viewer.setNeedsLayout()
+        viewer.layoutIfNeeded()
+    }
     override func prepareForReuse() { super.prepareForReuse(); viewer.prepareForReuse() }
-    func configure(source: String, imagesEnabled: Bool) { _ = viewer.apply(source: .json(source), configuration: .init(imagesEnabled: imagesEnabled)); viewer.setNeedsLayout() }
+    func configure(source: String, configuration: ProseViewerConfiguration) throws {
+        guard viewer.apply(source: .json(source), configuration: configuration) else {
+            throw NSError(domain: "PreparedProseCollectionCell", code: 1, userInfo: [NSLocalizedDescriptionKey: "benchmark source was rejected"])
+        }
+        viewer.setNeedsLayout()
+    }
+    @discardableResult
+    func prepareAndMeasure(width: CGFloat) -> CGFloat {
+        guard width.isFinite, width > 0 else { return 0 }
+        return max(1, ceil(viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+    }
 }
 
 private enum PreparedProsePerformanceGates {

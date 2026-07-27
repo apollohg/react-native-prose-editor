@@ -226,4 +226,71 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(projectYml).toContain('../ios/Viewer/PreparedProseInstrumentation.swift');
         expect((pbxproj.match(/PreparedProseInstrumentation\.swift/g) ?? [])).toHaveLength(4);
     });
+
+    it('shares one complete corpus schema and image policy with every benchmark surface', () => {
+        const configuration = JSON.parse(readSource('scripts/tests/prepared-prose-benchmark-config.json')) as {
+            configuration: { initialization: { type: string }; schema: { nodes: Array<{ name: string; attrs?: Record<string, unknown> }>; marks: Array<{ name: string; attrs?: Record<string, unknown> }> } };
+            imageLoadingPolicy: Record<string, number>;
+        };
+        const nodeNames = new Set(configuration.configuration.schema.nodes.map(({ name }) => name));
+        const markNames = new Set(configuration.configuration.schema.marks.map(({ name }) => name));
+        expect(configuration.configuration.initialization).toEqual({ type: 'localEmpty' });
+        [
+            'doc', 'paragraph', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'codeBlock',
+            'orderedList', 'bulletList', 'taskList', 'listItem', 'image', 'hardBreak', 'mention', 'opaque', 'opaqueBlock',
+        ].forEach((name) => expect(nodeNames.has(name)).toBe(true));
+        ['bold', 'italic', 'underline', 'strike', 'code', 'link', 'textColor', 'highlight', 'textStyle']
+            .forEach((name) => expect(markNames.has(name)).toBe(true));
+        expect(configuration.configuration.schema.nodes.find(({ name }) => name === 'image')?.attrs)
+            .toMatchObject({ src: {}, alt: { default: null }, title: { default: null }, width: { default: null }, height: { default: null } });
+        expect(configuration.configuration.schema.marks.find(({ name }) => name === 'textStyle')?.attrs)
+            .toMatchObject({ fontFamily: {}, fontSize: {} });
+        expect(configuration.imageLoadingPolicy).toMatchObject({ maxConcurrentRequests: 2, maxPendingRequests: 64 });
+
+        const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
+        const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
+        const example = readSource('example/App.tsx');
+        [iosHarness, androidHarness, example].forEach((source) => {
+            expect(source).toContain('prepared-prose-benchmark-config');
+        });
+        expect(iosHarness).not.toContain('configuration: .init(imagesEnabled:');
+        expect(androidHarness).not.toContain('ProseViewerConfiguration(configJson = "{}"');
+        expect(example).toContain('schema={preparedViewerConfiguration.configuration.schema}');
+        expect(example).toContain('imageLoadingPolicy={preparedViewerConfiguration.imageLoadingPolicy}');
+    });
+
+    it('keeps native and FlatList phases separate from reset, measurement, and export', () => {
+        const iosInstrumentation = readSource('ios/Viewer/PreparedProseInstrumentation.swift');
+        const androidInstrumentation = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseInstrumentation.kt');
+        const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
+        const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
+        const example = readSource('example/App.tsx');
+        const fixtures = JSON.parse(readSource('scripts/tests/prepared-prose-harness-static-fixtures.json')) as {
+            preparation: { requirement: string };
+            differingHeights: { requirement: string };
+            drawEvidence: { requirement: string };
+        };
+
+        [iosInstrumentation, androidInstrumentation].forEach((source) => {
+            expect(source).toContain('beginPhase');
+            expect(source).toContain('endPhase');
+            expect(source).toContain('completedPhases');
+        });
+        expect(iosHarness).toContain('viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))');
+        expect(iosHarness).toContain('cell.prepareAndMeasure(width: collectionView.bounds.width)');
+        expect(iosHarness).toContain('testPreparedProseHarnessStaticFixtures');
+        expect(iosHarness).toContain('PREPARED_PROSE_STATIC_HARNESS_FIXTURES');
+        expect(iosHarness).toContain('XCTAssertGreaterThan(longHeight, shortHeight)');
+        expect(iosHarness).not.toContain('height: 180');
+        expect(androidHarness).toContain('PreparedProseInstrumentation.beginPhase(phase)');
+        expect(androidHarness).toContain('PreparedProseInstrumentation.endPhase()');
+        expect(example).toContain('preparedProseBenchmarkBeginPhase');
+        expect(example).toContain('preparedProseBenchmarkEndPhase');
+        expect(example).toContain('scrollToOffset({ offset, animated: false })');
+        expect(example).toContain('await waitForDrawSettle()');
+        expect(example).toContain('Reset is intentionally not a traversal phase');
+        expect(fixtures.preparation.requirement).toContain('prepare once');
+        expect(fixtures.differingHeights.requirement).toContain('taller');
+        expect(fixtures.drawEvidence.requirement).toContain('final settled frame');
+    });
 });

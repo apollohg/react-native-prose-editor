@@ -1,0 +1,17 @@
+{
+  "preparation": {
+    "entryId": "very-long-0001",
+    "widthPoints": 390,
+    "requirement": "prepare once for semantic identity, effective width, and revision before final cell height"
+  },
+  "differingHeights": {
+    "shortEntryId": "short-0001",
+    "longEntryId": "very-long-0001",
+    "widthPoints": 390,
+    "requirement": "very-long entry measures taller than the short entry at the same width"
+  },
+  "drawEvidence": {
+    "phase": "warm",
+    "requirement": "end phase only after the final settled frame records viewer draw evidence"
+  }
+}

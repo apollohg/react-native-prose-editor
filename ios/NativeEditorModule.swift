@@ -559,6 +559,13 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
         Function("preparedProseBenchmarkBegin") {
             PreparedProseInstrumentation.beginBenchmark()
         }
+        Function("preparedProseBenchmarkBeginPhase") { (phase: String) in
+            guard let traversal = PreparedProseInstrumentation.TraversalPhase(rawValue: phase) else { return }
+            PreparedProseInstrumentation.beginPhase(traversal)
+        }
+        Function("preparedProseBenchmarkEndPhase") {
+            PreparedProseInstrumentation.endPhase()
+        }
         Function("preparedProseBenchmarkReset") {
             PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning()
             PreparedProseInstrumentation.invalidated(.cacheReset)
