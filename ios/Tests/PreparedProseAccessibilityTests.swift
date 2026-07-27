@@ -174,7 +174,7 @@ final class PreparedProseAccessibilityTests: XCTestCase {
 private extension Collection {
     func single(where predicate: (Element) -> Bool) throws -> Element {
         let matches = filter(predicate)
-        try XCTUnwrap(matches.single)
+        return try XCTUnwrap(matches.single)
     }
 }
 

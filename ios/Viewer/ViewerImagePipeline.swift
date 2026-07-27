@@ -18,6 +18,20 @@ struct ViewerImageAttachment: Hashable {
     let bounds: CGRect
     let declaredSize: CGSize?
 
+    init(
+        ordinal: Int = -1,
+        id: String,
+        source: String,
+        bounds: CGRect,
+        declaredSize: CGSize?
+    ) {
+        self.ordinal = ordinal
+        self.id = id
+        self.source = source
+        self.bounds = bounds
+        self.declaredSize = declaredSize
+    }
+
     var hasDeclaredSize: Bool { (declaredSize?.width ?? 0) > 0 && (declaredSize?.height ?? 0) > 0 }
 
     static func sourceAndDeclaredSize(in block: ViewerBlock) -> (id: String, source: String, declaredSize: CGSize?)? {

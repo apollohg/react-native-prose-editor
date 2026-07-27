@@ -57,19 +57,15 @@ private func preparedAtomDelegate(_ metrics: PreparedAtomMetrics) -> CTRunDelega
     var callbacks = CTRunDelegateCallbacks(
         version: kCTRunDelegateVersion1,
         dealloc: { refCon in
-            guard let refCon else { return }
             Unmanaged<PreparedAtomMetrics>.fromOpaque(refCon).release()
         },
         getAscent: { refCon in
-            guard let refCon else { return 0 }
             return Unmanaged<PreparedAtomMetrics>.fromOpaque(refCon).takeUnretainedValue().ascent
         },
         getDescent: { refCon in
-            guard let refCon else { return 0 }
             return Unmanaged<PreparedAtomMetrics>.fromOpaque(refCon).takeUnretainedValue().descent
         },
         getWidth: { refCon in
-            guard let refCon else { return 0 }
             return Unmanaged<PreparedAtomMetrics>.fromOpaque(refCon).takeUnretainedValue().width
         }
     )
@@ -452,8 +448,8 @@ final class CoreTextProseLayoutEngine {
                 // runs (particularly around bidi boundaries). Intersect it with
                 // each shaped run instead of manufacturing one endpoint rect.
                 var visualPieces: [(rect: CGRect, rightToLeft: Bool)] = []
-                for run in CTLineGetGlyphRuns(line) as NSArray {
-                    guard let run = run as? CTRun else { continue }
+                let glyphRuns = CTLineGetGlyphRuns(line) as? [CTRun] ?? []
+                for run in glyphRuns {
                     let stringRange = CTRunGetStringRange(run)
                     let runRange = NSRange(location: stringRange.location, length: stringRange.length)
                     let overlap = NSIntersectionRange(NSIntersectionRange(semantic.range, lineRange), runRange)
