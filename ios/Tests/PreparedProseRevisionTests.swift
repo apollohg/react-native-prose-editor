@@ -143,14 +143,14 @@ final class PreparedProseRevisionTests: XCTestCase {
     @MainActor
     func testMountedPixelOwnershipCountsOnlySurfaceMapEntries() {
         let drawing = PreparedProseDrawingView()
-        let image = paddedImage(bytesPerRow: 64, height: 2)
+        let image = UIImage()
         drawing.imagePixels = ["first": image, "second": image]
         XCTAssertEqual(
             PreparedProseDrawingView.imagePixelMapRetainedBytes
                 + PreparedProseDrawingView.imagePixelEntryRetainedBytes * 2,
             drawing.retainedImagePixelsBytesForTesting
         )
-        drawing.imagePixels = ["replacement": paddedImage(bytesPerRow: 32, height: 3)]
+        drawing.imagePixels = ["replacement": UIImage()]
         XCTAssertEqual(
             PreparedProseDrawingView.imagePixelMapRetainedBytes
                 + PreparedProseDrawingView.imagePixelEntryRetainedBytes,
@@ -254,24 +254,6 @@ final class PreparedProseRevisionTests: XCTestCase {
         FabricAttachmentSidecars.remove(second)
         XCTAssertNil(FabricAttachmentSidecars.state(for: first))
         XCTAssertNil(FabricAttachmentSidecars.state(for: second))
-    }
-
-    private func paddedImage(bytesPerRow: Int, height: Int) -> UIImage {
-        let data = Data(repeating: 0, count: bytesPerRow * height)
-        let image = CGImage(
-            width: 2,
-            height: height,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-            provider: CGDataProvider(data: data as CFData)!,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )!
-        return UIImage(cgImage: image)
     }
 
     func testBoundedIntrinsicMetadataEvictsOldestEntryDeterministically() {

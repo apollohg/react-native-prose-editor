@@ -1,8 +1,8 @@
 import Foundation
 
-/// Owns unmounted layouts and the bounded Yoga-to-Fabric handoff. A lease
-/// shares its immutable artifact with the LRU; bytes are counted once across
-/// both owners so handoff cannot silently bypass the cache budget.
+/// Owns unmounted layouts and exact Yoga-to-Fabric handoffs. A lease shares
+/// its immutable artifact with the LRU; lifecycle release owns a live
+/// handoff's retirement so its eventual mount cannot fall back to a cache.
 final class PreparedProseLayoutCache {
     private final class Preparation {
         var result: Result<PreparedProseLayout, Error>?
@@ -14,10 +14,9 @@ final class PreparedProseLayoutCache {
     private var inFlight: [ProseLayoutKey: Preparation] = [:]
     /// Yoga measurement hands an immutable artifact to Fabric before there is
     /// a component view. A pending handoff is therefore distinct from a
-    /// mounted owner: mount consumes it exactly once and only the mounted
-    /// owner is non-evictable.
+    /// mounted owner: mount consumes it exactly once. Both are live exact
+    /// owners and remain retained until their lifecycle releases them.
     private var pendingLeases: [FabricLeaseKey: PreparedProseLayout] = [:]
-    private var pendingLeaseAccessOrder: [FabricLeaseKey] = []
     private var mountedLeases: [FabricLeaseKey: PreparedProseLayout] = [:]
     private var directMounted: [String: PreparedProseLayout] = [:]
     private var mountIndex: [ProseMountKey: ProseLayoutKey] = [:]
@@ -28,13 +27,8 @@ final class PreparedProseLayoutCache {
     private var publishedKeys: Set<ProseLayoutKey> = []
 #endif
     private let byteBudget: Int
-    /// Bound handoff metadata separately from retained bytes: many virtualized
-    /// owners can share one immutable artifact without sharing one lease key.
-    private let pendingLeaseBudget: Int
-
-    init(byteBudget: Int = 32 * 1024 * 1024, pendingLeaseBudget: Int = 256) {
+    init(byteBudget: Int = 32 * 1024 * 1024) {
         self.byteBudget = byteBudget
-        self.pendingLeaseBudget = max(1, pendingLeaseBudget)
     }
 
     func value(
@@ -362,24 +356,17 @@ final class PreparedProseLayoutCache {
             return
         }
         pendingLeases[leaseKey] = layout
-        touchPendingLease(leaseKey)
-        enforceBudgetLocked(preferredPendingLease: leaseKey)
+        enforceBudgetLocked()
         publishOwnerBytesLocked()
     }
 
     private func removePendingLeaseLocked(_ key: FabricLeaseKey) {
         pendingLeases.removeValue(forKey: key)
-        pendingLeaseAccessOrder.removeAll { $0 == key }
     }
 
     private func touch(_ key: ProseLayoutKey) {
         accessOrder.removeAll { $0 == key }
         accessOrder.append(key)
-    }
-
-    private func touchPendingLease(_ key: FabricLeaseKey) {
-        pendingLeaseAccessOrder.removeAll { $0 == key }
-        pendingLeaseAccessOrder.append(key)
     }
 
     private func sameFabricOwner(_ lhs: FabricLeaseKey, as rhs: FabricLeaseKey) -> Bool {
@@ -430,51 +417,21 @@ final class PreparedProseLayoutCache {
 #endif
     }
 
-    private func enforceBudgetLocked(preferredPendingLease: FabricLeaseKey? = nil) {
-        // Pending Yoga-to-Fabric handoffs are unmounted cache owners. They
-        // share the same budget as completed entries; mounted owners never
-        // enter this calculation and survive pressure until explicit release.
+    private func enforceBudgetLocked() {
+        // Completed entries are a disposable LRU. A pending Yoga-to-Fabric
+        // handoff is an exact active owner: evicting it would make Fabric's
+        // later mount miss without any completed-cache fallback. Its lifecycle
+        // release, activation replacement, or explicit memory warning owns
+        // retirement instead of ordinary byte pressure.
         while budgetedRetainedBytesLocked() > byteBudget {
             if let oldest = accessOrder.first {
                 removeCompletedLocked(oldest)
                 continue
             }
-            if let oldest = pendingLeaseAccessOrder.first(where: {
-                $0 != preferredPendingLease && pendingLeaseRemovalLowersBudgetedBytesLocked($0)
-            }) {
-                removePendingLeaseLocked(oldest)
-                continue
-            }
             break
-        }
-        // Byte pressure must retain duplicate handoffs that free no memory.
-        // Metadata pressure is independent: evict oldest non-preferred pending
-        // ownership even when the artifact remains mounted elsewhere.
-        while pendingLeases.count > pendingLeaseBudget {
-            guard let oldest = pendingLeaseAccessOrder.first(where: {
-                $0 != preferredPendingLease && pendingLeases[$0] != nil
-            }) else { break }
-            removePendingLeaseLocked(oldest)
         }
         retireUnownedPublicationKeysLocked()
         publishOwnerBytesLocked()
-    }
-
-    /// Removing a duplicate pending reference must not evict another
-    /// surface's handoff: it does not lower retained bytes. This matters for
-    /// oversized artifacts, which intentionally retain one immutable object
-    /// shared by every live owner rather than rebuilding it per surface.
-    private func pendingLeaseRemovalLowersBudgetedBytesLocked(_ leaseKey: FabricLeaseKey) -> Bool {
-        guard let layout = pendingLeases[leaseKey] else { return false }
-        let identifier = ObjectIdentifier(layout)
-        let mountedIdentifiers = Set(
-            (Array(mountedLeases.values) + Array(directMounted.values)).map(ObjectIdentifier.init)
-        )
-        guard !mountedIdentifiers.contains(identifier) else { return false }
-        guard !completed.values.contains(where: { ObjectIdentifier($0) == identifier }) else { return false }
-        return !pendingLeases.contains { candidate, value in
-            candidate != leaseKey && ObjectIdentifier(value) == identifier
-        }
     }
 
     /// Cache and lease references commonly point at the same immutable layout.

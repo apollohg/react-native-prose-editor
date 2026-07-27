@@ -715,8 +715,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.layoutRetainedBytesForTesting, 2)
     }
 
-    func testPendingLeaseEntryBudgetEvictsDuplicateMetadataButKeepsMountedAndPreferredOwners() throws {
-        let cache = PreparedProseLayoutCache(byteBudget: 1, pendingLeaseBudget: 2)
+    func testExactPendingLeasesSurviveBytePressureUntilTheirOwnersAcquire() throws {
+        let cache = PreparedProseLayoutCache(byteBudget: 1)
         let key = ProseLayoutKey(
             semanticKey: String(repeating: "a", count: 64),
             widthPixels: 320,
@@ -755,15 +755,22 @@ final class PreparedProseLayoutTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(cache.pendingLeaseCountForTesting, 2)
+        XCTAssertEqual(cache.pendingLeaseCountForTesting, 3)
         XCTAssertEqual(cache.mountedLeaseCountForTesting, 1)
-        XCTAssertNil(cache.acquireForFabricMount(
+        XCTAssertTrue(cache.acquireForFabricMount(
             surface: surface,
             generationIdentity: key.generationIdentity,
             widthPixels: key.widthPixels,
             displayScale: 2,
             leaseHandle: firstPending
-        ))
+        ) === artifact)
+        XCTAssertTrue(cache.acquireForFabricMount(
+            surface: surface,
+            generationIdentity: key.generationIdentity,
+            widthPixels: key.widthPixels,
+            displayScale: 2,
+            leaseHandle: secondPending
+        ) === artifact)
         XCTAssertTrue(cache.acquireForFabricMount(
             surface: surface,
             generationIdentity: key.generationIdentity,
@@ -908,7 +915,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(component.contains("const auto leaseHandle = LeaseHandle(_viewerState)"))
         XCTAssertTrue(component.contains("leaseHandle:leaseHandle"))
         XCTAssertTrue(component.contains("beginNewGenerationTerminatingCurrentLease:NO"))
-        XCTAssertTrue(component.contains("releaseFabricOwnershipTerminatingLease:terminal"))
+        XCTAssertTrue(component.contains("releaseFabricOwnershipTerminatingLease:YES"))
         XCTAssertTrue(component.contains("if (terminal) {"))
         XCTAssertTrue(component.contains("DeactivateLease(_viewerState, stateLeaseHandle)"))
         XCTAssertTrue(component.contains("releaseFabricMountMissSurfaceId"))

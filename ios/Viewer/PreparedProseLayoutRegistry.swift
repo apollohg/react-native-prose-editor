@@ -109,7 +109,6 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     init(
         byteBudget: Int = 32 * 1024 * 1024,
-        pendingLeaseBudget: Int = 256,
         compiledByteBudget: Int = 8 * 1024 * 1024,
         compilationFailureBudget: Int = 128,
         themeByteBudget: Int = 512 * 1024,
@@ -119,10 +118,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     ) {
         self.compile = compile
         self.prepare = prepare
-        layoutCache = PreparedProseLayoutCache(
-            byteBudget: byteBudget,
-            pendingLeaseBudget: pendingLeaseBudget
-        )
+        layoutCache = PreparedProseLayoutCache(byteBudget: byteBudget)
         self.compiledByteBudget = compiledByteBudget
         self.compilationFailureBudget = compilationFailureBudget
         self.themeByteBudget = themeByteBudget
