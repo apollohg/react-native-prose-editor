@@ -47,7 +47,8 @@ final class PreparedProseRenderingTests: XCTestCase {
             }
             let layoutByItem = Dictionary(grouping: layoutEntries, by: { $0.0 })
             for (_, leaves) in layoutByItem {
-                let contentAnchors = leaves.compactMap { block, prepared -> CGFloat? in
+                let contentAnchors = leaves.compactMap { _, entry -> CGFloat? in
+                    let (block, prepared) = entry
                     let content = prepared.fragments.first { fragment in
                         switch fragment.kind {
                         case .text, .atom:

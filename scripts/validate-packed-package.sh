@@ -512,11 +512,12 @@ RUBY
   require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/Props.h"
   require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/EventEmitters.h"
   require_file "$ios_project/build/generated/ios" "RCTThirdPartyComponentsProvider.mm"
+  provider_source="$ios_project/build/generated/ios/RCTThirdPartyComponentsProvider.mm"
   grep -Fq '@"PreparedProseViewer": NSClassFromString(@"PREPPreparedProseViewerComponentView")' \
-    "$ios_project/build/generated/ios/RCTThirdPartyComponentsProvider.mm" || \
+    "$provider_source" || \
     fail "iOS packed consumer codegen is missing the PreparedProseViewer third-party provider entry"
   grep -Fq '@apollohg/react-native-prose-editor' \
-    "$ios_project/build/generated/ios/RCTThirdPartyComponentsProvider.mm" || \
+    "$provider_source" || \
     fail "iOS packed consumer provider entry is not attributed to the packed dependency"
   workspace_path="$ios_project/PackedConsumer.xcworkspace"
   [[ -f "$workspace_path/contents.xcworkspacedata" ]] || \
@@ -788,6 +789,15 @@ ruby -rjson -e '
   abort "podspec license type must be Apache-2.0" unless license.fetch("type") == "Apache-2.0"
   abort "podspec license file must resolve to LICENSE" unless license.fetch("file") == "LICENSE"
   abort "podspec must vend exactly ios/EditorCore.xcframework" unless Array(spec.fetch("vendored_frameworks")) == ["ios/EditorCore.xcframework"]
+  private_headers = Array(spec.fetch("private_header_files"))
+  required_private_headers = [
+    "ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.h",
+    "common/cpp/react/renderer/components/PreparedProseViewer/**/*.h",
+  ]
+  abort "podspec must keep every Fabric implementation header private" unless required_private_headers.all? { |path| private_headers.include?(path) }
+  source_files = Array(spec.fetch("source_files"))
+  abort "podspec must compile Fabric implementation C++ sources" unless source_files.include?("common/cpp/**/*.{h,cpp}")
+  abort "podspec must preserve the Fabric compiler header directory" unless spec.fetch("header_dir") == "react/renderer/components/PreparedProseViewer"
 ' "$podspec_json" || fail "packed podspec does not unconditionally vend EditorCore.xcframework"
 
 validate_ios_consumer "$package_dir" "$tarball_path"

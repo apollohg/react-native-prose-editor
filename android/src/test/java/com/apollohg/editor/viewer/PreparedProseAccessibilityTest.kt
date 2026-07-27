@@ -477,9 +477,9 @@ class PreparedProseAccessibilityTest {
         }
         val bidi = Bidi(text.subSequence(0, lineEnd).toString(), bidiDirection)
         assertEquals(
+            "the fixture must retain the inherited paragraph direction",
             paragraphDirection == Layout.DIR_LEFT_TO_RIGHT,
             bidi.baseIsLeftToRight(),
-            "the fixture must retain the inherited paragraph direction",
         )
         val visualRuns = visualBidiRuns(
             List(bidi.runCount) { logicalIndex ->

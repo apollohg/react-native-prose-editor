@@ -144,10 +144,23 @@ assert.doesNotMatch(
 );
 assert.match(
     viewerPodspec,
-    /s\.private_header_files\s*=\s*'ios\/Viewer\/Fabric\/PREPPreparedProseViewerComponentView\.h'/,
-    'the Fabric C++ component header must remain private to the pod implementation',
+    /s\.private_header_files\s*=\s*\[\s*'ios\/Viewer\/Fabric\/PREPPreparedProseViewerComponentView\.h',\s*'common\/cpp\/react\/renderer\/components\/PreparedProseViewer\/\*\*\/\*\.h',\s*\]/,
+    'all Fabric implementation headers must remain private to the pod implementation',
 );
 assert.match(viewerPodspec, /s\.source_files\s*=\s*\['ios\/\*\.swift', 'ios\/Viewer\/\*\*\/\*\.\{swift,h,mm\}', 'common\/cpp\/\*\*\/\*\.\{h,cpp\}'\]/);
+assert.match(
+    viewerPodspec,
+    /s\.header_dir\s*=\s*'react\/renderer\/components\/PreparedProseViewer'/,
+    'Fabric implementation headers must remain available to the pod compiler',
+);
+for (const path of [
+    'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseMeasurementsManager.h',
+    'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerComponentDescriptor.h',
+    'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.h',
+    'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h',
+]) {
+    assert.ok(exists(path), `Fabric implementation header must remain packaged and compiled: ${path}`);
+}
 for (const path of [
     'ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm',
     'ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm',
