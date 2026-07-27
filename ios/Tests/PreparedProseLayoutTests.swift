@@ -700,14 +700,14 @@ final class PreparedProseLayoutTests: XCTestCase {
         let second = ProseViewerView(layoutRegistry: registry)
 
         XCTAssertTrue(first.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
-        _ = first.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
+        _ = first.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude))
         guard let mounted = first.drawingViewForTesting.layout else {
             return XCTFail("The first direct viewer should retain its prepared artifact.")
         }
         registry.didReceiveMemoryWarning()
 
         XCTAssertTrue(second.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
-        _ = second.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
+        _ = second.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude))
 
         XCTAssertTrue(second.drawingViewForTesting.layout === mounted)
         XCTAssertEqual(preparations, 1)
@@ -1244,36 +1244,44 @@ final class PreparedProseLayoutTests: XCTestCase {
                 )
             }
         )
-        let request = request()
+        let primaryRequest = request()
         let otherRequest = request(source: "other")
         let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
         let otherSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
         let generation = FabricGenerationToken(
             surface: surface,
-            generationIdentity: canonicalFabricGenerationIdentity(request, registry: registry)
+            generationIdentity: canonicalFabricGenerationIdentity(primaryRequest, registry: registry)
         )
         let otherGeneration = FabricGenerationToken(
             surface: otherSurface,
             generationIdentity: canonicalFabricGenerationIdentity(otherRequest, registry: registry)
         )
 
-        let mounted = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        let mounted = registry.measure(request: primaryRequest, widthPoints: 160, scale: 2, fabricSurface: surface)
         let mountedView = PreparedProseDrawingView(frame: .zero)
-        XCTAssertTrue(install(request, in: mountedView, surface: surface, registry: registry))
+        XCTAssertTrue(install(primaryRequest, in: mountedView, surface: surface, registry: registry))
         XCTAssertTrue(mountedView.layout === mounted)
-        guard let sidecar = FabricAttachmentSidecars.state(generation) else {
+        guard let sidecar = FabricAttachmentSidecars.state(
+            for: generation.surface,
+            leaseHandle: generation.leaseHandle
+        ) else {
             return XCTFail("The mounted Fabric generation should retain its attachment sidecar.")
         }
         _ = registry.measure(request: otherRequest, widthPoints: 120, scale: 2, fabricSurface: otherSurface)
-        let invalid = registry.measure(request: request, widthPoints: 0, scale: 2, fabricSurface: surface)
+        let invalid = registry.measure(request: primaryRequest, widthPoints: 0, scale: 2, fabricSurface: surface)
 
         XCTAssertEqual(invalid.error?.code, "INVALID_WIDTH")
         XCTAssertTrue(mountedView.layout === mounted)
         XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(generation))
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(generation))
-        XCTAssertTrue(FabricAttachmentSidecars.state(generation) === sidecar)
-        let replacement = registry.measure(request: request, widthPoints: 140, scale: 2, fabricSurface: surface)
-        XCTAssertTrue(install(request, in: mountedView, surface: surface, registry: registry, width: 140))
+        XCTAssertTrue(
+            FabricAttachmentSidecars.state(
+                for: generation.surface,
+                leaseHandle: generation.leaseHandle
+            ) === sidecar
+        )
+        let replacement = registry.measure(request: primaryRequest, widthPoints: 140, scale: 2, fabricSurface: surface)
+        XCTAssertTrue(install(primaryRequest, in: mountedView, surface: surface, registry: registry, width: 140))
         XCTAssertTrue(mountedView.layout === replacement)
         XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(otherGeneration))
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(otherGeneration))
