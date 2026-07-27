@@ -309,29 +309,27 @@ class PreparedProseAccessibilityTest {
     @Test
     fun `fallback keeps an internal LTR terminal in an RTL paragraph out of adjacent visual text`() {
         assertInternalMixedSoftWrapTerminalBoundary(
-            // Keep the visible break space within the LTR isolate. Otherwise
-            // Bidi resets trailing whitespace to the RTL paragraph direction
-            // and the whitespace, rather than the LTR content, becomes the
-            // terminal run under test.
-            firstLine = "\u05d0\u05d1\u05d2 \u2066abc ",
+            // Do not put whitespace after the LTR isolate content: Java Bidi
+            // resets trailing whitespace to the RTL paragraph direction.
+            // The opposite-direction terminal must instead end at lineEnd.
+            firstLine = "\u05d0\u05d1\u05d2 \u2066abc",
             continuation = "\u2069next",
             paragraphDirection = Layout.DIR_RIGHT_TO_LEFT,
             terminalRunIsRtl = false,
-            expectedVisualLogicalOrder = listOf(2, 1, 0),
+            expectedVisualLogicalOrder = listOf(1, 0),
         )
     }
 
     @Test
     fun `fallback keeps an internal RTL terminal in an LTR paragraph out of adjacent visual text`() {
         assertInternalMixedSoftWrapTerminalBoundary(
-            // Likewise, retain the visible break space in the RTL isolate so
-            // the LTR paragraph's trailing whitespace cannot replace the RTL
-            // terminal run selected below.
-            firstLine = "abc \u2067\u05d0\u05d1\u05d2 ",
+            // Likewise, omit trailing whitespace so Java Bidi leaves the RTL
+            // content as the terminal run selected below.
+            firstLine = "abc \u2067\u05d0\u05d1\u05d2",
             continuation = "\u2069next",
             paragraphDirection = Layout.DIR_LEFT_TO_RIGHT,
             terminalRunIsRtl = true,
-            expectedVisualLogicalOrder = listOf(0, 1, 2),
+            expectedVisualLogicalOrder = listOf(0, 1),
         )
     }
 
@@ -623,7 +621,7 @@ class PreparedProseAccessibilityTest {
         val lineEnd = firstLine.length
         assertEquals(firstLine.length, lineEnd)
         assertTrue(lineEnd < text.length)
-        assertEquals(' ', text[lineEnd - 1])
+        assertTrue(text[lineEnd - 1].isLetter())
         assertTrue(text[lineEnd - 1] != '\n')
         val bidiDirection = if (paragraphDirection == Layout.DIR_RIGHT_TO_LEFT) {
             Bidi.DIRECTION_RIGHT_TO_LEFT

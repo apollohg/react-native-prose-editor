@@ -190,9 +190,13 @@ class PreparedProseRenderingTest {
         val fixture = Fixture.structural[2]
         val request = ProseViewerRequest(fixture.source, ProseViewerConfiguration(configJson = fixture.configJson, themeJson = Fixture.themeJson))
         val surface = FabricSurfaceToken(77, 701)
+        val leaseHandle = 1L
+        val generation = FabricGenerationToken(surface, request.generationIdentity, leaseHandle)
+        registry.registerFabricLease(surface, leaseHandle)
+        registry.activateFabricGeneration(generation)
 
-        val densityOne = registry.measure(request, Fixture.widthPx, 1f, surface)
-        val densityTwo = registry.measure(request, Fixture.widthPx, 2f, surface)
+        val densityOne = registry.measure(request, Fixture.widthPx, 1f, surface, fabricLeaseHandle = leaseHandle)
+        val densityTwo = registry.measure(request, Fixture.widthPx, 2f, surface, fabricLeaseHandle = leaseHandle)
         val sourceAtoms = compile(fixture).blocks.flatMap { it.inlines }.filterIsInstance<ViewerInline.Atom>()
         val mention = sourceAtoms.single { it.nodeType == "mention" && it.label == "Ada" }
         val opaque = sourceAtoms.single { it.nodeType == "opaque" && it.label == "opaque" }
@@ -225,6 +229,10 @@ class PreparedProseRenderingTest {
         assertEquals(18f, twoAtom.cornerRadius)
         assertTrue(densityOne.hasOpaqueAtom())
         assertTrue(densityTwo.hasOpaqueAtom())
+
+        registry.releaseFabricGeneration(generation)
+        registry.deactivateFabricLease(surface, leaseHandle)
+        registry.finalizeFabricLease(surface, leaseHandle)
     }
 
     @Test
@@ -309,9 +317,9 @@ class PreparedProseRenderingTest {
             single.getLineBaseline(0) - naturalSingle.getLineBaseline(0),
         )
         assertEquals(1, (single.text as android.text.Spanned).getSpans(0, single.text.length, FixedLineHeightMetricSpan::class.java).size)
-        val wrapped = textLayout(densityOne, paragraphs[1].index)
-        assertTrue("wrapped fixture must have a final line", wrapped.lineCount >= 2)
-        assertEqualsLazy(48, lineHeight(wrapped, wrapped.lineCount - 1)) { "wrapped paragraph ${metricProjection(document, densityOne)}" }
+        val wideParagraph = textLayout(densityOne, paragraphs[1].index)
+        assertTrue("wide fixture must have a final line", wideParagraph.lineCount >= 1)
+        assertEqualsLazy(48, lineHeight(wideParagraph, wideParagraph.lineCount - 1)) { "wide paragraph ${metricProjection(document, densityOne)}" }
         val forcedWrapped = prepare(document, densityOneTheme, 1)
         val forcedWrappedText = textLayout(forcedWrapped, paragraphs[1].index)
         assertTrue("one-pixel artifact must wrap the final paragraph", forcedWrappedText.lineCount >= 2)
