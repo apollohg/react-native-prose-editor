@@ -820,6 +820,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(state.contains("if (data.count(key) == 0)"))
         XCTAssertTrue(state.contains("return fallback;"))
         XCTAssertTrue(state.contains("leaseLifecycle"))
+        XCTAssertTrue(state.contains("~PreparedProseViewerLeaseLifecycle"))
+        XCTAssertTrue(state.contains("bindTerminalCleanup"))
         XCTAssertTrue(shadow.contains("NextFabricLeaseHandle"))
         XCTAssertTrue(shadow.contains("initialStateData"))
         XCTAssertTrue(shadow.contains("state.leaseHandle = NextFabricLeaseHandle()"))
@@ -831,8 +833,10 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(shadow.contains("PendingLeaseHandles"))
         XCTAssertFalse(shadow.contains("ShadowNodeFamily*"))
         XCTAssertTrue(manager.contains("leaseHandle:leaseHandle"))
+        XCTAssertTrue(manager.contains("bindLeaseLifecycle"))
         XCTAssertTrue(manager.contains("!leaseLifecycle->isActive()"))
-        XCTAssertTrue(android.contains("leaseHandle,"))
+        XCTAssertTrue(android.contains("beginNativeMeasure"))
+        XCTAssertTrue(android.contains("static_cast<int64_t>(leaseHandle)"))
         XCTAssertTrue(registry.contains("leaseHandle: UInt64"))
         XCTAssertTrue(registry.contains("releaseFabricLeaseSurfaceId"))
         XCTAssertTrue(registry.contains("releaseFabricInvalidMeasurement"))
@@ -840,12 +844,80 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(component.contains("installCachedLayoutInDrawingView"))
         XCTAssertTrue(component.contains("const auto leaseHandle = LeaseHandle(_viewerState)"))
         XCTAssertTrue(component.contains("leaseHandle:leaseHandle"))
-        XCTAssertTrue(component.contains("DeactivateLease(_viewerState, leaseHandle)"))
+        XCTAssertTrue(component.contains("beginNewGenerationTerminatingCurrentLease:NO"))
+        XCTAssertTrue(component.contains("releaseFabricOwnershipTerminatingLease:terminal"))
+        XCTAssertTrue(component.contains("if (terminal) DeactivateLease"))
         XCTAssertTrue(component.contains("releaseFabricMountMissSurfaceId"))
         XCTAssertTrue(component.contains("leaseHandle:_ownedLeaseHandle"))
         XCTAssertTrue(cache.contains("$0.leaseHandle == leaseHandle"))
         XCTAssertTrue(cache.contains("fabricGenerations(for surface"))
         XCTAssertFalse(cache.contains(".max(by: { $0.epoch < $1.epoch })"))
+    }
+
+    func testFabricStateLifecycleUsesOneHandleAcrossOrdinaryRevisionsStaticContract() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let component = try String(
+            contentsOf: root.appendingPathComponent("ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm"),
+            encoding: .utf8
+        )
+        let shadow = try String(
+            contentsOf: root.appendingPathComponent("common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.cpp"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(component.contains("beginNewGenerationTerminatingCurrentLease:NO"))
+        XCTAssertTrue(component.contains("leaseChanged"))
+        XCTAssertTrue(component.contains("beginNewGenerationTerminatingCurrentLease:leaseChanged"))
+        XCTAssertTrue(component.contains("releaseFabricOwnershipTerminatingLease:YES"))
+        XCTAssertTrue(shadow.contains("std::numeric_limits<int64_t>::max()"))
+        XCTAssertTrue(shadow.contains("return 0;"))
+    }
+
+    func testNeverMountedFabricStateBindsExactTerminalCleanupStaticContract() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let state = try String(
+            contentsOf: root.appendingPathComponent("common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h"),
+            encoding: .utf8
+        )
+        let bridge = try String(
+            contentsOf: root.appendingPathComponent("ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(state.contains("final snapshot dies"))
+        XCTAssertTrue(bridge.contains("releaseFabricLeaseSurfaceId"))
+        XCTAssertTrue(bridge.contains("leaseLifecycle->bindTerminalCleanup"))
+    }
+
+    func testAndroidNativeStateKeepsExactLeaseHandleStaticContract() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let manager = try String(
+            contentsOf: root.appendingPathComponent("android/src/main/java/com/apollohg/editor/viewer/PreparedProseViewerManager.kt"),
+            encoding: .utf8
+        )
+        let cache = try String(
+            contentsOf: root.appendingPathComponent("android/src/main/java/com/apollohg/editor/viewer/PreparedProseLayoutCache.kt"),
+            encoding: .utf8
+        )
+        let jni = try String(
+            contentsOf: root.appendingPathComponent("android/src/main/jni/PreparedProseViewerMeasurementsManager.cpp"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(manager.contains("stringOrNull(\"leaseHandle\")?.toLongOrNull()"))
+        XCTAssertTrue(manager.contains("incoming.copy(leaseHandle = prior.leaseHandle)"))
+        XCTAssertTrue(manager.contains("FabricLeaseHandleBridge.currentHandle()"))
+        XCTAssertTrue(cache.contains("pendingLeases"))
+        XCTAssertTrue(cache.contains("mountedLeases"))
+        XCTAssertFalse(cache.contains("completed[mountIndex"))
+        XCTAssertTrue(jni.contains("getStaticMethod<void(jlong)>(\"beginNativeMeasure\")"))
+        XCTAssertTrue(jni.contains("std::to_string(static_cast<int64_t>(leaseHandle))"))
     }
 
 #if DEBUG

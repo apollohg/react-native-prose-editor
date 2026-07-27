@@ -18,7 +18,21 @@ internal data class ProseLayoutKey(
 )
 
 internal data class FabricSurfaceToken(val surfaceId: Int, val componentTag: Int)
-internal data class FabricGenerationToken(val surface: FabricSurfaceToken, val generationIdentity: String)
+/**
+ * The state-owned Fabric incarnation.  A recycled component may reuse the
+ * same surface/tag and even the same semantic generation, so every handoff
+ * operation must carry the native lease handle as well.
+ */
+internal data class FabricGenerationToken(
+    val surface: FabricSurfaceToken,
+    val generationIdentity: String,
+    val leaseHandle: Long,
+) {
+    init {
+        require(leaseHandle > 0) { "Fabric lease handles must be signed, non-zero Int64 values." }
+    }
+}
+internal data class FabricLeaseKey(val generation: FabricGenerationToken, val layout: ProseLayoutKey)
 internal data class ProseMountKey(val generationIdentity: String, val widthPx: Int, val densityBits: Long)
 
 /** Paint-only operations which Android spans cannot represent accurately. */

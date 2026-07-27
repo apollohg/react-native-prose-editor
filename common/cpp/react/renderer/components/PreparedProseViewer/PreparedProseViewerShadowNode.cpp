@@ -36,13 +36,23 @@ uint64_t FontEnvironmentRevision(const PreparedProseViewerProps &props) {
 }
 
 uint64_t NextFabricLeaseHandle() {
-  static std::atomic<uint64_t> next{0};
-  auto handle = next.fetch_add(1, std::memory_order_relaxed) + 1;
-  // Zero is the explicit "no committed handoff" sentinel in component state.
-  if (handle == 0) {
-    handle = next.fetch_add(1, std::memory_order_relaxed) + 1;
+  // The Android JNI contract is a signed jlong.  Stop rather than wrapping:
+  // aliasing a still-live owner would be worse than declining a theoretical
+  // 9e18th viewer incarnation.
+  static std::atomic<int64_t> next{0};
+  auto current = next.load(std::memory_order_relaxed);
+  while (current > 0 && current < std::numeric_limits<int64_t>::max()) {
+    if (next.compare_exchange_weak(
+            current, current + 1, std::memory_order_relaxed,
+            std::memory_order_relaxed)) {
+      return static_cast<uint64_t>(current + 1);
+    }
   }
-  return handle;
+  if (current == 0 && next.compare_exchange_strong(
+          current, 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
+    return 1;
+  }
+  return 0;
 }
 
 } // namespace
@@ -96,6 +106,10 @@ Size PreparedProseViewerShadowNode::measureContent(
   const auto leaseHandle = state.leaseLifecycle && state.leaseLifecycle->isActive()
       ? state.leaseHandle
       : 0;
+  if (leaseHandle != 0) {
+    measurementsManager_->bindLeaseLifecycle(
+        getSurfaceId(), getTag(), leaseHandle, state.leaseLifecycle);
+  }
   return measurementsManager_->measure(
       getSurfaceId(),
       getTag(),

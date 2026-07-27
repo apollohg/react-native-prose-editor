@@ -63,11 +63,12 @@ class PreparedProseRevisionTest {
     @Test fun fabricMeasurementResetsSemanticSidecarBeforeMountBindsOrdinals() {
         val surface = FabricSurfaceToken(71, 9)
         try {
-            val first = FabricAttachmentSidecars.begin(surface, "semantic-a")
+            val generation = FabricGenerationToken(surface, "semantic", 1)
+            val first = FabricAttachmentSidecars.begin(generation, "semantic-a")
             first.admit(1)
             assertTrue(first.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
 
-            val replacement = FabricAttachmentSidecars.begin(surface, "semantic-b")
+            val replacement = FabricAttachmentSidecars.begin(generation, "semantic-b")
             assertTrue(first === replacement)
             assertEquals(0, replacement.revision)
             replacement.admit(1)
@@ -83,17 +84,19 @@ class PreparedProseRevisionTest {
         val released = FabricSurfaceToken(71, 9)
         val sibling = FabricSurfaceToken(71, 10)
         try {
-            FabricAttachmentSidecars.begin(released, "semantic-a")
-            FabricAttachmentSidecars.begin(sibling, "semantic-b")
+            val releasedGeneration = FabricGenerationToken(released, "released", 1)
+            val siblingGeneration = FabricGenerationToken(sibling, "sibling", 2)
+            FabricAttachmentSidecars.begin(releasedGeneration, "semantic-a")
+            FabricAttachmentSidecars.begin(siblingGeneration, "semantic-b")
 
             // This models a drop after the UIView tag has reset: teardown is
             // driven by the recorded token, not a recomputed current tag.
             registry.releaseFabricSurface(released)
-            assertEquals(null, FabricAttachmentSidecars.state(released))
-            assertTrue(FabricAttachmentSidecars.state(sibling) != null)
+            assertEquals(null, FabricAttachmentSidecars.state(releasedGeneration))
+            assertTrue(FabricAttachmentSidecars.state(siblingGeneration) != null)
 
             registry.releaseFabricSurface(released)
-            assertTrue(FabricAttachmentSidecars.state(sibling) != null)
+            assertTrue(FabricAttachmentSidecars.state(siblingGeneration) != null)
         } finally {
             registry.releaseFabricSurface(released)
             registry.releaseFabricSurface(sibling)
@@ -185,16 +188,18 @@ class PreparedProseRevisionTest {
     @Test fun concurrentFabricMeasurementScopesKeepEvictedIntrinsicMetadataSurfaceLocalAndCleanUp() {
         val first = FabricSurfaceToken(91, 1)
         val second = FabricSurfaceToken(92, 1)
+        val firstGeneration = FabricGenerationToken(first, "first", 1)
+        val secondGeneration = FabricGenerationToken(second, "second", 2)
         // This deliberately collides an attachment identity across semantic
         // source/revision states; only the stable Fabric token may select it.
         val id = "7:https://example.test/shared"
         val executor = Executors.newFixedThreadPool(2)
         ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
         try {
-            val firstState = FabricAttachmentSidecars.begin(first, "source-a-revision-1")
+            val firstState = FabricAttachmentSidecars.begin(firstGeneration, "source-a-revision-1")
             firstState.admit(1)
             assertTrue(firstState.recordIntrinsicSize(id, 0, 80, 40, null))
-            val secondState = FabricAttachmentSidecars.begin(second, "source-b-revision-2")
+            val secondState = FabricAttachmentSidecars.begin(secondGeneration, "source-b-revision-2")
             secondState.admit(1)
             assertTrue(secondState.recordIntrinsicSize(id, 0, 30, 60, null))
             assertEquals(1, firstState.revision)
@@ -235,14 +240,14 @@ class PreparedProseRevisionTest {
             }
             assertEquals(null, FabricAttachmentSidecars.currentMeasurementState)
 
-            FabricAttachmentSidecars.remove(first)
-            FabricAttachmentSidecars.remove(second)
-            assertEquals(null, FabricAttachmentSidecars.state(first))
-            assertEquals(null, FabricAttachmentSidecars.state(second))
+            FabricAttachmentSidecars.remove(firstGeneration)
+            FabricAttachmentSidecars.remove(secondGeneration)
+            assertEquals(null, FabricAttachmentSidecars.state(firstGeneration))
+            assertEquals(null, FabricAttachmentSidecars.state(secondGeneration))
         } finally {
             executor.shutdownNow()
-            FabricAttachmentSidecars.remove(first)
-            FabricAttachmentSidecars.remove(second)
+            FabricAttachmentSidecars.remove(firstGeneration)
+            FabricAttachmentSidecars.remove(secondGeneration)
             ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting()
         }
     }

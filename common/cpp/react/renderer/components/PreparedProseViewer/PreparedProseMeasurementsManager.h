@@ -30,6 +30,12 @@ class PreparedProseMeasurementsManager {
       uint64_t leaseHandle,
       const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const;
 
+  void bindLeaseLifecycle(
+      SurfaceId surfaceId,
+      Tag componentTag,
+      uint64_t leaseHandle,
+      const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const;
+
  private:
   const ContextContainer::Shared contextContainer_;
 };

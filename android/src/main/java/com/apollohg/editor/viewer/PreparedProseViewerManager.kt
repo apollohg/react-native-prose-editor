@@ -155,9 +155,12 @@ internal class PreparedProseViewerManager :
         val density = context.resources.displayMetrics.density
         val fontScale = context.resources.configuration.fontScale
         val surface = localData?.let(::surfaceToken)
-        val request = requestFrom(props, state)
+        val leaseHandle = FabricLeaseHandleBridge.currentHandle()
+        val request = requestFrom(props, state, leaseHandle)
         if (request == null) {
-            surface?.let(PreparedProseLayoutRegistry.shared::releaseFabricSurface)
+            // An incomplete/stale Yoga callback has not named an exact
+            // generation. It must never tear down a newer incarnation on the
+            // same surface; recycle and surface-stop own terminal cleanup.
             return YogaMeasureOutput.make(0f, 0f)
         }
         val widthPx = widthToPixels(width, density)
@@ -167,9 +170,9 @@ internal class PreparedProseViewerManager :
             (widthMode != YogaMeasureMode.EXACTLY && widthMode != YogaMeasureMode.AT_MOST) ||
             widthPx == null
         ) {
-            PreparedProseLayoutRegistry.shared.measure(request, 0, density, fabricSurface = surface, fontScale = fontScale)
+            PreparedProseLayoutRegistry.shared.measure(request, 0, density, fabricSurface = surface, fabricLeaseHandle = leaseHandle, fontScale = fontScale)
         } else {
-            PreparedProseLayoutRegistry.shared.measure(request, widthPx, density, fabricSurface = surface, fontScale = fontScale)
+            PreparedProseLayoutRegistry.shared.measure(request, widthPx, density, fabricSurface = surface, fabricLeaseHandle = leaseHandle, fontScale = fontScale)
         }
         val measuredWidth = artifact.widthPx / density
         val intrinsicHeight = artifact.heightPx / density
@@ -203,10 +206,10 @@ internal class PreparedProseViewerManager :
         }
         val surface = FabricSurfaceToken(surfaceId, view.id)
         val generation = state.adopt(surface, request)
-        state.bindFabricAttachmentState(surface)
-        val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(surface, request, widthPx, density)
+        state.bindFabricAttachmentState(generation)
+        val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(generation, request, widthPx, density)
         if (artifact == null) {
-            PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation)
+            PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation, widthPx, density)
             state.finishWithoutMountedReplacement(view)
             return
         }
@@ -267,8 +270,8 @@ internal class PreparedProseViewerManager :
         return true
     }
 
-    private fun requestFrom(props: ReadableMap?, state: ReadableMap?): ProseViewerRequest? {
-        val revisions = state?.fabricRevisionsOrNull() ?: return null
+    private fun requestFrom(props: ReadableMap?, state: ReadableMap?, nativeLeaseHandle: Long = 0): ProseViewerRequest? {
+        val revisions = state?.fabricRevisionsOrNull(nativeLeaseHandle) ?: return null
         return requestFrom(props, revisions)
     }
 
@@ -325,10 +328,13 @@ internal class PreparedProseViewerManager :
     private fun ReadableMap.longOrZero(key: String): Long =
         if (!hasKey(key) || isNull(key)) 0 else getDouble(key).toLong().coerceAtLeast(0)
 
-    private fun ReadableMap.fabricRevisionsOrNull(): FabricStateRevisions? {
+    private fun ReadableMap.fabricRevisionsOrNull(nativeLeaseHandle: Long = 0): FabricStateRevisions? {
         val attachmentRevision = longOrNull("attachmentRevision") ?: return null
         val nativeFontRevision = longOrNull("nativeFontRevision") ?: return null
-        return FabricStateRevisions(attachmentRevision, nativeFontRevision)
+        // State's optional decimal representation is exact. The hot native
+        // measurement path receives this same handle as a JNI jlong above.
+        val stateHandle = stringOrNull("leaseHandle")?.toLongOrNull()?.takeIf { it > 0 } ?: 0L
+        return FabricStateRevisions(attachmentRevision, nativeFontRevision, stateHandle.takeIf { it > 0 } ?: nativeLeaseHandle)
     }
 
     private fun ReadableMap.longOrNull(key: String): Long? =
@@ -337,6 +343,7 @@ internal class PreparedProseViewerManager :
     private data class FabricStateRevisions(
         val attachmentRevision: Long,
         val nativeFontRevision: Long,
+        val leaseHandle: Long,
     )
 
     private class ViewState(
@@ -378,7 +385,10 @@ internal class PreparedProseViewerManager :
         fun replaceStateWrapper(next: StateWrapper, nextRevisions: FabricStateRevisions?) {
             if (stateWrapper !== next) stateWrapper?.destroyState()
             stateWrapper = next
-            revisions = nextRevisions
+            revisions = nextRevisions?.let { incoming ->
+                if (incoming.leaseHandle > 0) incoming
+                else revisions?.let { prior -> incoming.copy(leaseHandle = prior.leaseHandle) } ?: incoming
+            }
         }
 
         private var attachmentRevisions = ViewerAttachmentRevisionState()
@@ -403,8 +413,8 @@ internal class PreparedProseViewerManager :
             view.imagePixels = emptyMap()
         }
 
-        fun bindFabricAttachmentState(surface: FabricSurfaceToken) {
-            attachmentRevisions = FabricAttachmentSidecars.state(surface) ?: attachmentRevisions
+        fun bindFabricAttachmentState(generation: FabricGenerationToken) {
+            attachmentRevisions = FabricAttachmentSidecars.state(generation) ?: attachmentRevisions
         }
 
         fun recordIntrinsicSize(attachment: ViewerImageAttachment, width: Int, height: Int): Boolean =
@@ -436,13 +446,13 @@ internal class PreparedProseViewerManager :
 
         fun publishAttachmentRevision() {
             val current = revisions ?: return
-            publishRevisions(FabricStateRevisions(current.attachmentRevision + 1, current.nativeFontRevision))
+            publishRevisions(FabricStateRevisions(current.attachmentRevision + 1, current.nativeFontRevision, current.leaseHandle))
         }
 
         fun publishFontRevision(revision: Long) {
             val current = revisions ?: return
             if (revision <= 0) return
-            publishRevisions(FabricStateRevisions(current.attachmentRevision, current.nativeFontRevision + 1))
+            publishRevisions(FabricStateRevisions(current.attachmentRevision, current.nativeFontRevision + 1, current.leaseHandle))
         }
 
         private fun publishRevisions(next: FabricStateRevisions) {
@@ -489,13 +499,15 @@ internal class PreparedProseViewerManager :
             surface: FabricSurfaceToken,
             request: ProseViewerRequest,
         ): FabricGenerationToken {
-            val next = FabricGenerationToken(surface, request.generationIdentity)
+            val handle = revisions?.leaseHandle ?: 0L
+            require(handle > 0) { "Fabric mount attempted without an exact native lease handle." }
+            val next = FabricGenerationToken(surface, request.generationIdentity, handle)
             val previousSidecar = sidecarGeneration
-            if (previousSidecar != null && previousSidecar.surface != next.surface) {
+            if (previousSidecar != null && previousSidecar != next) {
                 // The view may already carry another Fabric tag by the time
                 // this callback runs. Remove only the sidecar token recorded
                 // for its former owner, never one reconstructed from the view.
-                PreparedProseLayoutRegistry.shared.releaseFabricSurface(previousSidecar.surface)
+                PreparedProseLayoutRegistry.shared.releaseFabricGeneration(previousSidecar)
             }
             sidecarGeneration = next
             if (generation != null && generation != next) {
@@ -524,11 +536,11 @@ internal class PreparedProseViewerManager :
 
         private fun releaseSidecarOwnership() {
             val sidecar = sidecarGeneration ?: return
-            // Sidecars are keyed by the surface/component half of the token.
-            // Clear the recorded owner before dispatching so drop/recycle and
-            // a later surface stop are all safely idempotent.
+            // Clear only the state incarnation recorded for this view. A
+            // stale recycled H1 must not remove H2 merely because Fabric has
+            // reused the same surface/component tag.
             sidecarGeneration = null
-            PreparedProseLayoutRegistry.shared.releaseFabricSurface(sidecar.surface)
+            PreparedProseLayoutRegistry.shared.releaseFabricGeneration(sidecar)
         }
     }
 

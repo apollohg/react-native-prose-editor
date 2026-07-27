@@ -4,6 +4,7 @@
 #include <folly/dynamic.h>
 #include <limits>
 #include <optional>
+#include <string>
 #include <react/jni/ReadableNativeMap.h>
 #include <react/renderer/core/conversions.h>
 
@@ -41,10 +42,19 @@ folly::dynamic toState(
   return folly::dynamic::object
       ("attachmentRevision", static_cast<int64_t>(attachmentRevision))
       ("nativeFontRevision", static_cast<int64_t>(nativeFontRevision))
-      ("leaseHandle", static_cast<int64_t>(leaseHandle));
+      ("leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
 }
 
 } // namespace
+
+void PreparedProseMeasurementsManager::bindLeaseLifecycle(
+    SurfaceId /*surfaceId*/,
+    Tag /*componentTag*/,
+    uint64_t /*leaseHandle*/,
+    const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& /*leaseLifecycle*/) const {
+  // Android's ViewManager receives an explicit onSurfaceStopped callback.
+  // The handle still scopes every per-view registry operation below.
+}
 
 Size PreparedProseMeasurementsManager::measure(
     SurfaceId surfaceId,
@@ -72,11 +82,17 @@ Size PreparedProseMeasurementsManager::measure(
                                 jfloat,
                                 jfloat,
                                 jfloat)>("measure");
+  static auto beginNativeMeasure = facebook::jni::findClassStatic(
+      "com/apollohg/editor/viewer/FabricLeaseHandleBridge")
+      ->getStaticMethod<void(jlong)>("beginNativeMeasure");
+  static auto endNativeMeasure = facebook::jni::findClassStatic(
+      "com/apollohg/editor/viewer/FabricLeaseHandleBridge")
+      ->getStaticMethod<void()>("endNativeMeasure");
 
   const auto localData = folly::dynamic::object
       ("surfaceId", static_cast<int64_t>(surfaceId))
       ("componentTag", static_cast<int64_t>(componentTag))
-      ("leaseHandle", static_cast<int64_t>(leaseHandle));
+      ("leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
   const auto propsDynamic = toDynamic(props);
   const auto stateDynamic = toState(attachmentRevision, nativeFontRevision, leaseHandle)
       ("nativeFontScale", nativeFontScale);
@@ -89,17 +105,25 @@ Size PreparedProseMeasurementsManager::measure(
   const auto componentName = make_jstring("PreparedProseViewer");
 
   const auto width = effectiveWidth;
-  return yogaMeassureToSize(measure(
-      fabricUIManager,
-      surfaceId,
-      componentName.get(),
-      localDataMap.get(),
-      propsMap.get(),
-      stateMap.get(),
-      0,
-      width,
-      0,
-      std::numeric_limits<Float>::infinity()));
+  beginNativeMeasure(static_cast<int64_t>(leaseHandle));
+  try {
+    const auto result = yogaMeassureToSize(measure(
+        fabricUIManager,
+        surfaceId,
+        componentName.get(),
+        localDataMap.get(),
+        propsMap.get(),
+        stateMap.get(),
+        0,
+        width,
+        0,
+        std::numeric_limits<Float>::infinity()));
+    endNativeMeasure();
+    return result;
+  } catch (...) {
+    endNativeMeasure();
+    throw;
+  }
 }
 
 } // namespace facebook::react

@@ -86,26 +86,31 @@ internal class PreparedProseLayoutRegistry(
         widthPx: Int,
         density: Float,
         fabricSurface: FabricSurfaceToken? = null,
+        fabricLeaseHandle: Long = 0,
         compiledDocument: ViewerDocument? = null,
         fontScale: Float = 1f,
         measurementImageState: ViewerAttachmentRevisionState? = null,
     ): PreparedProseLayout {
+        val generation = fabricSurface?.takeIf { fabricLeaseHandle > 0 }
+            ?.let { FabricGenerationToken(it, request.generationIdentity, fabricLeaseHandle) }
         if (!isValidMeasurement(widthPx, density)) {
-            fabricSurface?.let(::releaseFabricSurface)
+            // An old zero-width pass is not a lifecycle event.  Retire only
+            // this handle's pending handoffs and leave every mounted layout,
+            // including a newer H2, untouched.
+            generation?.let { layoutCache.releasePendingLease(it) }
             return invalidWidthArtifact(request)
         }
         val densityBits = density.toRawBits().toLong()
-        val generation = fabricSurface?.let { FabricGenerationToken(it, request.generationIdentity) }
         // Fabric resolves exactly its stable surface/component sidecar; direct
         // hosts pass their own mounted state. Neither path scans other hosts.
-        val imageMeasurementState = fabricSurface?.let {
+        val imageMeasurementState = generation?.let {
             FabricAttachmentSidecars.begin(it, request.semanticGenerationIdentity)
         } ?: measurementImageState
         return try {
             val document = preparedDocument(request, generation, compiledDocument)
             val theme = resolveTheme(request, density, fontScale)
             val key = layoutKey(document, request, widthPx, densityBits)
-            layoutCache.value(key, fabricSurface) {
+            layoutCache.value(key, generation) {
                 val layoutStarted = PreparedProseInstrumentation.now()
                 layoutPreparationCount += 1
                 try {
@@ -132,28 +137,28 @@ internal class PreparedProseLayoutRegistry(
                 }
             }
         } catch (error: ProseViewerError) {
-            cachedErrorArtifact(request, widthPx, densityBits, error, fabricSurface)
+            cachedErrorArtifact(request, widthPx, densityBits, error, generation)
         }
     }
 
     /** Mount acquisition intentionally cannot invoke Rust or StaticLayout.Builder. */
     fun acquireForFabricMount(
-        surface: FabricSurfaceToken,
+        generation: FabricGenerationToken,
         request: ProseViewerRequest,
         widthPx: Int,
         density: Float,
     ): PreparedProseLayout? {
         if (!isValidMeasurement(widthPx, density)) return null
         return layoutCache.acquireForFabricMount(
-            surface,
-            request.generationIdentity,
+            generation,
             widthPx,
             density.toRawBits().toLong(),
         )
     }
 
     fun releaseFabricGeneration(generation: FabricGenerationToken) {
-        layoutCache.releaseLease(generation.surface, generation.generationIdentity)
+        layoutCache.releaseLease(generation)
+        FabricAttachmentSidecars.remove(generation)
         synchronized(compilerLock) {
             documentsByFabricGeneration.remove(generation)
             failuresByFabricGeneration.remove(generation)
@@ -161,7 +166,7 @@ internal class PreparedProseLayoutRegistry(
     }
 
     fun releaseFabricSurface(surface: FabricSurfaceToken) {
-        layoutCache.releaseLease(surface)
+        layoutCache.releaseSurface(surface)
         FabricAttachmentSidecars.remove(surface)
         synchronized(compilerLock) {
             documentsByFabricGeneration.keys.removeAll { it.surface == surface }
@@ -184,7 +189,17 @@ internal class PreparedProseLayoutRegistry(
         }
     }
 
-    fun releaseFabricMountMiss(generation: FabricGenerationToken) = releaseFabricGeneration(generation)
+    /** A stale mount can retire only the exact unmounted handoff it requested. */
+    fun releaseFabricMountMiss(generation: FabricGenerationToken, widthPx: Int, density: Float) {
+        if (!isValidMeasurement(widthPx, density)) return
+        layoutCache.releasePendingLease(generation, widthPx, density.toRawBits().toLong())
+        synchronized(compilerLock) {
+            if (!hasFabricLease(generation)) {
+                documentsByFabricGeneration.remove(generation)
+                failuresByFabricGeneration.remove(generation)
+            }
+        }
+    }
 
     fun registerDirectMounted(owner: String, layout: PreparedProseLayout) = layoutCache.registerDirectMount(owner, layout)
     fun releaseDirectMounted(owner: String) = layoutCache.releaseDirectMount(owner)
@@ -211,6 +226,7 @@ internal class PreparedProseLayoutRegistry(
         documentsByFabricGeneration.size + failuresByFabricGeneration.size
     }
     internal val preparedThemeCountForTesting: Int get() = synchronized(compilerLock) { themes.size }
+    private fun hasFabricLease(generation: FabricGenerationToken): Boolean = layoutCache.hasLease(generation)
 
     private fun preparedDocument(
         request: ProseViewerRequest,
@@ -218,8 +234,6 @@ internal class PreparedProseLayoutRegistry(
         suppliedDocument: ViewerDocument?,
     ): ViewerDocument {
         if (generation != null) synchronized(compilerLock) {
-            documentsByFabricGeneration.keys.removeAll { it.surface == generation.surface && it != generation }
-            failuresByFabricGeneration.keys.removeAll { it.surface == generation.surface && it != generation }
             documentsByFabricGeneration[generation]?.let { return it }
             failuresByFabricGeneration[generation]?.let { throw it }
         }
@@ -240,7 +254,7 @@ internal class PreparedProseLayoutRegistry(
         widthPx: Int,
         densityBits: Long,
         error: ProseViewerError,
-        fabricSurface: FabricSurfaceToken?,
+        fabricGeneration: FabricGenerationToken?,
     ): PreparedProseLayout {
         val key = ProseLayoutKey(
             semanticKey = "error:${request.compiledCacheKey}",
@@ -253,7 +267,7 @@ internal class PreparedProseLayoutRegistry(
             generationIdentity = request.generationIdentity,
             semanticGenerationIdentity = request.semanticGenerationIdentity,
         )
-        return layoutCache.value(key, fabricSurface) { PreparedProseLayout.error(key, widthPx, error) }
+        return layoutCache.value(key, fabricGeneration) { PreparedProseLayout.error(key, widthPx, error) }
     }
 
     private fun invalidWidthArtifact(request: ProseViewerRequest): PreparedProseLayout {

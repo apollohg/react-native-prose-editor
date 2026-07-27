@@ -180,8 +180,9 @@ class PreparedProseLayoutTest {
         val request = request("Fabric acquisition")
         val surface = FabricSurfaceToken(surfaceId = 41, componentTag = 420)
 
-        registry.measure(request, widthPx = 320, density = 1f, fabricSurface = surface)
-        val artifact = registry.acquireForFabricMount(surface, request, widthPx = 320, density = 1f)
+        val generation = FabricGenerationToken(surface, request.generationIdentity, 1)
+        registry.measure(request, widthPx = 320, density = 1f, fabricSurface = surface, fabricLeaseHandle = generation.leaseHandle)
+        val artifact = registry.acquireForFabricMount(generation, request, widthPx = 320, density = 1f)
         val drawingView = PreparedProseDrawingView(context)
         drawingView.install(artifact)
         drawingView.layout(0, 0, 320, artifact!!.heightPx)
@@ -211,8 +212,8 @@ class PreparedProseLayoutTest {
     @Test
     fun `Fabric surface stop clears every measured generation pin and lease`() {
         val registry = testRegistry(CountingLayoutEngine())
-        registry.measure(request("first"), 320, 1f, FabricSurfaceToken(7, 71))
-        registry.measure(request("second"), 320, 1f, FabricSurfaceToken(7, 72))
+        registry.measure(request("first"), 320, 1f, FabricSurfaceToken(7, 71), fabricLeaseHandle = 1)
+        registry.measure(request("second"), 320, 1f, FabricSurfaceToken(7, 72), fabricLeaseHandle = 2)
 
         registry.releaseFabricSurfaceId(7)
 
@@ -225,10 +226,11 @@ class PreparedProseLayoutTest {
         val registry = testRegistry(CountingLayoutEngine())
         val request = request("mount miss")
         val surface = FabricSurfaceToken(8, 81)
-        registry.measure(request, 320, 1f, surface)
+        val generation = FabricGenerationToken(surface, request.generationIdentity, 1)
+        registry.measure(request, 320, 1f, surface, fabricLeaseHandle = generation.leaseHandle)
 
-        assertEquals(null, registry.acquireForFabricMount(surface, request, 321, 1f))
-        registry.releaseFabricMountMiss(FabricGenerationToken(surface, request.generationIdentity))
+        assertEquals(null, registry.acquireForFabricMount(generation, request, 321, 1f))
+        registry.releaseFabricMountMiss(generation, 320, 1f)
 
         assertEquals(0, registry.fabricGenerationPinCountForTesting)
         assertEquals(0, registry.fabricLeaseCountForTesting)
@@ -242,7 +244,7 @@ class PreparedProseLayoutTest {
             byteBudget = 1,
         )
         val request = request("too large to retain")
-        registry.measure(request, 320, 1f, FabricSurfaceToken(9, 91))
+        registry.measure(request, 320, 1f, FabricSurfaceToken(9, 91), fabricLeaseHandle = 1)
 
         assertEquals(0, registry.layoutRetainedBytesForTesting)
         assertEquals(1, registry.fabricLeaseCountForTesting)
@@ -257,12 +259,47 @@ class PreparedProseLayoutTest {
                 320,
                 1f,
                 FabricSurfaceToken(10, 100 + index),
+                fabricLeaseHandle = index + 1L,
             )
         }
 
         assertEquals(33, registry.fabricLeaseCountForTesting)
         registry.releaseFabricSurfaceId(10)
         assertEquals(0, registry.fabricLeaseCountForTesting)
+    }
+
+    @Test
+    fun `Fabric mount requires its exact pending lease handle and stale H1 cannot disturb H2`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val request = request("exact lease")
+        val surface = FabricSurfaceToken(12, 120)
+        val h1 = FabricGenerationToken(surface, request.generationIdentity, 1)
+        val h2 = FabricGenerationToken(surface, request.generationIdentity, 2)
+
+        registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h1.leaseHandle)
+        registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h2.leaseHandle)
+
+        assertEquals(null, registry.acquireForFabricMount(FabricGenerationToken(surface, request.generationIdentity, 3), request, 320, 1f))
+        registry.releaseFabricMountMiss(h1, 320, 1f)
+        registry.measure(request, 0, 1f, surface, fabricLeaseHandle = h1.leaseHandle)
+
+        assertNotNull(registry.acquireForFabricMount(h2, request, 320, 1f))
+        assertEquals(1, registry.fabricLeaseCountForTesting)
+    }
+
+    @Test
+    fun `Fabric invalid width retires only exact pending ownership`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val request = request("invalid H1")
+        val surface = FabricSurfaceToken(13, 130)
+        val h1 = FabricGenerationToken(surface, request.generationIdentity, 1)
+        val h2 = FabricGenerationToken(surface, request.generationIdentity, 2)
+
+        registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h1.leaseHandle)
+        registry.measure(request, 320, 1f, surface, fabricLeaseHandle = h2.leaseHandle)
+        registry.measure(request, 0, 1f, surface, fabricLeaseHandle = h1.leaseHandle)
+
+        assertNotNull(registry.acquireForFabricMount(h2, request, 320, 1f))
     }
 
     @Test

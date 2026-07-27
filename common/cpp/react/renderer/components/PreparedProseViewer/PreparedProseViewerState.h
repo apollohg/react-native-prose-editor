@@ -4,6 +4,9 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <functional>
+#include <mutex>
 
 #ifdef ANDROID
 #include <folly/dynamic.h>
@@ -17,6 +20,16 @@ namespace facebook::react {
 /// Its lifetime is bounded by the state snapshots that reference it.
 class PreparedProseViewerLeaseLifecycle final {
  public:
+  ~PreparedProseViewerLeaseLifecycle() {
+    deactivate();
+    std::function<void()> cleanup;
+    {
+      std::lock_guard<std::mutex> lock(cleanupMutex_);
+      cleanup = std::move(cleanup_);
+    }
+    if (cleanup) cleanup();
+  }
+
   bool isActive() const {
     return active_.load(std::memory_order_acquire);
   }
@@ -25,8 +38,19 @@ class PreparedProseViewerLeaseLifecycle final {
     active_.store(false, std::memory_order_release);
   }
 
+  // The platform bridge binds this once the first measurement knows the
+  // concrete Fabric surface/tag. It is held by shared state data, so ordinary
+  // state clones cannot fire it; it runs only when the family incarnation's
+  // final snapshot dies.
+  void bindTerminalCleanup(std::function<void()> cleanup) {
+    std::lock_guard<std::mutex> lock(cleanupMutex_);
+    if (!cleanup_) cleanup_ = std::move(cleanup);
+  }
+
  private:
   std::atomic<bool> active_{true};
+  std::mutex cleanupMutex_;
+  std::function<void()> cleanup_;
 };
 
 struct PreparedProseViewerState final {
@@ -58,13 +82,16 @@ struct PreparedProseViewerState final {
     return folly::dynamic::object("attachmentRevision", attachmentRevision)(
         "nativeFontRevision", nativeFontRevision)(
         "nativeFontScale", nativeFontScale)(
-        "leaseHandle", static_cast<int64_t>(leaseHandle));
+        // ReadableMap exposes numeric values as doubles on Android. Preserve
+        // this opaque Int64 identity as decimal text at the state boundary;
+        // the synchronous JNI measurement path still carries a real jlong.
+        "leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
   }
 
  private:
   static uint64_t revisionValue(const folly::dynamic& data, const char* key) {
     const auto value = data.getDefault(key, 0).asInt();
-    return value < 0 ? 0 : static_cast<uint64_t>(value);
+    return value > 0 ? static_cast<uint64_t>(value) : 0;
   }
 
   static double scaleValue(const folly::dynamic& data, const char* key) {
@@ -79,8 +106,16 @@ struct PreparedProseViewerState final {
     if (data.count(key) == 0) {
       return fallback;
     }
+    if (data[key].isString()) {
+      try {
+        const auto value = std::stoll(data[key].asString());
+        return value > 0 ? static_cast<uint64_t>(value) : 0;
+      } catch (...) {
+        return 0;
+      }
+    }
     const auto value = data.getDefault(key, 0).asInt();
-    return value < 0 ? 0 : static_cast<uint64_t>(value);
+    return value > 0 ? static_cast<uint64_t>(value) : 0;
   }
 
   static std::shared_ptr<PreparedProseViewerLeaseLifecycle> lifecycleValue(

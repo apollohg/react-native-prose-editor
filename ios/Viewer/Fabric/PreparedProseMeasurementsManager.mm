@@ -29,6 +29,21 @@ NSString *SourceKind(const PreparedProseViewerProps &props) {
 
 } // namespace
 
+void PreparedProseMeasurementsManager::bindLeaseLifecycle(
+    SurfaceId surfaceId,
+    Tag componentTag,
+    uint64_t leaseHandle,
+    const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const {
+  if (leaseHandle == 0 || !leaseLifecycle) return;
+  leaseLifecycle->bindTerminalCleanup([
+      surfaceId, componentTag, leaseHandle] {
+    [[PREPPreparedProseLayoutRegistry sharedRegistry]
+        releaseFabricLeaseSurfaceId:static_cast<int64_t>(surfaceId)
+                  componentTag:static_cast<int64_t>(componentTag)
+                   leaseHandle:leaseHandle];
+  });
+}
+
 Size PreparedProseMeasurementsManager::measure(
     SurfaceId surfaceId,
     Tag componentTag,

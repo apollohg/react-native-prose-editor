@@ -251,7 +251,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   const BOOL generationChanged =
       !_viewerProps || !HasEquivalentGenerationProps(*_viewerProps, *nextProps);
   if (generationChanged) {
-    [self beginNewGeneration];
+    [self beginNewGenerationTerminatingCurrentLease:NO];
   }
   _viewerProps = nextProps;
   [self beginSemanticImageGenerationIfPossible];
@@ -265,11 +265,15 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 {
   [super updateState:state oldState:oldState];
   const auto nextState = std::static_pointer_cast<const PreparedProseViewerShadowNode::ConcreteState>(state);
+  const BOOL leaseChanged = _viewerState && LeaseHandle(_viewerState) != LeaseHandle(nextState);
   if (!_viewerState || Revision(_viewerState, true) != Revision(nextState, true) ||
       Revision(_viewerState, false) != Revision(nextState, false) ||
       NativeFontScale(_viewerState) != NativeFontScale(nextState) ||
-      LeaseHandle(_viewerState) != LeaseHandle(nextState)) {
-    [self beginNewGeneration];
+      leaseChanged) {
+    // Revisions and same-family width updates are replacements, not a
+    // teardown.  Only a genuinely different state incarnation retires the
+    // previous lifecycle guard.
+    [self beginNewGenerationTerminatingCurrentLease:leaseChanged];
   }
   _viewerState = nextState;
   [self beginSemanticImageGenerationIfPossible];
@@ -297,10 +301,10 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 {
   [super didMoveToSuperview];
   if (self.superview == nil) {
-    // Once detached, this view has no trustworthy root from which to prove
-    // that its ownership can survive a remount. Release the persisted owner
-    // now; a real reattachment acquires a fresh exact token through the gate.
-    [self releaseAllFabricOwnership];
+    // Detachment is a normal Fabric transaction boundary. The state-owned
+    // lifetime guard performs terminal cleanup if this family is discarded;
+    // retaining a same-family lease here lets an ordinary reattachment mount
+    // the already prepared artifact without reminting a handle.
     [_drawingView cancelConfiguredImages];
     return;
   }
@@ -330,9 +334,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   _ownedLeaseHandle = 0;
 }
 
-- (void)beginNewGeneration
+- (void)beginNewGenerationTerminatingCurrentLease:(BOOL)terminal
 {
-  [self releaseFabricOwnership];
+  [self releaseFabricOwnershipTerminatingLease:terminal];
   [_drawingView cancelConfiguredImages];
   // Keep the last complete artifact visible while a new generation has no
   // representable layout metrics. The install gate clears it only
@@ -359,23 +363,20 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   [_drawingView beginSemanticImageGeneration:semanticGeneration];
 }
 
-- (void)releaseFabricOwnership
+- (void)releaseFabricOwnershipTerminatingLease:(BOOL)terminal
 {
-  // A Yoga handoff can exist before this component has acquired it. Recycling
-  // still terminates that exact state incarnation so a delayed first mount or
-  // measure cannot turn the orphaned handoff into new retained ownership.
+  // A state handle represents the Fabric family lifetime, not one props,
+  // image, font, or width revision.  Only recycle/family teardown may
+  // deactivate it; ordinary replacement releases its old generation key.
   const auto stateLeaseHandle = LeaseHandle(_viewerState);
-  if (stateLeaseHandle != 0) {
+  if (terminal && stateLeaseHandle != 0) {
     DeactivateLease(_viewerState, stateLeaseHandle);
   }
   if (!_hasOwnedSurface || !_ownedGeneration) {
     return;
   }
   const auto leaseHandle = _ownedLeaseHandle;
-  // Deactivate the state-owned incarnation before touching the registry. Any
-  // delayed Yoga snapshot sharing this state can now produce only an unowned
-  // bounded cache artifact, never a new Fabric lease or image sidecar.
-  DeactivateLease(_viewerState, leaseHandle);
+  if (terminal) DeactivateLease(_viewerState, leaseHandle);
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
       releaseFabricGenerationSurfaceId:_ownedSurfaceId
                           componentTag:_ownedComponentTag
@@ -389,7 +390,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (void)releaseAllFabricOwnership
 {
   // Recycling is terminal for this exact state-carried lease incarnation.
-  [self releaseFabricOwnership];
+  [self releaseFabricOwnershipTerminatingLease:YES];
 }
 
 - (void)installMeasuredArtifactIfAttached
@@ -454,7 +455,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     // A reused view may have a different root/token before the previous
     // lifecycle callback finishes. Release only the persisted owner, never
     // the current UIView tag, which React Native may already have reset.
-    [self releaseFabricOwnership];
+    [self releaseFabricOwnershipTerminatingLease:NO];
   }
   const BOOL preservesMountedArtifactForWidthReplacement =
       _hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
