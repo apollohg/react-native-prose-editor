@@ -1,6 +1,9 @@
 package com.apollohg.editor.viewer
 
 import android.graphics.Rect
+import android.graphics.Paint
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
@@ -12,6 +15,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import uniffi.editor_core.FfiViewerMark
+import java.text.Bidi
+import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.min
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -34,6 +41,43 @@ class PreparedProseAccessibilityTest {
                 listOf(Rect(11, 10, 18, 20), Rect(0, 30, 8, 40), Rect(2, 10, 10, 20))
             )
         )
+    }
+
+    @Test
+    fun `empty shaped selection fallback uses matching RTL boundary affinities`() {
+        val text = "Latin \u05d0\u05d1\u05d2 Latin"
+        val width = 300
+        val layout = StaticLayout.Builder.obtain(
+            text,
+            TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 18f },
+            width,
+        ).build()
+        val bidi = Bidi(text, Bidi.DIRECTION_LEFT_TO_RIGHT)
+        val run = (0 until bidi.runCount).single { (bidi.getRunLevel(it) and 1) == 1 }
+        val start = bidi.getRunStart(run)
+        val end = bidi.getRunLimit(run)
+
+        val rect = requireNotNull(
+            fallbackSelectionRectForVisualRun(
+                layout = layout,
+                runStart = start,
+                runEnd = end,
+                runIsRtl = true,
+                line = layout.getLineForOffset(start),
+                width = width,
+            )
+        )
+
+        val expectedRight = ceil(
+            max(layout.getPrimaryHorizontal(start), layout.getSecondaryHorizontal(start))
+        ).toInt().coerceIn(0, width)
+        val expectedLeft = kotlin.math.floor(
+            min(layout.getPrimaryHorizontal(end), layout.getSecondaryHorizontal(end))
+        ).toInt().coerceIn(0, width)
+        assertEquals(expectedLeft, rect.left)
+        assertEquals(expectedRight, rect.right)
+        assertEquals(layout.getLineTop(0), rect.top)
+        assertEquals(layout.getLineBottom(0), rect.bottom)
     }
 
     @Test

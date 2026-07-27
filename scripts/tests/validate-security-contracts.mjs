@@ -5,6 +5,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import {
+    assertPinnedCargoBehaviorSpawnFixture,
+    runSecurityBehaviorCommands,
+    securityBehaviorCommands,
+} from './security-behavior-runner.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
@@ -269,18 +274,9 @@ assert.doesNotMatch(
     'the ordinary JNA JAR must remain exclusive to the JVM test runtime'
 );
 
-// Behavior validation must resolve the same pinned Cargo binary as every
-// release-facing Rust command; plain PATH cargo can select an older toolchain.
-const securityValidatorSource = read('scripts/tests/validate-security-contracts.mjs');
-assert.match(
-    securityValidatorSource,
-    /const pinnedCargo = resolve\(root, 'rust', 'toolchain-cargo\.sh'\);/
-);
-assert.match(
-    securityValidatorSource,
-    /\[\s*'rust',\s*pinnedCargo,/s,
-    'Rust behavior validation must invoke the pinned Cargo wrapper'
-);
+// This captures the actual command passed to spawn, rather than examining this
+// file's text. It is intentionally part of every security-validation entry.
+assertPinnedCargoBehaviorSpawnFixture({ root, pinnedCargo });
 
 // Task 16C: the legacy UDL and the legacy editor_*/collaboration_session_*
 // exports were deleted; the production surface is the 31 editor_v2_*
@@ -359,50 +355,12 @@ if (behaviorMode) {
     const selectedTargets = new Set(
         (process.env.SECURITY_BEHAVIOR_TARGETS ?? 'rust,typescript,android,ios').split(',')
     );
-    const commands = [
-        [
-            'rust',
-            pinnedCargo,
-            [
-                'test',
-                '--manifest-path',
-                'rust/editor-core/Cargo.toml',
-                '--test',
-                'security_contract_fixture_test',
-            ],
-            root,
-        ],
-        [
-            'typescript',
-            'npx',
-            ['jest', 'src/__tests__/securityContracts.test.ts', '--runInBand', '--watchman=false'],
-            root,
-        ],
-        [
-            'android',
-            './gradlew',
-            [
-                ':apollohg-react-native-prose-editor:testDebugUnitTest',
-                '--tests',
-                'com.apollohg.editor.RenderImageLoaderPolicyTest.shared whitespace base64 and trickle fixtures execute against Android boundary',
-            ],
-            resolve(root, 'example/android'),
-        ],
-        [
-            'ios',
-            'bash',
-            [
-                'scripts/run-ios-tests.sh',
-                '-only-testing:NativeEditorTests/RenderBridgeTests/testSharedWhitespaceBase64AndTrickleFixturesExecuteAgainstIOSBoundary',
-            ],
-            root,
-        ],
-    ];
-    for (const [target, command, args, cwd] of commands) {
-        if (!selectedTargets.has(target)) continue;
-        const result = spawnSync(command, args, { cwd, env: environment, stdio: 'inherit' });
-        assert.equal(result.status, 0, `behavior harness failed: ${command} ${args.join(' ')}`);
-    }
+    runSecurityBehaviorCommands({
+        commands: securityBehaviorCommands({ root, pinnedCargo }),
+        selectedTargets,
+        environment,
+        spawn: spawnSync,
+    });
 }
 
 const validationScope = behaviorMode

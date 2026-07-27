@@ -61,6 +61,37 @@ internal fun mergeAdjacentSameLineSelectionFragments(fragments: List<Rect>): Lis
 
 private const val SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX = 1
 
+/**
+ * Returns the fallback rectangle for one visual Bidi run when Android exposes
+ * no shaped selection contour. At a directional boundary StaticLayout has two
+ * valid cursor positions: primary follows the paragraph affinity and secondary
+ * follows the other visual run. Selecting the visual edge from the run's
+ * direction prevents an RTL run from inheriting its LTR neighbour's boundary.
+ */
+internal fun fallbackSelectionRectForVisualRun(
+    layout: StaticLayout,
+    runStart: Int,
+    runEnd: Int,
+    runIsRtl: Boolean,
+    line: Int,
+    width: Int,
+): Rect? {
+    if (runStart >= runEnd) return null
+
+    fun visualBoundary(offset: Int, logicalRunStart: Boolean): Float {
+        val primary = layout.getPrimaryHorizontal(offset)
+        val secondary = layout.getSecondaryHorizontal(offset)
+        val visualRightEdge = if (runIsRtl) logicalRunStart else !logicalRunStart
+        return if (visualRightEdge) max(primary, secondary) else min(primary, secondary)
+    }
+
+    val start = visualBoundary(runStart, logicalRunStart = true)
+    val end = visualBoundary(runEnd, logicalRunStart = false)
+    val left = kotlin.math.floor(min(start, end)).toInt().coerceIn(0, width)
+    val right = ceil(max(start, end)).toInt().coerceIn(0, width)
+    return Rect(left, layout.getLineTop(line), right, layout.getLineBottom(line)).takeIf { !it.isEmpty }
+}
+
 /** Creates immutable StaticLayout fragments without depending on a mounted View. */
 internal interface AndroidProseLayoutEngine {
     fun prepare(
@@ -518,7 +549,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             // return an empty selection path for an otherwise valid range.
             // Preserve shaped contours whenever they exist; only then derive
             // per-direction visual runs from StaticLayout's own positions.
-            result += fallbackSelectionRectsForLine(layout, start, end, line)
+            result += fallbackSelectionRectsForLine(layout, start, end, line, width)
         }
         return result.sortedWith(compareBy<Rect> { it.top }.thenBy { it.left })
     }
@@ -528,22 +559,19 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         start: Int,
         end: Int,
         line: Int,
+        width: Int,
     ): List<Rect> {
         val fragments = mutableListOf<Rect>()
-        fun appendRun(runStart: Int, runEnd: Int) {
-            if (runStart >= runEnd) return
-            val first = layout.getPrimaryHorizontal(runStart)
-            val last = layout.getPrimaryHorizontal(runEnd)
-            val left = kotlin.math.floor(min(first, last)).toInt()
-            val right = ceil(max(first, last)).toInt()
-            if (right > left) {
-                fragments += Rect(left, layout.getLineTop(line), right, layout.getLineBottom(line))
-            }
-        }
-
         val bidi = Bidi(layout.text.subSequence(start, end).toString(), Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT)
         for (run in 0 until bidi.runCount) {
-            appendRun(start + bidi.getRunStart(run), start + bidi.getRunLimit(run))
+            fallbackSelectionRectForVisualRun(
+                layout = layout,
+                runStart = start + bidi.getRunStart(run),
+                runEnd = start + bidi.getRunLimit(run),
+                runIsRtl = (bidi.getRunLevel(run) and 1) == 1,
+                line = line,
+                width = width,
+            )?.let(fragments::add)
         }
         return fragments
     }
