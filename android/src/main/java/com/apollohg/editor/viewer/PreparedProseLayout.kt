@@ -38,10 +38,14 @@ internal data class PreparedProseFragment(
     val cornerRadius: Float = 0f,
     val strokeWidth: Float = 0f,
     val label: String? = null,
+    /** Immutable compiler identity for an inline atom; absent for non-atoms. */
+    val atomNodeType: String? = null,
+    val atomDocPos: Long? = null,
+    val atomAttrsJson: String? = null,
     val checked: Boolean = false,
 ) {
     val retainedBytes: Long
-        get() = 160L + (layout?.text?.length ?: 0).toLong() * 4 + (labelLayout?.text?.length ?: 0).toLong() * 4 + (label?.length ?: 0).toLong() * 2
+        get() = 160L + (layout?.text?.length ?: 0).toLong() * 4 + (labelLayout?.text?.length ?: 0).toLong() * 4 + (label?.length ?: 0).toLong() * 2 + (atomNodeType?.length ?: 0).toLong() * 2 + (atomAttrsJson?.length ?: 0).toLong() * 2
 }
 
 /** A vertically sorted immutable culling unit. */

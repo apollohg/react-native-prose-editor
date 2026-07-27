@@ -52,6 +52,21 @@ function visitCorpusNode(
 }
 
 describe('prepared prose native lifecycle contracts', () => {
+    it('isolates host JNA from Android production and unit-test AAR resolution', () => {
+        const androidBuild = readSource('android/build.gradle');
+
+        expect(androidBuild).toContain('api "net.java.dev.jna:jna:5.18.1@aar"');
+        expect(androidBuild).toContain('hostTestJna {');
+        expect(androidBuild).toContain('canBeConsumed = false');
+        expect(androidBuild).toContain('canBeResolved = true');
+        expect(androidBuild).toContain('transitive = false');
+        expect(androidBuild).toContain('hostTestJna "net.java.dev.jna:jna:5.18.1@jar"');
+        expect(androidBuild).toContain('testRuntimeOnly files(configurations.hostTestJna)');
+        expect(androidBuild).toContain("name.endsWith('UnitTestRuntimeClasspath')");
+        expect(androidBuild).toContain("exclude group: 'net.java.dev.jna', module: 'jna'");
+        expect(androidBuild).not.toContain('testRuntimeOnly "net.java.dev.jna:jna:5.18.1"');
+    });
+
     it('keeps the hard cutover validator manifest-driven across exports and native project membership', () => {
         const validator = readSource('scripts/tests/validate-prepared-prose-viewer-cutover.mjs');
         const manifest = JSON.parse(readSource('scripts/package-abi-manifest.json')) as {

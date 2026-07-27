@@ -18,6 +18,27 @@ if (!newArchEnabled) {
 group = 'com.apollohg'
 version = packageJson.version
 
+// The Android AAR is the only production JNA artifact. Robolectric runs the
+// generated UniFFI binding on the host JVM, which instead needs JNA's ordinary
+// JAR and its bundled host jnidispatch resource. Resolve that artifact outside
+// the Android runtime graph so Gradle cannot select the AAR for host tests.
+configurations {
+    hostTestJna {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false
+    }
+}
+
+configurations.configureEach {
+    if (name.endsWith('UnitTestRuntimeClasspath')) {
+        // The direct host JAR below supplies JNA classes and host native
+        // resources. Do not let the Android AAR's component variant collapse
+        // that runtime back to Android-only jnidispatch binaries.
+        exclude group: 'net.java.dev.jna', module: 'jna'
+    }
+}
+
 android {
     namespace = "com.apollohg.editor"
     buildFeatures {
@@ -87,10 +108,10 @@ dependencies {
     implementation "com.squareup.okhttp3:okhttp:4.9.2"
 
     api "net.java.dev.jna:jna:5.18.1@aar"
-    // Robolectric runs generated UniFFI bindings on the host JVM. Keep the
-    // ordinary JNA JAR test-only so it supplies host jnidispatch without
-    // changing the Android AAR's native-library packaging.
-    testRuntimeOnly "net.java.dev.jna:jna:5.18.1"
+    // Do not add this JAR to any Android or published configuration. The
+    // separate artifact request is intentionally consumed only by JVM tests.
+    hostTestJna "net.java.dev.jna:jna:5.18.1@jar"
+    testRuntimeOnly files(configurations.hostTestJna)
 
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.robolectric:robolectric:4.14.1"

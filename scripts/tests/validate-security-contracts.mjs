@@ -263,14 +263,26 @@ for (const code of ffiV2.operationCodes) assert.ok(ffiTypes.includes(`"${code}"`
 assert.match(ffiTypes, /Some\(true\)/, 'unit success must cross UniFFI as Some(true)');
 
 // Android production keeps JNA in its Android AAR form. The host JVM test
-// runtime needs the ordinary JAR for JNA's platform-specific jnidispatch
-// resource, and must not publish that JAR with the library.
+// runtime resolves the ordinary JAR in an isolated configuration for JNA's
+// platform-specific jnidispatch resource. It must neither publish that JAR
+// nor permit the Android AAR variant to collapse the host runtime.
 const androidBuild = read('android/build.gradle');
 assert.match(androidBuild, /^\s*api "net\.java\.dev\.jna:jna:5\.18\.1@aar"\s*$/m);
-assert.match(androidBuild, /^\s*testRuntimeOnly "net\.java\.dev\.jna:jna:5\.18\.1"\s*$/m);
+assert.match(
+    androidBuild,
+    /hostTestJna\s*\{\s*canBeConsumed\s*=\s*false\s*canBeResolved\s*=\s*true\s*transitive\s*=\s*false\s*\}/s,
+    'host JNA must resolve in a non-consumable, non-transitive test-only configuration'
+);
+assert.match(androidBuild, /^\s*hostTestJna "net\.java\.dev\.jna:jna:5\.18\.1@jar"\s*$/m);
+assert.match(androidBuild, /^\s*testRuntimeOnly files\(configurations\.hostTestJna\)\s*$/m);
+assert.match(
+    androidBuild,
+    /name\.endsWith\('UnitTestRuntimeClasspath'\)[\s\S]*?exclude group:\s*'net\.java\.dev\.jna', module:\s*'jna'/,
+    'JVM unit-test runtime must exclude the Android JNA component before receiving the host JAR'
+);
 assert.doesNotMatch(
     androidBuild,
-    /^\s*(?:api|implementation|runtimeOnly) "net\.java\.dev\.jna:jna:5\.18\.1"\s*$/m,
+    /^\s*(?:api|implementation|runtimeOnly|testRuntimeOnly) "net\.java\.dev\.jna:jna:5\.18\.1(?:@jar)?"\s*$/m,
     'the ordinary JNA JAR must remain exclusive to the JVM test runtime'
 );
 

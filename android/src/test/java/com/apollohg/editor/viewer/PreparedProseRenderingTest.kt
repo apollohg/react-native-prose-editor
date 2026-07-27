@@ -155,8 +155,17 @@ class PreparedProseRenderingTest {
 
     @Test
     fun `mention merges local paint and border into its immutable atom fragment`() {
-        val layout = prepare(compile(Fixture.structural[2]))
-        val atom = layout.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.ATOM }
+        val document = compile(Fixture.structural[2])
+        val mention = document.blocks.flatMap { it.inlines }.filterIsInstance<ViewerInline.Atom>()
+            .single { it.nodeType == "mention" && it.label == "Ada" }
+        val layout = prepare(document)
+        val atom = layout.blocks.flatMap { it.fragments }.single {
+            it.kind == PreparedProseFragmentKind.ATOM &&
+                it.atomNodeType == mention.nodeType &&
+                it.atomDocPos == mention.docPos &&
+                it.atomAttrsJson == mention.attrsJson &&
+                it.label == mention.label
+        }
 
         assertEquals(0xFF00FF00.toInt(), atom.color)
         assertEquals(0xFF0000FF.toInt(), atom.borderColor)
@@ -179,8 +188,25 @@ class PreparedProseRenderingTest {
 
         val densityOne = registry.measure(request, Fixture.widthPx, 1f, surface)
         val densityTwo = registry.measure(request, Fixture.widthPx, 2f, surface)
-        val oneAtom = densityOne.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.ATOM }
-        val twoAtom = densityTwo.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.ATOM }
+        val sourceAtoms = compile(fixture).blocks.flatMap { it.inlines }.filterIsInstance<ViewerInline.Atom>()
+        val mention = sourceAtoms.single { it.nodeType == "mention" && it.label == "Ada" }
+        val opaque = sourceAtoms.single { it.nodeType == "opaque" && it.label == "opaque" }
+        fun PreparedProseLayout.mentionAtom() = blocks.flatMap { it.fragments }.single {
+            it.kind == PreparedProseFragmentKind.ATOM &&
+                it.atomNodeType == mention.nodeType &&
+                it.atomDocPos == mention.docPos &&
+                it.atomAttrsJson == mention.attrsJson &&
+                it.label == mention.label
+        }
+        fun PreparedProseLayout.hasOpaqueAtom() = blocks.flatMap { it.fragments }.any {
+            it.kind == PreparedProseFragmentKind.ATOM &&
+                it.atomNodeType == opaque.nodeType &&
+                it.atomDocPos == opaque.docPos &&
+                it.atomAttrsJson == opaque.attrsJson &&
+                it.label == opaque.label
+        }
+        val oneAtom = densityOne.mentionAtom()
+        val twoAtom = densityTwo.mentionAtom()
 
         assertEquals(1, compilations)
         assertEquals(2, engine.prepareCount)
@@ -192,6 +218,8 @@ class PreparedProseRenderingTest {
         assertEquals(4f, twoAtom.strokeWidth)
         assertEquals(9f, oneAtom.cornerRadius)
         assertEquals(18f, twoAtom.cornerRadius)
+        assertTrue(densityOne.hasOpaqueAtom())
+        assertTrue(densityTwo.hasOpaqueAtom())
     }
 
     @Test

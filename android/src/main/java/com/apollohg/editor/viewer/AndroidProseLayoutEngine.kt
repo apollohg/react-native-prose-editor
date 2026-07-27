@@ -441,7 +441,18 @@ internal data class PreparedProseTheme(
 }
 
 private data class PreparedAtomAppearance(val paint: PreparedTextPaint, val background: Int, val borderColor: Int?, val borderWidth: Float, val radius: Float, val paddingHorizontal: Int, val paddingVertical: Int)
-private data class PreparedAtomSpec(val start: Int, val nodeType: String, val label: String, val appearance: PreparedAtomAppearance, val widthPx: Int, val heightPx: Int, val labelLayout: StaticLayout, val labelBaselinePx: Int)
+private data class PreparedAtomSpec(
+    val start: Int,
+    val nodeType: String,
+    val docPos: Long,
+    val attrsJson: String,
+    val label: String,
+    val appearance: PreparedAtomAppearance,
+    val widthPx: Int,
+    val heightPx: Int,
+    val labelLayout: StaticLayout,
+    val labelBaselinePx: Int,
+)
 private data class PreparedMarker(val layout: StaticLayout?, val label: String, val widthPx: Int, val heightPx: Int, val ascentPx: Int, val descentPx: Int, val baselinePx: Int, val checked: Boolean)
 
 private class AtomMetricSpan(
@@ -673,7 +684,21 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             val baseline = textTop + layout.getLineBaseline(line)
             val atomTop = baseline - atom.appearance.paddingVertical - atom.labelBaselinePx
             val bounds = Rect(atomLeft, atomTop, max(atomLeft + 1, atomRight), atomTop + atom.heightPx)
-            fragments += PreparedProseFragment(PreparedProseFragmentKind.ATOM, bounds, labelLayout = atom.labelLayout, labelX = bounds.left + atom.appearance.paddingHorizontal, labelY = bounds.top + atom.appearance.paddingVertical, color = atom.appearance.background, borderColor = atom.appearance.borderColor, cornerRadius = atom.appearance.radius, strokeWidth = atom.appearance.borderWidth, label = atom.label)
+            fragments += PreparedProseFragment(
+                kind = PreparedProseFragmentKind.ATOM,
+                bounds = bounds,
+                labelLayout = atom.labelLayout,
+                labelX = bounds.left + atom.appearance.paddingHorizontal,
+                labelY = bounds.top + atom.appearance.paddingVertical,
+                color = atom.appearance.background,
+                borderColor = atom.appearance.borderColor,
+                cornerRadius = atom.appearance.radius,
+                strokeWidth = atom.appearance.borderWidth,
+                label = atom.label,
+                atomNodeType = atom.nodeType,
+                atomDocPos = atom.docPos,
+                atomAttrsJson = atom.attrsJson,
+            )
         }
         if (block.inBlockquote) fragments += PreparedProseFragment(PreparedProseFragmentKind.BORDER, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + theme.quoteBorderWidthPx, totalEnd), color = theme.quoteBorderColor)
         firstMarkers.forEach { (ancestor, marker) ->
@@ -787,7 +812,18 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                     val height = ascent + metricDescent
                     val start = source.length
                     source.append('\uFFFC')
-                    atoms += PreparedAtomSpec(start, inline.nodeType, label, appearance, width, height, labelLayout, labelLayout.getLineBaseline(0))
+                    atoms += PreparedAtomSpec(
+                        start = start,
+                        nodeType = inline.nodeType,
+                        docPos = inline.docPos,
+                        attrsJson = inline.attrsJson,
+                        label = label,
+                        appearance = appearance,
+                        widthPx = width,
+                        heightPx = height,
+                        labelLayout = labelLayout,
+                        labelBaselinePx = labelLayout.getLineBaseline(0),
+                    )
                     spans += { value -> value.setSpan(AtomMetricSpan(width, ascent, metricDescent), start, start + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
                     if (inline.nodeType == "mention") semanticRanges += PreparedSemanticRange.Mention(start, start + 1, inline.docPos, label)
                 }

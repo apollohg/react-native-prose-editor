@@ -64,6 +64,15 @@ internal class ViewerFontEnvironment {
             if (normalized.isEmpty()) return ResolvedFamily(Typeface.create(fallback, style), false)
             synchronized(familyLock) {
                 registeredFamilies[normalized]?.let { return ResolvedFamily(Typeface.create(it, style), false) }
+            }
+            // Generic platform families are part of Android's viewer contract,
+            // not custom family probes. Resolve them before the injectable
+            // resolver so a test/custom loader cannot mark sans-serif (or its
+            // peers) missing and emit a false warning.
+            if (normalized.lowercase() in genericPlatformFamilies) {
+                return ResolvedFamily(Typeface.create(normalized, style), false)
+            }
+            synchronized(familyLock) {
                 if (normalized in demonstrablyMissingFamilies) return ResolvedFamily(Typeface.create(fallback, style), true)
             }
             // API 34 exposes the resolved system family name. That is a public
