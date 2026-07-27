@@ -3,6 +3,7 @@
 #include <fbjni/fbjni.h>
 #include <folly/dynamic.h>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <react/jni/ReadableNativeMap.h>
@@ -45,16 +46,21 @@ folly::dynamic toState(
       ("leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
 }
 
-// The class reference is deliberately process-lifetime. Terminal callbacks
-// may run on the final C++ state release rather than a Java-created thread;
-// retaining one global class (not a manager or view) gives that callback a
-// valid application class loader without creating a lifecycle cycle or a
-// per-family global-reference leak.
+// Each C++ state-family owns one bridge while it is live. Terminal callbacks
+// can run on the final C++ state release rather than a Java-created thread, so
+// this must retain a JNI global reference instead of the local class lookup
+// that created it. The bridge owns no state-family object, avoiding a cycle.
 class AndroidLeaseLifecycleBridge final {
  public:
-  AndroidLeaseLifecycleBridge()
-      : bridgeClass_(facebook::jni::findClassStatic(
-            "com/apollohg/editor/viewer/FabricLeaseHandleBridge")),
+  static std::shared_ptr<AndroidLeaseLifecycleBridge> create() {
+    return std::make_shared<AndroidLeaseLifecycleBridge>(
+        facebook::jni::make_global(facebook::jni::findClassStatic(
+            "com/apollohg/editor/viewer/FabricLeaseHandleBridge")));
+  }
+
+  explicit AndroidLeaseLifecycleBridge(
+      facebook::jni::global_ref<facebook::jni::JClass> bridgeClass)
+      : bridgeClass_(std::move(bridgeClass)),
         registerLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
             "registerNativeLease")),
         releaseLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
@@ -66,34 +72,17 @@ class AndroidLeaseLifecycleBridge final {
                    static_cast<jlong>(leaseHandle));
   }
 
-  void releaseLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const noexcept {
-    if (!facebook::jni::Environment::isGlobalJvmAvailable()) {
-      return;
-    }
-    try {
-      facebook::jni::ThreadScope threadScope;
-      releaseLease_(bridgeClass_, static_cast<jint>(surfaceId),
-                    static_cast<jint>(componentTag),
-                    static_cast<jlong>(leaseHandle));
-    } catch (...) {
-      // Process/runtime teardown can invalidate the Java callback after the
-      // registry itself has disappeared. A terminal C++ destructor must never
-      // throw or dereference a view/manager in that case.
-    }
+  void releaseLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const {
+    releaseLease_(bridgeClass_, static_cast<jint>(surfaceId),
+                  static_cast<jint>(componentTag),
+                  static_cast<jlong>(leaseHandle));
   }
 
  private:
-  facebook::jni::alias_ref<facebook::jni::JClass> bridgeClass_;
+  facebook::jni::global_ref<facebook::jni::JClass> bridgeClass_;
   facebook::jni::JStaticMethod<void(jint, jint, jlong)> registerLease_;
   facebook::jni::JStaticMethod<void(jint, jint, jlong)> releaseLease_;
 };
-
-AndroidLeaseLifecycleBridge& androidLeaseLifecycleBridge() {
-  // Never destruct the global class reference after the VM has begun
-  // unloading. This is a single bounded process-lifetime bridge.
-  static auto* bridge = new AndroidLeaseLifecycleBridge();
-  return *bridge;
-}
 
 } // namespace
 
@@ -113,10 +102,32 @@ void PreparedProseMeasurementsManager::bindLeaseLifecycle(
   }
   try {
     facebook::jni::ThreadScope threadScope;
-    auto& bridge = androidLeaseLifecycleBridge();
-    bridge.registerLease(surfaceId, componentTag, leaseHandle);
-    leaseLifecycle->bindTerminalCleanup([surfaceId, componentTag, leaseHandle] {
-      androidLeaseLifecycleBridge().releaseLease(surfaceId, componentTag, leaseHandle);
+    auto bridge = AndroidLeaseLifecycleBridge::create();
+    bridge->registerLease(surfaceId, componentTag, leaseHandle);
+    leaseLifecycle->bindTerminalCleanup([bridge = std::move(bridge), surfaceId, componentTag, leaseHandle]() mutable {
+      // Destroy the owning global reference while this callback still owns an
+      // attached JNI environment. During VM teardown, releasing a Java lease
+      // is optional; dropping the reference remains bounded to this family.
+      try {
+        if (!facebook::jni::Environment::isGlobalJvmAvailable()) {
+          bridge.reset();
+          return;
+        }
+        facebook::jni::ThreadScope threadScope;
+        try {
+          bridge->releaseLease(surfaceId, componentTag, leaseHandle);
+        } catch (...) {
+          // The Java registry may already be gone during runtime teardown.
+        }
+        // This reset is deliberately inside ThreadScope, including when the
+        // Java callback threw, so fbjni releases the global reference through
+        // a valid attached environment.
+        bridge.reset();
+      } catch (...) {
+        // A failed attach means VM teardown is already underway. The process
+        // owns the remaining JNI globals; never dereference Java from here.
+        bridge.reset();
+      }
     });
   } catch (...) {
     // Runtime teardown may race a Yoga worker before it has an attached env.

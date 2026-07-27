@@ -925,6 +925,10 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(jni.contains("getStaticMethod<void(jlong)>(\"beginNativeMeasure\")"))
         XCTAssertTrue(jni.contains("registerNativeLease"))
         XCTAssertTrue(jni.contains("releaseNativeLease"))
+        XCTAssertTrue(jni.contains("global_ref<facebook::jni::JClass>"))
+        XCTAssertFalse(jni.contains("alias_ref<facebook::jni::JClass>"))
+        XCTAssertTrue(jni.contains("make_global"))
+        XCTAssertTrue(jni.contains("bridge.reset()"))
         XCTAssertTrue(jni.contains("facebook::jni::ThreadScope"))
         XCTAssertTrue(jni.contains("Every object allocation, class lookup, and Java invocation below can run"))
         XCTAssertTrue(jni.contains("Still inside ThreadScope"))
@@ -1077,7 +1081,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(freshGeneration))
     }
 
-    func testInvalidFabricWidthReleasesOwnershipButRetainsLifecycleHandleForLaterValidMeasure() {
+    func testInvalidFabricWidthPreservesMountedOwnershipAndLaterValidReplacement() {
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
             compile: { [document = self.document] _ in document },
@@ -1103,16 +1107,24 @@ final class PreparedProseLayoutTests: XCTestCase {
             generationIdentity: canonicalFabricGenerationIdentity(otherRequest, registry: registry)
         )
 
-        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        let mounted = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+        let mountedView = PreparedProseDrawingView(frame: .zero)
+        XCTAssertTrue(install(request, in: mountedView, surface: surface, registry: registry))
+        XCTAssertTrue(mountedView.layout === mounted)
+        guard let sidecar = FabricAttachmentSidecars.state(generation) else {
+            return XCTFail("The mounted Fabric generation should retain its attachment sidecar.")
+        }
         _ = registry.measure(request: otherRequest, widthPoints: 120, scale: 2, fabricSurface: otherSurface)
         let invalid = registry.measure(request: request, widthPoints: 0, scale: 2, fabricSurface: surface)
 
         XCTAssertEqual(invalid.error?.code, "INVALID_WIDTH")
-        XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(generation))
-        XCTAssertFalse(registry.hasFabricThemeOwnershipForTesting(generation))
-        XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
-        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
-        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+        XCTAssertTrue(mountedView.layout === mounted)
+        XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(generation))
+        XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(generation))
+        XCTAssertTrue(FabricAttachmentSidecars.state(generation) === sidecar)
+        let replacement = registry.measure(request: request, widthPoints: 140, scale: 2, fabricSurface: surface)
+        XCTAssertTrue(install(request, in: mountedView, surface: surface, registry: registry, width: 140))
+        XCTAssertTrue(mountedView.layout === replacement)
         XCTAssertTrue(registry.hasFabricGenerationOwnershipForTesting(otherGeneration))
         XCTAssertTrue(registry.hasFabricThemeOwnershipForTesting(otherGeneration))
         XCTAssertTrue(install(otherRequest, in: PreparedProseDrawingView(frame: .zero), surface: otherSurface, registry: registry, width: 120))

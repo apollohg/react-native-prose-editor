@@ -207,7 +207,13 @@ public final class PreparedProseLayoutRegistry: NSObject {
             )
         }
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
-            if let generation { releaseFabricInvalidMeasurement(generation) }
+            if let generation {
+                releaseFabricInvalidMeasurement(
+                    generation,
+                    widthPoints: widthPoints,
+                    scale: scale
+                )
+            }
             return invalidWidthArtifact(
                 request: request,
                 scale: scale,
@@ -667,26 +673,51 @@ public final class PreparedProseLayoutRegistry: NSObject {
         FabricAttachmentSidecars.remove(surface, leaseHandle: leaseHandle)
     }
 
-    /// An invalid width did not create a new handoff. Clean up only pending
-    /// work for the exact state-carried handle, preserving both its lifecycle
-    /// and any mounted layout so a later valid width can reuse the same token.
-    private func releaseFabricInvalidMeasurement(_ generation: FabricGenerationToken) {
+    /// An invalid Yoga pass is not a lifecycle event. It may retire only an
+    /// exact physical pending handoff; an actually invalid width has no such
+    /// key, so it must not infer one from a prior measurement. In particular,
+    /// it preserves mounted rendering, compiler/theme pins, permitted
+    /// generation ownership, and attachment sidecar state for a later valid
+    /// measure in this same state-family lifecycle.
+    private func releaseFabricInvalidMeasurement(
+        _ generation: FabricGenerationToken,
+        widthPoints: CGFloat,
+        scale: CGFloat
+    ) {
+        guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
+            return
+        }
         compiledCondition.lock()
         guard isFabricLeaseActiveLocked(generation) else {
             compiledCondition.unlock()
             return
         }
-        fabricOwnershipRevisions.removeValue(forKey: generation)
+        compiledCondition.unlock()
+        let hasSurvivingLease = layoutCache.releasePendingLease(
+            for: generation.surface,
+            generationIdentity: generation.generationIdentity,
+            widthPixels: widthPixels,
+            displayScale: scale,
+            leaseHandle: generation.leaseHandle
+        )
+        guard !hasSurvivingLease else { return }
+
+        // This branch is defensive: current validation reaches this helper
+        // only when no physical key exists. If validation evolves, compiler
+        // pins can be released only after the exact pending handoff is gone
+        // and no displayed/in-flight ownership remains. Sidecars are never
+        // reset here because they may back the currently displayed artifact.
+        compiledCondition.lock()
+        guard (fabricMeasurementsInFlight[generation]?.count ?? 0) == 0,
+              isFabricLeaseActiveLocked(generation)
+        else {
+            compiledCondition.unlock()
+            return
+        }
         documentsByFabricGeneration.removeValue(forKey: generation)
         failuresByFabricGeneration.removeValue(forKey: generation)
         releaseThemeOwnership(for: generation)
         compiledCondition.unlock()
-        layoutCache.releasePendingLeases(
-            for: generation.surface,
-            generationIdentity: generation.generationIdentity,
-            leaseHandle: generation.leaseHandle
-        )
-        FabricAttachmentSidecars.remove(generation.surface, leaseHandle: generation.leaseHandle)
     }
 
     /// Fabric records an owner before it tries to consume Yoga's lease. A

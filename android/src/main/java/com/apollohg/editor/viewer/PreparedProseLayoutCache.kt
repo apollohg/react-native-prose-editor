@@ -198,14 +198,21 @@ internal class PreparedProseLayoutCache(
     }
 
     private fun enforceBudgetLocked(preferredGeneration: FabricGenerationToken?) {
-        while (evictableBytesLocked() > byteBudget || pendingLeases.size > pendingLeaseBudget) {
+        while (budgetedRetainedBytesLocked() > byteBudget || pendingLeases.size > pendingLeaseBudget) {
             val completedEntry = completed.entries.firstOrNull()
             if (completedEntry != null) {
                 completed.remove(completedEntry.key)
                 if (mountIndex[mountKey(completedEntry.key)] == completedEntry.key) mountIndex.remove(mountKey(completedEntry.key))
                 continue
             }
-            val pendingEntry = pendingLeases.entries.firstOrNull { it.key.generation != preferredGeneration } ?: break
+            // A duplicate pending handoff can be the only exact artifact for
+            // another Fabric owner even when the same immutable object is
+            // already mounted/direct-mounted. Removing it frees zero bytes,
+            // so it cannot satisfy either retained-byte pressure or justify
+            // breaking exact-once handoff ownership.
+            val pendingEntry = pendingLeases.entries.firstOrNull {
+                it.key.generation != preferredGeneration && pendingRemovalLowersBudgetLocked(it)
+            } ?: break
             pendingLeases.remove(pendingEntry.key)
         }
     }
@@ -229,8 +236,26 @@ internal class PreparedProseLayoutCache(
         return uniqueBytes(completed.values.filter { it !in live })
     }
 
-    /** Pending handoffs participate in the same bounded pre-mount budget. */
-    private fun evictableBytesLocked(): Long = uniqueBytes(completed.values + pendingLeases.values)
+    /**
+     * The pre-mount budget counts each immutable artifact once, excluding
+     * identities already retained by mounted Fabric or direct View owners.
+     * A second pending lease for such an object is ownership metadata, not an
+     * additional allocation.
+     */
+    private fun budgetedRetainedBytesLocked(): Long {
+        val live = identitySet(mountedLeases.values + directMounted.values)
+        return uniqueBytes((completed.values + pendingLeases.values).filter { it !in live })
+    }
+
+    private fun pendingRemovalLowersBudgetLocked(
+        entry: Map.Entry<FabricLeaseKey, PreparedProseLayout>,
+    ): Boolean {
+        val layout = entry.value
+        val mountedOrDirect = identitySet(mountedLeases.values + directMounted.values)
+        if (layout in mountedOrDirect) return false
+        if (completed.values.any { it === layout }) return false
+        return pendingLeases.any { (key, candidate) -> key != entry.key && candidate === layout }.not()
+    }
 
     private fun identitySet(layouts: Collection<PreparedProseLayout>): MutableSet<PreparedProseLayout> =
         Collections.newSetFromMap(IdentityHashMap<PreparedProseLayout, Boolean>()).apply { addAll(layouts) }

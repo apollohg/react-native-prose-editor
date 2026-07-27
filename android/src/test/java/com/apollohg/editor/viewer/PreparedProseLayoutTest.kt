@@ -412,6 +412,26 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `budget retains pending duplicate already mounted by another Fabric owner`() {
+        val cache = PreparedProseLayoutCache(byteBudget = 1, pendingLeaseBudget = 1)
+        val sharedKey = testLayoutKey("mounted duplicate")
+        val shared = testArtifact(sharedKey, retainedBytes = 80)
+        val mountedOwner = FabricGenerationToken(FabricSurfaceToken(17, 171), sharedKey.generationIdentity, 1)
+        val pendingOwner = FabricGenerationToken(FabricSurfaceToken(17, 172), sharedKey.generationIdentity, 2)
+        val oversizedKey = testLayoutKey("oversized pending")
+        val oversizedOwner = FabricGenerationToken(FabricSurfaceToken(17, 173), oversizedKey.generationIdentity, 3)
+
+        assertTrue(cache.value(sharedKey, mountedOwner) { shared } === shared)
+        assertTrue(cache.acquireForFabricMount(mountedOwner, sharedKey.widthPx, sharedKey.densityBits) === shared)
+        assertTrue(cache.value(sharedKey, pendingOwner) { error("mounted artifact must be reused") } === shared)
+        cache.value(oversizedKey, oversizedOwner) { testArtifact(oversizedKey, retainedBytes = 80) }
+
+        // Removing pendingOwner would free no bytes: the mounted owner still
+        // retains the same immutable artifact, so it remains an exact handoff.
+        assertTrue(cache.acquireForFabricMount(pendingOwner, sharedKey.widthPx, sharedKey.densityBits) === shared)
+    }
+
+    @Test
     fun `Fabric error reporting is once per generation`() {
         val reporter = FabricErrorReporter()
 
