@@ -10,7 +10,7 @@ source "$repo_root/scripts/require-native-artifacts.sh"
 require_native_artifacts ios
 
 workspace="$repo_root/ios-tests/NativeEditorTests.xcworkspace"
-scheme="NativeEditorTests"
+scheme="${NATIVE_EDITOR_IOS_TEST_SCHEME:-NativeEditorTests}"
 destination="${IOS_DESTINATION:-}"
 simulator_name="${IOS_SIMULATOR_NAME:-}"
 device_id="${IOS_DEVICE_ID:-}"
@@ -35,12 +35,15 @@ Environment:
   IOS_SIMULATOR_NAME           Preferred simulator name when auto-selecting.
   IOS_DEVICE_ID                Physical iOS device identifier override.
   IOS_DEVELOPMENT_TEAM         Development team used for physical device signing.
+  NATIVE_EDITOR_IOS_TEST_SCHEME
+                              Xcode scheme override; defaults to NativeEditorTests.
 
 Examples:
   npm run ios:test
   npm run ios:test -- -only-testing:NativeEditorTests/RenderBridgeTests
   IOS_SIMULATOR_NAME="iPhone 17" npm run ios:test
   IOS_DEVICE_ID="<udid>" IOS_DEVELOPMENT_TEAM="<team>" npm run ios:test
+  NATIVE_EDITOR_IOS_TEST_SCHEME=NativeEditorPreparedProsePerformance npm run ios:test
 EOF
 }
 

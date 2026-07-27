@@ -300,6 +300,43 @@ describe('prepared prose native lifecycle contracts', () => {
         expect((pbxproj.match(/PreparedProseInstrumentation\.swift/g) ?? [])).toHaveLength(4);
     });
 
+    it('routes the iPhone 13 prepared-prose release gate through its dedicated launch environment', () => {
+        const packageJson = JSON.parse(readSource('package.json')) as { scripts: Record<string, string> };
+        const runner = readSource('scripts/run-ios-tests.sh');
+        const projectYml = readSource('ios-tests/project.yml');
+        const ordinaryScheme = readSource('ios-tests/NativeEditorTests.xcodeproj/xcshareddata/xcschemes/NativeEditorTests.xcscheme');
+        const preparedSchemePath = path.join(
+            REPO_ROOT,
+            'ios-tests/NativeEditorTests.xcodeproj/xcshareddata/xcschemes/NativeEditorPreparedProsePerformance.xcscheme'
+        );
+
+        expect(fs.existsSync(preparedSchemePath)).toBe(true);
+        const preparedScheme = fs.readFileSync(preparedSchemePath, 'utf8');
+        const preparedTestAction = preparedScheme.slice(
+            preparedScheme.indexOf('<TestAction'),
+            preparedScheme.indexOf('</TestAction>') + '</TestAction>'.length
+        );
+        const preparedLaunchAction = preparedScheme.slice(
+            preparedScheme.indexOf('<LaunchAction'),
+            preparedScheme.indexOf('</LaunchAction>') + '</LaunchAction>'.length
+        );
+
+        expect(packageJson.scripts['ios:test:perf:device']).toBe(
+            'NATIVE_EDITOR_IOS_TEST_SCHEME=NativeEditorPreparedProsePerformance bash ./scripts/run-ios-on-device.sh -only-testing:NativeEditorTests/NativePerformanceTests/testPerformance_preparedProseCorpusGates_iPhone13'
+        );
+        expect(packageJson.scripts['ios:test:perf']).toBe(
+            'bash ./scripts/run-ios-tests.sh -only-testing:NativeEditorTests/NativePerformanceTests'
+        );
+        expect(packageJson.scripts['ios:test']).toBe('bash ./scripts/run-ios-tests.sh');
+        expect(runner).toContain('scheme="${NATIVE_EDITOR_IOS_TEST_SCHEME:-NativeEditorTests}"');
+        expect(runner).toContain('-scheme "$scheme"');
+        expect(ordinaryScheme).not.toContain('PREPARED_PROSE_DEVICE_BENCHMARK');
+        expect(preparedTestAction).toContain('shouldUseLaunchSchemeArgsEnv = "YES"');
+        expect(preparedLaunchAction).toContain('<EnvironmentVariable\n            key = "PREPARED_PROSE_DEVICE_BENCHMARK"\n            value = "1"\n            isEnabled = "YES">');
+        expect(projectYml).toContain('NativeEditorPreparedProsePerformance:');
+        expect(projectYml).toContain('PREPARED_PROSE_DEVICE_BENCHMARK: "1"');
+    });
+
     it('shares one complete corpus schema and image policy with every benchmark surface', () => {
         const configuration = JSON.parse(readSource('scripts/tests/prepared-prose-benchmark-config.json')) as {
             configuration: { initialization: { type: string }; schema: { nodes: Array<{ name: string; attrs?: Record<string, unknown> }>; marks: Array<{ name: string; attrs?: Record<string, unknown> }> } };

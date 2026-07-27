@@ -120,3 +120,17 @@ schemes:
       gatherCoverageData: false
       targets:
         - name: NativeEditorTests
+  NativeEditorPreparedProsePerformance:
+    build:
+      targets:
+        NativeEditorTestHost: all
+        NativeEditorTests: all
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - name: NativeEditorTests
+    run:
+      config: Debug
+      environmentVariables:
+        PREPARED_PROSE_DEVICE_BENCHMARK: "1"
