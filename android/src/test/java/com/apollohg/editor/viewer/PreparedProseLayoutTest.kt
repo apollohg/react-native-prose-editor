@@ -220,7 +220,7 @@ class PreparedProseLayoutTest {
         registry.measure(request("first"), 320, 1f, first, fabricLeaseHandle = 1)
         registry.measure(request("second"), 320, 1f, second, fabricLeaseHandle = 2)
 
-        registry.releaseFabricSurfaceId(7)
+        registry.deactivateFabricSurfaceId(7)
 
         assertEquals(0, registry.fabricGenerationPinCountForTesting)
         assertEquals(0, registry.fabricLeaseCountForTesting)
@@ -228,7 +228,7 @@ class PreparedProseLayoutTest {
         // guards terminate. A delayed H1 cannot recreate ownership.
         registry.measure(request("late"), 320, 1f, first, fabricLeaseHandle = 1)
         assertEquals(0, registry.fabricLeaseCountForTesting)
-        registry.releaseFabricLease(first, 1)
+        registry.finalizeFabricLease(first, 1)
         registry.registerFabricLease(first, 3)
         registry.measure(request("fresh"), 320, 1f, first, fabricLeaseHandle = 3)
         assertTrue(registry.fabricLeaseCountForTesting > 0)
@@ -282,7 +282,7 @@ class PreparedProseLayoutTest {
         }
 
         assertEquals(33, registry.fabricLeaseCountForTesting)
-        registry.releaseFabricSurfaceId(10)
+        registry.deactivateFabricSurfaceId(10)
         assertEquals(0, registry.fabricLeaseCountForTesting)
     }
 
@@ -338,11 +338,13 @@ class PreparedProseLayoutTest {
         assertEquals(1, registry.fabricLeaseCountForTesting)
         assertEquals(1, registry.fabricGenerationPinCountForTesting)
 
-        registry.releaseFabricLease(surface, h1.leaseHandle)
+        registry.deactivateFabricLease(surface, h1.leaseHandle)
         assertEquals(null, FabricAttachmentSidecars.state(h1))
         assertEquals(0, registry.fabricLeaseCountForTesting)
         assertEquals(0, registry.fabricGenerationPinCountForTesting)
-        assertEquals(0, registry.activeFabricLeaseCountForTesting)
+        // Java recycle keeps this inactive guard until C++ destroys the
+        // state-family. A delayed Yoga callback must not revive it.
+        assertEquals(1, registry.activeFabricLeaseCountForTesting)
 
         registry.measure(request, 320, 1f, surface, h1.leaseHandle)
         assertEquals(0, registry.fabricLeaseCountForTesting)
@@ -352,6 +354,9 @@ class PreparedProseLayoutTest {
         registry.registerFabricLease(surface, h2.leaseHandle)
         registry.measure(request, 320, 1f, surface, h2.leaseHandle)
         assertNotNull(registry.acquireForFabricMount(h2, request, 320, 1f))
+
+        registry.finalizeFabricLease(surface, h1.leaseHandle)
+        assertEquals(1, registry.activeFabricLeaseCountForTesting)
     }
 
     @Test
@@ -402,7 +407,7 @@ class PreparedProseLayoutTest {
         registry.measure(first, 320, 1f, isolatedSurface, isolatedHandle)
 
         assertEquals(3, registry.fabricLeaseCountForTesting)
-        registry.releaseFabricLease(surface, handle)
+        registry.deactivateFabricLease(surface, handle)
 
         assertEquals(1, registry.fabricLeaseCountForTesting)
         assertEquals(1, registry.fabricGenerationPinCountForTesting)
@@ -412,9 +417,50 @@ class PreparedProseLayoutTest {
         assertNotNull(registry.acquireForFabricMount(isolated, first, 320, 1f))
 
         // The family guard terminal callback is idempotent after view release.
-        registry.releaseFabricLease(surface, handle)
+        registry.finalizeFabricLease(surface, handle)
         assertEquals(1, registry.fabricLeaseCountForTesting)
         assertEquals(1, registry.fabricGenerationPinCountForTesting)
+    }
+
+    @Test
+    fun `Java terminal cleanup keeps H1 inactive until the C++ lifecycle finalizes it`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val first = request("recycled H1")
+        val second = request("unaffected H2")
+        val h1Surface = FabricSurfaceToken(46, 460)
+        val h2Surface = FabricSurfaceToken(47, 470)
+        val h1 = FabricGenerationToken(h1Surface, first.generationIdentity, 46)
+        val h2 = FabricGenerationToken(h2Surface, second.generationIdentity, 47)
+
+        registry.registerFabricLease(h1Surface, h1.leaseHandle)
+        registry.registerFabricLease(h2Surface, h2.leaseHandle)
+        registry.measure(first, 320, 1f, h1Surface, h1.leaseHandle)
+        registry.measure(second, 320, 1f, h2Surface, h2.leaseHandle)
+        assertNotNull(registry.acquireForFabricMount(h2, second, 320, 1f))
+
+        // View recycle and surface stop sweep H1 resources but retain the
+        // inactive family record. A delayed C++ bind/measure cannot recreate it.
+        registry.deactivateFabricLease(h1Surface, h1.leaseHandle)
+        registry.deactivateFabricSurfaceId(h1Surface.surfaceId)
+        registry.registerFabricLease(h1Surface, h1.leaseHandle)
+        registry.measure(first, 320, 1f, h1Surface, h1.leaseHandle)
+
+        assertEquals(null, FabricAttachmentSidecars.state(h1))
+        assertEquals(null, registry.acquireForFabricMount(h1, first, 320, 1f))
+        assertEquals(1, registry.fabricLeaseCountForTesting)
+        assertEquals(1, registry.fabricGenerationPinCountForTesting)
+        assertEquals(2, registry.activeFabricLeaseCountForTesting)
+        assertNotNull(FabricAttachmentSidecars.state(h2))
+
+        // This simulates PreparedProseViewerLeaseLifecycle's last-owner
+        // destructor callback. It is idempotent and removes the bounded guard.
+        registry.finalizeFabricLease(h1Surface, h1.leaseHandle)
+        registry.finalizeFabricLease(h1Surface, h1.leaseHandle)
+
+        assertEquals(1, registry.activeFabricLeaseCountForTesting)
+        assertEquals(1, registry.fabricGenerationPinCountForTesting)
+        assertEquals(1, registry.fabricLeaseCountForTesting)
+        assertNotNull(FabricAttachmentSidecars.state(h2))
     }
 
     @Test

@@ -25,9 +25,10 @@ internal object FabricLeaseHandleBridge {
         )
     }
 
-    @JvmStatic fun releaseNativeLease(surfaceId: Int, componentTag: Int, leaseHandle: Long) {
+    /** Invoked only from the C++ state-family's final destructor callback. */
+    @JvmStatic fun finalizeNativeLease(surfaceId: Int, componentTag: Int, leaseHandle: Long) {
         if (surfaceId <= 0 || componentTag <= 0 || leaseHandle <= 0) return
-        PreparedProseLayoutRegistry.shared.releaseFabricLease(
+        PreparedProseLayoutRegistry.shared.finalizeFabricLease(
             FabricSurfaceToken(surfaceId, componentTag),
             leaseHandle,
         )

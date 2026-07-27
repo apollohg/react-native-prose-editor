@@ -91,15 +91,15 @@ class PreparedProseRevisionTest {
 
             // This models a drop after the UIView tag has reset: teardown is
             // driven by the recorded token, not a recomputed current tag.
-            registry.releaseFabricSurface(released)
+            registry.deactivateFabricSurface(released)
             assertEquals(null, FabricAttachmentSidecars.state(releasedGeneration))
             assertTrue(FabricAttachmentSidecars.state(siblingGeneration) != null)
 
-            registry.releaseFabricSurface(released)
+            registry.deactivateFabricSurface(released)
             assertTrue(FabricAttachmentSidecars.state(siblingGeneration) != null)
         } finally {
-            registry.releaseFabricSurface(released)
-            registry.releaseFabricSurface(sibling)
+            registry.deactivateFabricSurface(released)
+            registry.deactivateFabricSurface(sibling)
         }
     }
 

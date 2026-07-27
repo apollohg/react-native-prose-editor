@@ -83,7 +83,7 @@ internal class PreparedProseViewerManager :
         // Yoga can measure a component that never receives a mounted View, so
         // the weak view map is only supplemental lifecycle bookkeeping. The
         // registry cleanup is intentionally unconditional and surface-wide.
-        PreparedProseLayoutRegistry.shared.releaseFabricSurfaceId(surfaceId)
+        PreparedProseLayoutRegistry.shared.deactivateFabricSurfaceId(surfaceId)
         states.entries.forEach { (view, state) ->
             if (state.ownsFabricSurface(surfaceId)) {
                 state.release()
@@ -528,7 +528,7 @@ internal class PreparedProseViewerManager :
             val terminalOwner = generation?.let { FabricLeaseOwner(it.surface, it.leaseHandle) }
                 ?: sidecarGeneration?.let { FabricLeaseOwner(it.surface, it.leaseHandle) }
             terminalOwner?.let { owner ->
-                PreparedProseLayoutRegistry.shared.releaseFabricLease(owner.surface, owner.leaseHandle)
+                PreparedProseLayoutRegistry.shared.deactivateFabricLease(owner.surface, owner.leaseHandle)
             }
             generation = null
             sidecarGeneration = null

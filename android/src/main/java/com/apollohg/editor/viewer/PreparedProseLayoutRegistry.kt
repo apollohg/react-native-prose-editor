@@ -191,14 +191,16 @@ internal class PreparedProseLayoutRegistry(
         }
     }
 
-    /** Called from the C++ state-family terminal callback; exact-handle only. */
+    /** Called by C++ before a state-family's first Yoga measurement. */
     fun registerFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
         if (leaseHandle <= 0) return
         synchronized(fabricLeaseLock) {
             val owner = FabricLeaseOwner(surface, leaseHandle)
-            // Surface teardown leaves an inactive record until the C++ family
-            // guard reaches terminal cleanup. Registration must not revive it.
-            activeFabricLeases.getOrPut(owner, ::FabricLeaseState)
+            // Java terminal cleanup leaves an inactive record until the C++
+            // state-family reaches its final destructor. A delayed Yoga bind
+            // must never recreate or reactivate that same incarnation.
+            if (activeFabricLeases.containsKey(owner)) return
+            activeFabricLeases[owner] = FabricLeaseState()
         }
     }
 
@@ -229,26 +231,48 @@ internal class PreparedProseLayoutRegistry(
         FabricAttachmentSidecars.removeOtherGenerations(owner, generation)
     }
 
-    fun releaseFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
+    /**
+     * Java-side terminal cleanup for an exact state-family. This deliberately
+     * keeps an inactive lifecycle record so a delayed C++ Yoga callback cannot
+     * re-register the same handle. Only [finalizeFabricLease] removes it.
+     */
+    fun deactivateFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
         if (leaseHandle <= 0) return
         val owner = FabricLeaseOwner(surface, leaseHandle)
-        // Mark inactive before releasing containers so a delayed Yoga worker
-        // sees cancellation even if it races this cleanup.
         synchronized(fabricLeaseLock) {
-            // Terminal family cleanup is the sole removal path. Mark first so
-            // any concurrent measurement observes cancellation before removal.
-            activeFabricLeases[owner]?.active?.set(false)
-            activeFabricLeases.remove(owner)
+            // A View can terminally recycle before Yoga's first bind. Create
+            // its inactive guard now so any later bind is rejected.
+            (activeFabricLeases[owner] ?: FabricLeaseState().also {
+                activeFabricLeases[owner] = it
+            }).active.set(false)
         }
+        sweepFabricOwner(owner)
+    }
+
+    /**
+     * Called only by the C++ PreparedProseViewerLeaseLifecycle final callback.
+     * It is intentionally idempotent: Java may already have swept resources,
+     * or a state-family may have ended before it ever reached a View.
+     */
+    fun finalizeFabricLease(surface: FabricSurfaceToken, leaseHandle: Long) {
+        if (leaseHandle <= 0) return
+        val owner = FabricLeaseOwner(surface, leaseHandle)
+        synchronized(fabricLeaseLock) {
+            activeFabricLeases.remove(owner)?.active?.set(false)
+        }
+        sweepFabricOwner(owner)
+    }
+
+    private fun sweepFabricOwner(owner: FabricLeaseOwner) {
         layoutCache.releaseOwner(owner)
         FabricAttachmentSidecars.remove(owner)
         synchronized(compilerLock) {
-            documentsByFabricGeneration.keys.removeAll { it.surface == surface && it.leaseHandle == leaseHandle }
-            failuresByFabricGeneration.keys.removeAll { it.surface == surface && it.leaseHandle == leaseHandle }
+            documentsByFabricGeneration.keys.removeAll { it.surface == owner.surface && it.leaseHandle == owner.leaseHandle }
+            failuresByFabricGeneration.keys.removeAll { it.surface == owner.surface && it.leaseHandle == owner.leaseHandle }
         }
     }
 
-    fun releaseFabricSurface(surface: FabricSurfaceToken) {
+    fun deactivateFabricSurface(surface: FabricSurfaceToken) {
         synchronized(fabricLeaseLock) {
             activeFabricLeases.keys.filter { it.surface == surface }
                 .forEach { activeFabricLeases[it]?.active?.set(false) }
@@ -264,10 +288,10 @@ internal class PreparedProseLayoutRegistry(
     /**
      * Surface shutdown is broader than per-view recycling: Yoga may have
      * measured components that never mounted, so no ViewState remains to name
-     * their exact component token. Clear every lease and generation pin for
-     * this Fabric surface unconditionally.
+     * their exact component token. Deactivate every known handle and sweep
+     * their resources; C++ finalization later removes the bounded records.
      */
-    fun releaseFabricSurfaceId(surfaceId: Int) {
+    fun deactivateFabricSurfaceId(surfaceId: Int) {
         synchronized(fabricLeaseLock) {
             activeFabricLeases.keys.filter { it.surface.surfaceId == surfaceId }
                 .forEach { activeFabricLeases[it]?.active?.set(false) }

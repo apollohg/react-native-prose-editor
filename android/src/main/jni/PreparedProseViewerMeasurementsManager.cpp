@@ -72,8 +72,8 @@ class AndroidLeaseLifecycleBridge final {
       : bridgeClass_(std::move(bridgeClass)),
         registerLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
             "registerNativeLease")),
-        releaseLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
-            "releaseNativeLease")) {}
+        finalizeLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
+            "finalizeNativeLease")) {}
 
   void registerLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const {
     registerLease_(bridgeClass_, static_cast<jint>(surfaceId),
@@ -81,16 +81,16 @@ class AndroidLeaseLifecycleBridge final {
                    static_cast<jlong>(leaseHandle));
   }
 
-  void releaseLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const {
-    releaseLease_(bridgeClass_, static_cast<jint>(surfaceId),
-                  static_cast<jint>(componentTag),
-                  static_cast<jlong>(leaseHandle));
+  void finalizeLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const {
+    finalizeLease_(bridgeClass_, static_cast<jint>(surfaceId),
+                   static_cast<jint>(componentTag),
+                   static_cast<jlong>(leaseHandle));
   }
 
  private:
   facebook::jni::global_ref<facebook::jni::JClass> bridgeClass_;
   facebook::jni::JStaticMethod<void(jint, jint, jlong)> registerLease_;
-  facebook::jni::JStaticMethod<void(jint, jint, jlong)> releaseLease_;
+  facebook::jni::JStaticMethod<void(jint, jint, jlong)> finalizeLease_;
 };
 
 } // namespace
@@ -122,7 +122,7 @@ void PreparedProseMeasurementsManager::bindLeaseLifecycle(
         }
         facebook::jni::ThreadScope threadScope;
         try {
-          AndroidLeaseLifecycleBridge::processLifetime().releaseLease(
+          AndroidLeaseLifecycleBridge::processLifetime().finalizeLease(
               surfaceId, componentTag, leaseHandle);
         } catch (...) {
           // The Java registry may already be gone during runtime teardown.
