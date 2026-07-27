@@ -300,6 +300,7 @@ reject_dist_symbol() {
 
 validate_ios_consumer() {
   local root="$1"
+  local tarball_path="$2"
   local ios_consumer="$work_dir/ios-consumer"
   local ios_project="$ios_consumer/ios"
   local packed_editor_dir="$ios_consumer/node_modules/@apollohg/react-native-prose-editor"
@@ -308,8 +309,10 @@ validate_ios_consumer() {
   local react_native_dependencies_archive="$repo_root/example/ios/Pods/ReactNativeDependencies-artifacts/reactnative-dependencies-0.81.5-debug.tar.gz"
   local react_native_core_archive="$repo_root/example/ios/Pods/ReactNativeCore-artifacts/reactnative-core-0.81.5-debug.tar.gz"
   local hermes_archive="$repo_root/example/ios/Pods/hermes-engine-artifacts/hermes-ios-0.81.5-debug.tar.gz"
-  local workspace_path
+  local workspace_path resolved_package_json resolved_package_dir
   root="$(cd "$root" && pwd -P)"
+  tarball_path="$(cd "$(dirname "$tarball_path")" && pwd -P)/$(basename "$tarball_path")"
+  [[ -f "$tarball_path" ]] || fail "iOS packed consumer tarball is missing: $tarball_path"
   require_command pod
   require_command xcodebuild
   [[ -f "$react_native_dir/scripts/react_native_pods.rb" ]] || fail "local example React Native dependencies are missing; run npm install in example/"
@@ -319,19 +322,10 @@ validate_ios_consumer() {
   [[ -s "$hermes_archive" ]] || fail "local Hermes artifact is missing from example/ios/Pods"
 
   mkdir -p "$ios_consumer"
-  # Model a real package consumer: Expo discovers this extracted npm artifact
-  # through package.json and node_modules, never through a source-tree pod
-  # declaration. Symlink the known-good Expo/RN peer installations, then copy
-  # the already-extracted npm artifact into the scoped dependency location.
-  mkdir -p "$ios_consumer/node_modules/@apollohg"
-  ln -s "$expo_dir" "$ios_consumer/node_modules/expo"
-  ln -s "$react_native_dir" "$ios_consumer/node_modules/react-native"
-  ln -s "$repo_root/example/node_modules/react" "$ios_consumer/node_modules/react"
-  cp -R "$root" "$packed_editor_dir"
-  [[ "$(cd "$packed_editor_dir" && pwd -P)" != "$repo_root" ]] || \
-    fail "iOS packed consumer must not discover the source-tree package"
-  [[ -f "$packed_editor_dir/ReactNativeProseEditor.podspec" ]] || \
-    fail "iOS packed consumer dependency is missing the root podspec"
+  # Model a real package consumer: npm installs the generated tarball and
+  # package.json supplies its RN peers from the known-good local installation.
+  # Keeping each peer as a file dependency makes the install network-free while
+  # preserving the dependency graph Expo inspects for autolinking and codegen.
   # This is intentionally a fresh UIKit target. Reusing the Expo example
   # project pulls app-only bundle and Hermes build phases into this package
   # consumer instead of proving the pod's own integration boundary.
@@ -375,18 +369,37 @@ WORKSPACE
 	rootObject = A00000000000000000000041 /* Project object */;
 }
 PBXPROJ
-  cat > "$ios_consumer/package.json" <<'JSON'
+  cat > "$ios_consumer/package.json" <<JSON
 {
   "name": "packed-tarball-ios-consumer",
   "private": true,
   "dependencies": {
-    "@apollohg/react-native-prose-editor": "file:./node_modules/@apollohg/react-native-prose-editor",
-    "expo": "~54.0.0",
-    "react": "19.1.0",
-    "react-native": "0.81.5"
+    "@apollohg/react-native-prose-editor": "file:$tarball_path",
+    "expo": "file:$expo_dir",
+    "react": "file:$repo_root/example/node_modules/react",
+    "react-native": "file:$react_native_dir"
   }
 }
 JSON
+  (
+    cd "$ios_consumer"
+    npm_config_cache="$pack_cache_dir" npm_config_logs_dir="$pack_cache_dir/logs" \
+      npm install --ignore-scripts --no-audit --no-fund --offline --package-lock=false --legacy-peer-deps
+  ) || fail "iOS packed consumer npm install failed"
+  [[ -f "$packed_editor_dir/ReactNativeProseEditor.podspec" ]] || \
+    fail "iOS packed consumer dependency is missing the root podspec"
+  resolved_package_json="$(
+    cd "$ios_consumer"
+    node --no-warnings --print "require.resolve('@apollohg/react-native-prose-editor/package.json')"
+  )" || fail "iOS packed consumer cannot resolve @apollohg/react-native-prose-editor"
+  [[ "$resolved_package_json" == "$packed_editor_dir/package.json" ]] || \
+    fail "iOS packed consumer resolved editor package outside consumer node_modules: $resolved_package_json"
+  resolved_package_dir="$(cd "$(dirname "$resolved_package_json")" && pwd -P)"
+  case "$resolved_package_dir" in
+    "$repo_root"|"$repo_root"/*|"$root"|"$root"/*)
+      fail "iOS packed consumer resolved editor package from repository or extraction staging: $resolved_package_dir"
+      ;;
+  esac
   mkdir -p "$ios_project/PackedConsumer"
   cat > "$ios_project/PackedConsumer/AppDelegate.swift" <<'SWIFT'
 import UIKit
@@ -597,6 +610,21 @@ KOTLIN
   done
 }
 
+pack_ios_consumer_tarball() {
+  local root="$1"
+  local pack_json tarball_name
+  root="$(cd "$root" && pwd -P)"
+  mkdir -p "$pack_cache_dir"
+  pack_json="$(mktemp "$work_dir/ios-consumer-pack.XXXXXX.json")"
+  (
+    cd "$root"
+    npm_config_cache="$pack_cache_dir" npm_config_logs_dir="$pack_cache_dir/logs" \
+      npm pack --ignore-scripts --json --pack-destination "$work_dir" > "$pack_json"
+  )
+  tarball_name="$(ruby -rjson -e 'entries = JSON.parse(File.read(ARGV.fetch(0))); abort "npm pack returned no artifact" unless entries.length == 1; puts entries.fetch(0).fetch("filename")' "$pack_json")"
+  printf '%s\n' "$work_dir/$tarball_name"
+}
+
 validate_package_entries() {
   local root="$1"
   require_file "$root" "ReactNativeProseEditor.podspec"
@@ -694,8 +722,12 @@ case "${1:-}" in
     exit 0
     ;;
   --validate-ios-consumer)
-    [[ "$#" == "2" ]] || fail "usage: $0 --validate-ios-consumer PACKED_ROOT"
-    validate_ios_consumer "$2"
+    [[ "$#" == "2" || "$#" == "3" ]] || fail "usage: $0 --validate-ios-consumer PACKED_ROOT [TARBALL_PATH]"
+    ios_consumer_tarball_path="${3:-}"
+    if [[ -z "$ios_consumer_tarball_path" ]]; then
+      ios_consumer_tarball_path="$(pack_ios_consumer_tarball "$2")"
+    fi
+    validate_ios_consumer "$2" "$ios_consumer_tarball_path"
     echo "iOS packed consumer compiles and links the final API."
     exit 0
     ;;
@@ -758,6 +790,6 @@ ruby -rjson -e '
   abort "podspec must vend exactly ios/EditorCore.xcframework" unless Array(spec.fetch("vendored_frameworks")) == ["ios/EditorCore.xcframework"]
 ' "$podspec_json" || fail "packed podspec does not unconditionally vend EditorCore.xcframework"
 
-validate_ios_consumer "$package_dir"
+validate_ios_consumer "$package_dir" "$tarball_path"
 validate_android_consumer "$package_dir"
 echo "==> Packed npm artifact, exact ABI, and real consumer validation passed."

@@ -9,8 +9,45 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const validator = join(repoRoot, "scripts", "validate-packed-package.sh");
 const checksumValidator = join(repoRoot, "scripts", "validate-uniffi-checksum-values.rb");
 const checksumManifest = join(repoRoot, "scripts", "package-abi-manifest.json");
+const validatorSource = readFileSync(validator, "utf8");
 const workDir = mkdtempSync(join(tmpdir(), "native-editor-packed-package-fixtures-"));
 const failures = [];
+
+assert.match(
+  validatorSource,
+  /npm install --ignore-scripts --no-audit --no-fund --offline --package-lock=false --legacy-peer-deps/,
+  "packed iOS consumer must install its generated tarball through npm without lifecycle scripts or network access",
+);
+assert.match(
+  validatorSource,
+  /"@apollohg\/react-native-prose-editor": "file:\$tarball_path"/,
+  "packed iOS consumer package.json must declare the generated tarball as its editor dependency",
+);
+assert.match(
+  validatorSource,
+  /require\.resolve\('@apollohg\/react-native-prose-editor\/package\.json'\)/,
+  "packed iOS consumer must prove Node resolves the installed editor package",
+);
+assert.match(
+  validatorSource,
+  /iOS packed consumer resolved editor package outside consumer node_modules/,
+  "packed iOS consumer must reject an editor package resolved outside its node_modules",
+);
+assert.match(
+  validatorSource,
+  /iOS packed consumer resolved editor package from repository or extraction staging/,
+  "packed iOS consumer must reject a resolved package realpath pointing at the repository or extracted staging tree",
+);
+assert.doesNotMatch(
+  validatorSource,
+  /cp -R "\$root" "\$packed_editor_dir"/,
+  "packed iOS consumer must not manually copy the extracted package into node_modules",
+);
+assert.doesNotMatch(
+  validatorSource,
+  /"@apollohg\/react-native-prose-editor": "file:\.\/node_modules\/@apollohg\/react-native-prose-editor"/,
+  "packed iOS consumer must not self-reference a manually populated node_modules dependency",
+);
 
 function copyPath(sourceRoot, destinationRoot, path) {
   const source = join(sourceRoot, path);
