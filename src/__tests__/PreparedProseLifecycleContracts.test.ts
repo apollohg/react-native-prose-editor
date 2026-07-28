@@ -126,7 +126,10 @@ describe('prepared prose native lifecycle contracts', () => {
         const iosProps = methodBody(ios, '- (void)updateProps:');
         const iosState = methodBody(ios, '- (void)updateState:');
         const androidUpdate = android.slice(android.indexOf('private fun update('), android.indexOf('private fun installCachedLayout('));
-        const androidMount = android.slice(android.indexOf('fun beginImages('), android.indexOf('fun requestVisibleImages('));
+        const androidBeginImages = android.slice(
+            android.indexOf('fun beginImages('),
+            android.indexOf('/** Phase one of Fabric image setup: no artifact is required yet. */'),
+        );
         const androidMeasure = android.slice(android.indexOf('override fun measure('), android.indexOf('private fun update('));
 
         expect(iosProps.indexOf('_viewerProps = nextProps;')).toBeLessThan(iosProps.indexOf('[self beginSemanticImageGenerationIfPossible];'));
@@ -141,7 +144,11 @@ describe('prepared prose native lifecycle contracts', () => {
             androidMeasure.indexOf('PreparedProseLayoutRegistry.shared.measure(')
         );
         expect(androidMeasure).toContain('fabricSurface = surface, fabricLeaseHandle = leaseHandle');
-        expect(androidMount).not.toContain('attachmentRevisions.beginSemanticGeneration');
+        expect(androidBeginImages).toContain('attachmentRevisions.admit(artifact.imageAttachments.size)');
+        expect(androidBeginImages).toContain('fontEnvironment.activate()');
+        expect(androidBeginImages).toContain('imagePipeline.begin(request.semanticGenerationIdentity');
+        expect(androidBeginImages).not.toContain('attachmentRevisions.beginSemanticGeneration');
+        expect(androidBeginImages).not.toContain('imagePipeline.cancel()');
     });
 
     it('drops Android Fabric sidecars through the exact persisted generation after view tags mutate', () => {
@@ -270,8 +277,13 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(androidDevice).toContain('import org.json.JSONObject');
         expect(androidDevice).toContain('activity.setContentView');
         expect(androidDevice).toContain('instrumentation.waitForIdleSync()');
-        expect(androidDevice).toContain('harness.traverseFromInstrumentationThread');
+        expect(androidDevice).toContain('harness.traverseWindows(\n                instrumentation,');
         expect(androidHarness).toContain('CountDownLatch');
+        expect(androidHarness).toContain('val completion = CountDownLatch(1)');
+        expect(androidHarness).toContain('instrumentation.runOnMainSync {');
+        expect(androidHarness).toContain('completion.countDown()');
+        expect(androidHarness).toContain('completion.await(10, TimeUnit.SECONDS)');
+        expect(androidHarness).not.toContain('traverseFromInstrumentationThread');
         expect(androidHarness).toContain('Choreographer.getInstance().postFrameCallback');
         expect(androidHarness).toContain('RecyclerView');
     });
@@ -345,11 +357,25 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(releaseTiming).not.toContain('BuildConfig');
     });
 
-    it('ships iOS instrumentation in the actual test target exactly once', () => {
+    it('ships iOS instrumentation through one file reference and one NativeEditorTests sources membership', () => {
         const projectYml = readSource('ios-tests/project.yml');
         const pbxproj = readSource('ios-tests/NativeEditorTests.xcodeproj/project.pbxproj');
-        expect(projectYml).toContain('../ios/Viewer/PreparedProseInstrumentation.swift');
-        expect((pbxproj.match(/PreparedProseInstrumentation\.swift/g) ?? [])).toHaveLength(4);
+        const fileReferenceId = 'A3B6C71D4E5F60718293A4D3';
+        const buildFileId = 'A3B6C71D4E5F60718293A4D4';
+        const nativeTestsTarget = pbxproj.slice(
+            pbxproj.indexOf('19C22BD2CB0BC83B9918257D /* NativeEditorTests */ = {'),
+            pbxproj.indexOf('36BE18DD6515FBAF43F806D5 /* NativeEditorTestHost */ = {'),
+        );
+        const sourcesBuildPhase = pbxproj.slice(
+            pbxproj.indexOf('A8B845B3B6EC5F9072D2E478 /* Sources */ = {'),
+            pbxproj.indexOf('/* End PBXSourcesBuildPhase section */'),
+        );
+
+        expect(projectYml.match(/^\s*- path: \.\.\/ios\/Viewer\/PreparedProseInstrumentation\.swift$/gm)).toHaveLength(1);
+        expect(pbxproj.match(new RegExp(`${fileReferenceId} /\\* PreparedProseInstrumentation\\.swift \\*/ = \\{isa = PBXFileReference;[^\\n]*path = PreparedProseInstrumentation\\.swift;`, 'g'))).toHaveLength(1);
+        expect(pbxproj.match(new RegExp(`${buildFileId} /\\* PreparedProseInstrumentation\\.swift in Sources \\*/ = \\{isa = PBXBuildFile; fileRef = ${fileReferenceId}`, 'g'))).toHaveLength(1);
+        expect(nativeTestsTarget).toContain('A8B845B3B6EC5F9072D2E478 /* Sources */');
+        expect(sourcesBuildPhase.match(new RegExp(`${buildFileId} /\\* PreparedProseInstrumentation\\.swift in Sources \\*/,`, 'g'))).toHaveLength(1);
     });
 
     it('routes the iPhone 13 prepared-prose release gate through its dedicated launch environment', () => {
@@ -451,10 +477,11 @@ describe('prepared prose native lifecycle contracts', () => {
             differingHeights: { requirement: string };
             drawEvidence: { requirement: string };
         };
-        const iosCollectionHarness = iosHarness.slice(
-            iosHarness.indexOf('private final class PreparedProseCollectionHarness'),
-            iosHarness.indexOf('private enum PreparedProsePerformanceGates'),
-        );
+        const iosCollectionHarnessStart = iosHarness.lastIndexOf('private final class PreparedProseCollectionHarness');
+        const iosPerformanceGatesStart = iosHarness.lastIndexOf('private enum PreparedProsePerformanceGates');
+        expect(iosCollectionHarnessStart).toBeGreaterThanOrEqual(0);
+        expect(iosPerformanceGatesStart).toBeGreaterThan(iosCollectionHarnessStart);
+        const iosCollectionHarness = iosHarness.slice(iosCollectionHarnessStart, iosPerformanceGatesStart);
 
         [iosInstrumentation, androidInstrumentation].forEach((source) => {
             expect(source).toContain('beginPhase');
