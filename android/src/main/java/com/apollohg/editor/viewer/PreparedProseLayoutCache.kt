@@ -233,6 +233,10 @@ internal class PreparedProseLayoutCache(
     }
 
     private fun publishOwnersLocked() {
+        PreparedProseInstrumentation.cacheUpdated(
+            unmountedBytes = unmountedBytesLocked(),
+            unmountedResidentCount = completed.size.toLong(),
+        )
         PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.UNMOUNTED_LAYOUT, "cache", unmountedBytesLocked())
         PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.FABRIC_LEASE_HANDOFF, "leases", uniqueBytes(pendingLeases.values + mountedLeases.values))
         PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.DIRECT_MOUNTED, "views", uniqueBytes(directMounted.values))

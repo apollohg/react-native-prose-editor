@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prepared Prose Benchmark Export",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "percentileDefinition", "nominalFramePeriodNanos", "singleTickToleranceNanos", "phaseSamples", "windowEvidence", "preResetSnapshot", "postResetSnapshot", "duplicatePublications"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "percentileDefinition": {"const": "nearest-rank: sorted[ceil(p*n)-1]"},
+    "nominalFramePeriodNanos": {"type": "integer", "minimum": 0},
+    "singleTickToleranceNanos": {"type": "integer", "minimum": 0},
+    "phaseSamples": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cold", "warm", "imagesDisabled"],
+      "properties": {"cold": {"$ref": "#/$defs/phase"}, "warm": {"$ref": "#/$defs/phase"}, "imagesDisabled": {"$ref": "#/$defs/phase"}}
+    },
+    "windowEvidence": {"type": "array", "items": {"$ref": "#/$defs/window"}},
+    "preResetSnapshot": {"$ref": "#/$defs/cache"},
+    "postResetSnapshot": {"$ref": "#/$defs/cache"},
+    "duplicatePublications": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unmountedCurrentBytes", "unmountedHighWaterBytes", "unmountedCurrentResidentCount", "unmountedHighWaterResidentCount", "compiledCurrentBytes", "compiledCurrentResidentCount"],
+      "properties": {
+        "unmountedCurrentBytes": {"type": "integer", "minimum": 0}, "unmountedHighWaterBytes": {"type": "integer", "minimum": 0},
+        "unmountedCurrentResidentCount": {"type": "integer", "minimum": 0}, "unmountedHighWaterResidentCount": {"type": "integer", "minimum": 0},
+        "compiledCurrentBytes": {"type": "integer", "minimum": 0}, "compiledCurrentResidentCount": {"type": "integer", "minimum": 0}
+      }
+    },
+    "delayedInterval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["startNanos", "endNanos", "rawDeltaNanos", "viewerLayoutNanos", "viewerDrawNanos", "viewerCaused"],
+      "properties": {
+        "startNanos": {"type": "integer", "minimum": 0}, "endNanos": {"type": "integer", "minimum": 0}, "rawDeltaNanos": {"type": "integer", "minimum": 0},
+        "viewerLayoutNanos": {"type": "integer", "minimum": 0}, "viewerDrawNanos": {"type": "integer", "minimum": 0}, "viewerCaused": {"type": "boolean"}
+      }
+    },
+    "phase": {
+      "type": "object", "additionalProperties": false,
+      "required": ["compileNanos", "layoutNanos", "combinedCompileLayoutNanos", "cacheLookupNanos", "drawNanos", "rawFrameDeltasNanos", "compileCount", "layoutCount", "cacheHits", "cacheMisses", "cacheWaits", "drawCount", "visibleBlocksDrawn", "imageRequestCount", "imageMetadataCount", "imageDecodeCount", "nominalFrameCount", "delayedIntervalCount", "viewerCausedDelayedIntervals", "invalidations"],
+      "properties": {
+        "compileNanos": {"$ref": "#/$defs/nanos"}, "layoutNanos": {"$ref": "#/$defs/nanos"}, "combinedCompileLayoutNanos": {"$ref": "#/$defs/nanos"}, "cacheLookupNanos": {"$ref": "#/$defs/nanos"}, "drawNanos": {"$ref": "#/$defs/nanos"}, "rawFrameDeltasNanos": {"$ref": "#/$defs/nanos"},
+        "compileCount": {"$ref": "#/$defs/counter"}, "layoutCount": {"$ref": "#/$defs/counter"}, "cacheHits": {"$ref": "#/$defs/counter"}, "cacheMisses": {"$ref": "#/$defs/counter"}, "cacheWaits": {"$ref": "#/$defs/counter"}, "drawCount": {"$ref": "#/$defs/counter"}, "visibleBlocksDrawn": {"$ref": "#/$defs/counter"},
+        "imageRequestCount": {"$ref": "#/$defs/counter"}, "imageMetadataCount": {"$ref": "#/$defs/counter"}, "imageDecodeCount": {"$ref": "#/$defs/counter"}, "nominalFrameCount": {"$ref": "#/$defs/counter"}, "delayedIntervalCount": {"$ref": "#/$defs/counter"},
+        "viewerCausedDelayedIntervals": {"type": "array", "items": {"$ref": "#/$defs/delayedInterval"}}, "invalidations": {"type": "object", "additionalProperties": {"$ref": "#/$defs/counter"}}
+      }
+    },
+    "window": {
+      "type": "object", "additionalProperties": false,
+      "required": ["windowId", "entryIds", "phase", "residentKeyCount", "residentKeyDigest", "cache", "compileCount", "layoutCount", "cacheMisses"],
+      "properties": {
+        "windowId": {"type": "string"}, "entryIds": {"type": "array", "items": {"type": "string"}}, "phase": {"enum": ["cold", "warm", "imagesDisabled"]}, "residentKeyCount": {"$ref": "#/$defs/counter"}, "residentKeyDigest": {"type": "string"}, "cache": {"$ref": "#/$defs/cache"}, "compileCount": {"$ref": "#/$defs/counter"}, "layoutCount": {"$ref": "#/$defs/counter"}, "cacheMisses": {"$ref": "#/$defs/counter"}
+      }
+    },
+    "counter": {"type": "integer", "minimum": 0},
+    "nanos": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+  }
+}

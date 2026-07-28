@@ -881,6 +881,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     @objc func didReceiveMemoryWarning() {
         PreparedProseInstrumentation.invalidated(.memoryPressure)
+        PreparedProseInstrumentation.capturePreResetSnapshot()
         layoutCache.removeAllUnmounted()
         compiledCondition.lock()
         fabricOwnershipRevisions.removeAll()
@@ -898,6 +899,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledRetainedBytes = 0
         compiledCondition.unlock()
         PreparedProseInstrumentation.retained(.compiled, scope: "registry", bytes: 0)
+        PreparedProseInstrumentation.cacheUpdated(compiledBytes: 0, compiledResidentCount: 0)
+        PreparedProseInstrumentation.capturePostResetSnapshot()
     }
 
     private func beginFabricMeasure(_ generation: FabricGenerationToken) -> Bool {
@@ -1288,6 +1291,10 @@ public final class PreparedProseLayoutRegistry: NSObject {
             }
         }
         PreparedProseInstrumentation.retained(.compiled, scope: "registry", bytes: compiledRetainedBytes)
+        PreparedProseInstrumentation.cacheUpdated(
+            compiledBytes: compiledRetainedBytes,
+            compiledResidentCount: compiledDocuments.count
+        )
     }
 
     private func touchCompilationFailure(_ cacheKey: String) {

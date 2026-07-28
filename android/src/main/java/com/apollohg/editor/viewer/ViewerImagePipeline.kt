@@ -251,14 +251,19 @@ internal class ViewerImagePipeline(
                 reportFailure(attachment, requestGeneration)
                 return@forEach
             }
+            PreparedProseInstrumentation.imageRequested()
             val receipt = load(source) { bitmap ->
                 if (!acceptsCompletion(requestGeneration)) return@load
                 if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) {
                     reportFailure(attachment, requestGeneration)
                     return@load
                 }
+                PreparedProseInstrumentation.imageMetadataRead()
                 onIntrinsicMetadata?.invoke(attachment, bitmap.width, bitmap.height)
-                if (acceptsCompletion(requestGeneration)) onPixels?.invoke(attachment, bitmap)
+                if (acceptsCompletion(requestGeneration)) {
+                    PreparedProseInstrumentation.imageDecoded()
+                    onPixels?.invoke(attachment, bitmap)
+                }
             }
             synchronized(lock) { if (acceptsCompletion(requestGeneration)) receipts[attachment.id] = receipt else receipt.cancel() }
         }

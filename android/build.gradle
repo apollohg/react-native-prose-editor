@@ -107,6 +107,7 @@ android {
     }
     testOptions {
         unitTests.includeAndroidResources = true
+        unitTests.includeAndroidResources = true
         unitTests.all { test ->
             if (project.findProperty("apollohgShowPerfTestOutput") == "true") {
                 test.testLogging {
@@ -138,6 +139,9 @@ android {
         test {
             java.srcDirs += [
                 "${project.projectDir}/src/sharedTest/java"
+            ]
+            assets.srcDirs += [
+                "${project.projectDir}/../scripts/tests"
             ]
         }
         androidTest {

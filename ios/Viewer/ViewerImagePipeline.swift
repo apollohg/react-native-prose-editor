@@ -382,6 +382,7 @@ final class ViewerImagePipeline {
         }
         guard let (currentGeneration, toStart) = start else { return }
         for attachment in toStart {
+            PreparedProseInstrumentation.imageRequested()
             let receipt = owner.startImageLoad(source: attachment.source) { [weak self] image in
                 guard let self, self.acceptsCompletion(generation: currentGeneration) else { return }
                 guard let image else {
@@ -393,8 +394,10 @@ final class ViewerImagePipeline {
                     self.reportFailure(attachment, generation: currentGeneration)
                     return
                 }
+                PreparedProseInstrumentation.imageMetadataRead()
                 self.onIntrinsicMetadata?(attachment, size)
                 guard self.acceptsCompletion(generation: currentGeneration) else { return }
+                PreparedProseInstrumentation.imageDecoded()
                 self.onPixels?(attachment, image)
             }
             if let receipt {

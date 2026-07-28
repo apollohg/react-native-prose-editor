@@ -322,6 +322,7 @@ internal class PreparedProseLayoutRegistry(
 
     fun didReceiveMemoryWarning() {
         PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.MEMORY_PRESSURE)
+        PreparedProseInstrumentation.capturePreResetSnapshot()
         layoutCache.removeAllUnmounted()
         synchronized(compilerLock) {
             compiled.clear()
@@ -333,6 +334,8 @@ internal class PreparedProseLayoutRegistry(
             themeRetainedBytes = 0
         }
         PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.COMPILED, "registry", 0L)
+        PreparedProseInstrumentation.cacheUpdated(compiledBytes = 0L, compiledResidentCount = 0L)
+        PreparedProseInstrumentation.capturePostResetSnapshot()
     }
 
     internal val preparedLayoutCacheCountForTesting: Int get() = layoutCache.completedCountForTesting
@@ -432,6 +435,10 @@ internal class PreparedProseLayoutRegistry(
             compiledRetainedBytes -= oldest.value.retainedBytes
         }
         PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.COMPILED, "registry", compiledRetainedBytes)
+        PreparedProseInstrumentation.cacheUpdated(
+            compiledBytes = compiledRetainedBytes,
+            compiledResidentCount = compiled.size.toLong(),
+        )
     }
 
     private fun resolveTheme(request: ProseViewerRequest, density: Float, fontScale: Float): PreparedProseTheme = synchronized(compilerLock) {

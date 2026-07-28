@@ -402,6 +402,83 @@ final class NativePerformanceTests: XCTestCase {
         XCTAssertGreaterThan(warm?["drawCount"] as? Int ?? 0, 0)
     }
 
+    func testPreparedProseInstrumentationContract() throws {
+        let fixture = try PreparedProseHarnessStaticFixtures.load().frameClassification
+        for delta in fixture.oneTickDeltasNanos {
+            XCTAssertEqual(
+                PreparedProseInstrumentation.classifyFrame(
+                    rawDeltaNanos: delta,
+                    nominalFramePeriodNanos: fixture.nominalFramePeriodNanos,
+                    singleTickToleranceNanos: fixture.singleTickToleranceNanos
+                ),
+                .init(nominalFrameCount: 1, isDelayed: false)
+            )
+        }
+        XCTAssertEqual(
+            PreparedProseInstrumentation.classifyFrame(
+                rawDeltaNanos: fixture.delayedDeltaNanos,
+                nominalFramePeriodNanos: fixture.nominalFramePeriodNanos,
+                singleTickToleranceNanos: fixture.singleTickToleranceNanos
+            ),
+            .init(nominalFrameCount: 3, isDelayed: true)
+        )
+
+        let delayedEnd = fixture.delayedDeltaNanos
+        XCTAssertFalse(
+            PreparedProseInstrumentation.viewerCaused(
+                0,
+                delayedEnd,
+                [
+                    .init(startNanos: 10_000_000, endNanos: 13_900_000, kind: .draw),
+                    .init(startNanos: 10_000_000, endNanos: 13_900_000, kind: .layout),
+                ],
+                fixture.nominalFramePeriodNanos
+            ),
+            "overlapping spans must be unioned instead of double-counted"
+        )
+        XCTAssertTrue(
+            PreparedProseInstrumentation.viewerCaused(
+                0,
+                delayedEnd,
+                [
+                    .init(startNanos: 0, endNanos: 12_000_000, kind: .layout),
+                    .init(startNanos: 12_000_000, endNanos: 24_000_000, kind: .draw),
+                ],
+                fixture.nominalFramePeriodNanos
+            )
+        )
+
+        PreparedProseInstrumentation.beginBenchmark()
+        for phase in [
+            PreparedProseInstrumentation.TraversalPhase.cold,
+            .warm,
+            .imagesDisabled,
+        ] {
+            PreparedProseInstrumentation.beginPhase(phase)
+            PreparedProseInstrumentation.endPhase()
+        }
+        let export = try JSONDecoder().decode(
+            PreparedProseBenchmarkExportContract.self,
+            from: Data(PreparedProseInstrumentation.exportJSON().utf8)
+        )
+        XCTAssertEqual(export.schemaVersion, 2)
+        XCTAssertEqual(export.nominalFramePeriodNanos, fixture.nominalFramePeriodNanos)
+        XCTAssertEqual(export.singleTickToleranceNanos, fixture.singleTickToleranceNanos)
+        for snapshot in [export.preResetSnapshot, export.postResetSnapshot] {
+            XCTAssertEqual(snapshot.unmountedCurrentBytes, 0)
+            XCTAssertEqual(snapshot.unmountedHighWaterBytes, 0)
+            XCTAssertEqual(snapshot.unmountedCurrentResidentCount, 0)
+            XCTAssertEqual(snapshot.unmountedHighWaterResidentCount, 0)
+            XCTAssertEqual(snapshot.compiledCurrentBytes, 0)
+            XCTAssertEqual(snapshot.compiledCurrentResidentCount, 0)
+        }
+        for phase in [export.phaseSamples.cold, export.phaseSamples.warm, export.phaseSamples.imagesDisabled] {
+            XCTAssertEqual(phase.imageRequestCount, 0)
+            XCTAssertEqual(phase.imageMetadataCount, 0)
+            XCTAssertEqual(phase.imageDecodeCount, 0)
+        }
+    }
+
     private func measureOptions() -> XCTMeasureOptions {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
@@ -457,9 +534,16 @@ private struct PreparedProseHarnessStaticFixtures: Decodable {
     struct Preparation: Decodable { let entryId: String; let widthPoints: CGFloat }
     struct DifferingHeights: Decodable { let shortEntryId: String; let longEntryId: String; let widthPoints: CGFloat }
     struct DrawEvidence: Decodable { let phase: String }
+    struct FrameClassification: Decodable {
+        let nominalFramePeriodNanos: UInt64
+        let singleTickToleranceNanos: UInt64
+        let oneTickDeltasNanos: [UInt64]
+        let delayedDeltaNanos: UInt64
+    }
     let preparation: Preparation
     let differingHeights: DifferingHeights
     let drawEvidence: DrawEvidence
+    let frameClassification: FrameClassification
 
     static func load() throws -> Self {
         guard let url = Bundle(for: NativePerformanceTests.self).url(
@@ -467,6 +551,33 @@ private struct PreparedProseHarnessStaticFixtures: Decodable {
         ) else { throw NSError(domain: "PreparedProseHarnessStaticFixtures", code: 1, userInfo: [NSLocalizedDescriptionKey: "Bundled prepared prose harness fixtures are missing."]) }
         return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
     }
+}
+
+private struct PreparedProseBenchmarkExportContract: Decodable {
+    struct CacheSnapshot: Decodable {
+        let unmountedCurrentBytes: Int
+        let unmountedHighWaterBytes: Int
+        let unmountedCurrentResidentCount: Int
+        let unmountedHighWaterResidentCount: Int
+        let compiledCurrentBytes: Int
+        let compiledCurrentResidentCount: Int
+    }
+    struct Phase: Decodable {
+        let imageRequestCount: Int
+        let imageMetadataCount: Int
+        let imageDecodeCount: Int
+    }
+    struct PhaseSamples: Decodable {
+        let cold: Phase
+        let warm: Phase
+        let imagesDisabled: Phase
+    }
+    let schemaVersion: Int
+    let nominalFramePeriodNanos: UInt64
+    let singleTickToleranceNanos: UInt64
+    let phaseSamples: PhaseSamples
+    let preResetSnapshot: CacheSnapshot
+    let postResetSnapshot: CacheSnapshot
 }
 
 private enum JSONValue: Codable {
@@ -611,8 +722,11 @@ private final class PreparedProseCollectionCell: UICollectionViewCell {
 }
 
 private enum PreparedProsePerformanceGates {
-    private struct Phase: Decodable { let combinedCompileLayoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let frameNanos: [UInt64]; let viewerFrameNanos: [UInt64]; let drawCount: Int }
-    private struct Export: Decodable { let percentileDefinition: String; let phaseSamples: [String: Phase]; let duplicatePublications: Int; let retainedBytes: [String: Int] }
+    private struct DelayedInterval: Decodable { let rawDeltaNanos: UInt64 }
+    private struct CacheSnapshot: Decodable { let unmountedCurrentBytes: Int; let unmountedHighWaterBytes: Int; let unmountedCurrentResidentCount: Int; let unmountedHighWaterResidentCount: Int; let compiledCurrentBytes: Int; let compiledCurrentResidentCount: Int }
+    private struct WindowEvidence: Decodable { let phase: String; let compileCount: Int; let layoutCount: Int; let cacheMisses: Int }
+    private struct Phase: Decodable { let combinedCompileLayoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let rawFrameDeltasNanos: [UInt64]; let nominalFrameCount: Int; let viewerCausedDelayedIntervals: [DelayedInterval]; let imageRequestCount: Int; let imageMetadataCount: Int; let imageDecodeCount: Int; let drawCount: Int }
+    private struct Export: Decodable { let percentileDefinition: String; let phaseSamples: [String: Phase]; let windowEvidence: [WindowEvidence]; let preResetSnapshot: CacheSnapshot; let postResetSnapshot: CacheSnapshot; let duplicatePublications: Int }
     static func assertPasses(exportJSON: String, expectedDocuments: Int) throws {
         let export = try JSONDecoder().decode(Export.self, from: Data(exportJSON.utf8))
         guard let cold = export.phaseSamples["cold"], let warm = export.phaseSamples["warm"], let imagesDisabled = export.phaseSamples["imagesDisabled"] else { XCTFail("every traversal phase must export samples"); return }
@@ -626,13 +740,32 @@ private enum PreparedProsePerformanceGates {
         XCTAssertEqual(export.percentileDefinition, "nearest-rank: sorted[ceil(p*n)-1]")
         for phase in [cold, warm, imagesDisabled] {
             XCTAssertGreaterThan(phase.drawCount, 0, "phase must include actual viewer draw evidence")
-            requireNonEmpty(phase.frameNanos, "phase frame")
-            let frames = phase.frameNanos
-            XCTAssertGreaterThanOrEqual(Double(frames.filter { $0 <= 16_670_000 }.count) / Double(frames.count), 0.99)
+            requireNonEmpty(phase.rawFrameDeltasNanos, "phase raw frame")
+            XCTAssertGreaterThanOrEqual(
+                Double(phase.rawFrameDeltasNanos.filter {
+                    PreparedProseInstrumentation.classifyFrame(
+                        rawDeltaNanos: $0,
+                        nominalFramePeriodNanos: PreparedProseInstrumentation.nominalFramePeriodNanos,
+                        singleTickToleranceNanos: PreparedProseInstrumentation.singleTickToleranceNanos
+                    ).nominalFrameCount == 1
+                }.count) / Double(phase.rawFrameDeltasNanos.count),
+                0.99
+            )
         }
-        requireNonEmpty(warm.viewerFrameNanos, "warm viewer-attributed frame")
-        XCTAssertLessThanOrEqual(warm.viewerFrameNanos.max() ?? .max, 33_300_000)
-        XCTAssertLessThanOrEqual(export.retainedBytes["unmountedLayout"] ?? 0, 32 * 1024 * 1024)
+        XCTAssertLessThanOrEqual(warm.viewerCausedDelayedIntervals.map(\.rawDeltaNanos).max() ?? 0, 33_300_000)
+        XCTAssertEqual(imagesDisabled.imageRequestCount, 0)
+        XCTAssertEqual(imagesDisabled.imageMetadataCount, 0)
+        XCTAssertEqual(imagesDisabled.imageDecodeCount, 0)
+        XCTAssertLessThanOrEqual(export.preResetSnapshot.unmountedHighWaterBytes, 32 * 1024 * 1024)
+        XCTAssertEqual(export.postResetSnapshot.unmountedCurrentBytes, 0)
+        XCTAssertEqual(export.postResetSnapshot.unmountedCurrentResidentCount, 0)
+        XCTAssertEqual(export.postResetSnapshot.compiledCurrentBytes, 0)
+        XCTAssertEqual(export.postResetSnapshot.compiledCurrentResidentCount, 0)
+        for evidence in export.windowEvidence where evidence.phase == "warm" {
+            XCTAssertEqual(evidence.compileCount, 0)
+            XCTAssertEqual(evidence.layoutCount, 0)
+            XCTAssertEqual(evidence.cacheMisses, 0)
+        }
         XCTAssertEqual(export.duplicatePublications, 0)
     }
     private static func requireNonEmpty(_ values: [UInt64], _ name: String) { XCTAssertFalse(values.isEmpty, "\(name) evidence must be nonempty") }

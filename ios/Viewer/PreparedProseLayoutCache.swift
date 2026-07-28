@@ -481,6 +481,10 @@ final class PreparedProseLayoutCache {
     }
 
     private func publishOwnerBytesLocked() {
+        PreparedProseInstrumentation.cacheUpdated(
+            unmountedBytes: completedRetainedBytesLocked(),
+            unmountedResidentCount: completed.count
+        )
         PreparedProseInstrumentation.retained(.unmountedLayout, scope: "cache", bytes: completedRetainedBytesLocked())
         let directLayouts = Array(directMounted.values)
         let fabricLayouts = Array(pendingLeases.values) + Array(mountedLeases.values)
