@@ -1,6 +1,8 @@
 import { MaterialIcons } from '@expo/vector-icons';
 import React, {
+    createContext,
     useCallback,
+    useContext,
     useEffect,
     useMemo,
     useRef,
@@ -224,6 +226,21 @@ let nextEditorToolbarRegistrationId = 1;
 let activeEditorToolbarInteractions = 0;
 let editorToolbarFocusPreserveUntil = 0;
 let activeEditorToolbarFrameOwnerId: number | null = null;
+const EditorToolbarFrameOwnerContext = createContext<number | null>(null);
+
+export function EditorToolbarFrameOwnerProvider({
+    ownerId,
+    children,
+}: {
+    ownerId: number;
+    children: React.ReactNode;
+}) {
+    return (
+        <EditorToolbarFrameOwnerContext.Provider value={ownerId}>
+            {children}
+        </EditorToolbarFrameOwnerContext.Provider>
+    );
+}
 
 interface EditorToolbarMentionState {
     ownerId: number;
@@ -650,19 +667,40 @@ export function EditorToolbar({
     const commands = activeState.commands ?? {};
     const allowedMarks = activeState.allowedMarks ?? [];
     const insertableNodes = activeState.insertableNodes ?? [];
+    const frameOwnerId = useContext(EditorToolbarFrameOwnerContext);
+    const publishesFocusFrames = preserveEditorFocus || frameOwnerId != null;
     const rootRef = useRef<View | null>(null);
+    const menuCardRef = useRef<View | null>(null);
     const groupButtonRefs = useRef(new Map<string, View | null>());
     const { width: windowWidth, height: windowHeight } = useWindowDimensions();
     const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
     const [menuState, setMenuState] = useState<ToolbarMenuState | null>(null);
+    const frameOwnerIdRef = useRef(frameOwnerId);
+    frameOwnerIdRef.current = frameOwnerId;
+    const publishesFocusFramesRef = useRef(publishesFocusFrames);
+    publishesFocusFramesRef.current = publishesFocusFrames;
+    const menuStateRef = useRef(menuState);
+    menuStateRef.current = menuState;
+    const framePublisherMountedRef = useRef(false);
     const mentionState = useEditorToolbarMentionState();
     const toolbarInteractionActiveRef = useRef(false);
     const framePublishAnimationFramesRef = useRef<number[]>([]);
     const framePublishTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
     const registrationIdRef = useRef<number | null>(null);
+    const menuRegistrationIdRef = useRef<number | null>(null);
     if (registrationIdRef.current == null) {
         registrationIdRef.current = nextEditorToolbarRegistrationId++;
     }
+    if (menuRegistrationIdRef.current == null) {
+        menuRegistrationIdRef.current = nextEditorToolbarRegistrationId++;
+    }
+
+    useEffect(() => {
+        framePublisherMountedRef.current = true;
+        return () => {
+            framePublisherMountedRef.current = false;
+        };
+    }, []);
 
     const isMarkActive = useCallback((mark: string) => !!marks[mark], [marks]);
 
@@ -972,7 +1010,7 @@ export function EditorToolbar({
     const publishToolbarFrame = useCallback(() => {
         const registrationId = registrationIdRef.current;
         const toolbar = rootRef.current;
-        if (!preserveEditorFocus || registrationId == null || !toolbar) {
+        if (!publishesFocusFrames || registrationId == null || !toolbar) {
             if (registrationId != null) {
                 unregisterEditorToolbarFrame(registrationId);
             }
@@ -983,10 +1021,60 @@ export function EditorToolbar({
             return;
         }
 
+        const measuredFrameOwnerId = frameOwnerId;
         toolbar.measureInWindow((x, y, width, height) => {
-            registerEditorToolbarFrame(registrationId, { x, y, width, height }, null);
+            if (
+                !framePublisherMountedRef.current ||
+                !publishesFocusFramesRef.current ||
+                frameOwnerIdRef.current !== measuredFrameOwnerId
+            ) {
+                return;
+            }
+            registerEditorToolbarFrame(
+                registrationId,
+                { x, y, width, height },
+                measuredFrameOwnerId
+            );
         });
-    }, [preserveEditorFocus]);
+    }, [frameOwnerId, publishesFocusFrames]);
+
+    const publishMenuFrame = useCallback(() => {
+        const registrationId = menuRegistrationIdRef.current;
+        const menuCard = menuCardRef.current;
+        if (!publishesFocusFrames || menuState == null || registrationId == null || !menuCard) {
+            if (registrationId != null) {
+                unregisterEditorToolbarFrame(registrationId);
+            }
+            return;
+        }
+
+        if (typeof menuCard.measureInWindow !== 'function') {
+            return;
+        }
+
+        const measuredFrameOwnerId = frameOwnerId;
+        const measuredMenuState = menuState;
+        menuCard.measureInWindow((x, y, width, height) => {
+            if (
+                !framePublisherMountedRef.current ||
+                !publishesFocusFramesRef.current ||
+                frameOwnerIdRef.current !== measuredFrameOwnerId ||
+                menuStateRef.current !== measuredMenuState
+            ) {
+                return;
+            }
+            registerEditorToolbarFrame(
+                registrationId,
+                { x, y, width, height },
+                measuredFrameOwnerId
+            );
+        });
+    }, [frameOwnerId, menuState, publishesFocusFrames]);
+
+    const publishToolbarFrames = useCallback(() => {
+        publishToolbarFrame();
+        publishMenuFrame();
+    }, [publishMenuFrame, publishToolbarFrame]);
 
     const cancelScheduledFramePublishes = useCallback(() => {
         framePublishAnimationFramesRef.current.forEach((frame) => cancelAnimationFrame(frame));
@@ -996,25 +1084,29 @@ export function EditorToolbar({
     }, []);
 
     const scheduleToolbarFramePublish = useCallback(() => {
-        if (!preserveEditorFocus) {
+        if (!publishesFocusFrames) {
             return;
         }
 
         cancelScheduledFramePublishes();
-        publishToolbarFrame();
+        publishToolbarFrames();
 
-        framePublishAnimationFramesRef.current.push(requestAnimationFrame(publishToolbarFrame));
+        framePublishAnimationFramesRef.current.push(requestAnimationFrame(publishToolbarFrames));
         KEYBOARD_FRAME_REMEASURE_DELAYS_MS.forEach((delay) => {
-            framePublishTimeoutsRef.current.push(setTimeout(publishToolbarFrame, delay));
+            framePublishTimeoutsRef.current.push(setTimeout(publishToolbarFrames, delay));
         });
-    }, [cancelScheduledFramePublishes, preserveEditorFocus, publishToolbarFrame]);
+    }, [cancelScheduledFramePublishes, publishesFocusFrames, publishToolbarFrames]);
 
     const handleToolbarLayout = useCallback(() => {
         requestAnimationFrame(publishToolbarFrame);
     }, [publishToolbarFrame]);
 
+    const handleMenuLayout = useCallback(() => {
+        requestAnimationFrame(publishMenuFrame);
+    }, [publishMenuFrame]);
+
     useEffect(() => {
-        if (!preserveEditorFocus) {
+        if (!publishesFocusFrames) {
             const registrationId = registrationIdRef.current;
             if (registrationId != null) {
                 unregisterEditorToolbarFrame(registrationId);
@@ -1027,7 +1119,7 @@ export function EditorToolbar({
     }, [
         expandedGroupKey,
         menuState?.groupKey,
-        preserveEditorFocus,
+        publishesFocusFrames,
         publishToolbarFrame,
         startItems.length,
         scrollItems.length,
@@ -1037,7 +1129,21 @@ export function EditorToolbar({
     ]);
 
     useEffect(() => {
+        if (!publishesFocusFrames || menuState == null) {
+            const registrationId = menuRegistrationIdRef.current;
+            if (registrationId != null) {
+                unregisterEditorToolbarFrame(registrationId);
+            }
+            return;
+        }
+
+        const frame = requestAnimationFrame(publishMenuFrame);
+        return () => cancelAnimationFrame(frame);
+    }, [menuState, publishesFocusFrames, publishMenuFrame, windowHeight, windowWidth]);
+
+    useEffect(() => {
         const registrationId = registrationIdRef.current;
+        const menuRegistrationId = menuRegistrationIdRef.current;
         return () => {
             cancelScheduledFramePublishes();
             if (toolbarInteractionActiveRef.current) {
@@ -1047,11 +1153,14 @@ export function EditorToolbar({
             if (registrationId != null) {
                 unregisterEditorToolbarFrame(registrationId);
             }
+            if (menuRegistrationId != null) {
+                unregisterEditorToolbarFrame(menuRegistrationId);
+            }
         };
     }, [cancelScheduledFramePublishes]);
 
     useEffect(() => {
-        if (!preserveEditorFocus) {
+        if (!publishesFocusFrames) {
             cancelScheduledFramePublishes();
             return;
         }
@@ -1066,7 +1175,7 @@ export function EditorToolbar({
             subscriptions.forEach((subscription) => subscription.remove());
             cancelScheduledFramePublishes();
         };
-    }, [cancelScheduledFramePublishes, preserveEditorFocus, scheduleToolbarFramePublish]);
+    }, [cancelScheduledFramePublishes, publishesFocusFrames, scheduleToolbarFramePublish]);
 
     useEffect(() => {
         if (expandedGroupKey != null && !groupsByKey.has(expandedGroupKey)) {
@@ -1288,6 +1397,7 @@ export function EditorToolbar({
     return (
         <View
             ref={rootRef}
+            testID='editor-toolbar-root'
             collapsable={false}
             onLayout={handleToolbarLayout}
             style={[
@@ -1446,6 +1556,10 @@ export function EditorToolbar({
                     onRequestClose={() => setMenuState(null)}>
                     <Pressable style={styles.menuBackdrop} onPress={() => setMenuState(null)}>
                         <View
+                            ref={menuCardRef}
+                            testID='editor-toolbar-menu-card'
+                            collapsable={false}
+                            onLayout={handleMenuLayout}
                             style={[
                                 styles.menuCard,
                                 {

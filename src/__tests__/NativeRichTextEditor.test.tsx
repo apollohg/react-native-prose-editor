@@ -54,6 +54,7 @@ jest.mock('../schemas', () => {
 // ─── Imports (after mock setup) ─────────────────────────────────
 
 import React, { createRef } from 'react';
+import { View } from 'react-native';
 import { render, act } from '@testing-library/react-native';
 
 import {
@@ -73,6 +74,7 @@ import {
     NativeEditorV2OperationError,
 } from '../NativeEditorBoundaryError';
 import * as EditorUpdateRevision from '../EditorUpdateRevision';
+import { _resetEditorToolbarFrameRegistryForTests } from '../EditorToolbar';
 import { createYjsCollaborationController, useYjsCollaboration } from '../YjsCollaboration';
 import {
     createFakeNativeEditorV2Runtime,
@@ -171,6 +173,9 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
     });
 
     afterEach(() => {
+        act(() => {
+            _resetEditorToolbarFrameRegistryForTests();
+        });
         jest.useRealTimers();
     });
 
@@ -1797,6 +1802,67 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         rerender(<NativeRichTextEditor documentHandle={handle} toolbarPlacement='inline' />);
         expect(queryByTestId('native-editor-js-toolbar')).not.toBeNull();
         handle.destroy();
+    });
+
+    it('forwards focused toolbar frames to native without racing a refocus after blur', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const onBlur = jest.fn();
+        const viewPrototype = (
+            View as unknown as {
+                prototype: {
+                    measureInWindow: (
+                        callback: (x: number, y: number, width: number, height: number) => void
+                    ) => void;
+                };
+            }
+        ).prototype;
+        const measureInWindow = jest
+            .spyOn(viewPrototype, 'measureInWindow')
+            .mockImplementation(function (callback) {
+                const testID = (this as unknown as { props?: { testID?: string } }).props?.testID;
+                if (testID === 'editor-toolbar-root') {
+                    callback(12, 24, 320, 48);
+                }
+            });
+
+        try {
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    toolbarPlacement='inline'
+                    onBlur={onBlur}
+                />
+            );
+            const nativeView = getByTestId('native-editor-view');
+
+            act(() => {
+                nativeView.props.onFocusChange({
+                    nativeEvent: { isFocused: true, editorId: handle.editorId },
+                });
+                jest.runOnlyPendingTimers();
+            });
+
+            expect(JSON.parse(getByTestId('native-editor-view').props.toolbarFrameJson)).toEqual({
+                x: 12,
+                y: 24,
+                width: 320,
+                height: 48,
+            });
+            expect(mockNativeFocus).not.toHaveBeenCalled();
+
+            act(() => {
+                getByTestId('native-editor-view').props.onFocusChange({
+                    nativeEvent: { isFocused: false, editorId: handle.editorId },
+                });
+            });
+
+            expect(getByTestId('native-editor-view').props.toolbarFrameJson).toBeUndefined();
+            expect(onBlur).toHaveBeenCalledTimes(1);
+            expect(mockNativeFocus).not.toHaveBeenCalled();
+        } finally {
+            measureInWindow.mockRestore();
+            handle.destroy();
+        }
     });
 
     it('routes every typing/command ref method through the v2 bridge with the frozen payload', () => {

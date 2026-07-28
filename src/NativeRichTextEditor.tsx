@@ -38,7 +38,11 @@ import { useNativeEditorDocument } from './useNativeEditor';
 import {
     DEFAULT_EDITOR_TOOLBAR_ITEMS,
     EditorToolbar,
+    EditorToolbarFrameOwnerProvider,
+    setActiveEditorToolbarFrameOwnerForEditor,
+    useEditorToolbarFrames,
     type EditorToolbarCommand,
+    type EditorToolbarFrame,
     type EditorToolbarGroupChildItem,
     type EditorToolbarHeadingLevel,
     type EditorToolbarIcon,
@@ -83,6 +87,7 @@ interface NativeEditorViewProps {
     themeJson?: string;
     addonsJson?: string;
     toolbarItemsJson?: string;
+    toolbarFrameJson?: string;
     remoteSelectionsJson?: string;
     editorUpdateJson?: string;
     editorUpdateEditorId?: string;
@@ -151,6 +156,13 @@ interface NativeEditorErrorBinding {
 
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
 const IMAGE_TOOLBAR_ACTION_KEY = '__native-editor-image__';
+let nextNativeEditorToolbarFrameOwnerId = 1;
+
+function allocateToolbarFrameOwnerId(): number {
+    const ownerId = nextNativeEditorToolbarFrameOwnerId;
+    nextNativeEditorToolbarFrameOwnerId += 1;
+    return ownerId;
+}
 
 const EMPTY_ACTIVE_STATE: ActiveState = {
     marks: {},
@@ -340,6 +352,15 @@ function serializeRemoteSelections(
         };
     });
     return stringifyCachedJson(normalized);
+}
+
+function serializeToolbarFrames(
+    frames: readonly EditorToolbarFrame[] | null | undefined
+): string | undefined {
+    if (!frames || frames.length === 0) {
+        return undefined;
+    }
+    return JSON.stringify(frames.length === 1 ? frames[0] : { frames });
 }
 
 function parseCaretRectJson(raw: string | null | undefined): NativeRichTextEditorCaretRect | null {
@@ -779,10 +800,17 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             editorId: string;
         } | null>(null);
         const [autoGrowHeight, setAutoGrowHeight] = useState<number | null>(null);
+        const [isFocused, setIsFocused] = useState(false);
         const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
         const activeStateKeyRef = useRef<string | null>(null);
         const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
         const isFocusedRef = useRef(false);
+        const toolbarFrameOwnerIdRef = useRef<number | null>(null);
+        if (toolbarFrameOwnerIdRef.current == null) {
+            toolbarFrameOwnerIdRef.current = allocateToolbarFrameOwnerId();
+        }
+        const toolbarFrameOwnerId = toolbarFrameOwnerIdRef.current;
+        const registeredToolbarFrames = useEditorToolbarFrames(toolbarFrameOwnerId);
         const latestRevisionRef = useRef<string | null>(null);
         const currentPushedUpdateEditorIdRef = useRef(editorId);
         currentPushedUpdateEditorIdRef.current = editorId;
@@ -814,6 +842,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             activeStateRef.current = EMPTY_ACTIVE_STATE;
             activeStateKeyRef.current = null;
             isFocusedRef.current = false;
+            setIsFocused(false);
             toolbarItemsSerializationCacheRef.current = null;
             setActiveState(EMPTY_ACTIVE_STATE);
             setPushedUpdate(null);
@@ -837,6 +866,13 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             latestRevisionRef.current = documentHandle.bridge.getState().documentRevision;
             latestRevisionScopeEditorIdRef.current = editorId;
         }, [documentHandle, editorId]);
+
+        useEffect(
+            () => () => {
+                setActiveEditorToolbarFrameOwnerForEditor(toolbarFrameOwnerId, false);
+            },
+            [editorId, toolbarFrameOwnerId]
+        );
 
         const applyTypedUpdateState = useCallback(
             (
@@ -1264,13 +1300,15 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 const focused = event.nativeEvent.isFocused;
                 const wasFocused = isFocusedRef.current;
                 isFocusedRef.current = focused;
+                setActiveEditorToolbarFrameOwnerForEditor(toolbarFrameOwnerId, focused);
+                setIsFocused(focused);
                 if (focused && !wasFocused) {
                     onFocusRef.current?.();
                 } else if (!focused && wasFocused) {
                     onBlurRef.current?.();
                 }
             },
-            [documentHandle, isForThisEditor]
+            [documentHandle, isForThisEditor, toolbarFrameOwnerId]
         );
 
         const handleContentHeightChange = useCallback(
@@ -1414,6 +1452,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const nativeViewStyle =
             nativeViewStyleParts.length <= 1 ? nativeViewStyleParts[0] : nativeViewStyleParts;
         const currentPushedUpdate = pushedUpdate?.editorId === editorId ? pushedUpdate : null;
+        const toolbarFrameJson = serializeToolbarFrames(
+            editable && isFocused ? registeredToolbarFrames : undefined
+        );
 
         return (
             <View style={[styles.container, containerStyle]}>
@@ -1437,6 +1478,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     themeJson={themeJson}
                     addonsJson={addonsJson}
                     toolbarItemsJson={toolbarItemsJson}
+                    toolbarFrameJson={toolbarFrameJson}
                     remoteSelectionsJson={remoteSelectionsJson}
                     editorUpdateJson={currentPushedUpdate?.json}
                     editorUpdateEditorId={currentPushedUpdate?.editorId}
@@ -1453,46 +1495,48 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     <View
                         testID='native-editor-js-toolbar'
                         style={[styles.inlineToolbar, { marginTop: inlineToolbarMarginTop }]}>
-                        <EditorToolbar
-                            activeState={activeState}
-                            historyState={document.historyState}
-                            toolbarItems={toolbarItems}
-                            theme={theme?.toolbar}
-                            showTopBorder={theme?.toolbar?.showTopBorder ?? false}
-                            preserveEditorFocus={false}
-                            onToggleMark={commandToggleMark}
-                            onToggleListType={(listType: EditorToolbarListType) =>
-                                commandToggleList(listType)
-                            }
-                            onToggleHeading={commandToggleHeading}
-                            onToggleBlockquote={commandToggleBlockquote}
-                            onInsertNodeType={commandInsertNode}
-                            onRunCommand={(command: EditorToolbarCommand) => {
-                                switch (command) {
-                                    case 'indentList':
-                                        commandIndentListItem();
-                                        break;
-                                    case 'outdentList':
-                                        commandOutdentListItem();
-                                        break;
-                                    case 'undo':
-                                        document.undo();
-                                        break;
-                                    case 'redo':
-                                        document.redo();
-                                        break;
+                        <EditorToolbarFrameOwnerProvider ownerId={toolbarFrameOwnerId}>
+                            <EditorToolbar
+                                activeState={activeState}
+                                historyState={document.historyState}
+                                toolbarItems={toolbarItems}
+                                theme={theme?.toolbar}
+                                showTopBorder={theme?.toolbar?.showTopBorder ?? false}
+                                preserveEditorFocus={false}
+                                onToggleMark={commandToggleMark}
+                                onToggleListType={(listType: EditorToolbarListType) =>
+                                    commandToggleList(listType)
                                 }
-                            }}
-                            onRequestLink={onRequestLink ? openLinkRequest : undefined}
-                            onRequestImage={onRequestImage ? openImageRequest : undefined}
-                            onToolbarAction={onToolbarAction}
-                            onToggleBold={() => commandToggleMark('bold')}
-                            onToggleItalic={() => commandToggleMark('italic')}
-                            onToggleUnderline={() => commandToggleMark('underline')}
-                            onToggleStrike={() => commandToggleMark('strike')}
-                            onUndo={document.undo}
-                            onRedo={document.redo}
-                        />
+                                onToggleHeading={commandToggleHeading}
+                                onToggleBlockquote={commandToggleBlockquote}
+                                onInsertNodeType={commandInsertNode}
+                                onRunCommand={(command: EditorToolbarCommand) => {
+                                    switch (command) {
+                                        case 'indentList':
+                                            commandIndentListItem();
+                                            break;
+                                        case 'outdentList':
+                                            commandOutdentListItem();
+                                            break;
+                                        case 'undo':
+                                            document.undo();
+                                            break;
+                                        case 'redo':
+                                            document.redo();
+                                            break;
+                                    }
+                                }}
+                                onRequestLink={onRequestLink ? openLinkRequest : undefined}
+                                onRequestImage={onRequestImage ? openImageRequest : undefined}
+                                onToolbarAction={onToolbarAction}
+                                onToggleBold={() => commandToggleMark('bold')}
+                                onToggleItalic={() => commandToggleMark('italic')}
+                                onToggleUnderline={() => commandToggleMark('underline')}
+                                onToggleStrike={() => commandToggleMark('strike')}
+                                onUndo={document.undo}
+                                onRedo={document.redo}
+                            />
+                        </EditorToolbarFrameOwnerProvider>
                     </View>
                 ) : null}
             </View>
