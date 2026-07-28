@@ -3,13 +3,19 @@ package com.apollohg.editor.viewer
 import android.graphics.Canvas
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.app.Activity
+import android.os.Looper
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import com.apollohg.editor.PreparedProseRecyclerHarness
+import com.apollohg.editor.PreparedProseBenchmarkConfiguration
+import com.apollohg.editor.PreparedProsePerformanceGates
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
 import com.apollohg.editor.ProseViewerErrorCode
@@ -24,8 +30,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Robolectric
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.TimeUnit
+import org.json.JSONArray
+import org.json.JSONObject
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -35,28 +46,75 @@ class PreparedProseLayoutTest {
 
     @Test
     fun windowedRecyclerWarmRevisitUsesOnePrimePreparation() {
-        val traversal = PreparedProseRecyclerHarness.WindowTraversalResult(
-            windowId = "short-01",
-            prime = PreparedProseRecyclerHarness.WindowPhaseResult(
-                residentKeyCount = 60,
-                residentKeyDigest = "short-01",
-                compileCount = 60,
-                layoutCount = 60,
-                cacheMisses = 60,
-            ),
-            warm = PreparedProseRecyclerHarness.WindowPhaseResult(
-                residentKeyCount = 60,
-                residentKeyDigest = "short-01",
-                compileCount = 0,
-                layoutCount = 0,
-                cacheMisses = 0,
-            ),
-        )
+        val corpus = JSONObject(context.assets.open("viewer-performance-corpus.json").bufferedReader().use { it.readText() })
+        val entries = corpus.getJSONArray("documents").let { documents ->
+            buildMap {
+                for (index in 0 until documents.length()) {
+                    val document = documents.getJSONObject(index)
+                    put(
+                        document.getString("id"),
+                        PreparedProseRecyclerHarness.Entry(document.getString("id"), document.getJSONObject("contentJSON").toString()),
+                    )
+                }
+            }
+        }
+        val literalWindows = corpus.getJSONArray("warmWindows").toWarmWindows()
+        val shortWindow = literalWindows.single { it.id == "short-01" }
+        assertEquals(60, shortWindow.primeIds.size)
 
-        assertEquals(60, traversal.prime.residentKeyCount)
+        shadowOf(context.getSystemService(AccessibilityManager::class.java)).setEnabled(true)
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val harness = PreparedProseRecyclerHarness(activity, PreparedProseBenchmarkConfiguration.load(context))
+        activity.setContentView(FrameLayout(activity).apply {
+            addView(harness, FrameLayout.LayoutParams(390, 844))
+        })
+        shadowOf(Looper.getMainLooper()).idle()
+
+        PreparedProseInstrumentation.beginBenchmark()
+        var shortResult: Result<List<PreparedProseRecyclerHarness.WindowTraversalResult>>? = null
+        harness.traverseWindowsForTesting(
+            windows = listOf(shortWindow),
+            entriesById = entries,
+            phase = PreparedProseInstrumentation.TraversalPhase.COLD,
+            imagesEnabled = true,
+        ) { shortResult = it }
+        drainMainLooperUntil { shortResult != null }
+        val traversal = requireNotNull(shortResult).getOrThrow().single()
+        assertTrue("prime must wait for the attached, bound leading holder", traversal.initialLeadingHolderAttached)
+        assertEquals(
+            "prime compile=${traversal.prime.compileCount}, layout=${traversal.prime.layoutCount}, misses=${traversal.prime.cacheMisses}",
+            60,
+            traversal.prime.residentKeyCount,
+        )
         assertEquals(0, traversal.warm.compileCount)
         assertEquals(0, traversal.warm.layoutCount)
         assertEquals(0, traversal.warm.cacheMisses)
+
+        val oneItem = literalWindows.single { it.id == "very-long-01" }
+        assertEquals(1, oneItem.primeIds.size)
+        var oneItemResult: Result<List<PreparedProseRecyclerHarness.WindowTraversalResult>>? = null
+        harness.traverseWindowsForTesting(
+            windows = listOf(oneItem),
+            entriesById = entries,
+            phase = PreparedProseInstrumentation.TraversalPhase.COLD,
+            imagesEnabled = true,
+        ) { oneItemResult = it }
+        drainMainLooperUntil { oneItemResult != null }
+        assertEquals(oneItem.id, requireNotNull(oneItemResult).getOrThrow().single().windowId)
+
+        val exactEvidence = JSONArray().apply {
+            literalWindows.forEach { window ->
+                put(windowEvidence(window, "cold", window.primeIds))
+            }
+            literalWindows.forEach { window ->
+                put(windowEvidence(window, "warm", window.warmIds))
+            }
+            literalWindows.forEach { window ->
+                put(windowEvidence(window, "imagesDisabled", window.primeIds))
+                put(windowEvidence(window, "imagesDisabled", window.warmIds))
+            }
+        }
+        PreparedProsePerformanceGates.assertExactWindowEvidence(exactEvidence, literalWindows)
 
         val harnessSource = sequenceOf(
             File("src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt"),
@@ -65,16 +123,40 @@ class PreparedProseLayoutTest {
         ).firstOrNull(File::isFile)?.readText()
         assertNotNull("PreparedProseRecyclerHarness source must be available to the contract test", harnessSource)
         val source = requireNotNull(harnessSource)
-        assertTrue(source.contains("fun traverseWindows("))
+        assertTrue(source.contains("awaitInitialLeadingAttachment"))
+        assertTrue(source.contains("completeDirectionIfIdleAndAttached"))
         assertTrue(source.contains("smoothScrollToPosition(lastIndex)"))
         assertTrue(source.contains("smoothScrollToPosition(0)"))
-        assertTrue(source.contains("OnScrollListener"))
-        assertTrue(source.contains("beginBenchmarkResidentCensus"))
-        assertTrue(source.contains("recordWindow("))
         assertTrue(source.contains("prepareForReuse()"))
         assertFalse(source.contains("scrollToPosition(position)"))
         assertFalse(source.contains("requestLayout()"))
         assertFalse(source.contains("settle(instrumentation)"))
+    }
+
+    private fun JSONArray.toWarmWindows() = List(length()) { index ->
+        getJSONObject(index).let { window ->
+            fun ids(key: String) = window.getJSONArray(key).let { values ->
+                List(values.length()) { valueIndex -> values.getString(valueIndex) }
+            }
+            PreparedProseRecyclerHarness.WarmWindow(window.getString("id"), ids("primeIds"), ids("warmIds"))
+        }
+    }
+
+    private fun windowEvidence(
+        window: PreparedProseRecyclerHarness.WarmWindow,
+        phase: String,
+        ids: List<String>,
+    ) = JSONObject()
+        .put("windowId", window.id)
+        .put("phase", phase)
+        .put("entryIds", JSONArray(ids))
+
+    private fun drainMainLooperUntil(predicate: () -> Boolean) {
+        repeat(600) {
+            if (predicate()) return
+            shadowOf(Looper.getMainLooper()).idleFor(16, TimeUnit.MILLISECONDS)
+        }
+        assertTrue("expected attached RecyclerView lifecycle to complete", predicate())
     }
 
     @Test

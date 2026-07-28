@@ -3,6 +3,8 @@ package com.apollohg.editor
 import android.graphics.Color
 import android.app.Instrumentation
 import android.content.Context
+import android.os.Looper
+import android.os.SystemClock
 import android.view.ViewGroup
 import android.view.Choreographer
 import androidx.recyclerview.widget.RecyclerView
@@ -76,7 +78,11 @@ internal data class TimingStats(
 /** Pixel 7 release gate, evaluated only by the Task 14 device lane. */
 internal object PreparedProsePerformanceGates {
     private const val NS_PER_MS = 1_000_000L
-    fun assertPasses(exportJson: String, expectedDocuments: Int) {
+    fun assertPasses(
+        exportJson: String,
+        expectedDocuments: Int,
+        expectedWindows: List<PreparedProseRecyclerHarness.WarmWindow>,
+    ) {
         val export = JSONObject(exportJson)
         val phases = export.getJSONObject("phaseSamples")
         val cold = phases.getJSONObject("cold")
@@ -119,11 +125,9 @@ internal object PreparedProsePerformanceGates {
         check(postReset.getLong("unmountedCurrentResidentCount") == 0L)
         check(postReset.getLong("compiledCurrentBytes") == 0L)
         check(postReset.getLong("compiledCurrentResidentCount") == 0L)
-        val warmWindows = export.getJSONArray("windowEvidence").objects().filter {
-            it.getString("phase") == "warm"
-        }
-        check(warmWindows.isNotEmpty()) { "expected warm-window evidence" }
-        warmWindows.forEach { window ->
+        val evidence = export.getJSONArray("windowEvidence")
+        assertExactWindowEvidence(evidence, expectedWindows)
+        evidence.objects().filter { it.getString("phase") == "warm" }.forEach { window ->
             check(window.getInt("compileCount") == 0)
             check(window.getInt("layoutCount") == 0)
             check(window.getInt("cacheMisses") == 0)
@@ -132,8 +136,58 @@ internal object PreparedProsePerformanceGates {
         }
         check(export.optInt("duplicatePublications") == 0)
     }
+
+    /**
+     * The benchmark must prove its literal virtualized traversal rather than
+     * merely some warm cache hits. Filtering keeps the requirement independent
+     * of interleaved forward/reverse recording while preserving each phase's
+     * exact corpus order.
+     */
+    fun assertExactWindowEvidence(
+        evidence: JSONArray,
+        expectedWindows: List<PreparedProseRecyclerHarness.WarmWindow>,
+    ) {
+        check(expectedWindows.size == 27) { "expected the 27 literal warm windows" }
+        val records = evidence.objects()
+        assertWindowSeries(
+            records.filter { it.getString("phase") == "cold" },
+            expectedWindows.map { it to it.primeIds },
+            "cold",
+        )
+        assertWindowSeries(
+            records.filter { it.getString("phase") == "warm" },
+            expectedWindows.map { it to it.warmIds },
+            "warm",
+        )
+        assertWindowSeries(
+            records.filter { it.getString("phase") == "imagesDisabled" },
+            expectedWindows.flatMap { window -> listOf(window to window.primeIds, window to window.warmIds) },
+            "imagesDisabled",
+        )
+    }
+
+    private fun assertWindowSeries(
+        actual: List<JSONObject>,
+        expected: List<Pair<PreparedProseRecyclerHarness.WarmWindow, List<String>>>,
+        phase: String,
+    ) {
+        check(actual.size == expected.size) {
+            "expected ${expected.size} $phase window records, found ${actual.size}"
+        }
+        actual.zip(expected).forEachIndexed { index, (record, expectedRecord) ->
+            val (window, ids) = expectedRecord
+            check(record.getString("windowId") == window.id) {
+                "$phase record $index must be literal window ${window.id}"
+            }
+            check(record.getJSONArray("entryIds").strings() == ids) {
+                "$phase record $index must retain ${window.id}'s literal entry ordering"
+            }
+        }
+    }
+
     private fun JSONArray.longs() = List(length()) { getLong(it) }
     private fun JSONArray.objects() = List(length()) { getJSONObject(it) }
+    private fun JSONArray.strings() = List(length()) { getString(it) }
     private fun requireNonEmpty(values: List<Long>, name: String) = check(values.isNotEmpty()) { "$name evidence must be nonempty" }
     /** Nearest rank shared with iOS: sorted[ceil(p * n) - 1]. */
     private fun percentile(values: List<Long>, percentile: Double): Long = values.sorted()[(kotlin.math.ceil(values.size * percentile).toInt() - 1).coerceAtLeast(0)]
@@ -157,6 +211,7 @@ internal class PreparedProseRecyclerHarness(
         val windowId: String,
         val prime: WindowPhaseResult,
         val warm: WindowPhaseResult,
+        val initialLeadingHolderAttached: Boolean,
     )
 
     private enum class Direction { PRIME, WARM }
@@ -168,6 +223,10 @@ internal class PreparedProseRecyclerHarness(
         var direction: Direction = Direction.PRIME,
         var counters: Triple<Int, Int, Int> = Triple(0, 0, 0),
         var prime: WindowPhaseResult? = null,
+        var initialLeadingHolderAttached: Boolean = false,
+        var finishingDirection: Boolean = false,
+        var evidenceActive: Boolean = false,
+        val attachmentDeadlineUptimeMs: Long = SystemClock.uptimeMillis() + INITIAL_ATTACHMENT_TIMEOUT_MS,
     )
 
     private val benchmarkAdapter = object : RecyclerView.Adapter<Holder>() {
@@ -200,14 +259,7 @@ internal class PreparedProseRecyclerHarness(
         addOnScrollListener(object : OnScrollListener() {
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 if (newState != SCROLL_STATE_IDLE) return
-                val active = activeWindow ?: return
-                val destination = if (active.direction == Direction.PRIME) {
-                    benchmarkAdapter.entries.lastIndex
-                } else {
-                    0
-                }
-                if (destination < 0 || findViewHolderForAdapterPosition(destination) == null) return
-                finishDirection()
+                completeDirectionIfIdleAndAttached()
             }
         })
     }
@@ -231,6 +283,34 @@ internal class PreparedProseRecyclerHarness(
         return windows.map { window -> traverseWindow(instrumentation, window, phase, imagesEnabled) }
     }
 
+    /** Robolectric entrypoint for the same attached RecyclerView lifecycle. */
+    fun traverseWindowsForTesting(
+        windows: List<WarmWindow>,
+        entriesById: Map<String, Entry>,
+        phase: PreparedProseInstrumentation.TraversalPhase,
+        imagesEnabled: Boolean,
+        completion: (Result<List<WindowTraversalResult>>) -> Unit,
+    ) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "Robolectric traversal must start on the main thread" }
+        require(phase == PreparedProseInstrumentation.TraversalPhase.COLD || phase == PreparedProseInstrumentation.TraversalPhase.IMAGES_DISABLED)
+        windowEntriesById.clear()
+        windowEntriesById.putAll(entriesById)
+        val results = mutableListOf<WindowTraversalResult>()
+        fun start(index: Int) {
+            if (index == windows.size) {
+                completion(Result.success(results))
+                return
+            }
+            startWindow(windows[index], phase, imagesEnabled) { result ->
+                result.fold(
+                    onSuccess = { traversal -> results += traversal; start(index + 1) },
+                    onFailure = { error -> completion(Result.failure(error)) },
+                )
+            }
+        }
+        start(0)
+    }
+
     private fun traverseWindow(
         instrumentation: Instrumentation,
         window: WarmWindow,
@@ -242,27 +322,52 @@ internal class PreparedProseRecyclerHarness(
         instrumentation.runOnMainSync {
             check(isAttachedToWindow) { "RecyclerView must be attached before traversal" }
             check(activeWindow == null) { "a RecyclerView window traversal is already active" }
-            val entries = window.primeIds.map { id ->
-                requireNotNull(windowEntriesById[id]) { "window ${window.id} references unknown entry $id" }
+            startWindow(window, phase, imagesEnabled) { completed ->
+                result = completed
+                completion.countDown()
             }
-            activeWindow = ActiveWindow(
-                window = window,
-                phase = phase,
-                imagesEnabled = imagesEnabled,
-                completion = { completed ->
-                    result = completed
-                    completion.countDown()
-                },
-            )
-            benchmarkAdapter.submit(entries, imagesEnabled)
-            beginDirection()
         }
         check(completion.await(10, TimeUnit.SECONDS)) { "timed out waiting for RecyclerView window ${window.id}" }
         return requireNotNull(result).getOrThrow()
     }
 
+    private fun startWindow(
+        window: WarmWindow,
+        phase: PreparedProseInstrumentation.TraversalPhase,
+        imagesEnabled: Boolean,
+        completion: (Result<WindowTraversalResult>) -> Unit,
+    ) {
+        check(isAttachedToWindow) { "RecyclerView must be attached before traversal" }
+        check(activeWindow == null) { "a RecyclerView window traversal is already active" }
+        val entries = window.primeIds.map { id ->
+            requireNotNull(windowEntriesById[id]) { "window ${window.id} references unknown entry $id" }
+        }
+        activeWindow = ActiveWindow(window, phase, imagesEnabled, completion)
+        // Prime evidence includes RecyclerView's initial post-submit binds,
+        // not only the subsequent scroll-bound work.
+        beginDirection()
+        benchmarkAdapter.submit(entries, imagesEnabled)
+        awaitInitialLeadingAttachment()
+    }
+
+    /** Wait for RecyclerView's ordinary post-submit bind/attachment before priming. */
+    private fun awaitInitialLeadingAttachment() {
+        val active = activeWindow ?: return
+        if (findViewHolderForAdapterPosition(0) != null) {
+            active.initialLeadingHolderAttached = true
+            driveCurrentDirection()
+            return
+        }
+        if (SystemClock.uptimeMillis() >= active.attachmentDeadlineUptimeMs) {
+            failActiveWindow(IllegalStateException("initial leading holder was not attached for ${active.window.id}"))
+            return
+        }
+        post { awaitInitialLeadingAttachment() }
+    }
+
     private fun beginDirection() {
         val active = activeWindow ?: return
+        active.finishingDirection = false
         PreparedProseLayoutRegistry.shared.beginBenchmarkResidentCensus()
         val evidencePhase = if (active.direction == Direction.WARM && active.phase == PreparedProseInstrumentation.TraversalPhase.COLD) {
             PreparedProseInstrumentation.TraversalPhase.WARM
@@ -271,8 +376,14 @@ internal class PreparedProseRecyclerHarness(
         }
         PreparedProseInstrumentation.beginPhase(evidencePhase)
         active.counters = PreparedProseInstrumentation.phaseCounters()
+        active.evidenceActive = true
         measuring = true
         Choreographer.getInstance().postFrameCallback(frameCallback)
+    }
+
+    private fun driveCurrentDirection() {
+        val active = activeWindow ?: return
+        check(active.evidenceActive) { "direction evidence must begin before scroll" }
         post {
             val current = activeWindow ?: return@post
             if (current.direction == Direction.PRIME) {
@@ -281,10 +392,22 @@ internal class PreparedProseRecyclerHarness(
             } else {
                 smoothScrollToPosition(0)
             }
+            // A one-item window and an already-attached destination can leave
+            // RecyclerView idle without dispatching a scroll-state callback.
+            completeDirectionIfIdleAndAttached()
         }
     }
 
-    /** Called solely by the attached RecyclerView scroll listener at idle. */
+    /** Completion always requires an idle RecyclerView and attached destination. */
+    private fun completeDirectionIfIdleAndAttached() {
+        val active = activeWindow ?: return
+        if (scrollState != SCROLL_STATE_IDLE || active.finishingDirection) return
+        val destination = if (active.direction == Direction.PRIME) benchmarkAdapter.entries.lastIndex else 0
+        if (destination < 0 || findViewHolderForAdapterPosition(destination) == null) return
+        active.finishingDirection = true
+        finishDirection()
+    }
+
     private fun finishDirection() {
         val active = activeWindow ?: return
         val census = PreparedProseLayoutRegistry.shared.endBenchmarkResidentCensus()
@@ -313,14 +436,29 @@ internal class PreparedProseRecyclerHarness(
         measuring = false
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         PreparedProseInstrumentation.endPhase()
+        active.evidenceActive = false
         if (active.direction == Direction.PRIME) {
             active.prime = result
             active.direction = Direction.WARM
             beginDirection()
+            driveCurrentDirection()
         } else {
             activeWindow = null
-            active.completion(Result.success(WindowTraversalResult(active.window.id, requireNotNull(active.prime), result)))
+            active.completion(Result.success(WindowTraversalResult(active.window.id, requireNotNull(active.prime), result, active.initialLeadingHolderAttached)))
         }
+    }
+
+    private fun failActiveWindow(error: Throwable) {
+        val active = activeWindow ?: return
+        activeWindow = null
+        if (active.evidenceActive) {
+            PreparedProseLayoutRegistry.shared.endBenchmarkResidentCensus()
+            measuring = false
+            Choreographer.getInstance().removeFrameCallback(frameCallback)
+            PreparedProseInstrumentation.endPhase()
+            active.evidenceActive = false
+        }
+        active.completion(Result.failure(error))
     }
 
     fun exportBeforeReset(): String = PreparedProseInstrumentation.exportJson()
@@ -350,6 +488,10 @@ internal class PreparedProseRecyclerHarness(
                 ),
             )
         }
+    }
+
+    private companion object {
+        const val INITIAL_ATTACHMENT_TIMEOUT_MS = 5_000L
     }
 }
 

@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
@@ -63,7 +64,12 @@ class NativeDevicePerformanceTest {
         ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
             lateinit var harness: PreparedProseRecyclerHarness
             scenario.onActivity { activity ->
-                activity.setContentView(PreparedProseRecyclerHarness(activity, configuration).also { harness = it })
+                activity.setContentView(FrameLayout(activity).apply {
+                    addView(
+                        PreparedProseRecyclerHarness(activity, configuration).also { harness = it },
+                        FrameLayout.LayoutParams(390, 844),
+                    )
+                })
             }
             instrumentation.waitForIdleSync()
             PreparedProseInstrumentation.beginBenchmark()
@@ -87,7 +93,11 @@ class NativeDevicePerformanceTest {
             check(harness.exportBeforeReset().isNotEmpty()) { "pre-reset prepared prose evidence must export" }
             instrumentation.runOnMainSync { harness.resetCacheWhileMounted() }
         }
-        PreparedProsePerformanceGates.assertPasses(PreparedProseInstrumentation.exportJson(), expectedDocuments = 1_000)
+        PreparedProsePerformanceGates.assertPasses(
+            PreparedProseInstrumentation.exportJson(),
+            expectedDocuments = 1_000,
+            expectedWindows = warmWindows,
+        )
     }
 
     @Test
