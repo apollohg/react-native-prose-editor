@@ -1,5 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+    FlatList,
+    KeyboardAvoidingView,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
+    type NativeScrollEvent,
+    type NativeSyntheticEvent,
+    type ViewToken,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { requireNativeModule } from 'expo-modules-core';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -44,6 +56,7 @@ const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
 const OUTPUT_PANEL_UPDATE_DEBOUNCE_MS = 120;
 const SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS = 1_500;
+const SCROLL_COMMAND_MIN_OFFSET_DELTA = 4;
 
 type PreparedProseBenchmarkBridge = {
     preparedProseBenchmarkBegin(): void;
@@ -549,9 +562,12 @@ type ScrollCommandToken = {
     runId: number;
     windowIndex: number;
     direction: 'prime' | 'warm';
+    expectedDirection: 'forward' | 'reverse';
+    expectedTerminalEntryId: string;
     dispatched: boolean;
     momentumBegan: boolean;
     consumed: boolean;
+    startOffsetY: number | null;
 };
 
 const preparedViewerCorpus = performanceCorpus as PerformanceCorpus;
@@ -583,6 +599,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
     const nextRunIdRef = useRef(0);
     const activeScrollCommandRef = useRef<ScrollCommandToken | null>(null);
     const scrollCommandWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const visibleEntryIdsRef = useRef<Set<string>>(new Set());
     useEffect(() => {
         benchmarkBridge.preparedProseBenchmarkBegin();
     }, [benchmarkBridge]);
@@ -610,20 +627,24 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
         scrollCommandWatchdogRef.current = null;
     }, []);
 
+    const releaseActiveTraversal = useCallback(() => {
+        clearScrollCommandWatchdog();
+        activeScrollCommandRef.current = null;
+        activeRunIdRef.current = null;
+        traversalInFlightRef.current = false;
+        endActiveBridgePhase();
+    }, [clearScrollCommandWatchdog, endActiveBridgePhase]);
+
     const cancelActiveTraversal = useCallback(
         (errorMessage?: string) => {
-            clearScrollCommandWatchdog();
-            activeScrollCommandRef.current = null;
-            activeRunIdRef.current = null;
-            traversalInFlightRef.current = false;
-            endActiveBridgePhase();
+            releaseActiveTraversal();
             setIsTraversing(false);
             if (errorMessage != null) {
                 console.warn(errorMessage);
                 setBenchmarkError(errorMessage);
             }
         },
-        [clearScrollCommandWatchdog, endActiveBridgePhase]
+        [releaseActiveTraversal]
     );
 
     const beginWindowRun = useCallback(
@@ -636,6 +657,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             nextRunIdRef.current = runId;
             activeRunIdRef.current = runId;
             activeBridgePhaseRef.current = null;
+            visibleEntryIdsRef.current = new Set();
             setBenchmarkError(null);
             setImagesEnabled(nextImagesEnabled);
             setWindowIndex(0);
@@ -671,6 +693,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                     endActiveBridgePhase();
                     setPhase('cold');
                 }
+                visibleEntryIdsRef.current = new Set();
                 setWindowIndex(nextWindowIndex);
                 setDirection('prime');
                 return;
@@ -686,14 +709,31 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             const runId = activeRunIdRef.current;
             if (!traversalInFlightRef.current || runId == null) return;
 
+            const commandWindow = preparedViewerCorpus.warmWindows[commandWindowIndex];
+            const commandIds =
+                commandDirection === 'prime' ? commandWindow.primeIds : commandWindow.warmIds;
+            const expectedTerminalEntryId =
+                commandDirection === 'prime'
+                    ? commandIds[commandIds.length - 1]
+                    : commandIds[0];
+            if (expectedTerminalEntryId == null) {
+                cancelActiveTraversal(
+                    `Prepared viewer benchmark aborted: ${commandDirection} window ${commandWindowIndex + 1} has no terminal entry.`
+                );
+                return;
+            }
+
             clearScrollCommandWatchdog();
             const command: ScrollCommandToken = {
                 runId,
                 windowIndex: commandWindowIndex,
                 direction: commandDirection,
+                expectedDirection: commandDirection === 'prime' ? 'forward' : 'reverse',
+                expectedTerminalEntryId,
                 dispatched: true,
                 momentumBegan: false,
                 consumed: false,
+                startOffsetY: null,
             };
             activeScrollCommandRef.current = command;
             scrollCommandWatchdogRef.current = setTimeout(() => {
@@ -703,13 +743,12 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                     activeCommand.windowIndex !== command.windowIndex ||
                     activeCommand.direction !== command.direction ||
                     !activeCommand.dispatched ||
-                    activeCommand.momentumBegan ||
                     activeCommand.consumed
                 ) {
                     return;
                 }
                 cancelActiveTraversal(
-                    `Prepared viewer benchmark aborted: ${command.direction} scroll for window ${command.windowIndex + 1} did not begin.`
+                    `Prepared viewer benchmark aborted: ${command.direction} scroll for window ${command.windowIndex + 1} did not complete valid motion.`
                 );
             }, SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS);
 
@@ -734,7 +773,21 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
         return () => cancelAnimationFrame(frame);
     }, [benchmarkBridge, direction, dispatchScrollCommand, isTraversing, phase, windowIndex]);
 
-    const handleMomentumScrollBegin = useCallback(() => {
+    const handleViewableItemsChanged = useCallback(
+        ({ viewableItems }: { viewableItems: Array<ViewToken> }) => {
+            const visibleEntryIds = new Set<string>();
+            for (const viewableItem of viewableItems) {
+                const entry = viewableItem.item as CorpusEntry | null;
+                if (entry?.id != null) {
+                    visibleEntryIds.add(entry.id);
+                }
+            }
+            visibleEntryIdsRef.current = visibleEntryIds;
+        },
+        []
+    );
+
+    const handleMomentumScrollBegin = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
         const command = activeScrollCommandRef.current;
         if (
             !traversalInFlightRef.current ||
@@ -746,10 +799,10 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             return;
         }
         command.momentumBegan = true;
-        clearScrollCommandWatchdog();
-    }, [clearScrollCommandWatchdog]);
+        command.startOffsetY = event.nativeEvent.contentOffset.y;
+    }, []);
 
-    const handleMomentumScrollEnd = useCallback(() => {
+    const handleMomentumScrollEnd = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
         const command = activeScrollCommandRef.current;
         if (
             !traversalInFlightRef.current ||
@@ -761,6 +814,19 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
         ) {
             return;
         }
+        const startOffsetY = command.startOffsetY;
+        const offsetDelta = event.nativeEvent.contentOffset.y - (startOffsetY ?? 0);
+        const movedInExpectedDirection =
+            command.expectedDirection === 'forward'
+                ? offsetDelta > SCROLL_COMMAND_MIN_OFFSET_DELTA
+                : offsetDelta < -SCROLL_COMMAND_MIN_OFFSET_DELTA;
+        if (
+            startOffsetY == null ||
+            !movedInExpectedDirection ||
+            !visibleEntryIdsRef.current.has(command.expectedTerminalEntryId)
+        ) {
+            return;
+        }
         command.consumed = true;
         activeScrollCommandRef.current = null;
         clearScrollCommandWatchdog();
@@ -769,9 +835,9 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
 
     useEffect(
         () => () => {
-            cancelActiveTraversal();
+            releaseActiveTraversal();
         },
-        [cancelActiveTraversal]
+        [releaseActiveTraversal]
     );
 
     const handleBack = useCallback(() => {
@@ -828,6 +894,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 initialNumToRender={12}
                 maxToRenderPerBatch={12}
                 windowSize={9}
+                onViewableItemsChanged={handleViewableItemsChanged}
                 onMomentumScrollBegin={handleMomentumScrollBegin}
                 onMomentumScrollEnd={handleMomentumScrollEnd}
                 renderItem={({ item }) => (

@@ -26,6 +26,7 @@ describe('NativeProseViewer', () => {
         expect(source).toContain('warmWindows: WarmWindow[]');
         expect(source).toContain('type ScrollCommandToken');
         expect(source).toContain('SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS');
+        expect(source).toContain('SCROLL_COMMAND_MIN_OFFSET_DELTA');
         expect(benchmark).toContain('preparedViewerCorpus.warmWindows');
         expect(benchmark).toContain('windowIndex');
         expect(benchmark).toContain('phase');
@@ -36,13 +37,21 @@ describe('NativeProseViewer', () => {
             'dispatched',
             'momentumBegan',
             'consumed',
+            'expectedDirection',
+            'expectedTerminalEntryId',
+            'startOffsetY',
             'SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS',
+            'SCROLL_COMMAND_MIN_OFFSET_DELTA',
             'dispatchScrollCommand',
             'clearScrollCommandWatchdog',
+            'releaseActiveTraversal',
             'cancelActiveTraversal',
+            'handleViewableItemsChanged',
             'handleBack',
+            'onViewableItemsChanged={handleViewableItemsChanged}',
             'onMomentumScrollBegin={handleMomentumScrollBegin}',
             'onMomentumScrollEnd={handleMomentumScrollEnd}',
+            'nativeEvent.contentOffset.y',
         ]) {
             expect(benchmark).toContain(lifecycleContract);
         }
