@@ -52,7 +52,7 @@ function visitCorpusNode(
 }
 
 describe('prepared prose native lifecycle contracts', () => {
-    it('isolates host JNA from Android production and unit-test AAR resolution', () => {
+    it('injects the raw host JNA JAR into JVM Test tasks without contaminating Android resolution', () => {
         const androidBuild = readSource('android/build.gradle');
 
         expect(androidBuild).toContain('api "net.java.dev.jna:jna:5.18.1@aar"');
@@ -61,9 +61,13 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(androidBuild).toContain('canBeResolved = true');
         expect(androidBuild).toContain('transitive = false');
         expect(androidBuild).toContain('hostTestJna "net.java.dev.jna:jna:5.18.1@jar"');
-        expect(androidBuild).toContain('testRuntimeOnly files(configurations.hostTestJna)');
         expect(androidBuild).toContain("name.endsWith('UnitTestRuntimeClasspath')");
         expect(androidBuild).toContain("exclude group: 'net.java.dev.jna', module: 'jna'");
+        expect(androidBuild).toContain('def hostTestJnaClasspath = files(configurations.hostTestJna)');
+        expect(androidBuild).toContain('tasks.withType(Test).configureEach {');
+        expect(androidBuild).toContain("inputs.files(hostTestJnaClasspath).withPropertyName('hostTestJnaClasspath')");
+        expect(androidBuild).toContain('classpath = hostTestJnaClasspath.plus(classpath)');
+        expect(androidBuild).not.toContain('testRuntimeOnly files(configurations.hostTestJna)');
         expect(androidBuild).not.toContain('testRuntimeOnly "net.java.dev.jna:jna:5.18.1"');
     });
 
@@ -96,7 +100,9 @@ describe('prepared prose native lifecycle contracts', () => {
 
         expect(generationComparator).not.toContain('enableLinkTaps');
         expect(updateProps).toContain('const BOOL generationChanged =');
-        expect(updateProps).toContain('if (generationChanged) {\n    [self beginNewGeneration];\n  }');
+        expect(updateProps).toContain(
+            'if (generationChanged) {\n    [self beginNewGenerationTerminatingCurrentLease:NO];\n  }'
+        );
         expect(updateProps).toContain('_drawingView.linkInteractionsEnabled = nextProps->enableLinkTaps;');
         expect(updateProps).toContain(
             'if (generationChanged && _hasReceivedUsableLayoutMetrics) {\n    [self installMeasuredArtifactIfAttached];\n  }'
@@ -128,13 +134,17 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(iosDrawing).toContain('@objc(beginSemanticImageGeneration:)');
         expect(androidUpdate.indexOf('state.mutation()')).toBeLessThan(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)'));
         expect(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)')).toBeLessThan(androidUpdate.indexOf('reconcile(view, state)'));
-        expect(androidMeasure.indexOf('FabricAttachmentSidecars.begin(it, request.semanticGenerationIdentity)')).toBeLessThan(
+        expect(androidMeasure).toContain('val leaseHandle = FabricLeaseHandleBridge.currentHandle()');
+        expect(androidMeasure).toContain('if (surface != null && leaseHandle <= 0L) return YogaMeasureOutput.make(0f, 0f)');
+        expect(androidMeasure).toContain('val request = requestFrom(props, state, leaseHandle)');
+        expect(androidMeasure.indexOf('val request = requestFrom(props, state, leaseHandle)')).toBeLessThan(
             androidMeasure.indexOf('PreparedProseLayoutRegistry.shared.measure(')
         );
+        expect(androidMeasure).toContain('fabricSurface = surface, fabricLeaseHandle = leaseHandle');
         expect(androidMount).not.toContain('attachmentRevisions.beginSemanticGeneration');
     });
 
-    it('drops Android Fabric sidecars through the persisted token after view tags mutate', () => {
+    it('drops Android Fabric sidecars through the exact persisted generation after view tags mutate', () => {
         const android = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseViewerManager.kt');
         const drop = android.slice(android.indexOf('override fun onDropViewInstance'), android.indexOf('override fun onSurfaceStopped'));
         const viewState = android.slice(android.indexOf('private class ViewState'), android.indexOf('\n    companion object'));
@@ -146,32 +156,35 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(drop).not.toContain('UIManagerHelper.getSurfaceId(view)');
         expect(drop).not.toContain('FabricAttachmentSidecars.remove(');
         expect(viewState).toContain('private var sidecarGeneration: FabricGenerationToken? = null');
-        expect(adopt).toContain('previousSidecar.surface != next.surface');
-        expect(adopt).toContain('releaseFabricSurface(previousSidecar.surface)');
+        expect(adopt).toContain('if (previousSidecar != null && previousSidecar != next)');
+        expect(adopt).toContain('PreparedProseLayoutRegistry.shared.releaseFabricGeneration(previousSidecar)');
         expect(release).toContain('releaseSidecarOwnership()');
         expect(releaseSidecar).toContain('val sidecar = sidecarGeneration ?: return');
         expect(releaseSidecar).toContain('sidecarGeneration = null');
-        expect(releaseSidecar).toContain('releaseFabricSurface(sidecar.surface)');
+        expect(releaseSidecar).toContain('PreparedProseLayoutRegistry.shared.releaseFabricGeneration(sidecar)');
     });
 
-    it('releases iOS Fabric sidecars on detach, recycle, and dealloc using only recorded ownership', () => {
+    it('preserves iOS Fabric ownership across detach and terminates the recorded lease on recycle or dealloc', () => {
         const ios = readSource('ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm');
         const detach = methodBody(ios, '- (void)didMoveToSuperview');
         const recycle = methodBody(ios, '- (void)prepareForRecycle');
         const dealloc = methodBody(ios, '- (void)dealloc');
-        const releaseSidecar = methodBody(ios, '- (void)releaseFabricSidecarOwnership');
+        const beginGeneration = methodBody(ios, '- (void)beginNewGenerationTerminatingCurrentLease:');
+        const releaseOwnership = methodBody(ios, '- (void)releaseFabricOwnershipTerminatingLease:');
         const install = methodBody(ios, '- (void)installMeasuredArtifactIfAttached');
 
-        expect(detach).toContain('[self releaseAllFabricOwnership];');
-        expect(detach).not.toContain('[self releaseFabricOwnership];');
+        expect(detach).toContain('[_drawingView cancelConfiguredImages];');
+        expect(detach).not.toContain('[self releaseAllFabricOwnership];');
         expect(recycle).toContain('[self releaseAllFabricOwnership];');
         expect(dealloc).toContain('[self releaseAllFabricOwnership];');
-        expect(releaseSidecar).toContain('if (!_hasOwnedSidecar) return;');
-        expect(releaseSidecar).toContain('releaseFabricSurfaceId:_ownedSidecarSurfaceId');
-        expect(releaseSidecar).toContain('componentTag:_ownedSidecarComponentTag');
-        expect(releaseSidecar).toContain('_hasOwnedSidecar = NO;');
-        expect(releaseSidecar).not.toContain('self.tag');
-        expect(install).toContain('[self releaseFabricSidecarOwnership];');
+        expect(beginGeneration).toContain('if (terminal) {\n    [self releaseFabricOwnershipTerminatingLease:YES];\n  }');
+        expect(releaseOwnership).toContain('const auto stateLeaseHandle = LeaseHandle(_viewerState);');
+        expect(releaseOwnership).toContain('DeactivateLease(_viewerState, stateLeaseHandle);');
+        expect(releaseOwnership).toContain('releaseFabricLeaseSurfaceId:_ownedSurfaceId');
+        expect(releaseOwnership).toContain('componentTag:_ownedComponentTag');
+        expect(releaseOwnership).toContain('leaseHandle:leaseHandle');
+        expect(releaseOwnership).not.toContain('self.tag');
+        expect(install).toContain('const auto componentTag = static_cast<int64_t>(self.tag);');
     });
 
     it('keeps every very-long literal independently complete and preserves the exact traversal contract', () => {
@@ -179,6 +192,7 @@ describe('prepared prose native lifecycle contracts', () => {
             documents: Array<{ id: string; category: string; contentJSON: unknown }>;
             coldTraversal: string[];
             warmTraversal: string[];
+            warmWindows: Array<{ id: string; primeIds: string[]; warmIds: string[] }>;
         };
         expect(corpus.documents).toHaveLength(1_000);
         expect(new Set(corpus.documents.map(({ id }) => id)).size).toBe(1_000);
@@ -189,6 +203,20 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(longEntries).toHaveLength(5);
         expect(corpus.coldTraversal).toEqual(corpus.documents.map(({ id }) => id));
         expect(corpus.warmTraversal).toEqual([...corpus.coldTraversal].reverse());
+        expect(corpus.warmWindows).toHaveLength(27);
+        expect(new Set(corpus.warmWindows.map(({ id }) => id)).size).toBe(27);
+        expect(corpus.warmWindows.flatMap(({ primeIds }) => primeIds).sort())
+            .toEqual(corpus.documents.map(({ id }) => id).sort());
+        for (const window of corpus.warmWindows) {
+            expect(window.warmIds).toEqual(window.primeIds);
+        }
+        expect(corpus.warmWindows.filter(({ id }) => id.startsWith('very-long-'))).toEqual([
+            { id: 'very-long-01', primeIds: ['very-long-0001'], warmIds: ['very-long-0001'] },
+            { id: 'very-long-02', primeIds: ['very-long-0002'], warmIds: ['very-long-0002'] },
+            { id: 'very-long-03', primeIds: ['very-long-0003'], warmIds: ['very-long-0003'] },
+            { id: 'very-long-04', primeIds: ['very-long-0004'], warmIds: ['very-long-0004'] },
+            { id: 'very-long-05', primeIds: ['very-long-0005'], warmIds: ['very-long-0005'] },
+        ]);
 
         for (const entry of longEntries) {
             const nodeTypes = new Set<string>();
@@ -226,8 +254,19 @@ describe('prepared prose native lifecycle contracts', () => {
             expect(source).toContain('requireNonEmpty');
             expect(source).toContain('drawCount');
         });
-        expect(iosHarness).toContain('viewerFrameNanos');
-        expect(androidHarness).toContain('warmViewerFrames');
+        [iosInstrumentation, androidInstrumentation].forEach((source) => {
+            expect(source).toContain('rawFrameDeltasNanos');
+            expect(source).toContain('viewerCausedDelayedIntervals');
+            expect(source).toContain('imageRequestCount');
+            expect(source).toContain('imageMetadataCount');
+            expect(source).toContain('imageDecodeCount');
+        });
+        [iosHarness, androidHarness].forEach((source) => {
+            expect(source).toContain('rawFrameDeltasNanos');
+            expect(source).toContain('viewerCausedDelayedIntervals');
+            expect(source).toContain('preResetSnapshot');
+            expect(source).toContain('postResetSnapshot');
+        });
         expect(androidDevice).toContain('import org.json.JSONObject');
         expect(androidDevice).toContain('activity.setContentView');
         expect(androidDevice).toContain('instrumentation.waitForIdleSync()');
@@ -254,6 +293,10 @@ describe('prepared prose native lifecycle contracts', () => {
             androidView.indexOf('override fun onAttachedToWindow()'),
             androidView.indexOf('override fun onConfigurationChanged('),
         );
+        const androidReset = androidCache.slice(
+            androidCache.indexOf('fun removeAllUnmounted()'),
+            androidCache.indexOf('internal val completedCountForTesting'),
+        );
 
         expect(iosView).toContain('releaseDirectMounted(preparedInstrumentationOwner)');
         expect(iosView).toContain('registerDirectMounted(preparedInstrumentationOwner, layout: layout)');
@@ -266,7 +309,12 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(androidMeasure).toContain('registerDirectMountedArtifactIfAttached(artifact)');
         expect(androidDirectOwnership).toContain('if (!isAttachedToWindow) return');
         expect(androidAttach).toContain('preparedArtifact?.let(::registerDirectMountedArtifactIfAttached)');
-        expect(androidCache).toContain('fun removeAllUnmounted() = synchronized(lock) { completed.clear(); mountIndex.clear();');
+        expect(androidReset).toContain('completed.clear()');
+        expect(androidReset).toContain('mountIndex.clear()');
+        expect(androidReset).toContain('pendingLeases.clear()');
+        expect(androidReset).toContain('retireUnownedPublicationsLocked()');
+        expect(androidReset).toContain('publishOwnersLocked()');
+        expect(androidReset).not.toContain('mountedLeases.clear()');
         expect(iosCache).toContain('retireUnownedPublicationKeysLocked');
         expect(iosCache).toContain('releaseLease');
         expect(iosCache).toContain('publishOwnerBytesLocked');
@@ -282,9 +330,13 @@ describe('prepared prose native lifecycle contracts', () => {
         const drawing = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseDrawingView.kt');
         const debugTiming = readSource('android/src/debug/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt');
         const releaseTiming = readSource('android/src/release/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt');
+        const onDraw = drawing.slice(
+            drawing.indexOf('override fun onDraw(canvas: Canvas)'),
+            drawing.indexOf('private fun drawBackground'),
+        );
 
-        expect(drawing).toContain('recordPreparedProseDraw {');
-        expect(drawing).not.toContain('PreparedProseInstrumentation.');
+        expect(onDraw).toContain('recordPreparedProseDraw {');
+        expect(onDraw).not.toContain('PreparedProseInstrumentation.');
         expect(debugTiming).toContain('PreparedProseInstrumentation.now()');
         expect(debugTiming).toContain('PreparedProseInstrumentation.drew(started, draw())');
         expect(releaseTiming).toContain('internal inline fun recordPreparedProseDraw');
@@ -399,14 +451,23 @@ describe('prepared prose native lifecycle contracts', () => {
             differingHeights: { requirement: string };
             drawEvidence: { requirement: string };
         };
+        const iosCollectionHarness = iosHarness.slice(
+            iosHarness.indexOf('private final class PreparedProseCollectionHarness'),
+            iosHarness.indexOf('private enum PreparedProsePerformanceGates'),
+        );
 
         [iosInstrumentation, androidInstrumentation].forEach((source) => {
             expect(source).toContain('beginPhase');
             expect(source).toContain('endPhase');
             expect(source).toContain('completedPhases');
         });
-        expect(iosHarness).toContain('viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))');
-        expect(iosHarness).toContain('cell.prepareAndMeasure(width: collectionView.bounds.width)');
+        expect(iosCollectionHarness).toContain('func traverseWindows(');
+        expect(iosCollectionHarness).toContain('override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes)');
+        expect(iosCollectionHarness).toContain('let width = max(1, attributes.size.width)');
+        expect(iosCollectionHarness).toContain('viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))');
+        ['measurementView', 'prepareAndMeasure', 'RunLoop.main.run', 'scrollToItem(at:'].forEach((removedPath) =>
+            expect(iosCollectionHarness).not.toContain(removedPath)
+        );
         expect(iosHarness).toContain('testPreparedProseHarnessStaticFixtures');
         expect(iosHarness).toContain('PREPARED_PROSE_STATIC_HARNESS_FIXTURES');
         expect(iosHarness).toContain('XCTAssertGreaterThan(longHeight, shortHeight)');
