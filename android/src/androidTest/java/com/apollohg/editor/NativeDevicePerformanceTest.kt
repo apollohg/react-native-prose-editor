@@ -15,6 +15,8 @@ import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
 import com.apollohg.editor.viewer.PreparedProseInstrumentation
 import java.io.BufferedReader
+import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -64,10 +66,12 @@ class NativeDevicePerformanceTest {
         ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
             lateinit var harness: PreparedProseRecyclerHarness
             scenario.onActivity { activity ->
+                val viewportWidth = PreparedProseRecyclerHarness.viewportWidthPx(activity)
+                val viewportHeight = PreparedProseRecyclerHarness.viewportHeightPx(activity)
                 activity.setContentView(FrameLayout(activity).apply {
                     addView(
                         PreparedProseRecyclerHarness(activity, configuration).also { harness = it },
-                        FrameLayout.LayoutParams(390, 844),
+                        FrameLayout.LayoutParams(viewportWidth, viewportHeight),
                     )
                 })
             }
@@ -93,8 +97,10 @@ class NativeDevicePerformanceTest {
             check(harness.exportBeforeReset().isNotEmpty()) { "pre-reset prepared prose evidence must export" }
             instrumentation.runOnMainSync { harness.resetCacheWhileMounted() }
         }
+        val export = PreparedProseInstrumentation.exportJson()
+        reportPreparedProseExport(export)
         PreparedProsePerformanceGates.assertPasses(
-            PreparedProseInstrumentation.exportJson(),
+            export,
             expectedDocuments = 1_000,
             expectedWindows = warmWindows,
         )
@@ -406,6 +412,26 @@ class NativeDevicePerformanceTest {
                     stats.summaryString(tag = "NativeDevicePerformanceTest") + "\n"
                 )
             }
+        )
+    }
+
+    /** Persist evidence before any numerical assertion can terminate the test. */
+    private fun reportPreparedProseExport(export: String) {
+        val bytes = export.toByteArray(Charsets.UTF_8)
+        val output = File(targetContext.filesDir, "prepared-prose-performance-export.json")
+        output.writeBytes(bytes)
+        val sha256 = MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        instrumentation.sendStatus(
+            0,
+            Bundle().apply {
+                putString(
+                    Instrumentation.REPORT_KEY_STREAMRESULT,
+                    "[PreparedProseExport] package=${targetContext.packageName} " +
+                        "path=${output.absolutePath} bytes=${bytes.size} sha256=$sha256\n",
+                )
+            },
         )
     }
 

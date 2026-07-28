@@ -774,6 +774,10 @@ class PreparedProseLayoutTest {
     private fun unspecifiedHeight() = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
 
     private class CapturingAccessibilityParent(context: android.content.Context) : ViewGroup(context) {
+        init {
+            shadowOf(context.getSystemService(AccessibilityManager::class.java)).setEnabled(true)
+        }
+
         val eventTypes = mutableListOf<Int>()
         private val changeTypes = mutableListOf<Int>()
 

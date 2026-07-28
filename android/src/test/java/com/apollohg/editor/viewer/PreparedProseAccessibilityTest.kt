@@ -9,6 +9,7 @@ import android.text.TextDirectionHeuristics
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -16,6 +17,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import uniffi.editor_core.FfiViewerMark
 import java.text.Bidi
@@ -873,6 +875,10 @@ class PreparedProseAccessibilityTest {
     )
 
     private class CapturingAccessibilityParent(context: android.content.Context) : ViewGroup(context) {
+        init {
+            shadowOf(context.getSystemService(AccessibilityManager::class.java)).setEnabled(true)
+        }
+
         val eventTypes = mutableListOf<Int>()
         private val changeTypes = mutableListOf<Int>()
 

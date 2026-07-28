@@ -47,7 +47,7 @@ for (const path of manifest.removedPaths) {
 const viewerBoundary = [
     'src/index.ts',
     'src/NativeProseViewer.tsx',
-    'src/specs/NativePreparedProseViewer.ts',
+    'src/specs/PreparedProseViewerNativeComponent.ts',
     'ios/NativeEditorModule.swift',
     'ios/ProseViewerView.swift',
     'android/src/main/java/com/apollohg/editor/NativeEditorModule.kt',
@@ -68,7 +68,7 @@ for (const [path, source] of viewerBoundary) {
 }
 
 const jsViewer = read('src/NativeProseViewer.tsx');
-const fabricSpec = read('src/specs/NativePreparedProseViewer.ts');
+const fabricSpec = read('src/specs/PreparedProseViewerNativeComponent.ts');
 for (const name of ['containerWidth', 'onContentHeightChange']) {
     assert.ok(!jsViewer.includes(name), `NativeProseViewer still exposes ${name}`);
     assert.ok(!fabricSpec.includes(name), `PreparedProseViewer spec still exposes ${name}`);

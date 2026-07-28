@@ -13,12 +13,12 @@
     },
     "main": "dist/index.js",
     "module": "dist/index.js",
-    "react-native": "dist/index.js",
+    "react-native": "src/index.ts",
     "types": "dist/index.d.ts",
     "exports": {
         ".": {
             "types": "./dist/index.d.ts",
-            "react-native": "./dist/index.js",
+            "react-native": "./src/index.ts",
             "default": "./dist/index.js"
         },
         "./app.plugin": "./app.plugin.js",
@@ -99,7 +99,9 @@
         "LICENSE",
         "app.plugin.js",
         "dist",
-        "src/specs",
+        "src",
+        "!src/__tests__",
+        "!src/type-tests",
         "android/build.gradle",
         "android/consumer-rules.pro",
         "android/src/main",

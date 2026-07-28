@@ -13,7 +13,7 @@ import {
 import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
 import type { DocumentJSON } from './NativeEditorBridge';
 import { withMentionsSchema } from './addons';
-import NativePreparedProseViewer from './specs/NativePreparedProseViewer';
+import NativePreparedProseViewer from './specs/PreparedProseViewerNativeComponent';
 import {
     serializePreparedProseViewerConfiguration,
     type PreparedProseViewerConfiguration,

@@ -9,6 +9,7 @@ import android.util.AttributeSet
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
@@ -100,6 +101,7 @@ class ProseViewerView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : ViewGroup(context, attrs, defStyleAttr) {
+    private val accessibilityManager = context.getSystemService(AccessibilityManager::class.java)
     private val preparedInstrumentationOwner = "direct-${System.identityHashCode(this)}"
     internal constructor(context: Context, registry: PreparedProseLayoutRegistry) : this(context) {
         layoutRegistry = registry
@@ -561,6 +563,7 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     private fun sendVirtualAccessibilityEvent(virtualViewId: Int, eventType: Int) {
+        if (!accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(eventType).apply {
             packageName = context.packageName
             className = android.widget.Button::class.java.name
@@ -570,6 +573,7 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     private fun notifyAccessibilitySubtreeChanged() {
+        if (!accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ).apply {

@@ -14,6 +14,7 @@ import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import org.json.JSONArray
 import org.json.JSONObject
@@ -91,13 +92,29 @@ internal object PreparedProsePerformanceGates {
         val nominalFramePeriodNanos = export.getLong("nominalFramePeriodNanos")
         val singleTickToleranceNanos = export.getLong("singleTickToleranceNanos")
         val combined = cold.getJSONArray("combinedCompileLayoutNanos").longs()
+        val compile = cold.getJSONArray("compileNanos").longs()
+        val layout = cold.getJSONArray("layoutNanos").longs()
         val lookup = cold.getJSONArray("cacheLookupNanos").longs()
         val draw = cold.getJSONArray("drawNanos").longs()
         requireNonEmpty(combined, "cold compile+layout")
+        requireNonEmpty(compile, "cold compile")
+        requireNonEmpty(layout, "cold layout")
         requireNonEmpty(lookup, "cold cache lookup")
         requireNonEmpty(draw, "cold draw")
         check(combined.size >= expectedDocuments) { "expected cold compile+layout samples for every corpus document" }
-        check(percentile(combined, .95) < 4 * NS_PER_MS)
+        val combinedP95 = percentile(combined, .95)
+        check(combinedP95 < 4 * NS_PER_MS) {
+            buildString {
+                append("cold compile+layout p95 ${micros(combinedP95)}us must be below 4000us; ")
+                append("combined p50/p99/max=${micros(percentile(combined, .50))}/")
+                append("${micros(percentile(combined, .99))}/${micros(combined.max())}us, ")
+                append("compile p50/p95/p99=${micros(percentile(compile, .50))}/")
+                append("${micros(percentile(compile, .95))}/${micros(percentile(compile, .99))}us, ")
+                append("layout p50/p95/p99=${micros(percentile(layout, .50))}/")
+                append("${micros(percentile(layout, .95))}/${micros(percentile(layout, .99))}us; ")
+                append("samples combined/compile/layout=${combined.size}/${compile.size}/${layout.size}")
+            }
+        }
         check(percentile(lookup, .99) < 100_000L)
         check(percentile(draw, .95) < NS_PER_MS)
         check(export.getInt("schemaVersion") == 2)
@@ -191,6 +208,7 @@ internal object PreparedProsePerformanceGates {
     private fun requireNonEmpty(values: List<Long>, name: String) = check(values.isNotEmpty()) { "$name evidence must be nonempty" }
     /** Nearest rank shared with iOS: sorted[ceil(p * n) - 1]. */
     private fun percentile(values: List<Long>, percentile: Double): Long = values.sorted()[(kotlin.math.ceil(values.size * percentile).toInt() - 1).coerceAtLeast(0)]
+    private fun micros(value: Long): Double = value / 1_000.0
 }
 
 /** Actual RecyclerView traversal: holders host the shipped ProseViewerView. */
@@ -261,7 +279,7 @@ internal class PreparedProseRecyclerHarness(
     init {
         layoutManager = LinearLayoutManager(context)
         adapter = benchmarkAdapter
-        layoutParams = ViewGroup.LayoutParams(390, 844)
+        layoutParams = ViewGroup.LayoutParams(viewportWidthPx(context), viewportHeightPx(context))
         addOnScrollListener(object : OnScrollListener() {
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 if (newState != SCROLL_STATE_IDLE) return
@@ -505,7 +523,16 @@ internal class PreparedProseRecyclerHarness(
         }
     }
 
-    private companion object {
+    companion object {
+        /** Matches the 390 x 844 point iOS benchmark in Android density-independent units. */
+        fun viewportWidthPx(context: Context): Int =
+            (VIEWPORT_WIDTH_DP * context.resources.displayMetrics.density).roundToInt()
+
+        fun viewportHeightPx(context: Context): Int =
+            (VIEWPORT_HEIGHT_DP * context.resources.displayMetrics.density).roundToInt()
+
+        private const val VIEWPORT_WIDTH_DP = 390f
+        private const val VIEWPORT_HEIGHT_DP = 844f
         const val INITIAL_ATTACHMENT_TIMEOUT_MS = 5_000L
         const val NO_SUBMISSION_GENERATION = -1L
     }

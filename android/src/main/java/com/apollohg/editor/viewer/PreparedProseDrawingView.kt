@@ -13,12 +13,14 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 
 /** Rendering-only consumer of fully prepared StaticLayout and geometry fragments. */
 internal class PreparedProseDrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+    private val accessibilityManager = context.getSystemService(AccessibilityManager::class.java)
     var preparedLayout: PreparedProseLayout? = null
         private set
     var onUsableMetricsChanged: (() -> Unit)? = null
@@ -305,6 +307,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     }
 
     private fun sendVirtualAccessibilityEvent(id: Int, type: Int) {
+        if (!accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(type).apply {
             packageName = context.packageName
             className = android.widget.Button::class.java.name
@@ -315,7 +318,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
     /** Publishes a logical prepared-subtree transition without changing its artifact. */
     internal fun announceAccessibilitySubtreeChanged() {
-        if (!publishesAccessibilitySubtree) return
+        if (!publishesAccessibilitySubtree || !accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply {
             packageName = context.packageName
             className = android.widget.TextView::class.java.name

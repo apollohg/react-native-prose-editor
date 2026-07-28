@@ -39,7 +39,7 @@ class PreparedProseAccessibilityDeviceTest {
                             "Latin \u05d0\u05d1\u05d2",
                             listOf(FfiViewerMark("link", "{\"href\":\"https://example.test/bidi\"}")),
                         ),
-                        ViewerInline.Text(" ABC \u05d3\u05d4\u05d5 tail"),
+                        ViewerInline.Text(" ABC \u05d3\u05d4\u05d5 tail", emptyList()),
                     ),
                 ),
             ),
@@ -61,7 +61,7 @@ class PreparedProseAccessibilityDeviceTest {
             theme = PreparedProseTheme.resolve(null, 1f),
             widthPx = 300,
             density = 1f,
-            imagesEnabled = false,
+            collapsesWhenEmpty = false,
         )
         val link = layout.interactions.single { it.kind == PreparedProseInteraction.Kind.LINK }
 
@@ -113,7 +113,7 @@ class PreparedProseAccessibilityDeviceTest {
             theme = PreparedProseTheme.resolve(null, 1f),
             widthPx = 90,
             density = 1f,
-            imagesEnabled = false,
+            collapsesWhenEmpty = false,
         )
         val link = layout.interactions.single { it.kind == PreparedProseInteraction.Kind.LINK }
         val mention = layout.interactions.single { it.kind == PreparedProseInteraction.Kind.MENTION }

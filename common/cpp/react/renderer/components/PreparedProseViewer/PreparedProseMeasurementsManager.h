@@ -14,7 +14,7 @@ namespace facebook::react {
 class PreparedProseMeasurementsManager {
  public:
   explicit PreparedProseMeasurementsManager(
-      const ContextContainer::Shared& contextContainer)
+      const std::shared_ptr<const ContextContainer>& contextContainer)
       : contextContainer_(contextContainer) {}
 
   Size measure(
@@ -37,7 +37,7 @@ class PreparedProseMeasurementsManager {
       const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const;
 
  private:
-  const ContextContainer::Shared contextContainer_;
+  const std::shared_ptr<const ContextContainer> contextContainer_;
 };
 
 } // namespace facebook::react
