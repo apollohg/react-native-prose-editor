@@ -499,7 +499,14 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(iosHarness).toContain('PREPARED_PROSE_STATIC_HARNESS_FIXTURES');
         expect(iosHarness).toContain('XCTAssertGreaterThan(longHeight, shortHeight)');
         expect(iosHarness).not.toContain('height: 180');
-        expect(androidHarness).toContain('PreparedProseInstrumentation.beginPhase(phase)');
+        expect(androidHarness).toContain(
+            'val evidencePhase = if (active.direction == Direction.WARM && active.phase == PreparedProseInstrumentation.TraversalPhase.COLD) {\n' +
+            '            PreparedProseInstrumentation.TraversalPhase.WARM\n' +
+            '        } else {\n' +
+            '            active.phase\n' +
+            '        }'
+        );
+        expect(androidHarness).toContain('PreparedProseInstrumentation.beginPhase(evidencePhase)');
         expect(androidHarness).toContain('PreparedProseInstrumentation.endPhase()');
         expect(example).toContain('preparedProseBenchmarkBeginPhase');
         expect(example).toContain('preparedProseBenchmarkEndPhase');
