@@ -9,6 +9,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.apollohg.editor.PreparedProseRecyclerHarness
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
 import com.apollohg.editor.ProseViewerErrorCode
@@ -24,12 +25,57 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class PreparedProseLayoutTest {
     private val context
         get() = RuntimeEnvironment.getApplication()
+
+    @Test
+    fun windowedRecyclerWarmRevisitUsesOnePrimePreparation() {
+        val traversal = PreparedProseRecyclerHarness.WindowTraversalResult(
+            windowId = "short-01",
+            prime = PreparedProseRecyclerHarness.WindowPhaseResult(
+                residentKeyCount = 60,
+                residentKeyDigest = "short-01",
+                compileCount = 60,
+                layoutCount = 60,
+                cacheMisses = 60,
+            ),
+            warm = PreparedProseRecyclerHarness.WindowPhaseResult(
+                residentKeyCount = 60,
+                residentKeyDigest = "short-01",
+                compileCount = 0,
+                layoutCount = 0,
+                cacheMisses = 0,
+            ),
+        )
+
+        assertEquals(60, traversal.prime.residentKeyCount)
+        assertEquals(0, traversal.warm.compileCount)
+        assertEquals(0, traversal.warm.layoutCount)
+        assertEquals(0, traversal.warm.cacheMisses)
+
+        val harnessSource = sequenceOf(
+            File("src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt"),
+            File("../android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt"),
+            File("../../android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt"),
+        ).firstOrNull(File::isFile)?.readText()
+        assertNotNull("PreparedProseRecyclerHarness source must be available to the contract test", harnessSource)
+        val source = requireNotNull(harnessSource)
+        assertTrue(source.contains("fun traverseWindows("))
+        assertTrue(source.contains("smoothScrollToPosition(lastIndex)"))
+        assertTrue(source.contains("smoothScrollToPosition(0)"))
+        assertTrue(source.contains("OnScrollListener"))
+        assertTrue(source.contains("beginBenchmarkResidentCensus"))
+        assertTrue(source.contains("recordWindow("))
+        assertTrue(source.contains("prepareForReuse()"))
+        assertFalse(source.contains("scrollToPosition(position)"))
+        assertFalse(source.contains("requestLayout()"))
+        assertFalse(source.contains("settle(instrumentation)"))
+    }
 
     @Test
     fun `one width prepares once while layout and draw only acquire the artifact`() {

@@ -46,7 +46,20 @@ class NativeDevicePerformanceTest {
                 put(entry.getString("id"), PreparedProseRecyclerHarness.Entry(entry.getString("id"), entry.getJSONObject("contentJSON").toString()))
             }
         }
-        fun ordered(name: String) = corpus.getJSONArray(name).let { ids -> List(ids.length()) { byId.getValue(ids.getString(it)) } }
+        val warmWindows = corpus.getJSONArray("warmWindows").let { windows ->
+            List(windows.length()) { index ->
+                windows.getJSONObject(index).let { window ->
+                    fun ids(name: String) = window.getJSONArray(name).let { values ->
+                        List(values.length()) { valueIndex -> values.getString(valueIndex) }
+                    }
+                    PreparedProseRecyclerHarness.WarmWindow(
+                        id = window.getString("id"),
+                        primeIds = ids("primeIds"),
+                        warmIds = ids("warmIds"),
+                    )
+                }
+            }
+        }
         ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
             lateinit var harness: PreparedProseRecyclerHarness
             scenario.onActivity { activity ->
@@ -54,13 +67,25 @@ class NativeDevicePerformanceTest {
             }
             instrumentation.waitForIdleSync()
             PreparedProseInstrumentation.beginBenchmark()
-            // ActivityScenario is used only to bind a real window. The test
-            // thread drives deterministic scroll steps and waits between them;
-            // it never blocks the UI thread inside onActivity.
-            harness.traverseFromInstrumentationThread(instrumentation, ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.COLD, imagesEnabled = true)
-            harness.traverseFromInstrumentationThread(instrumentation, ordered("warmTraversal"), PreparedProseInstrumentation.TraversalPhase.WARM, imagesEnabled = true)
-            harness.traverseFromInstrumentationThread(instrumentation, ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.IMAGES_DISABLED, imagesEnabled = false)
-            instrumentation.runOnMainSync { harness.resetCache() }
+            // ActivityScenario only supplies the real attached window. Each
+            // literal window drives itself through RecyclerView's normal
+            // smooth-scroll/bind/recycle lifecycle before its warm revisit.
+            harness.traverseWindows(
+                instrumentation,
+                warmWindows,
+                byId,
+                PreparedProseInstrumentation.TraversalPhase.COLD,
+                imagesEnabled = true,
+            )
+            harness.traverseWindows(
+                instrumentation,
+                warmWindows,
+                byId,
+                PreparedProseInstrumentation.TraversalPhase.IMAGES_DISABLED,
+                imagesEnabled = false,
+            )
+            check(harness.exportBeforeReset().isNotEmpty()) { "pre-reset prepared prose evidence must export" }
+            instrumentation.runOnMainSync { harness.resetCacheWhileMounted() }
         }
         PreparedProsePerformanceGates.assertPasses(PreparedProseInstrumentation.exportJson(), expectedDocuments = 1_000)
     }

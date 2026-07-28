@@ -44,6 +44,28 @@ internal object PreparedProseInstrumentation {
             .put("startNanos", startNanos).put("endNanos", endNanos).put("rawDeltaNanos", rawDeltaNanos)
             .put("viewerLayoutNanos", viewerLayoutNanos).put("viewerDrawNanos", viewerDrawNanos).put("viewerCaused", viewerCaused)
     }
+    private data class WindowEvidence(
+        val windowId: String,
+        val entryIds: List<String>,
+        val phase: String,
+        val residentKeyCount: Int,
+        val residentKeyDigest: String,
+        val cache: CacheSnapshot,
+        val compileCount: Int,
+        val layoutCount: Int,
+        val cacheMisses: Int,
+    ) {
+        fun json() = JSONObject()
+            .put("windowId", windowId)
+            .put("entryIds", JSONArray(entryIds))
+            .put("phase", phase)
+            .put("residentKeyCount", residentKeyCount)
+            .put("residentKeyDigest", residentKeyDigest)
+            .put("cache", cache.json())
+            .put("compileCount", compileCount)
+            .put("layoutCount", layoutCount)
+            .put("cacheMisses", cacheMisses)
+    }
     private class PhaseSamples {
         val compileNanos = mutableListOf<Long>(); val layoutNanos = mutableListOf<Long>(); val combinedCompileLayoutNanos = mutableListOf<Long>()
         val cacheLookupNanos = mutableListOf<Long>(); val drawNanos = mutableListOf<Long>(); val rawFrameDeltasNanos = mutableListOf<Long>()
@@ -65,6 +87,7 @@ internal object PreparedProseInstrumentation {
     @Volatile private var enabled = false; private var phase: TraversalPhase? = null
     private val phaseSamples = linkedMapOf<TraversalPhase, PhaseSamples>(); private val completedPhases = linkedSetOf<TraversalPhase>(); private val pendingCompileNanos = linkedMapOf<TraversalPhase, MutableMap<String, Long>>()
     private val viewerWorkSpans = linkedMapOf<TraversalPhase, MutableList<ViewerWorkSpan>>(); private var cacheSnapshot = CacheSnapshot(); private var preResetSnapshot = CacheSnapshot(); private var postResetSnapshot = CacheSnapshot()
+    private val windowEvidence = mutableListOf<WindowEvidence>()
     private var duplicatePublications = 0; private var previousFrameNanos = 0L; private var surfaceDrawnSinceFrame = false
 
     fun classifyFrame(rawDeltaNanos: Long, nominalFramePeriodNanos: Long, singleTickToleranceNanos: Long): FrameClassification {
@@ -134,6 +157,35 @@ internal object PreparedProseInstrumentation {
         synchronized(lock) { if (enabled) phase?.let { viewerWorkSpans.getOrPut(it) { mutableListOf() } += ViewerWorkSpan(startNanos, endNanos, kind) } }
     }
     fun snapshotCache(): CacheSnapshot = synchronized(lock) { cacheSnapshot.copy() }
+    fun phaseCounters(): Triple<Int, Int, Int> = synchronized(lock) {
+        val active = phase ?: return@synchronized Triple(0, 0, 0)
+        samples(active).let { Triple(it.compileCount, it.layoutCount, it.cacheMisses) }
+    }
+    fun recordWindow(
+        windowId: String,
+        entryIds: List<String>,
+        phase: TraversalPhase,
+        residentKeyCount: Int,
+        residentKeyDigest: String,
+        cache: CacheSnapshot,
+        counters: Triple<Int, Int, Int>,
+    ) {
+        if (!BuildConfig.PREPARED_PROSE_INSTRUMENTATION) return
+        synchronized(lock) {
+            if (!enabled) return
+            windowEvidence += WindowEvidence(
+                windowId = windowId,
+                entryIds = entryIds,
+                phase = phase.jsonName(),
+                residentKeyCount = residentKeyCount,
+                residentKeyDigest = residentKeyDigest,
+                cache = cache,
+                compileCount = counters.first,
+                layoutCount = counters.second,
+                cacheMisses = counters.third,
+            )
+        }
+    }
     fun capturePreResetSnapshot() { if (BuildConfig.PREPARED_PROSE_INSTRUMENTATION) synchronized(lock) { if (enabled) preResetSnapshot = cacheSnapshot.copy() } }
     fun capturePostResetSnapshot() { if (BuildConfig.PREPARED_PROSE_INSTRUMENTATION) synchronized(lock) { if (enabled) postResetSnapshot = cacheSnapshot.copy() } }
     fun cacheUpdated(unmountedBytes: Long? = null, unmountedResidentCount: Long? = null, compiledBytes: Long? = null, compiledResidentCount: Long? = null) {
@@ -154,7 +206,7 @@ internal object PreparedProseInstrumentation {
             listOf(TraversalPhase.COLD, TraversalPhase.WARM, TraversalPhase.IMAGES_DISABLED).forEach { phase -> phases.put(phase.jsonName(), samples(phase).json()) }
             JSONObject().put("schemaVersion", 2).put("percentileDefinition", "nearest-rank: sorted[ceil(p*n)-1]")
                 .put("nominalFramePeriodNanos", NOMINAL_FRAME_PERIOD_NANOS).put("singleTickToleranceNanos", SINGLE_TICK_TOLERANCE_NANOS)
-                .put("phaseSamples", phases).put("windowEvidence", JSONArray()).put("preResetSnapshot", preResetSnapshot.json()).put("postResetSnapshot", postResetSnapshot.json()).put("duplicatePublications", duplicatePublications).toString()
+                .put("phaseSamples", phases).put("windowEvidence", JSONArray(windowEvidence.map(WindowEvidence::json))).put("preResetSnapshot", preResetSnapshot.json()).put("postResetSnapshot", postResetSnapshot.json()).put("duplicatePublications", duplicatePublications).toString()
         }
     }
     fun now(): Long = if (BuildConfig.PREPARED_PROSE_INSTRUMENTATION && enabled) System.nanoTime() else 0L
@@ -176,5 +228,5 @@ internal object PreparedProseInstrumentation {
     private fun samples(phase: TraversalPhase) = phaseSamples.getOrPut(phase) { PhaseSamples() }
     private fun append(target: MutableList<Long>, value: Long) { if (target.size < SAMPLE_LIMIT) target += value }
     private fun TraversalPhase.jsonName() = when (this) { TraversalPhase.COLD -> "cold"; TraversalPhase.WARM -> "warm"; TraversalPhase.IMAGES_DISABLED -> "imagesDisabled"; TraversalPhase.RESET -> "reset" }
-    private fun resetLocked() { phase = null; phaseSamples.clear(); completedPhases.clear(); pendingCompileNanos.clear(); viewerWorkSpans.clear(); cacheSnapshot = CacheSnapshot(); preResetSnapshot = CacheSnapshot(); postResetSnapshot = CacheSnapshot(); duplicatePublications = 0; previousFrameNanos = 0; surfaceDrawnSinceFrame = false }
+    private fun resetLocked() { phase = null; phaseSamples.clear(); completedPhases.clear(); pendingCompileNanos.clear(); viewerWorkSpans.clear(); cacheSnapshot = CacheSnapshot(); preResetSnapshot = CacheSnapshot(); postResetSnapshot = CacheSnapshot(); windowEvidence.clear(); duplicatePublications = 0; previousFrameNanos = 0; surfaceDrawnSinceFrame = false }
 }

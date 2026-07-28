@@ -20,6 +20,7 @@ internal class PreparedProseLayoutCache(
     private val directMounted = mutableMapOf<String, PreparedProseLayout>()
     private val mountIndex = mutableMapOf<ProseMountKey, ProseLayoutKey>()
     private val publishedKeys = mutableSetOf<ProseLayoutKey>()
+    private var benchmarkCensusKeys: MutableSet<ProseLayoutKey>? = null
 
     fun value(
         key: ProseLayoutKey,
@@ -29,6 +30,7 @@ internal class PreparedProseLayoutCache(
     ): PreparedProseLayout {
         val started = PreparedProseInstrumentation.now()
         synchronized(lock) {
+            benchmarkCensusKeys?.add(key)
             completed[key]?.let {
                 createPendingLeaseIfActiveLocked(it, fabricGeneration, shouldCreateFabricLease)
                 PreparedProseInstrumentation.cacheLookup(started, true)
@@ -174,6 +176,16 @@ internal class PreparedProseLayoutCache(
     internal val retainedLeaseBytesForTesting: Long get() = synchronized(lock) { uniqueBytes(pendingLeases.values + mountedLeases.values) }
     internal val leaseCountForTesting: Int get() = synchronized(lock) { pendingLeases.size + mountedLeases.size }
     internal val pendingLeaseCountForTesting: Int get() = synchronized(lock) { pendingLeases.size }
+    internal fun beginBenchmarkCensus() = synchronized(lock) {
+        benchmarkCensusKeys = linkedSetOf()
+    }
+    internal fun endBenchmarkCensus(): Set<ProseLayoutKey> = synchronized(lock) {
+        val liveKeys = completed.keys + pendingLeases.values.map { it.key } +
+            mountedLeases.values.map { it.key } + directMounted.values.map { it.key }
+        val resident = benchmarkCensusKeys.orEmpty().intersect(liveKeys.toSet())
+        benchmarkCensusKeys = null
+        resident
+    }
     internal fun hasLease(generation: FabricGenerationToken): Boolean = synchronized(lock) {
         pendingLeases.keys.any { it.generation == generation } || mountedLeases.keys.any { it.generation == generation }
     }

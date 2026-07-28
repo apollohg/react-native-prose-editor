@@ -145,6 +145,31 @@ internal class PreparedProseRecyclerHarness(
     private val configuration: PreparedProseBenchmarkConfiguration,
 ) : RecyclerView(context) {
     data class Entry(val id: String, val contentJson: String)
+    data class WarmWindow(val id: String, val primeIds: List<String>, val warmIds: List<String>)
+    data class WindowPhaseResult(
+        val residentKeyCount: Int,
+        val residentKeyDigest: String,
+        val compileCount: Int,
+        val layoutCount: Int,
+        val cacheMisses: Int,
+    )
+    data class WindowTraversalResult(
+        val windowId: String,
+        val prime: WindowPhaseResult,
+        val warm: WindowPhaseResult,
+    )
+
+    private enum class Direction { PRIME, WARM }
+    private data class ActiveWindow(
+        val window: WarmWindow,
+        val phase: PreparedProseInstrumentation.TraversalPhase,
+        val imagesEnabled: Boolean,
+        val completion: (Result<WindowTraversalResult>) -> Unit,
+        var direction: Direction = Direction.PRIME,
+        var counters: Triple<Int, Int, Int> = Triple(0, 0, 0),
+        var prime: WindowPhaseResult? = null,
+    )
+
     private val benchmarkAdapter = object : RecyclerView.Adapter<Holder>() {
         var entries: List<Entry> = emptyList()
         var imagesEnabled = true
@@ -152,50 +177,169 @@ internal class PreparedProseRecyclerHarness(
         override fun onBindViewHolder(holder: Holder, position: Int) { holder.bind(entries[position], imagesEnabled) }
         override fun onViewRecycled(holder: Holder) { holder.viewer.prepareForReuse(); super.onViewRecycled(holder) }
         override fun getItemCount() = entries.size
+        fun submit(nextEntries: List<Entry>, nextImagesEnabled: Boolean) {
+            entries = nextEntries
+            imagesEnabled = nextImagesEnabled
+            notifyDataSetChanged()
+        }
     }
-    private val frameCallback = object : Choreographer.FrameCallback { override fun doFrame(frameTimeNanos: Long) { PreparedProseInstrumentation.onDisplayFrame(frameTimeNanos); if (measuring) Choreographer.getInstance().postFrameCallback(this) } }
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            PreparedProseInstrumentation.onDisplayFrame(frameTimeNanos)
+            if (measuring) Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
     private var measuring = false
-    init { layoutManager = LinearLayoutManager(context); adapter = benchmarkAdapter; layoutParams = ViewGroup.LayoutParams(390, 844) }
-    /** The instrumentation thread owns traversal; main only binds, lays out,
-     * draws, and services Choreographer. This avoids ActivityScenario deadlock. */
-    fun traverseFromInstrumentationThread(instrumentation: Instrumentation, order: List<Entry>, phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Boolean) {
+    private var activeWindow: ActiveWindow? = null
+    private val windowEntriesById = linkedMapOf<String, Entry>()
+
+    init {
+        layoutManager = LinearLayoutManager(context)
+        adapter = benchmarkAdapter
+        layoutParams = ViewGroup.LayoutParams(390, 844)
+        addOnScrollListener(object : OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                if (newState != SCROLL_STATE_IDLE) return
+                val active = activeWindow ?: return
+                val destination = if (active.direction == Direction.PRIME) {
+                    benchmarkAdapter.entries.lastIndex
+                } else {
+                    0
+                }
+                if (destination < 0 || findViewHolderForAdapterPosition(destination) == null) return
+                finishDirection()
+            }
+        })
+    }
+
+    /**
+     * Each literal window is submitted once, then RecyclerView owns bind,
+     * measure, draw, scrolling, and recycling through a forward prime and
+     * immediate reverse warm revisit. The instrumentation thread only waits
+     * for the lifecycle callback; it never drives per-item layout work.
+     */
+    fun traverseWindows(
+        instrumentation: Instrumentation,
+        windows: List<WarmWindow>,
+        entriesById: Map<String, Entry>,
+        phase: PreparedProseInstrumentation.TraversalPhase,
+        imagesEnabled: Boolean,
+    ): List<WindowTraversalResult> {
+        require(phase == PreparedProseInstrumentation.TraversalPhase.COLD || phase == PreparedProseInstrumentation.TraversalPhase.IMAGES_DISABLED)
+        windowEntriesById.clear()
+        windowEntriesById.putAll(entriesById)
+        return windows.map { window -> traverseWindow(instrumentation, window, phase, imagesEnabled) }
+    }
+
+    private fun traverseWindow(
+        instrumentation: Instrumentation,
+        window: WarmWindow,
+        phase: PreparedProseInstrumentation.TraversalPhase,
+        imagesEnabled: Boolean,
+    ): WindowTraversalResult {
+        val completion = CountDownLatch(1)
+        var result: Result<WindowTraversalResult>? = null
         instrumentation.runOnMainSync {
             check(isAttachedToWindow) { "RecyclerView must be attached before traversal" }
-            PreparedProseInstrumentation.beginPhase(phase)
-            benchmarkAdapter.entries = order; benchmarkAdapter.imagesEnabled = imagesEnabled; benchmarkAdapter.notifyDataSetChanged()
-            measuring = true; Choreographer.getInstance().postFrameCallback(frameCallback)
-            requestLayout(); postInvalidateOnAnimation()
+            check(activeWindow == null) { "a RecyclerView window traversal is already active" }
+            val entries = window.primeIds.map { id ->
+                requireNotNull(windowEntriesById[id]) { "window ${window.id} references unknown entry $id" }
+            }
+            activeWindow = ActiveWindow(
+                window = window,
+                phase = phase,
+                imagesEnabled = imagesEnabled,
+                completion = { completed ->
+                    result = completed
+                    completion.countDown()
+                },
+            )
+            benchmarkAdapter.submit(entries, imagesEnabled)
+            beginDirection()
         }
-        settle(instrumentation)
-        order.indices.forEach { position ->
-            instrumentation.runOnMainSync { scrollToPosition(position); requestLayout(); postInvalidateOnAnimation() }
-            settle(instrumentation)
+        check(completion.await(10, TimeUnit.SECONDS)) { "timed out waiting for RecyclerView window ${window.id}" }
+        return requireNotNull(result).getOrThrow()
+    }
+
+    private fun beginDirection() {
+        val active = activeWindow ?: return
+        PreparedProseLayoutRegistry.shared.beginBenchmarkResidentCensus()
+        val evidencePhase = if (active.direction == Direction.WARM && active.phase == PreparedProseInstrumentation.TraversalPhase.COLD) {
+            PreparedProseInstrumentation.TraversalPhase.WARM
+        } else {
+            active.phase
         }
-        // Keep the callback through a final rendered frame so frame evidence
-        // belongs to the current surface before its phase closes.
-        settle(instrumentation)
-        instrumentation.runOnMainSync {
-            measuring = false
-            Choreographer.getInstance().removeFrameCallback(frameCallback)
-            // This final settled frame is part of the phase evidence; export
-            // exposes it only after the phase is explicitly closed.
-            PreparedProseInstrumentation.endPhase()
+        PreparedProseInstrumentation.beginPhase(evidencePhase)
+        active.counters = PreparedProseInstrumentation.phaseCounters()
+        measuring = true
+        Choreographer.getInstance().postFrameCallback(frameCallback)
+        post {
+            val current = activeWindow ?: return@post
+            if (current.direction == Direction.PRIME) {
+                val lastIndex = benchmarkAdapter.entries.lastIndex
+                smoothScrollToPosition(lastIndex)
+            } else {
+                smoothScrollToPosition(0)
+            }
         }
     }
-    private fun settle(instrumentation: Instrumentation) {
-        instrumentation.waitForIdleSync()
-        val frame = CountDownLatch(1)
-        instrumentation.runOnMainSync { Choreographer.getInstance().postFrameCallback { frame.countDown() } }
-        check(frame.await(5, TimeUnit.SECONDS)) { "timed out waiting for main-loop layout/draw frame" }
-        instrumentation.waitForIdleSync()
+
+    /** Called solely by the attached RecyclerView scroll listener at idle. */
+    private fun finishDirection() {
+        val active = activeWindow ?: return
+        val census = PreparedProseLayoutRegistry.shared.endBenchmarkResidentCensus()
+        val counters = PreparedProseInstrumentation.phaseCounters()
+        val result = WindowPhaseResult(
+            residentKeyCount = census.count,
+            residentKeyDigest = census.digest,
+            compileCount = counters.first - active.counters.first,
+            layoutCount = counters.second - active.counters.second,
+            cacheMisses = counters.third - active.counters.third,
+        )
+        val evidencePhase = if (active.direction == Direction.WARM && active.phase == PreparedProseInstrumentation.TraversalPhase.COLD) {
+            PreparedProseInstrumentation.TraversalPhase.WARM
+        } else {
+            active.phase
+        }
+        PreparedProseInstrumentation.recordWindow(
+            windowId = active.window.id,
+            entryIds = if (active.direction == Direction.PRIME) active.window.primeIds else active.window.warmIds,
+            phase = evidencePhase,
+            residentKeyCount = result.residentKeyCount,
+            residentKeyDigest = result.residentKeyDigest,
+            cache = PreparedProseInstrumentation.snapshotCache(),
+            counters = Triple(result.compileCount, result.layoutCount, result.cacheMisses),
+        )
+        measuring = false
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        PreparedProseInstrumentation.endPhase()
+        if (active.direction == Direction.PRIME) {
+            active.prime = result
+            active.direction = Direction.WARM
+            beginDirection()
+        } else {
+            activeWindow = null
+            active.completion(Result.success(WindowTraversalResult(active.window.id, requireNotNull(active.prime), result)))
+        }
     }
-    fun resetCache() { PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning() }
+
+    fun exportBeforeReset(): String = PreparedProseInstrumentation.exportJson()
+
+    fun resetCacheWhileMounted() {
+        check((0 until childCount).any { index ->
+            (getChildViewHolder(getChildAt(index)) as? Holder)?.viewer?.preparedLayoutForTesting != null
+        }) { "a prepared viewer must remain mounted before the reset" }
+        PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning()
+        check((0 until childCount).any { index ->
+            (getChildViewHolder(getChildAt(index)) as? Holder)?.viewer?.preparedLayoutForTesting != null
+        }) { "the mounted prepared viewer must remain usable after the reset" }
+    }
+
     private class Holder(
         val viewer: ProseViewerView,
         private val configuration: PreparedProseBenchmarkConfiguration,
     ) : RecyclerView.ViewHolder(viewer) {
         fun bind(entry: Entry, imagesEnabled: Boolean) {
-            viewer.contentDescription = entry.id
             viewer.apply(
                 ProseViewerSource.Json(entry.contentJson),
                 ProseViewerConfiguration(

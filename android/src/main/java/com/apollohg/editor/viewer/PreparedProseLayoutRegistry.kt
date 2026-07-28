@@ -4,6 +4,7 @@ import com.apollohg.editor.ProseViewerError
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.security.MessageDigest
 
 /** Shared, thread-safe compiler and prepared-layout registry for View and Fabric hosts. */
 internal class PreparedProseLayoutRegistry(
@@ -14,6 +15,10 @@ internal class PreparedProseLayoutRegistry(
     private val compilationFailureBudget: Int = 128,
     private val themeEntryBudget: Int = 128,
 ) {
+    internal data class BenchmarkResidentCensus(
+        val count: Int,
+        val digest: String,
+    )
     private sealed interface Compilation {
         data class Document(val value: ViewerDocument) : Compilation
         data class Failure(val error: ProseViewerError) : Compilation
@@ -319,6 +324,20 @@ internal class PreparedProseLayoutRegistry(
 
     fun registerDirectMounted(owner: String, layout: PreparedProseLayout) = layoutCache.registerDirectMount(owner, layout)
     fun releaseDirectMounted(owner: String) = layoutCache.releaseDirectMount(owner)
+
+    internal fun beginBenchmarkResidentCensus() = layoutCache.beginBenchmarkCensus()
+
+    internal fun endBenchmarkResidentCensus(): BenchmarkResidentCensus {
+        val keys = layoutCache.endBenchmarkCensus()
+        val material = keys
+            .map { it.toString() }
+            .sorted()
+            .joinToString("\n")
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(material.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return BenchmarkResidentCensus(count = keys.size, digest = digest)
+    }
 
     fun didReceiveMemoryWarning() {
         PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.MEMORY_PRESSURE)
