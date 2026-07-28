@@ -355,10 +355,13 @@ final class NativePerformanceTests: XCTestCase {
         let configuration = try PreparedProseBenchmarkConfiguration.load()
         let harness = PreparedProseCollectionHarness(corpus: corpus, configuration: configuration, imagesEnabled: true)
         PreparedProseInstrumentation.beginBenchmark()
-        harness.traverse(corpus.coldTraversal, phase: .cold)
-        harness.traverse(corpus.warmTraversal, phase: .warm)
-        harness.traverse(corpus.coldTraversal, phase: .imagesDisabled, imagesEnabled: false)
+        _ = try traversePreparedProseWindows(harness, windows: corpus.warmWindows, phase: .cold, imagesEnabled: true)
+        _ = try traversePreparedProseWindows(harness, windows: corpus.warmWindows, phase: .imagesDisabled, imagesEnabled: false)
+        PreparedProseInstrumentation.capturePreResetSnapshot()
+        XCTAssertTrue(harness.hasMountedPreparedViewer)
         harness.resetCache()
+        XCTAssertTrue(harness.hasMountedPreparedViewer)
+        PreparedProseInstrumentation.capturePostResetSnapshot()
         let benchmarkExport = PreparedProseInstrumentation.exportJSON()
         print("[PreparedProseBenchmarkExport]\(benchmarkExport)")
         try PreparedProsePerformanceGates.assertPasses(
@@ -378,25 +381,12 @@ final class NativePerformanceTests: XCTestCase {
         let configuration = try PreparedProseBenchmarkConfiguration.load()
         let fixtures = try PreparedProseHarnessStaticFixtures.load()
         let harness = PreparedProseCollectionHarness(corpus: corpus, configuration: configuration, imagesEnabled: true)
-        let preparedHeight = try harness.measuredHeight(
-            for: fixtures.preparation.entryId,
-            width: fixtures.preparation.widthPoints,
-            imagesEnabled: true
-        )
-        let shortHeight = try harness.measuredHeight(
-            for: fixtures.differingHeights.shortEntryId,
-            width: fixtures.differingHeights.widthPoints,
-            imagesEnabled: true
-        )
-        let longHeight = try harness.measuredHeight(
-            for: fixtures.differingHeights.longEntryId,
-            width: fixtures.differingHeights.widthPoints,
-            imagesEnabled: true
-        )
+        PreparedProseInstrumentation.beginBenchmark()
+        let preparedHeight = try attachedPreparedProseHeight(harness, entryID: fixtures.preparation.entryId)
+        let shortHeight = try attachedPreparedProseHeight(harness, entryID: fixtures.differingHeights.shortEntryId)
+        let longHeight = try attachedPreparedProseHeight(harness, entryID: fixtures.differingHeights.longEntryId)
         XCTAssertGreaterThan(preparedHeight, 0)
         XCTAssertGreaterThan(longHeight, shortHeight)
-        PreparedProseInstrumentation.beginBenchmark()
-        harness.traverse([fixtures.preparation.entryId], phase: .warm)
         let export = try JSONSerialization.jsonObject(with: Data(PreparedProseInstrumentation.exportJSON().utf8)) as? [String: Any]
         let warm = ((export?["phaseSamples"] as? [String: Any])?[fixtures.drawEvidence.phase] as? [String: Any])
         XCTAssertGreaterThan(warm?["drawCount"] as? Int ?? 0, 0)
@@ -481,6 +471,76 @@ final class NativePerformanceTests: XCTestCase {
         }
     }
 
+    func testPreparedProseCollectionSelfSizingLifecycle() throws {
+        let corpus = try PreparedProseBenchmarkCorpus.load()
+        let configuration = try PreparedProseBenchmarkConfiguration.load()
+        let shortWindow = try XCTUnwrap(corpus.warmWindows.first { $0.id == "short-01" })
+        let harness = PreparedProseCollectionHarness(
+            corpus: corpus,
+            configuration: configuration,
+            imagesEnabled: true
+        )
+        let completion = expectation(description: "attached self-sizing short window")
+        var result: Result<[PreparedProseCollectionHarness.WindowTraversalResult], Error>?
+
+        PreparedProseInstrumentation.beginBenchmark()
+        harness.traverseWindows([shortWindow], phase: .cold, imagesEnabled: true) { traversal in
+            result = traversal
+            completion.fulfill()
+        }
+        wait(for: [completion], timeout: 10)
+
+        let traversals = try XCTUnwrap(result).get()
+        let traversal = try XCTUnwrap(traversals.first)
+        XCTAssertEqual(traversal.prime.residentKeyCount, 60)
+        XCTAssertEqual(traversal.warm.compileCount, 0)
+        XCTAssertEqual(traversal.warm.layoutCount, 0)
+        XCTAssertEqual(traversal.warm.cacheMisses, 0)
+        XCTAssertEqual(traversal.renderedHeight, traversal.preparedArtifactHeight, accuracy: 0.5)
+
+        let source = try String(contentsOfFile: #filePath, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private final class PreparedProseCollectionHarness"))
+        let end = try XCTUnwrap(source.range(of: "private enum PreparedProsePerformanceGates"))
+        let harnessSource = String(source[start.lowerBound..<end.lowerBound])
+        for forbidden in ["measurementView", "prepareAndMeasure", "RunLoop.main.run"] {
+            XCTAssertFalse(harnessSource.contains(forbidden), "harness must not use \(forbidden)")
+        }
+        XCTAssertFalse(
+            harnessSource.contains("scrollToItem(at:"),
+            "harness must not use a per-item UICollectionView jump loop"
+        )
+    }
+
+    private func traversePreparedProseWindows(
+        _ harness: PreparedProseCollectionHarness,
+        windows: [PreparedProseBenchmarkCorpus.WarmWindow],
+        phase: PreparedProseInstrumentation.TraversalPhase,
+        imagesEnabled: Bool
+    ) throws -> [PreparedProseCollectionHarness.WindowTraversalResult] {
+        let completion = expectation(description: "prepared prose \(phase.rawValue) traversal")
+        var result: Result<[PreparedProseCollectionHarness.WindowTraversalResult], Error>?
+        harness.traverseWindows(windows, phase: phase, imagesEnabled: imagesEnabled) {
+            result = $0
+            completion.fulfill()
+        }
+        wait(for: [completion], timeout: 60)
+        return try XCTUnwrap(result).get()
+    }
+
+    private func attachedPreparedProseHeight(
+        _ harness: PreparedProseCollectionHarness,
+        entryID: String
+    ) throws -> CGFloat {
+        let window = PreparedProseBenchmarkCorpus.WarmWindow(
+            id: "fixture-\(entryID)",
+            primeIds: [entryID],
+            warmIds: [entryID]
+        )
+        return try XCTUnwrap(
+            traversePreparedProseWindows(harness, windows: [window], phase: .cold, imagesEnabled: true).first
+        ).renderedHeight
+    }
+
     private func measureOptions() -> XCTMeasureOptions {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
@@ -490,9 +550,11 @@ final class NativePerformanceTests: XCTestCase {
 
 private struct PreparedProseBenchmarkCorpus: Decodable {
     struct Entry: Decodable { let id: String; let category: String; let contentJSON: [String: JSONValue] }
+    struct WarmWindow: Decodable { let id: String; let primeIds: [String]; let warmIds: [String] }
     let documents: [Entry]
     let coldTraversal: [String]
     let warmTraversal: [String]
+    let warmWindows: [WarmWindow]
 
     static func load() throws -> Self {
         guard let url = Bundle(for: NativePerformanceTests.self).url(
@@ -504,6 +566,7 @@ private struct PreparedProseBenchmarkCorpus: Decodable {
         XCTAssertEqual(Set(corpus.documents.map(\.id)).count, 1_000)
         XCTAssertEqual(corpus.coldTraversal.count, 1_000)
         XCTAssertEqual(corpus.warmTraversal.count, 1_000)
+        XCTAssertEqual(corpus.warmWindows.count, 27)
         return corpus
     }
 }
@@ -601,25 +664,67 @@ private enum JSONValue: Codable {
     }
 }
 
-private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
+    struct WindowPhaseResult {
+        let residentKeyCount: Int
+        let residentKeyDigest: String
+        let compileCount: Int
+        let layoutCount: Int
+        let cacheMisses: Int
+    }
+
+    struct WindowTraversalResult {
+        let windowId: String
+        let prime: WindowPhaseResult
+        let warm: WindowPhaseResult
+        let renderedHeight: CGFloat
+        let preparedArtifactHeight: CGFloat
+    }
+
+    private enum Direction { case forward, reverse }
+    private struct CounterBaseline {
+        let compileCount: Int
+        let layoutCount: Int
+        let cacheMisses: Int
+    }
+    private struct ActiveTraversal {
+        let windows: [PreparedProseBenchmarkCorpus.WarmWindow]
+        let phase: PreparedProseInstrumentation.TraversalPhase
+        let imagesEnabled: Bool
+        let completion: (Result<[WindowTraversalResult], Error>) -> Void
+        var index = 0
+        var direction: Direction = .forward
+        var prime: WindowPhaseResult?
+        var results: [WindowTraversalResult] = []
+        var counterBaseline = CounterBaseline(compileCount: 0, layoutCount: 0, cacheMisses: 0)
+    }
+
     private let corpus: PreparedProseBenchmarkCorpus
     private let configuration: PreparedProseBenchmarkConfiguration
     private let defaultImagesEnabled: Bool
     private let byID: [String: PreparedProseBenchmarkCorpus.Entry]
+    private let sourceByID: [String: String]
     private let collectionView: UICollectionView
     private let window: UIWindow
     private var orderedEntries: [PreparedProseBenchmarkCorpus.Entry] = []
     private var activeImagesEnabled = true
+    private var activeViewerConfiguration: ProseViewerConfiguration?
     private var displayLink: CADisplayLink?
-    /// The registry enforces the actual one-preparation invariant. This cache
-    /// preserves the matching dynamic UICollectionView height for each
-    /// semantic/configuration/width/revision identity during one traversal.
-    private var measuredHeights: [String: CGFloat] = [:]
+    private var traversal: ActiveTraversal?
 
     init(corpus: PreparedProseBenchmarkCorpus, configuration: PreparedProseBenchmarkConfiguration, imagesEnabled: Bool) {
         self.corpus = corpus; self.configuration = configuration; self.defaultImagesEnabled = imagesEnabled
         byID = Dictionary(uniqueKeysWithValues: corpus.documents.map { ($0.id, $0) })
-        let layout = UICollectionViewFlowLayout(); layout.estimatedItemSize = .zero; layout.minimumLineSpacing = 8
+        sourceByID = Dictionary(uniqueKeysWithValues: corpus.documents.map { entry in
+            guard let data = try? JSONEncoder().encode(entry.contentJSON),
+                  let source = String(data: data, encoding: .utf8)
+            else { preconditionFailure("invalid corpus entry \(entry.id)") }
+            return (entry.id, source)
+        })
+        let layout = UICollectionViewFlowLayout()
+        layout.estimatedItemSize = UICollectionViewFlowLayout.automaticSize
+        layout.minimumLineSpacing = 8
+        layout.sectionInset = .zero
         collectionView = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), collectionViewLayout: layout)
         window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         super.init()
@@ -629,104 +734,232 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
     }
     deinit { displayLink?.invalidate(); window.isHidden = true }
     func resetCache() { PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning() }
-    func measuredHeight(for id: String, width: CGFloat, imagesEnabled: Bool) throws -> CGFloat {
-        guard let entry = byID[id] else {
-            throw NSError(domain: "PreparedProseCollectionHarness", code: 1, userInfo: [NSLocalizedDescriptionKey: "unknown corpus entry \(id)"])
-        }
-        guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else {
-            throw NSError(domain: "PreparedProseCollectionHarness", code: 2, userInfo: [NSLocalizedDescriptionKey: "invalid corpus entry \(id)"])
-        }
-        let viewer = ProseViewerView(frame: CGRect(x: 0, y: 0, width: width, height: 0))
-        guard viewer.apply(source: .json(source), configuration: try configuration.viewerConfiguration(imagesEnabled: imagesEnabled)) else {
-            throw NSError(domain: "PreparedProseCollectionHarness", code: 3, userInfo: [NSLocalizedDescriptionKey: "corpus entry \(id) was rejected"])
-        }
-        return max(1, ceil(viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+    var hasMountedPreparedViewer: Bool {
+        collectionView.visibleCells.contains { ($0 as? PreparedProseCollectionCell)?.hasPreparedArtifact == true }
     }
-    func traverse(_ ids: [String], phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Bool? = nil) {
-        activeImagesEnabled = imagesEnabled ?? defaultImagesEnabled
-        orderedEntries = ids.compactMap { byID[$0] }
-        XCTAssertEqual(orderedEntries.count, ids.count)
-        measuredHeights.removeAll(keepingCapacity: true)
+
+    func traverseWindows(
+        _ windows: [PreparedProseBenchmarkCorpus.WarmWindow],
+        phase: PreparedProseInstrumentation.TraversalPhase,
+        imagesEnabled: Bool? = nil,
+        completion: @escaping (Result<[WindowTraversalResult], Error>) -> Void
+    ) {
+        guard traversal == nil else {
+            completion(.failure(NSError(domain: "PreparedProseCollectionHarness", code: 1, userInfo: [NSLocalizedDescriptionKey: "a traversal is already active"])))
+            return
+        }
+        guard phase == .cold || phase == .imagesDisabled else {
+            completion(.failure(NSError(domain: "PreparedProseCollectionHarness", code: 2, userInfo: [NSLocalizedDescriptionKey: "window traversal begins with cold or imagesDisabled"])))
+            return
+        }
+        traversal = .init(
+            windows: windows,
+            phase: phase,
+            imagesEnabled: imagesEnabled ?? defaultImagesEnabled,
+            completion: completion
+        )
+        startCurrentWindow()
+    }
+
+    private func startCurrentWindow() {
+        guard var traversal, traversal.index < traversal.windows.count else {
+            finishTraversal()
+            return
+        }
+        let window = traversal.windows[traversal.index]
+        orderedEntries = window.primeIds.compactMap { byID[$0] }
+        guard orderedEntries.count == window.primeIds.count else {
+            finishTraversal(error: NSError(domain: "PreparedProseCollectionHarness", code: 3, userInfo: [NSLocalizedDescriptionKey: "window \(window.id) references an unknown entry"]))
+            return
+        }
+        activeImagesEnabled = traversal.imagesEnabled
+        do {
+            activeViewerConfiguration = try configuration.viewerConfiguration(imagesEnabled: activeImagesEnabled)
+        } catch {
+            finishTraversal(error: error)
+            return
+        }
+        traversal.direction = .forward
+        traversal.prime = nil
+        self.traversal = traversal
+        collectionView.contentOffset = .zero
+        collectionView.reloadData()
+        beginWindowPass(phase: traversal.phase)
+    }
+
+    private func beginWindowPass(phase: PreparedProseInstrumentation.TraversalPhase) {
+        PreparedProseLayoutRegistry.shared.beginBenchmarkResidentCensus()
         PreparedProseInstrumentation.beginPhase(phase)
-        let link = CADisplayLink(target: self, selector: #selector(displayLinkTick(_:))); displayLink = link; link.add(to: .main, forMode: .common)
-        collectionView.setContentOffset(.zero, animated: false); collectionView.collectionViewLayout.invalidateLayout(); collectionView.reloadData(); collectionView.layoutIfNeeded()
-        for index in orderedEntries.indices {
-            collectionView.scrollToItem(at: IndexPath(item: index, section: 0), at: .centeredVertically, animated: false)
-            collectionView.layoutIfNeeded()
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        if var traversal {
+            let counters = PreparedProseInstrumentation.phaseCounters()
+            traversal.counterBaseline = .init(
+                compileCount: counters.compileCount,
+                layoutCount: counters.layoutCount,
+                cacheMisses: counters.cacheMisses
+            )
+            self.traversal = traversal
         }
-        // Keep the display link through a final settled draw so draw and frame
-        // evidence are complete before this phase becomes exportable.
-        collectionView.setNeedsDisplay(); collectionView.layoutIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
-        link.invalidate(); displayLink = nil; PreparedProseInstrumentation.endPhase()
+        if displayLink == nil {
+            let link = CADisplayLink(target: self, selector: #selector(displayLinkTick(_:)))
+            displayLink = link
+            link.add(to: .main, forMode: .common)
+        }
     }
-    @objc private func displayLinkTick(_ link: CADisplayLink) { PreparedProseInstrumentation.displayLinkDidTick(link) }
+
+    @objc private func displayLinkTick(_ link: CADisplayLink) {
+        PreparedProseInstrumentation.displayLinkDidTick(link)
+        driveCurrentWindow(with: link)
+    }
+
+    private func driveCurrentWindow(with link: CADisplayLink) {
+        guard let traversal, !orderedEntries.isEmpty else { return }
+        let maximumOffset = max(0, collectionView.contentSize.height - collectionView.bounds.height)
+        if maximumOffset == 0 {
+            guard collectionView.indexPathsForVisibleItems.contains(IndexPath(item: 0, section: 0)) else { return }
+            finishCurrentWindowPass()
+            return
+        }
+        let distance = CGFloat(max(1, 2_000 * link.duration))
+        let currentOffset = collectionView.contentOffset.y
+        let target: CGFloat
+        switch traversal.direction {
+        case .forward:
+            target = min(maximumOffset, currentOffset + distance)
+        case .reverse:
+            target = max(0, currentOffset - distance)
+        }
+        collectionView.contentOffset = CGPoint(x: 0, y: target)
+
+        let destination = traversal.direction == .forward ? orderedEntries.count - 1 : 0
+        guard target == (traversal.direction == .forward ? maximumOffset : 0),
+              collectionView.indexPathsForVisibleItems.contains(IndexPath(item: destination, section: 0))
+        else { return }
+        finishCurrentWindowPass()
+    }
+
+    private func finishCurrentWindowPass() {
+        guard var traversal else { return }
+        let window = traversal.windows[traversal.index]
+        let census = PreparedProseLayoutRegistry.shared.endBenchmarkResidentCensus()
+        let counters = PreparedProseInstrumentation.phaseCounters()
+        let result = WindowPhaseResult(
+            residentKeyCount: census.count,
+            residentKeyDigest: census.digest,
+            compileCount: counters.compileCount - traversal.counterBaseline.compileCount,
+            layoutCount: counters.layoutCount - traversal.counterBaseline.layoutCount,
+            cacheMisses: counters.cacheMisses - traversal.counterBaseline.cacheMisses
+        )
+        let phase: PreparedProseInstrumentation.TraversalPhase = traversal.direction == .forward ? traversal.phase : .warm
+        PreparedProseInstrumentation.recordWindow(
+            windowId: window.id,
+            entryIds: traversal.direction == .forward ? window.primeIds : window.warmIds,
+            phase: phase,
+            residentKeyCount: result.residentKeyCount,
+            residentKeyDigest: result.residentKeyDigest,
+            cache: PreparedProseInstrumentation.snapshotCache(),
+            counters: (result.compileCount, result.layoutCount, result.cacheMisses)
+        )
+        PreparedProseInstrumentation.endPhase()
+
+        if traversal.direction == .forward, traversal.phase == .cold {
+            traversal.prime = result
+            traversal.direction = .reverse
+            self.traversal = traversal
+            beginWindowPass(phase: .warm)
+            return
+        }
+
+        let warm = result
+        let visible = collectionView.cellForItem(at: IndexPath(item: 0, section: 0)) as? PreparedProseCollectionCell
+        guard let visible else {
+            finishTraversal(error: NSError(domain: "PreparedProseCollectionHarness", code: 4, userInfo: [NSLocalizedDescriptionKey: "leading cell was not attached at window completion"]))
+            return
+        }
+        traversal.results.append(
+            .init(
+                windowId: window.id,
+                prime: traversal.prime ?? result,
+                warm: warm,
+                renderedHeight: visible.bounds.height,
+                preparedArtifactHeight: visible.preparedArtifactHeight
+            )
+        )
+        traversal.index += 1
+        self.traversal = traversal
+        startCurrentWindow()
+    }
+
+    private func finishTraversal(error: Error? = nil) {
+        displayLink?.invalidate()
+        displayLink = nil
+        guard let traversal else { return }
+        self.traversal = nil
+        if let error {
+            traversal.completion(.failure(error))
+        } else {
+            traversal.completion(.success(traversal.results))
+        }
+    }
+
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { orderedEntries.count }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "prepared", for: indexPath) as! PreparedProseCollectionCell
         let entry = orderedEntries[indexPath.item]
-        guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(entry.id)"); return cell }
+        guard let source = sourceByID[entry.id], let activeViewerConfiguration else {
+            XCTFail("missing stable benchmark input for \(entry.id)")
+            return cell
+        }
         do {
-            try cell.configure(source: source, configuration: configuration.viewerConfiguration(imagesEnabled: activeImagesEnabled))
-            _ = cell.prepareAndMeasure(width: collectionView.bounds.width)
+            try cell.configure(
+                source: source,
+                configuration: activeViewerConfiguration,
+                fittingWidth: collectionView.bounds.width
+            )
         } catch {
             XCTFail("invalid benchmark configuration: \(error)")
         }
         return cell
     }
-    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-        let width = collectionView.bounds.width
-        let entry = orderedEntries[indexPath.item]
-        guard let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(entry.id)"); return .zero }
-        do {
-            let viewerConfiguration = try configuration.viewerConfiguration(imagesEnabled: activeImagesEnabled)
-            // A formatted CGFloat is locale-dependent and can merge distinct
-            // widths. The IEEE-754 payload is the exact measurement identity.
-            let widthIdentity = String(Double(width).bitPattern, radix: 16)
-            let key = [source, viewerConfiguration.configJSON, viewerConfiguration.imagePolicyJSON ?? "", viewerConfiguration.imagesEnabled ? "1" : "0", widthIdentity].joined(separator: "\u{1F}")
-            if let height = measuredHeights[key] { return CGSize(width: width, height: height) }
-            let measurementView = ProseViewerView(frame: CGRect(x: 0, y: 0, width: width, height: 0))
-            XCTAssertTrue(measurementView.apply(source: .json(source), configuration: viewerConfiguration))
-            let height = max(1, ceil(measurementView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
-            measuredHeights[key] = height
-            return CGSize(width: width, height: height)
-        } catch {
-            XCTFail("invalid benchmark configuration: \(error)")
-            return .zero
-        }
-    }
 }
 
 private final class PreparedProseCollectionCell: UICollectionViewCell {
     private let viewer = ProseViewerView()
-    override init(frame: CGRect) { super.init(frame: frame); contentView.addSubview(viewer) }
-    required init?(coder: NSCoder) { fatalError("PreparedProseCollectionCell is programmatic") }
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let height = prepareAndMeasure(width: contentView.bounds.width)
-        viewer.frame = CGRect(x: 0, y: 0, width: contentView.bounds.width, height: height)
-        viewer.setNeedsLayout()
-        viewer.layoutIfNeeded()
+    private(set) var preparedArtifactHeight: CGFloat = 0
+    private var fittingWidth: CGFloat = 0
+    var hasPreparedArtifact: Bool { preparedArtifactHeight > 0 }
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        viewer.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(viewer)
+        NSLayoutConstraint.activate([
+            viewer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            viewer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            viewer.topAnchor.constraint(equalTo: contentView.topAnchor),
+            viewer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
     }
-    override func prepareForReuse() { super.prepareForReuse(); viewer.prepareForReuse() }
-    func configure(source: String, configuration: ProseViewerConfiguration) throws {
+    required init?(coder: NSCoder) { fatalError("PreparedProseCollectionCell is programmatic") }
+    override func prepareForReuse() { super.prepareForReuse(); preparedArtifactHeight = 0; viewer.prepareForReuse() }
+    func configure(source: String, configuration: ProseViewerConfiguration, fittingWidth: CGFloat) throws {
         guard viewer.apply(source: .json(source), configuration: configuration) else {
             throw NSError(domain: "PreparedProseCollectionCell", code: 1, userInfo: [NSLocalizedDescriptionKey: "benchmark source was rejected"])
         }
-        viewer.setNeedsLayout()
+        self.fittingWidth = max(1, fittingWidth)
+        setNeedsLayout()
     }
-    @discardableResult
-    func prepareAndMeasure(width: CGFloat) -> CGFloat {
-        guard width.isFinite, width > 0 else { return 0 }
-        return max(1, ceil(viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+    override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        let fitted = attributes.copy() as! UICollectionViewLayoutAttributes
+        let width = max(1, fittingWidth)
+        preparedArtifactHeight = max(1, ceil(viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+        fitted.size = CGSize(width: width, height: preparedArtifactHeight)
+        return fitted
     }
 }
 
 private enum PreparedProsePerformanceGates {
     private struct DelayedInterval: Decodable { let rawDeltaNanos: UInt64 }
     private struct CacheSnapshot: Decodable { let unmountedCurrentBytes: Int; let unmountedHighWaterBytes: Int; let unmountedCurrentResidentCount: Int; let unmountedHighWaterResidentCount: Int; let compiledCurrentBytes: Int; let compiledCurrentResidentCount: Int }
-    private struct WindowEvidence: Decodable { let phase: String; let compileCount: Int; let layoutCount: Int; let cacheMisses: Int }
+    private struct WindowEvidence: Decodable { let windowId: String; let entryIds: [String]; let phase: String; let residentKeyCount: Int; let compileCount: Int; let layoutCount: Int; let cacheMisses: Int }
     private struct Phase: Decodable { let combinedCompileLayoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let rawFrameDeltasNanos: [UInt64]; let nominalFrameCount: Int; let viewerCausedDelayedIntervals: [DelayedInterval]; let imageRequestCount: Int; let imageMetadataCount: Int; let imageDecodeCount: Int; let drawCount: Int }
     private struct Export: Decodable { let percentileDefinition: String; let phaseSamples: [String: Phase]; let windowEvidence: [WindowEvidence]; let preResetSnapshot: CacheSnapshot; let postResetSnapshot: CacheSnapshot; let duplicatePublications: Int }
     static func assertPasses(exportJSON: String, expectedDocuments: Int) throws {
@@ -763,7 +996,15 @@ private enum PreparedProsePerformanceGates {
         XCTAssertEqual(export.postResetSnapshot.unmountedCurrentResidentCount, 0)
         XCTAssertEqual(export.postResetSnapshot.compiledCurrentBytes, 0)
         XCTAssertEqual(export.postResetSnapshot.compiledCurrentResidentCount, 0)
-        for evidence in export.windowEvidence where evidence.phase == "warm" {
+        let coldWindows = export.windowEvidence.filter { $0.phase == "cold" }
+        let warmWindows = export.windowEvidence.filter { $0.phase == "warm" }
+        XCTAssertEqual(coldWindows.count, 27)
+        XCTAssertEqual(warmWindows.count, 27)
+        for evidence in coldWindows + warmWindows {
+            XCTAssertFalse(evidence.windowId.isEmpty)
+            XCTAssertEqual(evidence.residentKeyCount, evidence.entryIds.count)
+        }
+        for evidence in warmWindows {
             XCTAssertEqual(evidence.compileCount, 0)
             XCTAssertEqual(evidence.layoutCount, 0)
             XCTAssertEqual(evidence.cacheMisses, 0)

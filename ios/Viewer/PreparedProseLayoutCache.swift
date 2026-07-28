@@ -19,6 +19,7 @@ final class PreparedProseLayoutCache {
     private var pendingLeases: [FabricLeaseKey: PreparedProseLayout] = [:]
     private var mountedLeases: [FabricLeaseKey: PreparedProseLayout] = [:]
     private var directMounted: [String: PreparedProseLayout] = [:]
+    private var benchmarkCensusKeys: Set<ProseLayoutKey>?
     private var mountIndex: [ProseMountKey: ProseLayoutKey] = [:]
 #if DEBUG
     /// A live generation must publish an artifact once for its complete
@@ -41,6 +42,7 @@ final class PreparedProseLayoutCache {
         precondition(fabricSurface == nil || fabricLeaseHandle != nil)
         let lookupStarted = PreparedProseInstrumentation.now()
         condition.lock()
+        benchmarkCensusKeys?.insert(key)
         // Mounted ownership is the most authoritative exact-key cache entry:
         // it survives unmounted-cache eviction and memory warnings. Consult it
         // before completed entries, because creating a same-width pending lease
@@ -299,6 +301,20 @@ final class PreparedProseLayoutCache {
         condition.lock()
         defer { condition.unlock() }
         return completed.count
+    }
+
+    func beginBenchmarkCensus() {
+        condition.lock()
+        benchmarkCensusKeys = []
+        condition.unlock()
+    }
+
+    func endBenchmarkCensus() -> [ProseLayoutKey] {
+        condition.lock()
+        defer { condition.unlock() }
+        let keys = benchmarkCensusKeys.map(Array.init) ?? []
+        benchmarkCensusKeys = nil
+        return keys
     }
 
     var retainedBytesForTesting: Int {

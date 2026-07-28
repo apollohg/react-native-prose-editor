@@ -79,6 +79,10 @@ public final class PreparedProseLayoutRegistry: NSObject {
     var pendingFabricLeaseCountForTesting: Int { layoutCache.pendingLeaseCountForTesting }
     var mountedFabricLeaseCountForTesting: Int { layoutCache.mountedLeaseCountForTesting }
     var fabricLeaseCountForTesting: Int { layoutCache.leaseCountForTesting }
+    struct BenchmarkResidentCensus {
+        let count: Int
+        let digest: String
+    }
     func permittedFabricGenerationForTesting(_ owner: FabricLeaseOwner) -> String? {
         compiledCondition.lock()
         defer { compiledCondition.unlock() }
@@ -819,6 +823,20 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     func releaseDirectMounted(_ owner: String) {
         layoutCache.releaseDirectMount(owner)
+    }
+
+    func beginBenchmarkResidentCensus() {
+        layoutCache.beginBenchmarkCensus()
+    }
+
+    func endBenchmarkResidentCensus() -> BenchmarkResidentCensus {
+        let keys = layoutCache.endBenchmarkCensus()
+        let material = keys
+            .map { String(describing: $0) }
+            .sorted()
+            .joined(separator: "\n")
+        let digest = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        return .init(count: keys.count, digest: digest)
     }
 
     @objc(releaseFabricSurfaceId:componentTag:)

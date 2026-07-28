@@ -201,6 +201,43 @@ enum PreparedProseInstrumentation {
         lock.lock(); if enabled { postResetSnapshot = cacheSnapshot }; lock.unlock()
 #endif
     }
+    static func phaseCounters() -> (compileCount: Int, layoutCount: Int, cacheMisses: Int) {
+#if DEBUG
+        lock.lock(); defer { lock.unlock() }
+        guard let phase else { return (0, 0, 0) }
+        let value = samples[phase] ?? PhaseSamples()
+        return (value.compileCount, value.layoutCount, value.cacheMisses)
+#else
+        return (0, 0, 0)
+#endif
+    }
+    static func recordWindow(
+        windowId: String,
+        entryIds: [String],
+        phase: TraversalPhase,
+        residentKeyCount: Int,
+        residentKeyDigest: String,
+        cache: CacheSnapshot,
+        counters: (compileCount: Int, layoutCount: Int, cacheMisses: Int)
+    ) {
+#if DEBUG
+        lock.lock(); defer { lock.unlock() }
+        guard enabled else { return }
+        windowEvidence.append(
+            .init(
+                windowId: windowId,
+                entryIds: entryIds,
+                phase: phase.rawValue,
+                residentKeyCount: residentKeyCount,
+                residentKeyDigest: residentKeyDigest,
+                cache: cache,
+                compileCount: counters.compileCount,
+                layoutCount: counters.layoutCount,
+                cacheMisses: counters.cacheMisses
+            )
+        )
+#endif
+    }
     static func cacheUpdated(unmountedBytes: Int? = nil, unmountedResidentCount: Int? = nil, compiledBytes: Int? = nil, compiledResidentCount: Int? = nil) {
 #if DEBUG
         lock.lock(); defer { lock.unlock() }
