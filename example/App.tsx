@@ -43,6 +43,7 @@ import { CollaborationPanel } from './components/CollaborationPanel';
 const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
 const OUTPUT_PANEL_UPDATE_DEBOUNCE_MS = 120;
+const SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS = 1_500;
 
 type PreparedProseBenchmarkBridge = {
     preparedProseBenchmarkBegin(): void;
@@ -544,6 +545,15 @@ type PerformanceCorpus = {
     warmWindows: WarmWindow[];
 };
 
+type ScrollCommandToken = {
+    runId: number;
+    windowIndex: number;
+    direction: 'prime' | 'warm';
+    dispatched: boolean;
+    momentumBegan: boolean;
+    consumed: boolean;
+};
+
 const preparedViewerCorpus = performanceCorpus as PerformanceCorpus;
 const preparedViewerConfiguration = preparedProseBenchmarkConfiguration as {
     configuration: { schema: Parameters<typeof NativeProseViewer>[0]['schema'] };
@@ -564,10 +574,15 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
     const [direction, setDirection] = useState<'prime' | 'warm'>('prime');
     const [imagesEnabled, setImagesEnabled] = useState(true);
     const [exportedCounters, setExportedCounters] = useState('Counters not exported yet.');
+    const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
     const [isTraversing, setIsTraversing] = useState(false);
     const listRef = useRef<FlatList<CorpusEntry>>(null);
     const traversalInFlightRef = useRef(false);
     const activeBridgePhaseRef = useRef<'cold' | 'warm' | 'imagesDisabled' | null>(null);
+    const activeRunIdRef = useRef<number | null>(null);
+    const nextRunIdRef = useRef(0);
+    const activeScrollCommandRef = useRef<ScrollCommandToken | null>(null);
+    const scrollCommandWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     useEffect(() => {
         benchmarkBridge.preparedProseBenchmarkBegin();
     }, [benchmarkBridge]);
@@ -583,21 +598,129 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 .filter((entry): entry is CorpusEntry => entry != null),
         [byId, direction, window]
     );
-    const beginWindowRun = useCallback((nextImagesEnabled: boolean) => {
-        if (traversalInFlightRef.current) return;
-        traversalInFlightRef.current = true;
-        activeBridgePhaseRef.current = null;
-        setImagesEnabled(nextImagesEnabled);
-        setWindowIndex(0);
-        setPhase(nextImagesEnabled ? 'cold' : 'imagesDisabled');
-        setDirection('prime');
-        setIsTraversing(true);
-    }, []);
     const endActiveBridgePhase = useCallback(() => {
         if (activeBridgePhaseRef.current == null) return;
         benchmarkBridge.preparedProseBenchmarkEndPhase();
         activeBridgePhaseRef.current = null;
     }, [benchmarkBridge]);
+
+    const clearScrollCommandWatchdog = useCallback(() => {
+        if (scrollCommandWatchdogRef.current == null) return;
+        clearTimeout(scrollCommandWatchdogRef.current);
+        scrollCommandWatchdogRef.current = null;
+    }, []);
+
+    const cancelActiveTraversal = useCallback(
+        (errorMessage?: string) => {
+            clearScrollCommandWatchdog();
+            activeScrollCommandRef.current = null;
+            activeRunIdRef.current = null;
+            traversalInFlightRef.current = false;
+            endActiveBridgePhase();
+            setIsTraversing(false);
+            if (errorMessage != null) {
+                console.warn(errorMessage);
+                setBenchmarkError(errorMessage);
+            }
+        },
+        [clearScrollCommandWatchdog, endActiveBridgePhase]
+    );
+
+    const beginWindowRun = useCallback(
+        (nextImagesEnabled: boolean) => {
+            if (traversalInFlightRef.current) return;
+            clearScrollCommandWatchdog();
+            activeScrollCommandRef.current = null;
+            traversalInFlightRef.current = true;
+            const runId = nextRunIdRef.current + 1;
+            nextRunIdRef.current = runId;
+            activeRunIdRef.current = runId;
+            activeBridgePhaseRef.current = null;
+            setBenchmarkError(null);
+            setImagesEnabled(nextImagesEnabled);
+            setWindowIndex(0);
+            setPhase(nextImagesEnabled ? 'cold' : 'imagesDisabled');
+            setDirection('prime');
+            setIsTraversing(true);
+        },
+        [clearScrollCommandWatchdog]
+    );
+
+    const advanceDirectionOrWindow = useCallback(
+        (completedCommand: ScrollCommandToken) => {
+            if (
+                !traversalInFlightRef.current ||
+                activeRunIdRef.current !== completedCommand.runId ||
+                completedCommand.windowIndex !== windowIndex ||
+                completedCommand.direction !== direction
+            ) {
+                return;
+            }
+            if (direction === 'prime') {
+                if (phase !== 'imagesDisabled') {
+                    endActiveBridgePhase();
+                    setPhase('warm');
+                }
+                setDirection('warm');
+                return;
+            }
+
+            const nextWindowIndex = windowIndex + 1;
+            if (nextWindowIndex < preparedViewerCorpus.warmWindows.length) {
+                if (phase !== 'imagesDisabled') {
+                    endActiveBridgePhase();
+                    setPhase('cold');
+                }
+                setWindowIndex(nextWindowIndex);
+                setDirection('prime');
+                return;
+            }
+
+            cancelActiveTraversal();
+        },
+        [cancelActiveTraversal, direction, endActiveBridgePhase, phase, windowIndex]
+    );
+
+    const dispatchScrollCommand = useCallback(
+        (commandWindowIndex: number, commandDirection: 'prime' | 'warm') => {
+            const runId = activeRunIdRef.current;
+            if (!traversalInFlightRef.current || runId == null) return;
+
+            clearScrollCommandWatchdog();
+            const command: ScrollCommandToken = {
+                runId,
+                windowIndex: commandWindowIndex,
+                direction: commandDirection,
+                dispatched: true,
+                momentumBegan: false,
+                consumed: false,
+            };
+            activeScrollCommandRef.current = command;
+            scrollCommandWatchdogRef.current = setTimeout(() => {
+                const activeCommand = activeScrollCommandRef.current;
+                if (
+                    activeCommand?.runId !== command.runId ||
+                    activeCommand.windowIndex !== command.windowIndex ||
+                    activeCommand.direction !== command.direction ||
+                    !activeCommand.dispatched ||
+                    activeCommand.momentumBegan ||
+                    activeCommand.consumed
+                ) {
+                    return;
+                }
+                cancelActiveTraversal(
+                    `Prepared viewer benchmark aborted: ${command.direction} scroll for window ${command.windowIndex + 1} did not begin.`
+                );
+            }, SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS);
+
+            if (commandDirection === 'prime') {
+                listRef.current?.scrollToEnd({ animated: true });
+            } else {
+                listRef.current?.scrollToIndex({ index: 0, animated: true });
+            }
+        },
+        [cancelActiveTraversal, clearScrollCommandWatchdog]
+    );
 
     useEffect(() => {
         if (!isTraversing) return;
@@ -606,41 +729,55 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             activeBridgePhaseRef.current = phase;
         }
         const frame = requestAnimationFrame(() => {
-            if (direction === 'prime') {
-                listRef.current?.scrollToEnd({ animated: true });
-            } else {
-                listRef.current?.scrollToIndex({ index: 0, animated: true });
-            }
+            dispatchScrollCommand(windowIndex, direction);
         });
         return () => cancelAnimationFrame(frame);
-    }, [benchmarkBridge, direction, isTraversing, phase, windowIndex]);
+    }, [benchmarkBridge, direction, dispatchScrollCommand, isTraversing, phase, windowIndex]);
 
-    const advanceDirectionOrWindow = useCallback(() => {
-        if (!traversalInFlightRef.current) return;
-        if (direction === 'prime') {
-            if (phase !== 'imagesDisabled') {
-                endActiveBridgePhase();
-                setPhase('warm');
-            }
-            setDirection('warm');
+    const handleMomentumScrollBegin = useCallback(() => {
+        const command = activeScrollCommandRef.current;
+        if (
+            !traversalInFlightRef.current ||
+            command == null ||
+            activeRunIdRef.current !== command.runId ||
+            !command.dispatched ||
+            command.consumed
+        ) {
             return;
         }
+        command.momentumBegan = true;
+        clearScrollCommandWatchdog();
+    }, [clearScrollCommandWatchdog]);
 
-        const nextWindowIndex = windowIndex + 1;
-        if (nextWindowIndex < preparedViewerCorpus.warmWindows.length) {
-            if (phase !== 'imagesDisabled') {
-                endActiveBridgePhase();
-                setPhase('cold');
-            }
-            setWindowIndex(nextWindowIndex);
-            setDirection('prime');
+    const handleMomentumScrollEnd = useCallback(() => {
+        const command = activeScrollCommandRef.current;
+        if (
+            !traversalInFlightRef.current ||
+            command == null ||
+            activeRunIdRef.current !== command.runId ||
+            !command.dispatched ||
+            !command.momentumBegan ||
+            command.consumed
+        ) {
             return;
         }
+        command.consumed = true;
+        activeScrollCommandRef.current = null;
+        clearScrollCommandWatchdog();
+        advanceDirectionOrWindow(command);
+    }, [advanceDirectionOrWindow, clearScrollCommandWatchdog]);
 
-        endActiveBridgePhase();
-        traversalInFlightRef.current = false;
-        setIsTraversing(false);
-    }, [direction, endActiveBridgePhase, phase, windowIndex]);
+    useEffect(
+        () => () => {
+            cancelActiveTraversal();
+        },
+        [cancelActiveTraversal]
+    );
+
+    const handleBack = useCallback(() => {
+        cancelActiveTraversal();
+        onBack();
+    }, [cancelActiveTraversal, onBack]);
 
     return (
         <View style={styles.benchmarkScreen}>
@@ -677,10 +814,11 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                     style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Export counters</Text>
                 </Pressable>
-                <Pressable onPress={onBack} style={styles.benchmarkButton}>
+                <Pressable onPress={handleBack} style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Back</Text>
                 </Pressable>
             </View>
+            {benchmarkError != null ? <Text style={styles.benchmarkCounters}>{benchmarkError}</Text> : null}
             <Text numberOfLines={3} style={styles.benchmarkCounters}>{exportedCounters}</Text>
             <FlatList
                 ref={listRef}
@@ -690,7 +828,8 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 initialNumToRender={12}
                 maxToRenderPerBatch={12}
                 windowSize={9}
-                onMomentumScrollEnd={advanceDirectionOrWindow}
+                onMomentumScrollBegin={handleMomentumScrollBegin}
+                onMomentumScrollEnd={handleMomentumScrollEnd}
                 renderItem={({ item }) => (
                     <NativeProseViewer
                         contentJSON={item.contentJSON}

@@ -24,13 +24,28 @@ describe('NativeProseViewer', () => {
         const benchmark = source.slice(benchmarkStart, benchmarkEnd);
 
         expect(source).toContain('warmWindows: WarmWindow[]');
+        expect(source).toContain('type ScrollCommandToken');
+        expect(source).toContain('SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS');
         expect(benchmark).toContain('preparedViewerCorpus.warmWindows');
         expect(benchmark).toContain('windowIndex');
         expect(benchmark).toContain('phase');
         expect(benchmark).toContain('direction');
         expect(benchmark).toContain('scrollToEnd({ animated: true })');
         expect(benchmark).toContain('scrollToIndex({ index: 0, animated: true })');
-        expect(benchmark).toContain('onMomentumScrollEnd');
+        for (const lifecycleContract of [
+            'dispatched',
+            'momentumBegan',
+            'consumed',
+            'SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS',
+            'dispatchScrollCommand',
+            'clearScrollCommandWatchdog',
+            'cancelActiveTraversal',
+            'handleBack',
+            'onMomentumScrollBegin={handleMomentumScrollBegin}',
+            'onMomentumScrollEnd={handleMomentumScrollEnd}',
+        ]) {
+            expect(benchmark).toContain(lifecycleContract);
+        }
         expect(benchmark).toContain('keyExtractor={(item) => item.id}');
         expect(benchmark).toContain('renderImages={imagesEnabled}');
         for (const bridgeMethod of [
