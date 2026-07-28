@@ -960,7 +960,6 @@ fn resolve_configured_create_schema(
 pub(crate) struct ResolvedLocalDocument {
     pub document: crate::model::Document,
     pub schema: crate::schema::Schema,
-    pub resource_limits: crate::boundary::ResourceLimits,
 }
 
 pub(crate) fn resolve_local_document(
@@ -1027,7 +1026,6 @@ pub(crate) fn resolve_local_document(
     Ok(ResolvedLocalDocument {
         document,
         schema,
-        resource_limits: config.resource_limits,
     })
 }
 
@@ -1048,7 +1046,6 @@ fn resolve_local_empty_document(config_json: &str) -> Result<ResolvedLocalDocume
     Ok(ResolvedLocalDocument {
         document,
         schema,
-        resource_limits: config.resource_limits,
     })
 }
 
