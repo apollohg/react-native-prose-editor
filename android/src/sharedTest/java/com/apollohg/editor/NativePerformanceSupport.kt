@@ -224,6 +224,7 @@ internal class PreparedProseRecyclerHarness(
         var counters: Triple<Int, Int, Int> = Triple(0, 0, 0),
         var prime: WindowPhaseResult? = null,
         var initialLeadingHolderAttached: Boolean = false,
+        var submissionGeneration: Long = NO_SUBMISSION_GENERATION,
         var finishingDirection: Boolean = false,
         var evidenceActive: Boolean = false,
         val attachmentDeadlineUptimeMs: Long = SystemClock.uptimeMillis() + INITIAL_ATTACHMENT_TIMEOUT_MS,
@@ -232,14 +233,19 @@ internal class PreparedProseRecyclerHarness(
     private val benchmarkAdapter = object : RecyclerView.Adapter<Holder>() {
         var entries: List<Entry> = emptyList()
         var imagesEnabled = true
+        private var submissionGeneration = NO_SUBMISSION_GENERATION
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(ProseViewerView(parent.context), configuration)
-        override fun onBindViewHolder(holder: Holder, position: Int) { holder.bind(entries[position], imagesEnabled) }
+        override fun onBindViewHolder(holder: Holder, position: Int) {
+            holder.bind(entries[position], imagesEnabled, submissionGeneration)
+        }
         override fun onViewRecycled(holder: Holder) { holder.viewer.prepareForReuse(); super.onViewRecycled(holder) }
         override fun getItemCount() = entries.size
-        fun submit(nextEntries: List<Entry>, nextImagesEnabled: Boolean) {
+        fun submit(nextEntries: List<Entry>, nextImagesEnabled: Boolean): Long {
+            submissionGeneration = Math.addExact(submissionGeneration, 1L)
             entries = nextEntries
             imagesEnabled = nextImagesEnabled
             notifyDataSetChanged()
+            return submissionGeneration
         }
     }
     private val frameCallback = object : Choreographer.FrameCallback {
@@ -346,14 +352,16 @@ internal class PreparedProseRecyclerHarness(
         // Prime evidence includes RecyclerView's initial post-submit binds,
         // not only the subsequent scroll-bound work.
         beginDirection()
-        benchmarkAdapter.submit(entries, imagesEnabled)
+        activeWindow?.submissionGeneration = benchmarkAdapter.submit(entries, imagesEnabled)
         awaitInitialLeadingAttachment()
     }
 
     /** Wait for RecyclerView's ordinary post-submit bind/attachment before priming. */
     private fun awaitInitialLeadingAttachment() {
         val active = activeWindow ?: return
-        if (findViewHolderForAdapterPosition(0) != null) {
+        val expectedEntryId = active.window.primeIds.first()
+        val holder = findViewHolderForAdapterPosition(0) as? Holder
+        if (holder?.boundSubmissionGeneration == active.submissionGeneration && holder.boundEntryId == expectedEntryId) {
             active.initialLeadingHolderAttached = true
             driveCurrentDirection()
             return
@@ -477,7 +485,12 @@ internal class PreparedProseRecyclerHarness(
         val viewer: ProseViewerView,
         private val configuration: PreparedProseBenchmarkConfiguration,
     ) : RecyclerView.ViewHolder(viewer) {
-        fun bind(entry: Entry, imagesEnabled: Boolean) {
+        var boundSubmissionGeneration: Long = NO_SUBMISSION_GENERATION
+            private set
+        var boundEntryId: String? = null
+            private set
+
+        fun bind(entry: Entry, imagesEnabled: Boolean, submissionGeneration: Long) {
             viewer.apply(
                 ProseViewerSource.Json(entry.contentJson),
                 ProseViewerConfiguration(
@@ -487,11 +500,14 @@ internal class PreparedProseRecyclerHarness(
                     collapsesWhenEmpty = true,
                 ),
             )
+            boundSubmissionGeneration = submissionGeneration
+            boundEntryId = entry.id
         }
     }
 
     private companion object {
         const val INITIAL_ATTACHMENT_TIMEOUT_MS = 5_000L
+        const val NO_SUBMISSION_GENERATION = -1L
     }
 }
 
