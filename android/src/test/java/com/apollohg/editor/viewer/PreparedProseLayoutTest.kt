@@ -20,6 +20,7 @@ import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerError
 import com.apollohg.editor.ProseViewerErrorCode
 import com.apollohg.editor.ProseViewerInteractionListenerAdapter
+import com.apollohg.editor.ProseViewerMention
 import com.apollohg.editor.ProseViewerSource
 import com.apollohg.editor.ProseViewerView
 import org.junit.Assert.assertEquals
@@ -43,6 +44,45 @@ import org.json.JSONObject
 class PreparedProseLayoutTest {
     private val context
         get() = RuntimeEnvironment.getApplication()
+
+    @Test
+    fun `mention activation preserves attributes and rejects a non-object root`() {
+        val viewer = ProseViewerView(context, testRegistry(CountingLayoutEngine()))
+        val mentions = mutableListOf<ProseViewerMention>()
+        val errors = mutableListOf<ProseViewerError>()
+        viewer.interactionListener = object : ProseViewerInteractionListenerAdapter() {
+            override fun onMentionTap(view: ProseViewerView, mention: ProseViewerMention) {
+                mentions += mention
+            }
+
+            override fun onViewerError(view: ProseViewerView, error: ProseViewerError) {
+                errors += error
+            }
+        }
+        val interaction = PreparedProseInteraction(
+            kind = PreparedProseInteraction.Kind.MENTION,
+            rects = listOf(Rect(0, 0, 20, 20)),
+            visibleText = "@alice",
+            docPos = 0xFFFF_FFFFL,
+            label = "@alice",
+            attrsJson = """{"id":"user-9","profile":{"kind":"clinician"}}""",
+        )
+
+        assertTrue(viewer.activatePreparedInteractionForTesting(interaction))
+        assertEquals(1, mentions.size)
+        assertEquals(0xFFFF_FFFFL, mentions.single().docPos)
+        assertEquals("@alice", mentions.single().label)
+        assertEquals("user-9", mentions.single().attrs["id"])
+        assertEquals("clinician", (mentions.single().attrs["profile"] as Map<*, *>)["kind"])
+
+        assertFalse(
+            viewer.activatePreparedInteractionForTesting(
+                interaction.copy(docPos = 9, label = "@invalid", attrsJson = "[]"),
+            ),
+        )
+        assertEquals(1, mentions.size)
+        assertEquals("INVALID_MENTION_ATTRIBUTES", errors.single().code.value)
+    }
 
     @Test
     fun windowedRecyclerWarmRevisitUsesOnePrimePreparation() {

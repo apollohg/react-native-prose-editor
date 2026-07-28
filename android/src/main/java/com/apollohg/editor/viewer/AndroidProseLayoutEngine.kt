@@ -849,8 +849,8 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         }
         val interactions = attributed.semanticRanges.zip(interactionRects).mapNotNull { (semantic, rects) ->
             if (rects.isEmpty()) null else when (semantic) {
-                is PreparedSemanticRange.Link -> PreparedProseInteraction(PreparedProseInteraction.Kind.LINK, rects, semantic.href, semantic.text, null, semantic.text)
-                is PreparedSemanticRange.Mention -> PreparedProseInteraction(PreparedProseInteraction.Kind.MENTION, rects, null, semantic.label, semantic.docPos, semantic.label)
+                is PreparedSemanticRange.Link -> PreparedProseInteraction(PreparedProseInteraction.Kind.LINK, rects, semantic.href, semantic.text, null, semantic.text, null)
+                is PreparedSemanticRange.Mention -> PreparedProseInteraction(PreparedProseInteraction.Kind.MENTION, rects, null, semantic.label, semantic.docPos, semantic.label, semantic.attrsJson)
             }
         }
         return finishBlock(fragments, interactions, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, totalEnd), totalEnd, itemSpacing, attributed.retainedBytes)
@@ -915,7 +915,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     private data class AttributedBlock(val text: SpannableString, val atoms: List<PreparedAtomSpec>, val semanticRanges: List<PreparedSemanticRange>, val retainedBytes: Long)
     private sealed interface PreparedSemanticRange { val start: Int; val end: Int
         data class Link(override val start: Int, override val end: Int, val href: String, val text: String) : PreparedSemanticRange
-        data class Mention(override val start: Int, override val end: Int, val docPos: Long, val label: String) : PreparedSemanticRange
+        data class Mention(override val start: Int, override val end: Int, val docPos: Long, val label: String, val attrsJson: String) : PreparedSemanticRange
     }
 
     private fun attributed(inlines: List<ViewerInline>, base: PreparedTextPaint, theme: PreparedProseTheme, warningSemanticGeneration: String): AttributedBlock {
@@ -968,7 +968,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                         labelBaselinePx = labelLayout.getLineBaseline(0),
                     )
                     spans += { value -> value.setSpan(AtomMetricSpan(width, ascent, metricDescent), start, start + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
-                    if (inline.nodeType == "mention") semanticRanges += PreparedSemanticRange.Mention(start, start + 1, inline.docPos, label)
+                    if (inline.nodeType == "mention") semanticRanges += PreparedSemanticRange.Mention(start, start + 1, inline.docPos, label, inline.attrsJson)
                 }
             }
         } }

@@ -232,6 +232,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (BOOL)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
               didActivateMention:(uint32_t)docPos
                             label:(NSString *)label
+                        attrsJSON:(NSString *)attrsJSON
 {
   const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
   if (!eventEmitter) return NO;
@@ -239,6 +240,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
       // Codegen's Double contract preserves the complete UInt32 domain in JS.
       .docPos = static_cast<double>(docPos),
       .label = std::string(label.UTF8String ?: ""),
+      .attrsJson = std::string(attrsJSON.UTF8String ?: ""),
   });
   return YES;
 }

@@ -77,7 +77,12 @@ final class PreparedProseAccessibilityTests: XCTestCase {
                             text: String(repeating: "linked ", count: 12),
                             marks: [FfiViewerMark(markType: "link", attrsJson: #"{"href":"https://example.test/wrapped"}"#)]
                         ),
-                        .atom(nodeType: "mention", docPos: UInt32.max, attrsJSON: "{}", label: "@Ada")
+                        .atom(
+                            nodeType: "mention",
+                            docPos: UInt32.max,
+                            attrsJSON: #"{"id":"user-9","profile":{"kind":"clinician"}}"#,
+                            label: "@Ada"
+                        )
                     ]
                 )
             ],
@@ -90,6 +95,10 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         XCTAssertEqual(layout.interactions.first?.href, "https://example.test/wrapped")
         XCTAssertGreaterThanOrEqual(layout.interactions.first?.rects.count ?? 0, 2)
         XCTAssertEqual(layout.interactions.last?.docPos, UInt32.max)
+        XCTAssertEqual(
+            layout.interactions.last?.attrsJSON,
+            #"{"id":"user-9","profile":{"kind":"clinician"}}"#
+        )
         XCTAssertEqual(layout.accessibilityNodes.map(\.role), [.link, .mention])
         XCTAssertEqual(layout.accessibilityNodes.last?.label, "@Ada")
         XCTAssertGreaterThan(layout.retainedBytes, document.retainedBytes)

@@ -177,6 +177,7 @@ class PreparedProseRenderingTest {
         assertEquals(2f, atom.strokeWidth)
         assertEquals(9f, atom.cornerRadius)
         assertNotNull(atom.labelLayout)
+        assertEquals(mention.attrsJson, layout.interactions.single { it.kind == PreparedProseInteraction.Kind.MENTION }.attrsJson)
     }
 
     @Test

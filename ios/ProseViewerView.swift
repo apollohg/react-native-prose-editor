@@ -1,9 +1,16 @@
 import UIKit
 
+/// A mention activated from an embedded prose viewer.
+public struct ProseViewerMention {
+    public let docPos: UInt32
+    public let label: String
+    public let attrs: [String: Any]
+}
+
 /// Interaction callbacks for an embedded prose viewer.
 public protocol ProseViewerInteractionDelegate: AnyObject {
     func proseViewer(_ view: ProseViewerView, didTapLink href: String, text: String)
-    func proseViewer(_ view: ProseViewerView, didTapMention docPos: UInt32, label: String)
+    func proseViewer(_ view: ProseViewerView, didTapMention mention: ProseViewerMention)
     func proseViewer(_ view: ProseViewerView, didFail error: ProseViewerError)
 }
 
@@ -99,10 +106,37 @@ public final class ProseViewerView: UIView {
             interactionDelegate?.proseViewer(self, didTapLink: href, text: interaction.visibleText)
             return true
         case .mention:
-            guard let docPos = interaction.docPos else { return false }
-            interactionDelegate?.proseViewer(self, didTapMention: docPos, label: interaction.label)
+            guard
+                let docPos = interaction.docPos,
+                let attrsJSON = interaction.attrsJSON,
+                let attrs = Self.parseMentionAttrs(attrsJSON)
+            else {
+                interactionDelegate?.proseViewer(
+                    self,
+                    didFail: .compiler(
+                        domain: "viewer",
+                        code: "INVALID_MENTION_ATTRIBUTES",
+                        message: "The prepared mention attributes are not a JSON object."
+                    )
+                )
+                return false
+            }
+            interactionDelegate?.proseViewer(
+                self,
+                didTapMention: ProseViewerMention(docPos: docPos, label: interaction.label, attrs: attrs)
+            )
             return true
         }
+    }
+
+    private static func parseMentionAttrs(_ json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    @discardableResult
+    internal func activatePreparedInteractionForTesting(_ interaction: PreparedProseInteraction) -> Bool {
+        activate(interaction)
     }
 
     private func installPreparedLayout(_ layout: PreparedProseLayout?) {

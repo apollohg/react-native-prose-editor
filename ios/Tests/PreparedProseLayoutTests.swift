@@ -59,6 +59,52 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.layoutPreparationCount, 2)
     }
 
+    func testMentionActivationPreservesAttributesAndRejectsANonObjectRoot() throws {
+        let viewer = ProseViewerView(layoutRegistry: makeRegistry { document, key, width, scale in
+            try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        })
+        let delegate = FailureRecordingDelegate()
+        viewer.interactionDelegate = delegate
+        let interaction = PreparedProseInteraction(
+            kind: .mention,
+            rects: [CGRect(x: 0, y: 0, width: 20, height: 20)],
+            href: nil,
+            visibleText: "@alice",
+            docPos: .max,
+            label: "@alice",
+            attrsJSON: #"{"id":"user-9","profile":{"kind":"clinician"}}"#
+        )
+
+        XCTAssertTrue(viewer.activatePreparedInteractionForTesting(interaction))
+        XCTAssertEqual(delegate.mentions.count, 1)
+        let mention = try XCTUnwrap(delegate.mentions.first)
+        XCTAssertEqual(mention.docPos, UInt32.max)
+        XCTAssertEqual(mention.label, "@alice")
+        XCTAssertEqual(mention.attrs["id"] as? String, "user-9")
+        XCTAssertEqual(
+            (mention.attrs["profile"] as? [String: Any])?["kind"] as? String,
+            "clinician"
+        )
+
+        let invalid = PreparedProseInteraction(
+            kind: .mention,
+            rects: interaction.rects,
+            href: nil,
+            visibleText: "@invalid",
+            docPos: 9,
+            label: "@invalid",
+            attrsJSON: "[]"
+        )
+        XCTAssertFalse(viewer.activatePreparedInteractionForTesting(invalid))
+        XCTAssertEqual(delegate.mentions.count, 1)
+        XCTAssertEqual(delegate.errors.last?.code, "INVALID_MENTION_ATTRIBUTES")
+    }
+
     func testMalformedInputProducesOneZeroHeightErrorArtifactAndOneDelegateEvent() {
         let registry = PreparedProseLayoutRegistry(
             compile: { _ in
@@ -2341,9 +2387,12 @@ final class PreparedProseLayoutTests: XCTestCase {
 
     private final class FailureRecordingDelegate: ProseViewerInteractionDelegate {
         var errors: [ProseViewerError] = []
+        var mentions: [ProseViewerMention] = []
 
         func proseViewer(_ view: ProseViewerView, didTapLink href: String, text: String) {}
-        func proseViewer(_ view: ProseViewerView, didTapMention docPos: UInt32, label: String) {}
+        func proseViewer(_ view: ProseViewerView, didTapMention mention: ProseViewerMention) {
+            mentions.append(mention)
+        }
         func proseViewer(_ view: ProseViewerView, didFail error: ProseViewerError) {
             errors.append(error)
         }

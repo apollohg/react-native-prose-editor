@@ -29,7 +29,7 @@ internal enum PreparedProseImagePixelMapAccounting {
 
 @objc public protocol PreparedProseDrawingViewInteractionDelegate: AnyObject {
     func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateLink href: String, text: String) -> Bool
-    func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateMention docPos: UInt32, label: String) -> Bool
+    func preparedProseDrawingView(_ view: PreparedProseDrawingView, didActivateMention docPos: UInt32, label: String, attrsJSON: String) -> Bool
 }
 
 /// A rendering-only view: it consumes already prepared Core Text lines.
@@ -223,8 +223,13 @@ public final class PreparedProseDrawingView: UIView {
             guard linkInteractionsEnabled, let href = interaction.href else { return false }
             return interactionDelegate?.preparedProseDrawingView(self, didActivateLink: href, text: interaction.visibleText) ?? false
         case .mention:
-            guard let docPos = interaction.docPos else { return false }
-            return interactionDelegate?.preparedProseDrawingView(self, didActivateMention: docPos, label: interaction.label) ?? false
+            guard let docPos = interaction.docPos, let attrsJSON = interaction.attrsJSON else { return false }
+            return interactionDelegate?.preparedProseDrawingView(
+                self,
+                didActivateMention: docPos,
+                label: interaction.label,
+                attrsJSON: attrsJSON
+            ) ?? false
         }
     }
 

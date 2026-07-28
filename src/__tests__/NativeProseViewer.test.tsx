@@ -191,7 +191,11 @@ describe('NativeProseViewer', () => {
             nativeEvent: { href: 'https://example.com', text: 'Example' },
         });
         fireEvent(nativeView, 'onPressMention', {
-            nativeEvent: { docPos: 4_294_967_295, label: '@alice' },
+            nativeEvent: {
+                docPos: 4_294_967_295,
+                label: '@alice',
+                attrsJson: '{"id":"user-9","profile":{"kind":"clinician"}}',
+            },
         });
         fireEvent(nativeView, 'onError', {
             nativeEvent: {
@@ -203,12 +207,40 @@ describe('NativeProseViewer', () => {
         });
 
         expect(onPressLink).toHaveBeenCalledWith({ href: 'https://example.com', text: 'Example' });
-        expect(onMentionPress).toHaveBeenCalledWith({ docPos: 4_294_967_295, label: '@alice' });
+        expect(onMentionPress).toHaveBeenCalledWith({
+            docPos: 4_294_967_295,
+            label: '@alice',
+            attrs: { id: 'user-9', profile: { kind: 'clinician' } },
+        });
         expect(onError).toHaveBeenCalledWith({
             domain: 'viewer',
             code: 'DOCUMENT_INVALID',
             message: 'Invalid document',
             fatal: true,
+        });
+    });
+
+    it('rejects non-object mention attributes without invoking the mention callback', () => {
+        const onMentionPress = jest.fn();
+        const onError = jest.fn();
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{ type: 'doc', content: [] }}
+                addons={{ mentions: { onPress: onMentionPress } }}
+                onError={onError}
+            />
+        );
+
+        fireEvent(getByTestId('prepared-prose-viewer'), 'onPressMention', {
+            nativeEvent: { docPos: 9, label: '@alice', attrsJson: '[]' },
+        });
+
+        expect(onMentionPress).not.toHaveBeenCalled();
+        expect(onError).toHaveBeenCalledWith({
+            domain: 'viewer',
+            code: 'INVALID_MENTION_ATTRIBUTES',
+            message: 'The prepared mention attributes are not a JSON object.',
+            fatal: false,
         });
     });
 

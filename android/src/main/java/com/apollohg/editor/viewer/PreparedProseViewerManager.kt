@@ -266,8 +266,9 @@ internal class PreparedProseViewerManager :
                     putString("href", interaction.href)
                     putString("text", interaction.visibleText)
                 } else {
-                    putDouble("docPos", (interaction.docPos ?: 0L).toDouble())
+                    putDouble("docPos", (interaction.docPos ?: return false).toDouble())
                     putString("label", interaction.label)
+                    putString("attrsJson", interaction.attrsJson ?: return false)
                 }
             },
         )

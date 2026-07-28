@@ -239,11 +239,11 @@ private struct PreparedAttributedBlock {
 
 private enum PreparedSemanticRange {
     case link(range: NSRange, href: String, text: String)
-    case mention(range: NSRange, docPos: UInt32, label: String)
+    case mention(range: NSRange, docPos: UInt32, label: String, attrsJSON: String)
 
     var range: NSRange {
         switch self {
-        case let .link(range, _, _), let .mention(range, _, _): range
+        case let .link(range, _, _), let .mention(range, _, _, _): range
         }
     }
 }
@@ -547,9 +547,9 @@ final class CoreTextProseLayoutEngine {
             guard !rects.isEmpty else { return nil }
             switch semantic {
             case let .link(_, href, text):
-                return PreparedProseInteraction(kind: .link, rects: rects, href: href, visibleText: text, docPos: nil, label: text)
-            case let .mention(_, docPos, label):
-                return PreparedProseInteraction(kind: .mention, rects: rects, href: nil, visibleText: label, docPos: docPos, label: label)
+                return PreparedProseInteraction(kind: .link, rects: rects, href: href, visibleText: text, docPos: nil, label: text, attrsJSON: nil)
+            case let .mention(_, docPos, label, attrsJSON):
+                return PreparedProseInteraction(kind: .mention, rects: rects, href: nil, visibleText: label, docPos: docPos, label: label, attrsJSON: attrsJSON)
             }
         }
         return (
@@ -625,7 +625,7 @@ final class CoreTextProseLayoutEngine {
                     )
                 )
                 if nodeType == "mention" {
-                    semanticRanges.append(.mention(range: range, docPos: docPos, label: displayLabel))
+                    semanticRanges.append(.mention(range: range, docPos: docPos, label: displayLabel, attrsJSON: attrsJSON))
                 }
             }
         }

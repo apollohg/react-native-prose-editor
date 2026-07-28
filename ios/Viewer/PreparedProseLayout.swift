@@ -221,9 +221,11 @@ struct PreparedProseInteraction: Hashable {
     let visibleText: String
     let docPos: UInt32?
     let label: String
+    let attrsJSON: String?
 
     var estimatedRetainedBytes: Int {
-        144 + rects.count * 64 + (href?.utf8.count ?? 0) * 2 + visibleText.utf8.count * 2 + label.utf8.count * 2
+        144 + rects.count * 64 + (href?.utf8.count ?? 0) * 2 + visibleText.utf8.count * 2
+            + label.utf8.count * 2 + (attrsJSON?.utf8.count ?? 0)
     }
 }
 

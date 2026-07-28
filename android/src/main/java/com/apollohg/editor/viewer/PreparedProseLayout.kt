@@ -87,9 +87,10 @@ internal data class PreparedProseInteraction(
     /** Kept as Long so the complete unsigned Rust u32 domain is lossless. */
     val docPos: Long? = null,
     val label: String,
+    val attrsJson: String? = null,
 ) {
     enum class Kind { LINK, MENTION }
-    val retainedBytes: Long get() = 144L + rects.size * 32L + (href?.length ?: 0) * 2L + visibleText.length * 2L + label.length * 2L
+    val retainedBytes: Long get() = 144L + rects.size * 32L + (href?.length ?: 0) * 2L + visibleText.length * 2L + label.length * 2L + (attrsJson?.length ?: 0) * 2L
 }
 
 internal data class PreparedProseAccessibilityNode(

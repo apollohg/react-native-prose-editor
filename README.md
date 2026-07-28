@@ -230,7 +230,15 @@ viewer adapter, render-ops bridge, height callback, or JavaScript height cache.
   contentJSON={{ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ready once measured.' }] }] }}
   schema={prosemirrorSchema}
   renderImages={false}
-  addons={{ mentions: { trigger: '@', prefix: '@', onPress: ({ label }) => openProfile(label) } }}
+  addons={{
+    mentions: {
+      trigger: '@',
+      prefix: '@',
+      onPress: ({ attrs }) => {
+        if (typeof attrs.id === 'string') openProfile(attrs.id);
+      },
+    },
+  }}
   onError={(error) => reportViewerError(error)}
 />
 ```
@@ -353,6 +361,24 @@ work and releases the retained artifact while preserving the interaction
 delegate/listener. `ProseViewerInteractionDelegate` and
 `ProseViewerInteractionListener` receive link, mention, and one-per-generation
 error callbacks. UIKit uses points; Android uses pixels.
+
+Mention callbacks preserve every admitted mention attribute. The package does
+not prescribe an identifier key: React Native reads `event.attrs`, UIKit reads
+`mention.attrs`, and Android reads `mention.attrs`. For example:
+
+```swift
+func proseViewer(_ view: ProseViewerView, didTapMention mention: ProseViewerMention) {
+    guard let id = mention.attrs["id"] as? String else { return }
+    openProfile(id)
+}
+```
+
+```kotlin
+override fun onMentionTap(view: ProseViewerView, mention: ProseViewerMention) {
+    val id = mention.attrs["id"] as? String ?: return
+    openProfile(id)
+}
+```
 
 ## Customization
 

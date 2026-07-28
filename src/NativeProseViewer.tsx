@@ -28,6 +28,7 @@ interface NativeProseViewerLinkPressNativeEvent {
 interface NativeProseViewerMentionPressNativeEvent {
     docPos: number;
     label: string;
+    attrsJson: string;
 }
 
 export interface NativeProseViewerErrorEvent {
@@ -40,6 +41,7 @@ export interface NativeProseViewerErrorEvent {
 export interface NativeProseViewerMentionPressEvent {
     docPos: number;
     label: string;
+    attrs: Record<string, unknown>;
 }
 
 export interface NativeProseViewerLinkPressEvent {
@@ -183,9 +185,25 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
     );
     const handlePressMention = useCallback(
         (event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>) => {
-            mentions?.onPress?.(event.nativeEvent);
+            const { docPos, label, attrsJson } = event.nativeEvent;
+            let attrs: unknown;
+            try {
+                attrs = JSON.parse(attrsJson);
+            } catch {
+                attrs = null;
+            }
+            if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) {
+                onError?.({
+                    domain: 'viewer',
+                    code: 'INVALID_MENTION_ATTRIBUTES',
+                    message: 'The prepared mention attributes are not a JSON object.',
+                    fatal: false,
+                });
+                return;
+            }
+            mentions?.onPress?.({ docPos, label, attrs: attrs as Record<string, unknown> });
         },
-        [mentions]
+        [mentions, onError]
     );
     const handleError = useCallback(
         (event: NativeSyntheticEvent<NativeProseViewerErrorEvent>) => {

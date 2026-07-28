@@ -24,6 +24,8 @@ import com.apollohg.editor.viewer.ViewerAttachmentRevisionState
 import com.apollohg.editor.viewer.ViewerFontEnvironment
 import com.apollohg.editor.viewer.ViewerImageAttachment
 import com.apollohg.editor.viewer.ViewerImagePipeline
+import org.json.JSONArray
+import org.json.JSONObject
 
 sealed interface ProseViewerSource {
     val value: String
@@ -52,6 +54,7 @@ value class ProseViewerErrorCode(val value: String) {
         val INVALID_WIDTH = ProseViewerErrorCode("INVALID_WIDTH")
         val LAYOUT_FAILED = ProseViewerErrorCode("LAYOUT_FAILED")
         val RESOURCE_LOAD_FAILED = ProseViewerErrorCode("RESOURCE_LOAD_FAILED")
+        val INVALID_MENTION_ATTRIBUTES = ProseViewerErrorCode("INVALID_MENTION_ATTRIBUTES")
     }
 }
 
@@ -81,16 +84,23 @@ data class ProseViewerError(
     }
 }
 
+/** A mention activated from an embedded prose viewer. */
+data class ProseViewerMention(
+    val docPos: Long,
+    val label: String,
+    val attrs: Map<String, Any?>,
+)
+
 /** Interaction callbacks for an embedded Android prose viewer. */
 interface ProseViewerInteractionListener {
     fun onLinkTap(view: ProseViewerView, href: String, text: String)
-    fun onMentionTap(view: ProseViewerView, docPos: Long, label: String)
+    fun onMentionTap(view: ProseViewerView, mention: ProseViewerMention)
     fun onViewerError(view: ProseViewerView, error: ProseViewerError) = Unit
 }
 
 abstract class ProseViewerInteractionListenerAdapter : ProseViewerInteractionListener {
     override fun onLinkTap(view: ProseViewerView, href: String, text: String) = Unit
-    override fun onMentionTap(view: ProseViewerView, docPos: Long, label: String) = Unit
+    override fun onMentionTap(view: ProseViewerView, mention: ProseViewerMention) = Unit
 }
 
 /**
@@ -434,20 +444,56 @@ class ProseViewerView @JvmOverloads constructor(
         if (value > 0 && total > Long.MAX_VALUE - value) Long.MAX_VALUE else total + value
     }
 
-    private fun activatePreparedInteraction(interaction: PreparedProseInteraction): Boolean = when (interaction.kind) {
-        PreparedProseInteraction.Kind.LINK -> {
-            val href = interaction.href ?: return false
-            if (!linkTapsEnabled) false else {
-                onLinkTapForTesting?.invoke() ?: interactionListener?.onLinkTap(this, href, interaction.visibleText)
+    private fun activatePreparedInteraction(interaction: PreparedProseInteraction): Boolean {
+        return when (interaction.kind) {
+            PreparedProseInteraction.Kind.LINK -> {
+                val href = interaction.href ?: return false
+                if (!linkTapsEnabled) false else {
+                    onLinkTapForTesting?.invoke() ?: interactionListener?.onLinkTap(this, href, interaction.visibleText)
+                    true
+                }
+            }
+            PreparedProseInteraction.Kind.MENTION -> {
+                val docPos = interaction.docPos ?: return false
+                val attrs = interaction.attrsJson?.let(::parseMentionAttrs)
+                if (attrs == null) {
+                    interactionListener?.onViewerError(
+                        this,
+                        ProseViewerError.compiler(
+                            "viewer",
+                            ProseViewerErrorCode.INVALID_MENTION_ATTRIBUTES.value,
+                            "The prepared mention attributes are not a JSON object.",
+                        ),
+                    )
+                    return false
+                }
+                onMentionTapForTesting?.invoke()
+                    ?: interactionListener?.onMentionTap(this, ProseViewerMention(docPos, interaction.label, attrs))
                 true
             }
         }
-        PreparedProseInteraction.Kind.MENTION -> {
-            val docPos = interaction.docPos ?: return false
-            onMentionTapForTesting?.invoke() ?: interactionListener?.onMentionTap(this, docPos, interaction.label)
-            true
-        }
     }
+
+    private fun parseMentionAttrs(json: String): Map<String, Any?>? = runCatching {
+        jsonObjectToMap(JSONObject(json))
+    }.getOrNull()
+
+    private fun jsonObjectToMap(value: JSONObject): Map<String, Any?> = buildMap {
+        value.keys().forEach { key -> put(key, jsonValue(value.get(key))) }
+    }
+
+    private fun jsonArrayToList(value: JSONArray): List<Any?> =
+        List(value.length()) { index -> jsonValue(value.get(index)) }
+
+    private fun jsonValue(value: Any): Any? = when (value) {
+        JSONObject.NULL -> null
+        is JSONObject -> jsonObjectToMap(value)
+        is JSONArray -> jsonArrayToList(value)
+        else -> value
+    }
+
+    internal fun activatePreparedInteractionForTesting(interaction: PreparedProseInteraction): Boolean =
+        activatePreparedInteraction(interaction)
 
     override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
         super.onInitializeAccessibilityNodeInfo(info)
