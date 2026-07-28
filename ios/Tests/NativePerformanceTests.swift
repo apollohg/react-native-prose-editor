@@ -498,6 +498,27 @@ final class NativePerformanceTests: XCTestCase {
         XCTAssertEqual(traversal.warm.cacheMisses, 0)
         XCTAssertEqual(traversal.renderedHeight, traversal.preparedArtifactHeight, accuracy: 0.5)
 
+        let imagesDisabledCompletion = expectation(description: "images-disabled short window revisits its leading cell")
+        var imagesDisabledResult: Result<[PreparedProseCollectionHarness.WindowTraversalResult], Error>?
+        harness.traverseWindows([shortWindow], phase: .imagesDisabled, imagesEnabled: false) { traversal in
+            imagesDisabledResult = traversal
+            imagesDisabledCompletion.fulfill()
+        }
+        wait(for: [imagesDisabledCompletion], timeout: 10)
+
+        let imagesDisabledTraversals = try XCTUnwrap(imagesDisabledResult).get()
+        let imagesDisabledTraversal = try XCTUnwrap(imagesDisabledTraversals.first)
+        XCTAssertEqual(imagesDisabledTraversal.renderedHeight, imagesDisabledTraversal.preparedArtifactHeight, accuracy: 0.5)
+
+        let export = try JSONDecoder().decode(
+            PreparedProseBenchmarkExportContract.self,
+            from: Data(PreparedProseInstrumentation.exportJSON().utf8)
+        )
+        let shortWindowEvidence = export.windowEvidence.filter { $0.windowId == shortWindow.id }
+        XCTAssertEqual(shortWindowEvidence.filter { $0.phase == "cold" }.count, 1)
+        XCTAssertEqual(shortWindowEvidence.filter { $0.phase == "warm" }.count, 1)
+        XCTAssertEqual(shortWindowEvidence.filter { $0.phase == "imagesDisabled" }.count, 2)
+
         let source = try String(contentsOfFile: #filePath, encoding: .utf8)
         let start = try XCTUnwrap(source.range(of: "private final class PreparedProseCollectionHarness"))
         let end = try XCTUnwrap(source.range(of: "private enum PreparedProsePerformanceGates"))
@@ -637,10 +658,15 @@ private struct PreparedProseBenchmarkExportContract: Decodable {
         let warm: Phase
         let imagesDisabled: Phase
     }
+    struct WindowEvidence: Decodable {
+        let windowId: String
+        let phase: String
+    }
     let schemaVersion: Int
     let nominalFramePeriodNanos: UInt64
     let singleTickToleranceNanos: UInt64
     let phaseSamples: PhaseSamples
+    let windowEvidence: [WindowEvidence]
     let preResetSnapshot: CacheSnapshot
     let postResetSnapshot: CacheSnapshot
 }
@@ -849,7 +875,8 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
             layoutCount: counters.layoutCount - traversal.counterBaseline.layoutCount,
             cacheMisses: counters.cacheMisses - traversal.counterBaseline.cacheMisses
         )
-        let phase: PreparedProseInstrumentation.TraversalPhase = traversal.direction == .forward ? traversal.phase : .warm
+        let phase: PreparedProseInstrumentation.TraversalPhase =
+            traversal.direction == .reverse && traversal.phase == .cold ? .warm : traversal.phase
         PreparedProseInstrumentation.recordWindow(
             windowId: window.id,
             entryIds: traversal.direction == .forward ? window.primeIds : window.warmIds,
@@ -861,11 +888,11 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         )
         PreparedProseInstrumentation.endPhase()
 
-        if traversal.direction == .forward, traversal.phase == .cold {
+        if traversal.direction == .forward {
             traversal.prime = result
             traversal.direction = .reverse
             self.traversal = traversal
-            beginWindowPass(phase: .warm)
+            beginWindowPass(phase: traversal.phase == .cold ? .warm : traversal.phase)
             return
         }
 
