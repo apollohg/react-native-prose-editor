@@ -13,5 +13,16 @@
   "drawEvidence": {
     "phase": "warm",
     "requirement": "end phase only after the final settled frame records viewer draw evidence"
+  },
+  "windowContract": {
+    "windowCount": 27,
+    "maxEntriesByCategory": {"short": 64, "medium": 16, "image": 8, "very-long": 1},
+    "requiredCategoryCounts": {"short": 900, "medium": 80, "image": 15, "very-long": 5}
+  },
+  "frameClassification": {
+    "nominalFramePeriodNanos": 16666667,
+    "singleTickToleranceNanos": 1000000,
+    "oneTickDeltasNanos": [16668166, 17294291],
+    "delayedDeltaNanos": 40398333
   }
 }
