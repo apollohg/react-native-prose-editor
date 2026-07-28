@@ -81,7 +81,9 @@ internal object PreparedProsePerformanceGates {
         val phases = export.getJSONObject("phaseSamples")
         val cold = phases.getJSONObject("cold")
         val warm = phases.getJSONObject("warm")
-        val imagesDisabled = phases.getJSONObject("images_disabled")
+        val imagesDisabled = phases.getJSONObject("imagesDisabled")
+        val nominalFramePeriodNanos = export.getLong("nominalFramePeriodNanos")
+        val singleTickToleranceNanos = export.getLong("singleTickToleranceNanos")
         val combined = cold.getJSONArray("combinedCompileLayoutNanos").longs()
         val lookup = cold.getJSONArray("cacheLookupNanos").longs()
         val draw = cold.getJSONArray("drawNanos").longs()
@@ -92,20 +94,46 @@ internal object PreparedProsePerformanceGates {
         check(percentile(combined, .95) < 4 * NS_PER_MS)
         check(percentile(lookup, .99) < 100_000L)
         check(percentile(draw, .95) < NS_PER_MS)
+        check(export.getInt("schemaVersion") == 2)
         check(export.getString("percentileDefinition") == "nearest-rank: sorted[ceil(p*n)-1]")
         listOf(cold, warm, imagesDisabled).forEach { phase ->
             check(phase.getInt("drawCount") > 0) { "phase must contain actual viewer draw evidence" }
-            val frames = phase.getJSONArray("frameNanos").longs()
-            requireNonEmpty(frames, "${phase} frame")
-            check(frames.count { it <= 16_670_000L }.toDouble() / frames.size >= .99)
+            val rawFrameDeltas = phase.getJSONArray("rawFrameDeltasNanos").longs()
+            requireNonEmpty(rawFrameDeltas, "${phase} raw frame")
+            check(
+                rawFrameDeltas.count {
+                    it <= Math.addExact(nominalFramePeriodNanos, singleTickToleranceNanos)
+                }.toDouble() / rawFrameDeltas.size >= .99
+            )
         }
-        val warmViewerFrames = warm.getJSONArray("viewerFrameNanos").longs()
-        requireNonEmpty(warmViewerFrames, "warm viewer-attributed frame")
-        check(warmViewerFrames.max() <= 33_300_000L)
-        check(export.getJSONObject("retainedBytes").optLong("unmounted_layout") <= 32L * 1024L * 1024L)
+        val warmViewerCausedIntervals = warm.getJSONArray("viewerCausedDelayedIntervals").objects()
+        check(warmViewerCausedIntervals.all { it.getBoolean("viewerCaused") })
+        check((warmViewerCausedIntervals.maxOfOrNull { it.getLong("rawDeltaNanos") } ?: 0L) <= 33_300_000L)
+        check(imagesDisabled.getInt("imageRequestCount") == 0)
+        check(imagesDisabled.getInt("imageMetadataCount") == 0)
+        check(imagesDisabled.getInt("imageDecodeCount") == 0)
+        val preReset = export.getJSONObject("preResetSnapshot")
+        val postReset = export.getJSONObject("postResetSnapshot")
+        check(preReset.getLong("unmountedHighWaterBytes") <= 32L * 1024L * 1024L)
+        check(postReset.getLong("unmountedCurrentBytes") == 0L)
+        check(postReset.getLong("unmountedCurrentResidentCount") == 0L)
+        check(postReset.getLong("compiledCurrentBytes") == 0L)
+        check(postReset.getLong("compiledCurrentResidentCount") == 0L)
+        val warmWindows = export.getJSONArray("windowEvidence").objects().filter {
+            it.getString("phase") == "warm"
+        }
+        check(warmWindows.isNotEmpty()) { "expected warm-window evidence" }
+        warmWindows.forEach { window ->
+            check(window.getInt("compileCount") == 0)
+            check(window.getInt("layoutCount") == 0)
+            check(window.getInt("cacheMisses") == 0)
+            check(window.getInt("residentKeyCount") == window.getJSONArray("entryIds").length())
+            check(window.getJSONObject("cache").getLong("unmountedHighWaterBytes") <= 32L * 1024L * 1024L)
+        }
         check(export.optInt("duplicatePublications") == 0)
     }
     private fun JSONArray.longs() = List(length()) { getLong(it) }
+    private fun JSONArray.objects() = List(length()) { getJSONObject(it) }
     private fun requireNonEmpty(values: List<Long>, name: String) = check(values.isNotEmpty()) { "$name evidence must be nonempty" }
     /** Nearest rank shared with iOS: sorted[ceil(p * n) - 1]. */
     private fun percentile(values: List<Long>, percentile: Double): Long = values.sorted()[(kotlin.math.ceil(values.size * percentile).toInt() - 1).coerceAtLeast(0)]
