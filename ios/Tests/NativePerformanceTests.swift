@@ -912,8 +912,7 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         do {
             try cell.configure(
                 source: source,
-                configuration: activeViewerConfiguration,
-                fittingWidth: collectionView.bounds.width
+                configuration: activeViewerConfiguration
             )
         } catch {
             XCTFail("invalid benchmark configuration: \(error)")
@@ -925,7 +924,6 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
 private final class PreparedProseCollectionCell: UICollectionViewCell {
     private let viewer = ProseViewerView()
     private(set) var preparedArtifactHeight: CGFloat = 0
-    private var fittingWidth: CGFloat = 0
     var hasPreparedArtifact: Bool { preparedArtifactHeight > 0 }
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -940,16 +938,15 @@ private final class PreparedProseCollectionCell: UICollectionViewCell {
     }
     required init?(coder: NSCoder) { fatalError("PreparedProseCollectionCell is programmatic") }
     override func prepareForReuse() { super.prepareForReuse(); preparedArtifactHeight = 0; viewer.prepareForReuse() }
-    func configure(source: String, configuration: ProseViewerConfiguration, fittingWidth: CGFloat) throws {
+    func configure(source: String, configuration: ProseViewerConfiguration) throws {
         guard viewer.apply(source: .json(source), configuration: configuration) else {
             throw NSError(domain: "PreparedProseCollectionCell", code: 1, userInfo: [NSLocalizedDescriptionKey: "benchmark source was rejected"])
         }
-        self.fittingWidth = max(1, fittingWidth)
         setNeedsLayout()
     }
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
         let fitted = attributes.copy() as! UICollectionViewLayoutAttributes
-        let width = max(1, fittingWidth)
+        let width = max(1, attributes.size.width)
         preparedArtifactHeight = max(1, ceil(viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
         fitted.size = CGSize(width: width, height: preparedArtifactHeight)
         return fitted

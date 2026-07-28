@@ -715,6 +715,81 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.layoutRetainedBytesForTesting, 2)
     }
 
+    func testBenchmarkCensusIncludesOnlyObservedLiveArtifacts() throws {
+        let cache = PreparedProseLayoutCache(byteBudget: 1)
+        func key(_ name: String) -> ProseLayoutKey {
+            ProseLayoutKey(
+                semanticKey: name,
+                widthPixels: 320,
+                themeDigest: "theme",
+                nativeFontRevision: 0,
+                fontEnvironmentRevision: 0,
+                displayScale: 2,
+                attachmentRevision: 0,
+                generationIdentity: name,
+                semanticGenerationIdentity: name
+            )
+        }
+        func layout(_ key: ProseLayoutKey, bytes: Int) -> PreparedProseLayout {
+            PreparedProseLayout(
+                key: key,
+                size: CGSize(width: 160, height: 20),
+                blocks: [],
+                retainedBytes: bytes
+            )
+        }
+
+        let directKey = key("direct")
+        let pendingKey = key("pending")
+        let mountedKey = key("mounted")
+        let completedKey = key("completed")
+        let replacementKey = key("replacement")
+        let oversizedKey = key("oversized")
+        let rejectedKey = key("rejected")
+        let surface = FabricSurfaceToken(surfaceId: 88, componentTag: 880)
+
+        cache.registerDirectMount("benchmark-direct", layout: layout(directKey, bytes: 2))
+        _ = try cache.value(for: pendingKey, fabricSurface: surface, fabricLeaseHandle: 1) {
+            layout(pendingKey, bytes: 2)
+        }
+        _ = try cache.value(for: mountedKey, fabricSurface: surface, fabricLeaseHandle: 2) {
+            layout(mountedKey, bytes: 2)
+        }
+        XCTAssertTrue(cache.acquireForFabricMount(
+            surface: surface,
+            generationIdentity: mountedKey.generationIdentity,
+            widthPixels: mountedKey.widthPixels,
+            displayScale: 2,
+            leaseHandle: 2
+        ) != nil)
+        _ = try cache.value(for: completedKey) { layout(completedKey, bytes: 1) }
+
+        cache.beginBenchmarkCensus()
+        _ = try cache.value(for: directKey) { XCTFail("direct owner should satisfy the lookup"); return layout(directKey, bytes: 2) }
+        _ = try cache.value(for: pendingKey, fabricSurface: surface, fabricLeaseHandle: 1) { XCTFail("pending owner should satisfy the lookup"); return layout(pendingKey, bytes: 2) }
+        _ = try cache.value(for: mountedKey, fabricSurface: surface, fabricLeaseHandle: 2) { XCTFail("mounted owner should satisfy the lookup"); return layout(mountedKey, bytes: 2) }
+        _ = try cache.value(for: completedKey) { XCTFail("completed entry should satisfy the lookup"); return layout(completedKey, bytes: 1) }
+        XCTAssertThrowsError(try cache.value(for: rejectedKey) { throw NSError(domain: "benchmark", code: 1) })
+        XCTAssertEqual(
+            Set(cache.endBenchmarkCensus()),
+            Set([directKey, pendingKey, mountedKey, completedKey])
+        )
+
+        // Re-observe the completed entry, then evict it. The replacement is
+        // live; the old key, a rejected lookup, and an oversized unowned
+        // artifact are not.
+        cache.beginBenchmarkCensus()
+        _ = try cache.value(for: completedKey) { XCTFail("completed entry should satisfy the lookup"); return layout(completedKey, bytes: 1) }
+        _ = try cache.value(for: replacementKey) { layout(replacementKey, bytes: 1) }
+        XCTAssertThrowsError(try cache.value(for: rejectedKey) { throw NSError(domain: "benchmark", code: 2) })
+        _ = try cache.value(for: oversizedKey) { layout(oversizedKey, bytes: 2) }
+        XCTAssertEqual(
+            Set(cache.endBenchmarkCensus()),
+            Set([replacementKey]),
+            "the observed completed key was evicted; rejected and oversized unowned lookups never became resident"
+        )
+    }
+
     func testExactPendingLeasesSurviveBytePressureUntilTheirOwnersAcquire() throws {
         let cache = PreparedProseLayoutCache(byteBudget: 1)
         let key = ProseLayoutKey(

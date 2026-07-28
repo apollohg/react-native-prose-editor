@@ -312,7 +312,17 @@ final class PreparedProseLayoutCache {
     func endBenchmarkCensus() -> [ProseLayoutKey] {
         condition.lock()
         defer { condition.unlock() }
-        let keys = benchmarkCensusKeys.map(Array.init) ?? []
+        // A census records keys observed during a benchmark pass, but it is
+        // evidence of resident artifacts only. A lookup can fail, produce an
+        // oversized unowned artifact, or evict an earlier completed entry;
+        // none of those keys is resident when the pass ends. Pending and
+        // mounted Fabric leases plus direct UIKit mounts are genuine live
+        // owners even when the disposable completed LRU no longer has them.
+        let liveKeys = Set(completed.keys)
+            .union(pendingLeases.values.map(\.key))
+            .union(mountedLeases.values.map(\.key))
+            .union(directMounted.values.map(\.key))
+        let keys = benchmarkCensusKeys.map { Array($0.intersection(liveKeys)) } ?? []
         benchmarkCensusKeys = nil
         return keys
     }
