@@ -567,7 +567,7 @@ type ScrollCommandToken = {
     dispatched: boolean;
     momentumBegan: boolean;
     consumed: boolean;
-    startOffsetY: number | null;
+    dispatchOffsetY: number;
 };
 
 const preparedViewerCorpus = performanceCorpus as PerformanceCorpus;
@@ -600,6 +600,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
     const activeScrollCommandRef = useRef<ScrollCommandToken | null>(null);
     const scrollCommandWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const visibleEntryIdsRef = useRef<Set<string>>(new Set());
+    const latestNativeContentOffsetYRef = useRef(0);
     useEffect(() => {
         benchmarkBridge.preparedProseBenchmarkBegin();
     }, [benchmarkBridge]);
@@ -724,6 +725,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             }
 
             clearScrollCommandWatchdog();
+            const dispatchOffsetY = latestNativeContentOffsetYRef.current;
             const command: ScrollCommandToken = {
                 runId,
                 windowIndex: commandWindowIndex,
@@ -733,7 +735,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 dispatched: true,
                 momentumBegan: false,
                 consumed: false,
-                startOffsetY: null,
+                dispatchOffsetY,
             };
             activeScrollCommandRef.current = command;
             scrollCommandWatchdogRef.current = setTimeout(() => {
@@ -787,22 +789,27 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
         []
     );
 
-    const handleMomentumScrollBegin = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+        latestNativeContentOffsetYRef.current = event.nativeEvent.contentOffset.y;
+    }, []);
+
+    const handleMomentumScrollBegin = useCallback(() => {
         const command = activeScrollCommandRef.current;
         if (
             !traversalInFlightRef.current ||
             command == null ||
             activeRunIdRef.current !== command.runId ||
             !command.dispatched ||
+            command.momentumBegan ||
             command.consumed
         ) {
             return;
         }
         command.momentumBegan = true;
-        command.startOffsetY = event.nativeEvent.contentOffset.y;
     }, []);
 
     const handleMomentumScrollEnd = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+        latestNativeContentOffsetYRef.current = event.nativeEvent.contentOffset.y;
         const command = activeScrollCommandRef.current;
         if (
             !traversalInFlightRef.current ||
@@ -814,14 +821,12 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
         ) {
             return;
         }
-        const startOffsetY = command.startOffsetY;
-        const offsetDelta = event.nativeEvent.contentOffset.y - (startOffsetY ?? 0);
+        const offsetDelta = event.nativeEvent.contentOffset.y - command.dispatchOffsetY;
         const movedInExpectedDirection =
             command.expectedDirection === 'forward'
                 ? offsetDelta > SCROLL_COMMAND_MIN_OFFSET_DELTA
                 : offsetDelta < -SCROLL_COMMAND_MIN_OFFSET_DELTA;
         if (
-            startOffsetY == null ||
             !movedInExpectedDirection ||
             !visibleEntryIdsRef.current.has(command.expectedTerminalEntryId)
         ) {
@@ -894,6 +899,7 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
                 initialNumToRender={12}
                 maxToRenderPerBatch={12}
                 windowSize={9}
+                onScroll={handleScroll}
                 onViewableItemsChanged={handleViewableItemsChanged}
                 onMomentumScrollBegin={handleMomentumScrollBegin}
                 onMomentumScrollEnd={handleMomentumScrollEnd}

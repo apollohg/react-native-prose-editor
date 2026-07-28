@@ -415,8 +415,22 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(androidHarness).toContain('PreparedProseInstrumentation.endPhase()');
         expect(example).toContain('preparedProseBenchmarkBeginPhase');
         expect(example).toContain('preparedProseBenchmarkEndPhase');
-        expect(example).toContain('scrollToOffset({ offset, animated: false })');
-        expect(example).toContain('await waitForDrawSettle()');
+        expect(example).toContain('preparedViewerCorpus.warmWindows');
+        expect(example).toContain('scrollToEnd({ animated: true })');
+        expect(example).toContain('scrollToIndex({ index: 0, animated: true })');
+        expect(example).toContain('dispatchOffsetY');
+        expect(example).toContain('latestNativeContentOffsetYRef');
+        expect(example).toContain('onScroll={handleScroll}');
+        [
+            'scrollToOffset',
+            'waitForDrawSettle',
+            'onContentSizeChange',
+            'contentHeightRef',
+            'measureInWindow',
+            'heightCache',
+            'containerWidth',
+            'getItemLayout',
+        ].forEach((removedPath) => expect(example).not.toContain(removedPath));
         expect(example).toContain('Reset is intentionally not a traversal phase');
         expect(fixtures.preparation.requirement).toContain('prepare once');
         expect(fixtures.differingHeights.requirement).toContain('taller');

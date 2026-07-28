@@ -39,7 +39,8 @@ describe('NativeProseViewer', () => {
             'consumed',
             'expectedDirection',
             'expectedTerminalEntryId',
-            'startOffsetY',
+            'dispatchOffsetY',
+            'latestNativeContentOffsetYRef',
             'SCROLL_COMMAND_NO_MOTION_TIMEOUT_MS',
             'SCROLL_COMMAND_MIN_OFFSET_DELTA',
             'dispatchScrollCommand',
@@ -47,7 +48,9 @@ describe('NativeProseViewer', () => {
             'releaseActiveTraversal',
             'cancelActiveTraversal',
             'handleViewableItemsChanged',
+            'handleScroll',
             'handleBack',
+            'onScroll={handleScroll}',
             'onViewableItemsChanged={handleViewableItemsChanged}',
             'onMomentumScrollBegin={handleMomentumScrollBegin}',
             'onMomentumScrollEnd={handleMomentumScrollEnd}',
@@ -55,6 +58,11 @@ describe('NativeProseViewer', () => {
         ]) {
             expect(benchmark).toContain(lifecycleContract);
         }
+        expect(benchmark).toContain('const dispatchOffsetY = latestNativeContentOffsetYRef.current;');
+        expect(benchmark).toContain('const offsetDelta = event.nativeEvent.contentOffset.y - command.dispatchOffsetY;');
+        expect(benchmark).toContain('command.momentumBegan ||');
+        expect(benchmark).not.toContain('startOffsetY');
+        expect(benchmark).not.toContain('command.dispatchOffsetY =');
         expect(benchmark).toContain('keyExtractor={(item) => item.id}');
         expect(benchmark).toContain('renderImages={imagesEnabled}');
         for (const bridgeMethod of [
