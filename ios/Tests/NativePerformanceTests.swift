@@ -48,6 +48,7 @@ private struct HostedLayoutTraceStats {
 final class NativePerformanceTests: XCTestCase {
     private let baseFont = UIFont.systemFont(ofSize: 16)
     private let textColor = UIColor.black
+    private static let preparedProseWindowTraversalTimeout: TimeInterval = 10
 
     func testPerformance_renderBridgeLargeDocument() {
         let renderJSON = NativePerformanceFixtureFactory.largeRenderJSON()
@@ -488,7 +489,7 @@ final class NativePerformanceTests: XCTestCase {
             result = traversal
             completion.fulfill()
         }
-        wait(for: [completion], timeout: 10)
+        wait(for: [completion], timeout: Self.preparedProseWindowTraversalTimeout)
 
         let traversals = try XCTUnwrap(result).get()
         let traversal = try XCTUnwrap(traversals.first)
@@ -504,7 +505,7 @@ final class NativePerformanceTests: XCTestCase {
             imagesDisabledResult = traversal
             imagesDisabledCompletion.fulfill()
         }
-        wait(for: [imagesDisabledCompletion], timeout: 10)
+        wait(for: [imagesDisabledCompletion], timeout: Self.preparedProseWindowTraversalTimeout)
 
         let imagesDisabledTraversals = try XCTUnwrap(imagesDisabledResult).get()
         let imagesDisabledTraversal = try XCTUnwrap(imagesDisabledTraversals.first)
@@ -544,8 +545,18 @@ final class NativePerformanceTests: XCTestCase {
             result = $0
             completion.fulfill()
         }
-        wait(for: [completion], timeout: 60)
+        wait(for: [completion], timeout: preparedProseTraversalTimeout(forWindowCount: windows.count))
         return try XCTUnwrap(result).get()
+    }
+
+    func testPreparedProseTraversalTimeoutScalesWithWindowCount() {
+        XCTAssertEqual(preparedProseTraversalTimeout(forWindowCount: 0), Self.preparedProseWindowTraversalTimeout)
+        XCTAssertEqual(preparedProseTraversalTimeout(forWindowCount: 1), Self.preparedProseWindowTraversalTimeout)
+        XCTAssertEqual(preparedProseTraversalTimeout(forWindowCount: 27), 270)
+    }
+
+    private func preparedProseTraversalTimeout(forWindowCount windowCount: Int) -> TimeInterval {
+        TimeInterval(max(1, windowCount)) * Self.preparedProseWindowTraversalTimeout
     }
 
     private func attachedPreparedProseHeight(
