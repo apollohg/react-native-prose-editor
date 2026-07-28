@@ -2,10 +2,6 @@ require 'json'
 
 package = JSON.parse(File.read(File.join(__dir__, 'package.json')))
 
-unless ENV['RCT_NEW_ARCH_ENABLED'] == '1'
-  raise 'ReactNativeProseEditor requires the React Native New Architecture. Set RCT_NEW_ARCH_ENABLED=1.'
-end
-
 Pod::Spec.new do |s|
   s.name           = 'ReactNativeProseEditor'
   # Expo autolinking imports the pod's public Swift module by pod name. Keep
