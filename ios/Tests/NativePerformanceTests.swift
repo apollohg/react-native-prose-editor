@@ -454,7 +454,7 @@ final class NativePerformanceTests: XCTestCase {
             PreparedProseBenchmarkExportContract.self,
             from: Data(PreparedProseInstrumentation.exportJSON().utf8)
         )
-        XCTAssertEqual(export.schemaVersion, 2)
+        XCTAssertEqual(export.schemaVersion, 3)
         XCTAssertEqual(export.nominalFramePeriodNanos, fixture.nominalFramePeriodNanos)
         XCTAssertEqual(export.singleTickToleranceNanos, fixture.singleTickToleranceNanos)
         for snapshot in [export.preResetSnapshot, export.postResetSnapshot] {
@@ -471,6 +471,125 @@ final class NativePerformanceTests: XCTestCase {
             XCTAssertEqual(phase.imageDecodeCount, 0)
         }
     }
+
+    func testPreparedProseInstrumentationSamplesEveryTickAndPreservesTransitionBaseline() throws {
+        let nominal = PreparedProseInstrumentation.nominalFramePeriodNanos
+        let baselineTimestamp: UInt64 = 1_000_000_000
+        let baselineMonotonic: UInt64 = 2_000_000_000
+
+        PreparedProseInstrumentation.beginBenchmark()
+        PreparedProseInstrumentation.beginPhase(.cold)
+        PreparedProseInstrumentation.recordDisplayLinkTick(
+            callbackTimestampNanos: baselineTimestamp,
+            observedMonotonicNanos: baselineMonotonic,
+            callbackDurationNanos: nominal,
+            targetLeadNanos: Int64(nominal)
+        )
+        PreparedProseInstrumentation.recordDisplayLinkTick(
+            callbackTimestampNanos: baselineTimestamp + nominal,
+            observedMonotonicNanos: baselineMonotonic + nominal,
+            callbackDurationNanos: nominal,
+            targetLeadNanos: Int64(nominal)
+        )
+        PreparedProseInstrumentation.transitionPhase(.warm)
+        PreparedProseInstrumentation.recordDisplayLinkTick(
+            callbackTimestampNanos: baselineTimestamp + (2 * nominal),
+            observedMonotonicNanos: baselineMonotonic + (2 * nominal),
+            callbackDurationNanos: nominal,
+            targetLeadNanos: Int64(nominal)
+        )
+        PreparedProseInstrumentation.endPhase()
+
+        let export = try JSONDecoder().decode(
+            PreparedProseBenchmarkExportContract.self,
+            from: Data(PreparedProseInstrumentation.exportJSON().utf8)
+        )
+        XCTAssertEqual(export.phaseSamples.cold.rawFrameDeltasNanos, [nominal])
+        XCTAssertEqual(export.phaseSamples.warm.rawFrameDeltasNanos, [nominal])
+        XCTAssertEqual(export.phaseSamples.cold.frameCallbackSamples.count, 2)
+        XCTAssertEqual(export.phaseSamples.warm.frameCallbackSamples.count, 1)
+        XCTAssertEqual(export.phaseSamples.cold.frameCallbackSamples.last?.callbackDurationNanos, nominal)
+        XCTAssertEqual(export.phaseSamples.warm.frameCallbackSamples[0].targetLeadNanos, Int64(nominal))
+    }
+
+    func testPreparedProseInstrumentationPreservesBaselineAcrossWindowPasses() throws {
+        let nominal = PreparedProseInstrumentation.nominalFramePeriodNanos
+        let interWindowGap = nominal * 3
+        let baselineTimestamp: UInt64 = 1_000_000_000
+        let baselineMonotonic: UInt64 = 2_000_000_000
+
+        PreparedProseInstrumentation.beginBenchmark()
+        PreparedProseInstrumentation.beginPhase(.cold)
+        PreparedProseInstrumentation.recordDisplayLinkTick(
+            callbackTimestampNanos: baselineTimestamp,
+            observedMonotonicNanos: baselineMonotonic,
+            callbackDurationNanos: nominal,
+            targetLeadNanos: Int64(nominal)
+        )
+        PreparedProseInstrumentation.recordDisplayLinkTick(
+            callbackTimestampNanos: baselineTimestamp + nominal,
+            observedMonotonicNanos: baselineMonotonic + nominal,
+            callbackDurationNanos: nominal,
+            targetLeadNanos: Int64(nominal)
+        )
+
+        PreparedProseInstrumentation.beginPhase(.cold, preservingDisplayLinkBaseline: true)
+        PreparedProseInstrumentation.recordDisplayLinkTick(
+            callbackTimestampNanos: baselineTimestamp + nominal + interWindowGap,
+            observedMonotonicNanos: baselineMonotonic + nominal + interWindowGap,
+            callbackDurationNanos: nominal,
+            targetLeadNanos: Int64(nominal)
+        )
+        PreparedProseInstrumentation.endPhase()
+
+        let export = try JSONDecoder().decode(
+            PreparedProseBenchmarkExportContract.self,
+            from: Data(PreparedProseInstrumentation.exportJSON().utf8)
+        )
+        XCTAssertEqual(export.phaseSamples.cold.rawFrameDeltasNanos, [nominal, interWindowGap])
+    }
+
+    func testPreparedProseInstrumentationLifecycleWorkUsesSingleCausalUnion() {
+        let spans: [PreparedProseInstrumentation.ViewerWorkSpan] = [
+            .init(startNanos: 0, endNanos: 12_000_000, kind: .layout),
+            .init(startNanos: 8_000_000, endNanos: 20_000_000, kind: .draw),
+            .init(startNanos: 18_000_000, endNanos: 30_000_000, kind: .lifecycle),
+        ]
+        XCTAssertEqual(PreparedProseInstrumentation.viewerWorkNanos(0, 30_000_000, spans), 30_000_000)
+        XCTAssertTrue(
+            PreparedProseInstrumentation.viewerCaused(
+                0,
+                30_000_000,
+                spans,
+                rawDeltaNanos: PreparedProseInstrumentation.nominalFramePeriodNanos + 25_000_000,
+                nominalFramePeriodNanos: PreparedProseInstrumentation.nominalFramePeriodNanos
+            )
+        )
+    }
+
+    func testPreparedProseInstrumentationCadenceRatioUsesInferredNominalSlots() {
+        let nominal = PreparedProseInstrumentation.nominalFramePeriodNanos
+        let ratio = PreparedProseInstrumentation.cadencePassRatio(
+            rawFrameDeltasNanos: [
+                nominal + PreparedProseInstrumentation.singleTickToleranceNanos,
+                nominal * 3,
+            ]
+        )
+        XCTAssertEqual(ratio, 0.25, accuracy: 0.000_001)
+    }
+
+    func testPreparedProseBenchmarkDisplayLinkRequestsFixed60HzCadence() {
+        let displayLink = CADisplayLink(target: self, selector: #selector(displayLinkProbe(_:)))
+        defer { displayLink.invalidate() }
+
+        PreparedProseInstrumentation.configureBenchmarkCadence(displayLink)
+
+        XCTAssertEqual(displayLink.preferredFrameRateRange.minimum, 60)
+        XCTAssertEqual(displayLink.preferredFrameRateRange.maximum, 60)
+        XCTAssertEqual(displayLink.preferredFrameRateRange.preferred, 60)
+    }
+
+    @objc private func displayLinkProbe(_ displayLink: CADisplayLink) {}
 
     func testPreparedProseCollectionSelfSizingLifecycle() throws {
         let corpus = try PreparedProseBenchmarkCorpus.load()
@@ -663,6 +782,14 @@ private struct PreparedProseBenchmarkExportContract: Decodable {
         let imageRequestCount: Int
         let imageMetadataCount: Int
         let imageDecodeCount: Int
+        let rawFrameDeltasNanos: [UInt64]
+        let nominalFrameCount: Int
+        let onTimeNominalFrameCount: Int
+        let frameCallbackSamples: [FrameCallbackSample]
+        struct FrameCallbackSample: Decodable {
+            let callbackDurationNanos: UInt64
+            let targetLeadNanos: Int64
+        }
     }
     struct PhaseSamples: Decodable {
         let cold: Phase
@@ -703,6 +830,7 @@ private enum JSONValue: Codable {
 
 private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
     struct WindowPhaseResult {
+        let residentKeys: [ProseLayoutKey]
         let residentKeyCount: Int
         let residentKeyDigest: String
         let compileCount: Int
@@ -804,6 +932,13 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
             return
         }
         let window = traversal.windows[traversal.index]
+        traversal.direction = .forward
+        traversal.prime = nil
+        self.traversal = traversal
+        beginWindowPass(
+            phase: traversal.phase,
+            preservingDisplayLinkBaseline: displayLink != nil
+        )
         orderedEntries = window.primeIds.compactMap { byID[$0] }
         guard orderedEntries.count == window.primeIds.count else {
             finishTraversal(error: NSError(domain: "PreparedProseCollectionHarness", code: 3, userInfo: [NSLocalizedDescriptionKey: "window \(window.id) references an unknown entry"]))
@@ -816,17 +951,28 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
             finishTraversal(error: error)
             return
         }
-        traversal.direction = .forward
-        traversal.prime = nil
-        self.traversal = traversal
-        collectionView.contentOffset = .zero
-        collectionView.reloadData()
-        beginWindowPass(phase: traversal.phase)
+        recordLifecycleWork {
+            collectionView.contentOffset = .zero
+            collectionView.reloadData()
+        }
     }
 
-    private func beginWindowPass(phase: PreparedProseInstrumentation.TraversalPhase) {
-        PreparedProseLayoutRegistry.shared.beginBenchmarkResidentCensus()
-        PreparedProseInstrumentation.beginPhase(phase)
+    private func beginWindowPass(
+        phase: PreparedProseInstrumentation.TraversalPhase,
+        preservingDisplayLinkBaseline: Bool = false
+    ) {
+        let seededKeys: [ProseLayoutKey]
+        if let traversal, traversal.direction == .reverse {
+            seededKeys = traversal.prime?.residentKeys ?? []
+        } else {
+            seededKeys = []
+        }
+        PreparedProseLayoutRegistry.shared.beginBenchmarkResidentCensus(seeding: seededKeys)
+        if preservingDisplayLinkBaseline {
+            PreparedProseInstrumentation.transitionPhase(phase)
+        } else {
+            PreparedProseInstrumentation.beginPhase(phase)
+        }
         if var traversal {
             let counters = PreparedProseInstrumentation.phaseCounters()
             traversal.counterBaseline = .init(
@@ -838,6 +984,7 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         }
         if displayLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(displayLinkTick(_:)))
+            PreparedProseInstrumentation.configureBenchmarkCadence(link)
             displayLink = link
             link.add(to: .main, forMode: .common)
         }
@@ -865,7 +1012,9 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         case .reverse:
             target = max(0, currentOffset - distance)
         }
-        collectionView.contentOffset = CGPoint(x: 0, y: target)
+        recordLifecycleWork {
+            collectionView.contentOffset = CGPoint(x: 0, y: target)
+        }
 
         let destination = traversal.direction == .forward ? orderedEntries.count - 1 : 0
         guard target == (traversal.direction == .forward ? maximumOffset : 0),
@@ -880,6 +1029,7 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         let census = PreparedProseLayoutRegistry.shared.endBenchmarkResidentCensus()
         let counters = PreparedProseInstrumentation.phaseCounters()
         let result = WindowPhaseResult(
+            residentKeys: census.keys,
             residentKeyCount: census.count,
             residentKeyDigest: census.digest,
             compileCount: counters.compileCount - traversal.counterBaseline.compileCount,
@@ -897,13 +1047,14 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
             cache: PreparedProseInstrumentation.snapshotCache(),
             counters: (result.compileCount, result.layoutCount, result.cacheMisses)
         )
-        PreparedProseInstrumentation.endPhase()
-
         if traversal.direction == .forward {
             traversal.prime = result
             traversal.direction = .reverse
             self.traversal = traversal
-            beginWindowPass(phase: traversal.phase == .cold ? .warm : traversal.phase)
+            beginWindowPass(
+                phase: traversal.phase == .cold ? .warm : traversal.phase,
+                preservingDisplayLinkBaseline: true
+            )
             return
         }
 
@@ -931,12 +1082,23 @@ private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDa
         displayLink?.invalidate()
         displayLink = nil
         guard let traversal else { return }
+        PreparedProseInstrumentation.endPhase()
         self.traversal = nil
         if let error {
             traversal.completion(.failure(error))
         } else {
             traversal.completion(.success(traversal.results))
         }
+    }
+
+    private func recordLifecycleWork(_ work: () -> Void) {
+        let startNanos = PreparedProseInstrumentation.now()
+        work()
+        PreparedProseInstrumentation.recordViewerWork(
+            startNanos: startNanos,
+            endNanos: PreparedProseInstrumentation.now(),
+            kind: .lifecycle
+        )
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { orderedEntries.count }
@@ -975,14 +1137,42 @@ private final class PreparedProseCollectionCell: UICollectionViewCell {
         ])
     }
     required init?(coder: NSCoder) { fatalError("PreparedProseCollectionCell is programmatic") }
-    override func prepareForReuse() { super.prepareForReuse(); preparedArtifactHeight = 0; viewer.prepareForReuse() }
+    override func prepareForReuse() {
+        let startNanos = PreparedProseInstrumentation.now()
+        defer {
+            PreparedProseInstrumentation.recordViewerWork(
+                startNanos: startNanos,
+                endNanos: PreparedProseInstrumentation.now(),
+                kind: .lifecycle
+            )
+        }
+        super.prepareForReuse()
+        preparedArtifactHeight = 0
+        viewer.prepareForReuse()
+    }
     func configure(source: String, configuration: ProseViewerConfiguration) throws {
+        let startNanos = PreparedProseInstrumentation.now()
+        defer {
+            PreparedProseInstrumentation.recordViewerWork(
+                startNanos: startNanos,
+                endNanos: PreparedProseInstrumentation.now(),
+                kind: .lifecycle
+            )
+        }
         guard viewer.apply(source: .json(source), configuration: configuration) else {
             throw NSError(domain: "PreparedProseCollectionCell", code: 1, userInfo: [NSLocalizedDescriptionKey: "benchmark source was rejected"])
         }
         setNeedsLayout()
     }
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        let startNanos = PreparedProseInstrumentation.now()
+        defer {
+            PreparedProseInstrumentation.recordViewerWork(
+                startNanos: startNanos,
+                endNanos: PreparedProseInstrumentation.now(),
+                kind: .lifecycle
+            )
+        }
         let fitted = attributes.copy() as! UICollectionViewLayoutAttributes
         let width = max(1, attributes.size.width)
         preparedArtifactHeight = max(1, ceil(viewer.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
@@ -995,7 +1185,8 @@ private enum PreparedProsePerformanceGates {
     private struct DelayedInterval: Decodable { let rawDeltaNanos: UInt64 }
     private struct CacheSnapshot: Decodable { let unmountedCurrentBytes: Int; let unmountedHighWaterBytes: Int; let unmountedCurrentResidentCount: Int; let unmountedHighWaterResidentCount: Int; let compiledCurrentBytes: Int; let compiledCurrentResidentCount: Int }
     private struct WindowEvidence: Decodable { let windowId: String; let entryIds: [String]; let phase: String; let residentKeyCount: Int; let compileCount: Int; let layoutCount: Int; let cacheMisses: Int }
-    private struct Phase: Decodable { let combinedCompileLayoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let rawFrameDeltasNanos: [UInt64]; let nominalFrameCount: Int; let viewerCausedDelayedIntervals: [DelayedInterval]; let imageRequestCount: Int; let imageMetadataCount: Int; let imageDecodeCount: Int; let drawCount: Int }
+    private struct Phase: Decodable { let combinedCompileLayoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let rawFrameDeltasNanos: [UInt64]; let frameCallbackSamples: [FrameCallbackSample]; let nominalFrameCount: Int; let onTimeNominalFrameCount: Int; let viewerCausedDelayedIntervals: [DelayedInterval]; let imageRequestCount: Int; let imageMetadataCount: Int; let imageDecodeCount: Int; let drawCount: Int }
+    private struct FrameCallbackSample: Decodable { let callbackDurationNanos: UInt64; let targetLeadNanos: Int64 }
     private struct Export: Decodable { let percentileDefinition: String; let phaseSamples: [String: Phase]; let windowEvidence: [WindowEvidence]; let preResetSnapshot: CacheSnapshot; let postResetSnapshot: CacheSnapshot; let duplicatePublications: Int }
     static func assertPasses(exportJSON: String, expectedDocuments: Int) throws {
         let export = try JSONDecoder().decode(Export.self, from: Data(exportJSON.utf8))
@@ -1011,14 +1202,10 @@ private enum PreparedProsePerformanceGates {
         for phase in [cold, warm, imagesDisabled] {
             XCTAssertGreaterThan(phase.drawCount, 0, "phase must include actual viewer draw evidence")
             requireNonEmpty(phase.rawFrameDeltasNanos, "phase raw frame")
+            XCTAssertFalse(phase.frameCallbackSamples.isEmpty, "phase scheduler diagnostics must not be empty")
+            XCTAssertGreaterThan(phase.nominalFrameCount, 0)
             XCTAssertGreaterThanOrEqual(
-                Double(phase.rawFrameDeltasNanos.filter {
-                    PreparedProseInstrumentation.classifyFrame(
-                        rawDeltaNanos: $0,
-                        nominalFramePeriodNanos: PreparedProseInstrumentation.nominalFramePeriodNanos,
-                        singleTickToleranceNanos: PreparedProseInstrumentation.singleTickToleranceNanos
-                    ).nominalFrameCount == 1
-                }.count) / Double(phase.rawFrameDeltasNanos.count),
+                Double(phase.onTimeNominalFrameCount) / Double(phase.nominalFrameCount),
                 0.99
             )
         }

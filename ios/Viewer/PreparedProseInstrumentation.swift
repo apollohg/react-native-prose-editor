@@ -8,7 +8,7 @@ enum PreparedProseInstrumentation {
     enum Owner: String, CaseIterable { case compiled, unmountedLayout, fabricLeaseHandoff, directMounted, image, sidecars, other }
     enum InvalidationReason: String { case content, width, attachment, font, memoryPressure, cacheReset, reuse }
     enum TraversalPhase: String, CaseIterable { case cold, warm, imagesDisabled, reset }
-    enum ViewerWorkKind: String, Codable { case layout, draw }
+    enum ViewerWorkKind: String, Codable { case layout, draw, lifecycle }
     struct ViewerWorkSpan: Equatable {
         let startNanos: UInt64
         let endNanos: UInt64
@@ -17,6 +17,11 @@ enum PreparedProseInstrumentation {
     struct FrameClassification: Equatable {
         let nominalFrameCount: Int
         let isDelayed: Bool
+    }
+    struct FrameCallbackSample: Codable {
+        let callbackTimestampNanos: UInt64
+        let callbackDurationNanos: UInt64
+        let targetLeadNanos: Int64
     }
     struct CacheSnapshot: Codable, Equatable {
         var unmountedCurrentBytes = 0
@@ -32,14 +37,17 @@ enum PreparedProseInstrumentation {
         let rawDeltaNanos: UInt64
         let viewerLayoutNanos: UInt64
         let viewerDrawNanos: UInt64
+        let viewerLifecycleNanos: UInt64
+        let viewerWorkUnionNanos: UInt64
         let viewerCaused: Bool
     }
     struct PhaseSamples: Codable {
         var compileNanos: [UInt64] = []; var layoutNanos: [UInt64] = []; var combinedCompileLayoutNanos: [UInt64] = []
         var cacheLookupNanos: [UInt64] = []; var drawNanos: [UInt64] = []; var rawFrameDeltasNanos: [UInt64] = []
+        var frameCallbackSamples: [FrameCallbackSample] = []
         var compileCount = 0; var layoutCount = 0; var cacheHits = 0; var cacheMisses = 0; var cacheWaits = 0; var drawCount = 0; var visibleBlocksDrawn = 0
         var imageRequestCount = 0; var imageMetadataCount = 0; var imageDecodeCount = 0
-        var nominalFrameCount = 0; var delayedIntervalCount = 0; var viewerCausedDelayedIntervals: [DelayedInterval] = []
+        var nominalFrameCount = 0; var onTimeNominalFrameCount = 0; var delayedIntervalCount = 0; var viewerCausedDelayedIntervals: [DelayedInterval] = []
         var invalidations: [String: Int] = [:]
     }
     struct WindowEvidence: Codable {
@@ -67,6 +75,7 @@ enum PreparedProseInstrumentation {
 
     static let nominalFramePeriodNanos: UInt64 = 16_666_667
     static let singleTickToleranceNanos: UInt64 = 1_000_000
+    static let benchmarkPreferredFrameRate: Float = 60
     private static let lock = NSLock(); private static let sampleLimit = 20_000
     private static var enabled = false; private static var phase: TraversalPhase?
     private static var samples: [TraversalPhase: PhaseSamples] = [:]
@@ -75,12 +84,36 @@ enum PreparedProseInstrumentation {
     private static var viewerWorkSpans: [TraversalPhase: [ViewerWorkSpan]] = [:]
     private static var cacheSnapshot = CacheSnapshot(); private static var preResetSnapshot = CacheSnapshot(); private static var postResetSnapshot = CacheSnapshot()
     private static var windowEvidence: [WindowEvidence] = []; private static var duplicatePublications = 0
-    private static var previousDisplayTimestamp: CFTimeInterval = 0; private static var previousMonotonicNanos: UInt64 = 0; private static var surfaceDrawnSinceFrame = false
+    private static var previousDisplayTimestampNanos: UInt64 = 0; private static var previousMonotonicNanos: UInt64 = 0
 
     static func classifyFrame(rawDeltaNanos: UInt64, nominalFramePeriodNanos: UInt64, singleTickToleranceNanos: UInt64) -> FrameClassification {
         precondition(nominalFramePeriodNanos > 0)
         if rawDeltaNanos <= nominalFramePeriodNanos + singleTickToleranceNanos { return .init(nominalFrameCount: 1, isDelayed: false) }
         return .init(nominalFrameCount: Int((rawDeltaNanos + nominalFramePeriodNanos - 1) / nominalFramePeriodNanos), isDelayed: true)
+    }
+
+    static func cadencePassRatio(rawFrameDeltasNanos: [UInt64]) -> Double {
+        let classifications = rawFrameDeltasNanos.map {
+            classifyFrame(
+                rawDeltaNanos: $0,
+                nominalFramePeriodNanos: nominalFramePeriodNanos,
+                singleTickToleranceNanos: singleTickToleranceNanos
+            )
+        }
+        let nominalSlots = classifications.reduce(0) { $0 + $1.nominalFrameCount }
+        guard nominalSlots > 0 else { return 0 }
+        let onTimeSlots = classifications.reduce(0) { $0 + ($1.isDelayed ? 0 : $1.nominalFrameCount) }
+        return Double(onTimeSlots) / Double(nominalSlots)
+    }
+
+    /// Benchmark-only cadence control. This is deliberately not used by
+    /// production viewer display links, whose cadence remains system-managed.
+    static func configureBenchmarkCadence(_ displayLink: CADisplayLink) {
+        displayLink.preferredFrameRateRange = CAFrameRateRange(
+            minimum: benchmarkPreferredFrameRate,
+            maximum: benchmarkPreferredFrameRate,
+            preferred: benchmarkPreferredFrameRate
+        )
     }
 
     static func viewerCaused(
@@ -93,17 +126,11 @@ enum PreparedProseInstrumentation {
         let lateness = rawDeltaNanos > nominalFramePeriodNanos
             ? rawDeltaNanos - nominalFramePeriodNanos
             : 0
-        let clipped = spans.compactMap { span -> Range<UInt64>? in
-            let lower = max(start, span.startNanos), upper = min(end, span.endNanos)
-            return lower < upper ? lower..<upper : nil
-        }.sorted { $0.lowerBound < $1.lowerBound }
-        let union = clipped.reduce(into: [Range<UInt64>]()) { merged, range in
-            if let last = merged.last, range.lowerBound <= last.upperBound {
-                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
-            } else { merged.append(range) }
-        }
-        let work = union.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
-        return lateness > 0 && work >= lateness
+        return lateness > 0 && viewerWorkNanos(start, end, spans) >= lateness
+    }
+
+    static func viewerWorkNanos(_ start: UInt64, _ end: UInt64, _ spans: [ViewerWorkSpan]) -> UInt64 {
+        mergedWorkNanos(start, end, spans)
     }
 
     static func beginBenchmark() {
@@ -116,11 +143,23 @@ enum PreparedProseInstrumentation {
         lock.lock(); resetLocked(); lock.unlock()
 #endif
     }
-    static func beginPhase(_ value: TraversalPhase) {
+    static func beginPhase(_ value: TraversalPhase, preservingDisplayLinkBaseline: Bool = false) {
 #if DEBUG
         lock.lock()
         guard enabled else { lock.unlock(); return }
-        phase = value; completedPhases.remove(value); previousDisplayTimestamp = 0; previousMonotonicNanos = 0; surfaceDrawnSinceFrame = false
+        phase = value; completedPhases.remove(value)
+        if !preservingDisplayLinkBaseline {
+            previousDisplayTimestampNanos = 0; previousMonotonicNanos = 0
+        }
+        lock.unlock()
+#endif
+    }
+    static func transitionPhase(_ value: TraversalPhase) {
+#if DEBUG
+        lock.lock()
+        guard enabled else { lock.unlock(); return }
+        if let phase { completedPhases.insert(phase); viewerWorkSpans[phase] = [] }
+        phase = value; completedPhases.remove(value)
         lock.unlock()
 #endif
     }
@@ -128,7 +167,7 @@ enum PreparedProseInstrumentation {
 #if DEBUG
         lock.lock()
         if let phase { completedPhases.insert(phase); viewerWorkSpans[phase] = [] }
-        phase = nil; previousDisplayTimestamp = 0; previousMonotonicNanos = 0; surfaceDrawnSinceFrame = false
+        phase = nil; previousDisplayTimestampNanos = 0; previousMonotonicNanos = 0
         lock.unlock()
 #endif
     }
@@ -137,20 +176,48 @@ enum PreparedProseInstrumentation {
 
     static func displayLinkDidTick(_ displayLink: CADisplayLink) {
 #if DEBUG
+        recordDisplayLinkTick(
+            callbackTimestampNanos: timeIntervalNanos(displayLink.timestamp),
+            observedMonotonicNanos: DispatchTime.now().uptimeNanoseconds,
+            callbackDurationNanos: timeIntervalNanos(displayLink.duration),
+            targetLeadNanos: signedTimeIntervalNanos(displayLink.targetTimestamp - displayLink.timestamp)
+        )
+#endif
+    }
+
+    static func recordDisplayLinkTick(
+        callbackTimestampNanos: UInt64,
+        observedMonotonicNanos: UInt64,
+        callbackDurationNanos: UInt64,
+        targetLeadNanos: Int64
+    ) {
+#if DEBUG
         lock.lock(); defer { lock.unlock() }
-        guard let phase else { return }
-        let monotonicNow = DispatchTime.now().uptimeNanoseconds
-        defer { previousDisplayTimestamp = displayLink.timestamp; previousMonotonicNanos = monotonicNow }
-        guard previousDisplayTimestamp > 0, previousMonotonicNanos > 0, surfaceDrawnSinceFrame else { return }
-        let rawDeltaNanos = UInt64((displayLink.timestamp - previousDisplayTimestamp) * 1_000_000_000)
+        guard enabled, let phase else { return }
+        mutate(phase) { sample in
+            append(
+                .init(
+                    callbackTimestampNanos: callbackTimestampNanos,
+                    callbackDurationNanos: callbackDurationNanos,
+                    targetLeadNanos: targetLeadNanos
+                ),
+                to: &sample.frameCallbackSamples
+            )
+        }
+        defer { previousDisplayTimestampNanos = callbackTimestampNanos; previousMonotonicNanos = observedMonotonicNanos }
+        guard previousDisplayTimestampNanos > 0, previousMonotonicNanos > 0,
+              callbackTimestampNanos > previousDisplayTimestampNanos
+        else { return }
+        let rawDeltaNanos = callbackTimestampNanos - previousDisplayTimestampNanos
         guard rawDeltaNanos > 0 else { return }
         let intervalStart = previousMonotonicNanos
-        let intervalEnd = monotonicNow
+        let intervalEnd = observedMonotonicNanos
         let spans = viewerWorkSpans[phase] ?? []
         mutate(phase) { sample in
             append(rawDeltaNanos, to: &sample.rawFrameDeltasNanos)
             let classification = classifyFrame(rawDeltaNanos: rawDeltaNanos, nominalFramePeriodNanos: nominalFramePeriodNanos, singleTickToleranceNanos: singleTickToleranceNanos)
             sample.nominalFrameCount += classification.nominalFrameCount
+            if !classification.isDelayed { sample.onTimeNominalFrameCount += classification.nominalFrameCount }
             if classification.isDelayed {
                 sample.delayedIntervalCount += 1
                 let caused = viewerCaused(
@@ -166,13 +233,14 @@ enum PreparedProseInstrumentation {
                     rawDeltaNanos: rawDeltaNanos,
                     viewerLayoutNanos: clippedWork(intervalStart, intervalEnd, spans, kind: .layout),
                     viewerDrawNanos: clippedWork(intervalStart, intervalEnd, spans, kind: .draw),
+                    viewerLifecycleNanos: clippedWork(intervalStart, intervalEnd, spans, kind: .lifecycle),
+                    viewerWorkUnionNanos: viewerWorkNanos(intervalStart, intervalEnd, spans),
                     viewerCaused: caused
                 )
-                if caused { sample.viewerCausedDelayedIntervals.append(interval) }
+                if caused { append(interval, to: &sample.viewerCausedDelayedIntervals) }
             }
         }
         viewerWorkSpans[phase] = spans.filter { $0.endNanos > intervalStart }
-        surfaceDrawnSinceFrame = false
 #endif
     }
 
@@ -254,7 +322,7 @@ enum PreparedProseInstrumentation {
         lock.lock()
         let exportedPhases = [TraversalPhase.cold, .warm, .imagesDisabled]
         let completedSamples = Dictionary(uniqueKeysWithValues: exportedPhases.map { ($0.rawValue, samples[$0] ?? PhaseSamples()) })
-        let snapshot = Snapshot(schemaVersion: 2, percentileDefinition: "nearest-rank: sorted[ceil(p*n)-1]", nominalFramePeriodNanos: nominalFramePeriodNanos, singleTickToleranceNanos: singleTickToleranceNanos, phaseSamples: completedSamples, windowEvidence: windowEvidence, preResetSnapshot: preResetSnapshot, postResetSnapshot: postResetSnapshot, duplicatePublications: duplicatePublications)
+        let snapshot = Snapshot(schemaVersion: 3, percentileDefinition: "nearest-rank: sorted[ceil(p*n)-1]", nominalFramePeriodNanos: nominalFramePeriodNanos, singleTickToleranceNanos: singleTickToleranceNanos, phaseSamples: completedSamples, windowEvidence: windowEvidence, preResetSnapshot: preResetSnapshot, postResetSnapshot: postResetSnapshot, duplicatePublications: duplicatePublications)
         lock.unlock()
         return String(data: (try? JSONEncoder().encode(snapshot)) ?? Data("{}".utf8), encoding: .utf8) ?? "{}"
 #else
@@ -272,7 +340,7 @@ enum PreparedProseInstrumentation {
     @inline(__always) static func compiled(_ start: UInt64, generation: String) { record(start) { phase, elapsed, _ in mutate(phase) { samples in samples.compileCount += 1; append(elapsed, to: &samples.compileNanos) }; pendingCompileNanos[phase, default: [:]][generation] = elapsed } }
     @inline(__always) static func laidOut(_ start: UInt64, generation: String) { record(start) { phase, elapsed, end in mutate(phase) { samples in samples.layoutCount += 1; append(elapsed, to: &samples.layoutNanos); if let compile = pendingCompileNanos[phase]?.removeValue(forKey: generation) { append(compile + elapsed, to: &samples.combinedCompileLayoutNanos) } }; recordViewerWorkLocked(startNanos: start, endNanos: end, kind: .layout, phase: phase) } }
     @inline(__always) static func cacheLookup(_ start: UInt64, hit: Bool, waited: Bool = false) { record(start) { phase, elapsed, _ in mutate(phase) { samples in append(elapsed, to: &samples.cacheLookupNanos); if hit { samples.cacheHits += 1 } else { samples.cacheMisses += 1 }; if waited { samples.cacheWaits += 1 } } } }
-    @inline(__always) static func drew(_ start: UInt64, visibleBlocks: Int) { record(start) { phase, elapsed, end in mutate(phase) { samples in append(elapsed, to: &samples.drawNanos); samples.drawCount += 1; samples.visibleBlocksDrawn += visibleBlocks }; recordViewerWorkLocked(startNanos: start, endNanos: end, kind: .draw, phase: phase); surfaceDrawnSinceFrame = true } }
+    @inline(__always) static func drew(_ start: UInt64, visibleBlocks: Int) { record(start) { phase, elapsed, end in mutate(phase) { samples in append(elapsed, to: &samples.drawNanos); samples.drawCount += 1; samples.visibleBlocksDrawn += visibleBlocks }; recordViewerWorkLocked(startNanos: start, endNanos: end, kind: .draw, phase: phase) } }
     static func imageRequested() { incrementImageCounter { $0.imageRequestCount += 1 } }
     static func imageMetadataRead() { incrementImageCounter { $0.imageMetadataCount += 1 } }
     static func imageDecoded() { incrementImageCounter { $0.imageDecodeCount += 1 } }
@@ -299,10 +367,15 @@ enum PreparedProseInstrumentation {
     }
     private static func recordViewerWorkLocked(startNanos: UInt64, endNanos: UInt64, kind: ViewerWorkKind, phase: TraversalPhase) { guard startNanos < endNanos else { return }; viewerWorkSpans[phase, default: []].append(.init(startNanos: startNanos, endNanos: endNanos, kind: kind)) }
     private static func clippedWork(_ start: UInt64, _ end: UInt64, _ spans: [ViewerWorkSpan], kind: ViewerWorkKind) -> UInt64 {
-        let clipped = spans.filter { $0.kind == kind }.compactMap { span -> Range<UInt64>? in let lower = max(start, span.startNanos), upper = min(end, span.endNanos); return lower < upper ? lower..<upper : nil }.sorted { $0.lowerBound < $1.lowerBound }
+        mergedWorkNanos(start, end, spans.filter { $0.kind == kind })
+    }
+    private static func mergedWorkNanos(_ start: UInt64, _ end: UInt64, _ spans: [ViewerWorkSpan]) -> UInt64 {
+        let clipped = spans.compactMap { span -> Range<UInt64>? in let lower = max(start, span.startNanos), upper = min(end, span.endNanos); return lower < upper ? lower..<upper : nil }.sorted { $0.lowerBound < $1.lowerBound }
         return clipped.reduce(into: [Range<UInt64>]()) { merged, range in if let last = merged.last, range.lowerBound <= last.upperBound { merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound) } else { merged.append(range) } }.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
     }
     private static func mutate(_ phase: TraversalPhase, _ body: (inout PhaseSamples) -> Void) { var value = samples[phase] ?? PhaseSamples(); body(&value); samples[phase] = value }
-    private static func append(_ value: UInt64, to samples: inout [UInt64]) { if samples.count < sampleLimit { samples.append(value) } }
-    private static func resetLocked() { phase = nil; samples = [:]; completedPhases = []; pendingCompileNanos = [:]; viewerWorkSpans = [:]; cacheSnapshot = CacheSnapshot(); preResetSnapshot = CacheSnapshot(); postResetSnapshot = CacheSnapshot(); windowEvidence = []; duplicatePublications = 0; previousDisplayTimestamp = 0; previousMonotonicNanos = 0; surfaceDrawnSinceFrame = false }
+    private static func append<T>(_ value: T, to samples: inout [T]) { if samples.count < sampleLimit { samples.append(value) } }
+    private static func timeIntervalNanos(_ seconds: CFTimeInterval) -> UInt64 { guard seconds.isFinite, seconds > 0 else { return 0 }; return UInt64((seconds * 1_000_000_000).rounded(.towardZero)) }
+    private static func signedTimeIntervalNanos(_ seconds: CFTimeInterval) -> Int64 { guard seconds.isFinite else { return 0 }; return Int64((seconds * 1_000_000_000).rounded(.towardZero)) }
+    private static func resetLocked() { phase = nil; samples = [:]; completedPhases = []; pendingCompileNanos = [:]; viewerWorkSpans = [:]; cacheSnapshot = CacheSnapshot(); preResetSnapshot = CacheSnapshot(); postResetSnapshot = CacheSnapshot(); windowEvidence = []; duplicatePublications = 0; previousDisplayTimestampNanos = 0; previousMonotonicNanos = 0 }
 }

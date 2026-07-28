@@ -134,6 +134,24 @@ final class PreparedProseRenderingTests: XCTestCase {
         }
     }
 
+    func testCoreTextFontBridgePreservesSystemFontIdentityAndWeightedTraits() {
+        let fonts = [
+            UIFont.systemFont(ofSize: 17),
+            UIFont.systemFont(ofSize: 17, weight: .semibold),
+        ]
+
+        for font in fonts {
+            let bridged = CoreTextProseLayoutEngine.coreTextFont(from: font)
+            let source = font as CTFont
+
+            XCTAssertTrue(CFEqual(bridged, source))
+            XCTAssertEqual(CTFontGetSize(bridged), CTFontGetSize(source))
+            XCTAssertEqual(CTFontCopyFamilyName(bridged) as String, CTFontCopyFamilyName(source) as String)
+            XCTAssertEqual(CTFontGetSymbolicTraits(bridged), CTFontGetSymbolicTraits(source))
+            XCTAssertEqual(CTFontCopyPostScriptName(bridged) as String, CTFontCopyPostScriptName(source) as String)
+        }
+    }
+
     func testExtremeListMarkerAndNestedCodeBlockquoteEdgesAreCompilerBacked() throws {
         try withCompiledDocument(source: Fixture.edgeSource, configJSON: Fixture.customConfig) { document in
             let layout = try prepare(

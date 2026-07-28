@@ -259,6 +259,13 @@ private struct PreparedListMarker {
 
 /// Performs the width-dependent, immutable Core Text preparation step.
 final class CoreTextProseLayoutEngine {
+    /// UIFont and CTFont are toll-free bridged. Recreating a system font from
+    /// UIFont.fontName is not equivalent on current iOS releases: private
+    /// .SFUI names are not valid public Core Text PostScript names.
+    static func coreTextFont(from font: UIFont) -> CTFont {
+        font as CTFont
+    }
+
     func prepare(
         document: ViewerDocument,
         key: ProseLayoutKey,
@@ -720,7 +727,7 @@ final class CoreTextProseLayoutEngine {
         // An explicit text-color mark is document content and therefore wins
         // over link-theme paint regardless of compiler mark ordering.
         let foreground = explicitForeground ?? (hasLink ? linkTheme?.color ?? UIColor.systemBlue : paint.color)
-        attributes[kCTFontAttributeName as NSAttributedString.Key] = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
+        attributes[kCTFontAttributeName as NSAttributedString.Key] = Self.coreTextFont(from: font)
         attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] = foreground.cgColor
         if let background { attributes[kCTBackgroundColorAttributeName as NSAttributedString.Key] = background.cgColor }
         if underline { attributes[kCTUnderlineStyleAttributeName as NSAttributedString.Key] = NSNumber(value: CTUnderlineStyle.single.rawValue) }
@@ -769,7 +776,7 @@ final class CoreTextProseLayoutEngine {
 
     private func baseAttributes(_ paint: PreparedTextPaint) -> [NSAttributedString.Key: Any] {
         [
-            kCTFontAttributeName as NSAttributedString.Key: CTFontCreateWithName(paint.font.fontName as CFString, paint.font.pointSize, nil),
+            kCTFontAttributeName as NSAttributedString.Key: Self.coreTextFont(from: paint.font),
             kCTForegroundColorAttributeName as NSAttributedString.Key: paint.color.cgColor,
         ]
     }
@@ -797,7 +804,7 @@ final class CoreTextProseLayoutEngine {
             NSAttributedString(
                 string: label,
                 attributes: [
-                    kCTFontAttributeName as NSAttributedString.Key: CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil),
+                    kCTFontAttributeName as NSAttributedString.Key: Self.coreTextFont(from: font),
                     kCTForegroundColorAttributeName as NSAttributedString.Key: theme.listMarkerColor.cgColor,
                 ]
             )
@@ -828,7 +835,7 @@ final class CoreTextProseLayoutEngine {
                     fontScale: 1,
                     semanticGeneration: warningSemanticGeneration
                 )
-                attributes[kCTFontAttributeName as NSAttributedString.Key] = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
+                attributes[kCTFontAttributeName as NSAttributedString.Key] = Self.coreTextFont(from: font)
             }
             attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] = (mention?.textColor ?? paint.color).cgColor
             return PreparedAtomAppearance(

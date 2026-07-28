@@ -35,7 +35,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private let lock = NSLock()
     private let compiledCondition = NSCondition()
     private var compiledDocuments: [String: ViewerDocument] = [:]
-    private var compiledAccessOrder: [String] = []
+    /// Lazy access generations keep repeated compiled-document hits O(1).
+    /// Stale tokens are skipped during eviction and bounded by compaction.
+    private var compiledAccessOrder: [(key: String, generation: UInt64)] = []
+    private var compiledAccessGenerations: [String: UInt64] = [:]
+    private var compiledAccessOrderHead = 0
+    private var nextCompiledAccessGeneration: UInt64 = 0
     private var compiledInFlight: [String: Compilation] = [:]
     private var compilationFailures: [String: Error] = [:]
     private var compilationFailureAccessOrder: [String] = []
@@ -80,6 +85,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     var mountedFabricLeaseCountForTesting: Int { layoutCache.mountedLeaseCountForTesting }
     var fabricLeaseCountForTesting: Int { layoutCache.leaseCountForTesting }
     struct BenchmarkResidentCensus {
+        let keys: [ProseLayoutKey]
         let count: Int
         let digest: String
     }
@@ -825,8 +831,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         layoutCache.releaseDirectMount(owner)
     }
 
-    func beginBenchmarkResidentCensus() {
-        layoutCache.beginBenchmarkCensus()
+    func beginBenchmarkResidentCensus(seeding keys: [ProseLayoutKey] = []) {
+        layoutCache.beginBenchmarkCensus(seeding: keys)
     }
 
     func endBenchmarkResidentCensus() -> BenchmarkResidentCensus {
@@ -836,7 +842,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             .sorted()
             .joined(separator: "\n")
         let digest = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
-        return .init(count: keys.count, digest: digest)
+        return .init(keys: keys, count: keys.count, digest: digest)
     }
 
     @objc(releaseFabricSurfaceId:componentTag:)
@@ -905,6 +911,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         fabricOwnershipRevisions.removeAll()
         compiledDocuments.removeAll()
         compiledAccessOrder.removeAll()
+        compiledAccessGenerations.removeAll()
+        compiledAccessOrderHead = 0
         compilationFailures.removeAll()
         compilationFailureAccessOrder.removeAll()
         documentsByFabricGeneration.removeAll()
@@ -1297,15 +1305,19 @@ public final class PreparedProseLayoutRegistry: NSObject {
     }
 
     private func touchCompiled(_ cacheKey: String) {
-        compiledAccessOrder.removeAll { $0 == cacheKey }
-        compiledAccessOrder.append(cacheKey)
+        guard compiledDocuments[cacheKey] != nil else { return }
+        precondition(nextCompiledAccessGeneration < UInt64.max, "Prepared prose compiled LRU generation overflowed.")
+        nextCompiledAccessGeneration += 1
+        compiledAccessGenerations[cacheKey] = nextCompiledAccessGeneration
+        compiledAccessOrder.append((cacheKey, nextCompiledAccessGeneration))
+        compactCompiledAccessOrderIfNeeded()
     }
 
     private func trimCompiledToBudget() {
-        while compiledRetainedBytes > compiledByteBudget, let oldest = compiledAccessOrder.first {
-            compiledAccessOrder.removeFirst()
+        while compiledRetainedBytes > compiledByteBudget, let oldest = oldestCompiledKey() {
             if let removed = compiledDocuments.removeValue(forKey: oldest) {
                 compiledRetainedBytes -= removed.retainedBytes
+                compiledAccessGenerations.removeValue(forKey: oldest)
             }
         }
         PreparedProseInstrumentation.retained(.compiled, scope: "registry", bytes: compiledRetainedBytes)
@@ -1313,6 +1325,29 @@ public final class PreparedProseLayoutRegistry: NSObject {
             compiledBytes: compiledRetainedBytes,
             compiledResidentCount: compiledDocuments.count
         )
+    }
+
+    private func oldestCompiledKey() -> String? {
+        while compiledAccessOrderHead < compiledAccessOrder.count {
+            let token = compiledAccessOrder[compiledAccessOrderHead]
+            compiledAccessOrderHead += 1
+            if compiledAccessGenerations[token.key] == token.generation, compiledDocuments[token.key] != nil {
+                compactCompiledAccessOrderIfNeeded()
+                return token.key
+            }
+        }
+        compiledAccessOrder.removeAll(keepingCapacity: true)
+        compiledAccessOrderHead = 0
+        return nil
+    }
+
+    private func compactCompiledAccessOrderIfNeeded() {
+        let liveTokenCount = compiledAccessOrder.count - compiledAccessOrderHead
+        guard liveTokenCount > max(64, compiledDocuments.count * 3) else { return }
+        compiledAccessOrder = compiledAccessOrder[compiledAccessOrderHead...].filter { token in
+            compiledAccessGenerations[token.key] == token.generation && compiledDocuments[token.key] != nil
+        }
+        compiledAccessOrderHead = 0
     }
 
     private func touchCompilationFailure(_ cacheKey: String) {
