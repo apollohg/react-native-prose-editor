@@ -533,10 +533,15 @@ type CorpusEntry = {
     contentJSON: DocumentJSON;
 };
 
+type WarmWindow = {
+    id: string;
+    primeIds: string[];
+    warmIds: string[];
+};
+
 type PerformanceCorpus = {
     documents: CorpusEntry[];
-    coldTraversal: string[];
-    warmTraversal: string[];
+    warmWindows: WarmWindow[];
 };
 
 const preparedViewerCorpus = performanceCorpus as PerformanceCorpus;
@@ -550,16 +555,19 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
     // This screen produces benchmark evidence. Resolving the Expo module here
     // leaves normal editor/viewer use independent of the benchmark harness,
     // while a missing required bridge fails visibly when the harness opens.
-    const benchmarkBridge = requireNativeModule<PreparedProseBenchmarkBridge>('NativeEditor');
-    const [traversal, setTraversal] = useState<'cold' | 'warm'>('cold');
+    const benchmarkBridge = useMemo(
+        () => requireNativeModule<PreparedProseBenchmarkBridge>('NativeEditor'),
+        []
+    );
+    const [windowIndex, setWindowIndex] = useState(0);
+    const [phase, setPhase] = useState<'cold' | 'warm' | 'imagesDisabled'>('cold');
+    const [direction, setDirection] = useState<'prime' | 'warm'>('prime');
     const [imagesEnabled, setImagesEnabled] = useState(true);
-    const [cacheEpoch, setCacheEpoch] = useState(0);
     const [exportedCounters, setExportedCounters] = useState('Counters not exported yet.');
     const [isTraversing, setIsTraversing] = useState(false);
     const listRef = useRef<FlatList<CorpusEntry>>(null);
-    const contentHeightRef = useRef(0);
-    const viewportHeightRef = useRef(0);
     const traversalInFlightRef = useRef(false);
+    const activeBridgePhaseRef = useRef<'cold' | 'warm' | 'imagesDisabled' | null>(null);
     useEffect(() => {
         benchmarkBridge.preparedProseBenchmarkBegin();
     }, [benchmarkBridge]);
@@ -567,94 +575,101 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
         () => new Map(preparedViewerCorpus.documents.map((entry) => [entry.id, entry])),
         []
     );
+    const window = preparedViewerCorpus.warmWindows[windowIndex];
     const entries = useMemo(
         () =>
-            (traversal === 'cold'
-                ? preparedViewerCorpus.coldTraversal
-                : preparedViewerCorpus.warmTraversal
-            ).map((id) => byId.get(id)).filter((entry): entry is CorpusEntry => entry != null),
-        [byId, traversal]
+            (direction === 'prime' ? window.primeIds : window.warmIds)
+                .map((id) => byId.get(id))
+                .filter((entry): entry is CorpusEntry => entry != null),
+        [byId, direction, window]
     );
-    const waitForDrawSettle = useCallback(
-        () =>
-            new Promise<void>((resolve) => {
-                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-            }),
-        []
-    );
-    const runTraversal = useCallback(
-        async (
-            phase: 'cold' | 'warm' | 'imagesDisabled',
-            nextTraversal: 'cold' | 'warm',
-            nextImagesEnabled: boolean
-        ) => {
-            if (traversalInFlightRef.current) return;
-            traversalInFlightRef.current = true;
-            setIsTraversing(true);
-            try {
-                // Changing controls is deliberately outside the phase. The
-                // images-disabled control keeps this exact schema/config and
-                // image loading policy; only renderImages changes.
-                setTraversal(nextTraversal);
-                setImagesEnabled(nextImagesEnabled);
-                await waitForDrawSettle();
-                benchmarkBridge.preparedProseBenchmarkBeginPhase(phase);
+    const beginWindowRun = useCallback((nextImagesEnabled: boolean) => {
+        if (traversalInFlightRef.current) return;
+        traversalInFlightRef.current = true;
+        activeBridgePhaseRef.current = null;
+        setImagesEnabled(nextImagesEnabled);
+        setWindowIndex(0);
+        setPhase(nextImagesEnabled ? 'cold' : 'imagesDisabled');
+        setDirection('prime');
+        setIsTraversing(true);
+    }, []);
+    const endActiveBridgePhase = useCallback(() => {
+        if (activeBridgePhaseRef.current == null) return;
+        benchmarkBridge.preparedProseBenchmarkEndPhase();
+        activeBridgePhaseRef.current = null;
+    }, [benchmarkBridge]);
 
-                const viewportHeight = Math.max(1, viewportHeightRef.current);
-                const finalOffset = Math.max(0, contentHeightRef.current - viewportHeight);
-                const step = Math.max(1, Math.min(320, Math.floor(viewportHeight / 2)));
-                for (let offset = 0; offset < finalOffset; offset += step) {
-                    listRef.current?.scrollToOffset({ offset, animated: false });
-                    await waitForDrawSettle();
-                }
-                listRef.current?.scrollToOffset({ offset: finalOffset, animated: false });
-                await waitForDrawSettle();
-                // Completed-phase exports include this final settled native
-                // draw/frame sample, never an in-progress phase.
-                benchmarkBridge.preparedProseBenchmarkEndPhase();
-            } finally {
-                traversalInFlightRef.current = false;
-                setIsTraversing(false);
+    useEffect(() => {
+        if (!isTraversing) return;
+        if (activeBridgePhaseRef.current !== phase) {
+            benchmarkBridge.preparedProseBenchmarkBeginPhase(phase);
+            activeBridgePhaseRef.current = phase;
+        }
+        const frame = requestAnimationFrame(() => {
+            if (direction === 'prime') {
+                listRef.current?.scrollToEnd({ animated: true });
+            } else {
+                listRef.current?.scrollToIndex({ index: 0, animated: true });
             }
-        },
-        [waitForDrawSettle]
-    );
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [benchmarkBridge, direction, isTraversing, phase, windowIndex]);
+
+    const advanceDirectionOrWindow = useCallback(() => {
+        if (!traversalInFlightRef.current) return;
+        if (direction === 'prime') {
+            if (phase !== 'imagesDisabled') {
+                endActiveBridgePhase();
+                setPhase('warm');
+            }
+            setDirection('warm');
+            return;
+        }
+
+        const nextWindowIndex = windowIndex + 1;
+        if (nextWindowIndex < preparedViewerCorpus.warmWindows.length) {
+            if (phase !== 'imagesDisabled') {
+                endActiveBridgePhase();
+                setPhase('cold');
+            }
+            setWindowIndex(nextWindowIndex);
+            setDirection('prime');
+            return;
+        }
+
+        endActiveBridgePhase();
+        traversalInFlightRef.current = false;
+        setIsTraversing(false);
+    }, [direction, endActiveBridgePhase, phase, windowIndex]);
 
     return (
         <View style={styles.benchmarkScreen}>
             <Text style={styles.benchmarkTitle}>Prepared prose benchmark</Text>
             <Text style={styles.benchmarkSubtitle}>
-                {entries.length} deterministic messages · {traversal} traversal · images{' '}
+                {entries.length} messages · {window.id} · {phase} {direction} · images{' '}
                 {imagesEnabled ? 'enabled' : 'disabled'}
             </Text>
             <View style={styles.benchmarkControls}>
                 <Pressable
                     disabled={isTraversing}
-                    onPress={() => void runTraversal('cold', 'cold', true)}
+                    onPress={() => beginWindowRun(true)}
                     style={styles.benchmarkButton}>
-                    <Text style={styles.benchmarkButtonLabel}>Cold traversal</Text>
-                </Pressable>
-                <Pressable
-                    disabled={isTraversing}
-                    onPress={() => void runTraversal('warm', 'warm', true)}
-                    style={styles.benchmarkButton}>
-                    <Text style={styles.benchmarkButtonLabel}>Warm traversal</Text>
+                    <Text style={styles.benchmarkButtonLabel}>Run warm windows</Text>
                 </Pressable>
                 <Pressable
                     disabled={isTraversing}
                     onPress={() => {
                         // Reset is intentionally not a traversal phase.
                         benchmarkBridge.preparedProseBenchmarkReset();
-                        setCacheEpoch((epoch) => epoch + 1);
                     }}
                     style={styles.benchmarkButton}>
                     <Text style={styles.benchmarkButtonLabel}>Reset cache</Text>
                 </Pressable>
                 <Pressable
                     disabled={isTraversing}
-                    onPress={() => void runTraversal('imagesDisabled', 'cold', false)}
+                    onPress={() => beginWindowRun(false)}
                     style={styles.benchmarkButton}>
-                    <Text style={styles.benchmarkButtonLabel}>Images disabled traversal</Text>
+                    <Text style={styles.benchmarkButtonLabel}>Images disabled windows</Text>
                 </Pressable>
                 <Pressable
                     disabled={isTraversing}
@@ -670,13 +685,12 @@ function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
             <FlatList
                 ref={listRef}
                 data={entries}
-                extraData={`${traversal}:${imagesEnabled}:${cacheEpoch}`}
-                keyExtractor={(item) => `${cacheEpoch}:${item.id}`}
+                extraData={`${phase}:${direction}:${imagesEnabled}`}
+                keyExtractor={(item) => item.id}
                 initialNumToRender={12}
                 maxToRenderPerBatch={12}
                 windowSize={9}
-                onContentSizeChange={(_width, height) => { contentHeightRef.current = height; }}
-                onLayout={(event) => { viewportHeightRef.current = event.nativeEvent.layout.height; }}
+                onMomentumScrollEnd={advanceDirectionOrWindow}
                 renderItem={({ item }) => (
                     <NativeProseViewer
                         contentJSON={item.contentJSON}

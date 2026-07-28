@@ -8,11 +8,55 @@ jest.mock('../specs/NativePreparedProseViewer', () => {
 });
 
 import React from 'react';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { fireEvent, render } from '@testing-library/react-native';
 
 import { NativeProseViewer } from '../NativeProseViewer';
 
 describe('NativeProseViewer', () => {
+    it('benchmark FlatList consumes warmWindows', () => {
+        const source = readFileSync(join(__dirname, '..', '..', 'example', 'App.tsx'), 'utf8');
+        const benchmarkStart = source.indexOf('function PreparedViewerBenchmarkScreen');
+        const benchmarkEnd = source.indexOf('\nconst styles =', benchmarkStart);
+        expect(benchmarkStart).toBeGreaterThanOrEqual(0);
+        expect(benchmarkEnd).toBeGreaterThan(benchmarkStart);
+        const benchmark = source.slice(benchmarkStart, benchmarkEnd);
+
+        expect(source).toContain('warmWindows: WarmWindow[]');
+        expect(benchmark).toContain('preparedViewerCorpus.warmWindows');
+        expect(benchmark).toContain('windowIndex');
+        expect(benchmark).toContain('phase');
+        expect(benchmark).toContain('direction');
+        expect(benchmark).toContain('scrollToEnd({ animated: true })');
+        expect(benchmark).toContain('scrollToIndex({ index: 0, animated: true })');
+        expect(benchmark).toContain('onMomentumScrollEnd');
+        expect(benchmark).toContain('keyExtractor={(item) => item.id}');
+        expect(benchmark).toContain('renderImages={imagesEnabled}');
+        for (const bridgeMethod of [
+            'preparedProseBenchmarkBegin',
+            'preparedProseBenchmarkBeginPhase',
+            'preparedProseBenchmarkEndPhase',
+            'preparedProseBenchmarkReset',
+            'preparedProseBenchmarkExport',
+        ]) {
+            expect(source).toContain(bridgeMethod);
+        }
+        for (const forbidden of [
+            'onContentSizeChange',
+            'contentHeightRef',
+            'scrollToOffset',
+            'measureInWindow',
+            'onContentHeightChange',
+            'heightCache',
+            'containerWidth',
+            'getItemLayout',
+        ]) {
+            expect(benchmark).not.toContain(forbidden);
+        }
+        expect(benchmark).not.toMatch(/\bmeasure\s*\(/);
+    });
+
     it('passes JSON directly to the Fabric component with serialized configuration', () => {
         const document = {
             type: 'doc',
