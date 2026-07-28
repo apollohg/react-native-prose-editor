@@ -107,7 +107,6 @@ android {
     }
     testOptions {
         unitTests.includeAndroidResources = true
-        unitTests.includeAndroidResources = true
         unitTests.all { test ->
             if (project.findProperty("apollohgShowPerfTestOutput") == "true") {
                 test.testLogging {

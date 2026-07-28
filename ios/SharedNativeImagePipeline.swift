@@ -538,6 +538,7 @@ final class RenderImageLoadOwner {
         let generation: UInt64
         let deadline: TimeInterval
         let completion: (UIImage?) -> Void
+        let onAcceptedStart: () -> Void
     }
 
     private final class ActiveRequest {
@@ -638,7 +639,8 @@ final class RenderImageLoadOwner {
     @discardableResult
     func startImageLoad(
         source: String,
-        completion: @escaping (UIImage?) -> Void
+        completion: @escaping (UIImage?) -> Void,
+        onAcceptedStart: @escaping () -> Void = {}
     ) -> ImageLoadReceipt? {
         let request: Request? = stateQueue.sync {
             let request = Request(
@@ -646,7 +648,8 @@ final class RenderImageLoadOwner {
                 source: source,
                 generation: generation,
                 deadline: now() + storedPolicy.requestTimeout,
-                completion: completion
+                completion: completion,
+                onAcceptedStart: onAcceptedStart
             )
             if occupiedWorkCountLocked >= storedPolicy.maxConcurrentRequests {
                 guard pending.count < storedPolicy.maxPendingRequests else { return nil }
@@ -715,6 +718,7 @@ final class RenderImageLoadOwner {
             return
         }
         if let cached = RenderImageCache.cache.image(forKey: cacheKey) {
+            request.onAcceptedStart()
             finishLocked(request, image: cached)
             return
         }
@@ -727,6 +731,7 @@ final class RenderImageLoadOwner {
                 finishLocked(request, image: nil)
                 return
             }
+            request.onAcceptedStart()
             decodeWorkIds.insert(request.id)
             decodeQueue.async { [weak self] in
                 guard let self else { return }
@@ -752,6 +757,7 @@ final class RenderImageLoadOwner {
             finishLocked(request, image: nil)
             return
         }
+        request.onAcceptedStart()
         activeRequest.task = transport.load(url, policy: policy) { [weak self] result in
             guard let self else { return }
             self.stateQueue.async {

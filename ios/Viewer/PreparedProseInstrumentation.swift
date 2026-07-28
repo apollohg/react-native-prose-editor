@@ -83,8 +83,16 @@ enum PreparedProseInstrumentation {
         return .init(nominalFrameCount: Int((rawDeltaNanos + nominalFramePeriodNanos - 1) / nominalFramePeriodNanos), isDelayed: true)
     }
 
-    static func viewerCaused(_ start: UInt64, _ end: UInt64, _ spans: [ViewerWorkSpan], _ period: UInt64) -> Bool {
-        let lateness = end > start + period ? end - start - period : 0
+    static func viewerCaused(
+        _ start: UInt64,
+        _ end: UInt64,
+        _ spans: [ViewerWorkSpan],
+        rawDeltaNanos: UInt64,
+        nominalFramePeriodNanos: UInt64
+    ) -> Bool {
+        let lateness = rawDeltaNanos > nominalFramePeriodNanos
+            ? rawDeltaNanos - nominalFramePeriodNanos
+            : 0
         let clipped = spans.compactMap { span -> Range<UInt64>? in
             let lower = max(start, span.startNanos), upper = min(end, span.endNanos)
             return lower < upper ? lower..<upper : nil
@@ -145,7 +153,13 @@ enum PreparedProseInstrumentation {
             sample.nominalFrameCount += classification.nominalFrameCount
             if classification.isDelayed {
                 sample.delayedIntervalCount += 1
-                let caused = viewerCaused(intervalStart, intervalEnd, spans, nominalFramePeriodNanos)
+                let caused = viewerCaused(
+                    intervalStart,
+                    intervalEnd,
+                    spans,
+                    rawDeltaNanos: rawDeltaNanos,
+                    nominalFramePeriodNanos: nominalFramePeriodNanos
+                )
                 let interval = DelayedInterval(
                     startNanos: intervalStart,
                     endNanos: intervalEnd,

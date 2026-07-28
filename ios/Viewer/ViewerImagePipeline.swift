@@ -382,8 +382,9 @@ final class ViewerImagePipeline {
         }
         guard let (currentGeneration, toStart) = start else { return }
         for attachment in toStart {
-            PreparedProseInstrumentation.imageRequested()
-            let receipt = owner.startImageLoad(source: attachment.source) { [weak self] image in
+            let receipt = owner.startImageLoad(
+                source: attachment.source,
+                completion: { [weak self] image in
                 guard let self, self.acceptsCompletion(generation: currentGeneration) else { return }
                 guard let image else {
                     self.reportFailure(attachment, generation: currentGeneration)
@@ -399,7 +400,9 @@ final class ViewerImagePipeline {
                 guard self.acceptsCompletion(generation: currentGeneration) else { return }
                 PreparedProseInstrumentation.imageDecoded()
                 self.onPixels?(attachment, image)
-            }
+                },
+                onAcceptedStart: PreparedProseInstrumentation.imageRequested
+            )
             if let receipt {
                 let shouldRetain = lock.withLock { () -> Bool in
                     guard enabled, generation == currentGeneration else { return false }

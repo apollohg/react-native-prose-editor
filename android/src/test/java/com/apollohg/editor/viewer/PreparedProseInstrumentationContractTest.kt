@@ -34,11 +34,12 @@ class PreparedProseInstrumentationContractTest {
         assertFalse(
             PreparedProseInstrumentation.viewerCaused(
                 0L,
-                delayed,
+                24_000_000L,
                 listOf(
-                    PreparedProseInstrumentation.ViewerWorkSpan(10_000_000L, 13_900_000L, PreparedProseInstrumentation.ViewerWorkKind.DRAW),
-                    PreparedProseInstrumentation.ViewerWorkSpan(10_000_000L, 13_900_000L, PreparedProseInstrumentation.ViewerWorkKind.LAYOUT),
+                    PreparedProseInstrumentation.ViewerWorkSpan(10_000_000L, 20_000_000L, PreparedProseInstrumentation.ViewerWorkKind.DRAW),
+                    PreparedProseInstrumentation.ViewerWorkSpan(10_000_000L, 20_000_000L, PreparedProseInstrumentation.ViewerWorkKind.LAYOUT),
                 ),
+                delayed,
                 period,
             ),
         )
@@ -50,6 +51,7 @@ class PreparedProseInstrumentationContractTest {
                     PreparedProseInstrumentation.ViewerWorkSpan(0L, 12_000_000L, PreparedProseInstrumentation.ViewerWorkKind.LAYOUT),
                     PreparedProseInstrumentation.ViewerWorkSpan(12_000_000L, 24_000_000L, PreparedProseInstrumentation.ViewerWorkKind.DRAW),
                 ),
+                delayed,
                 period,
             ),
         )

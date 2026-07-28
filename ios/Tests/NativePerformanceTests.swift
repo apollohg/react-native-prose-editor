@@ -427,14 +427,15 @@ final class NativePerformanceTests: XCTestCase {
         XCTAssertFalse(
             PreparedProseInstrumentation.viewerCaused(
                 0,
-                delayedEnd,
+                24_000_000,
                 [
-                    .init(startNanos: 10_000_000, endNanos: 13_900_000, kind: .draw),
-                    .init(startNanos: 10_000_000, endNanos: 13_900_000, kind: .layout),
+                    .init(startNanos: 10_000_000, endNanos: 20_000_000, kind: .draw),
+                    .init(startNanos: 10_000_000, endNanos: 20_000_000, kind: .layout),
                 ],
-                fixture.nominalFramePeriodNanos
+                rawDeltaNanos: delayedEnd,
+                nominalFramePeriodNanos: fixture.nominalFramePeriodNanos
             ),
-            "overlapping spans must be unioned instead of double-counted"
+            "causal attribution must use the exported raw frame delta and union overlapping spans"
         )
         XCTAssertTrue(
             PreparedProseInstrumentation.viewerCaused(
@@ -444,7 +445,8 @@ final class NativePerformanceTests: XCTestCase {
                     .init(startNanos: 0, endNanos: 12_000_000, kind: .layout),
                     .init(startNanos: 12_000_000, endNanos: 24_000_000, kind: .draw),
                 ],
-                fixture.nominalFramePeriodNanos
+                rawDeltaNanos: delayedEnd,
+                nominalFramePeriodNanos: fixture.nominalFramePeriodNanos
             )
         )
 

@@ -73,10 +73,19 @@ internal object PreparedProseInstrumentation {
         return FrameClassification(toIntExact(addExact(rawDeltaNanos, nominalFramePeriodNanos - 1) / nominalFramePeriodNanos), true)
     }
 
-    fun viewerCaused(start: Long, end: Long, spans: List<ViewerWorkSpan>, period: Long): Boolean {
-        require(end >= start); require(period > 0)
-        val duration = subtractExact(end, start)
-        val lateness = if (duration > period) subtractExact(duration, period) else 0L
+    fun viewerCaused(
+        start: Long,
+        end: Long,
+        spans: List<ViewerWorkSpan>,
+        rawDeltaNanos: Long,
+        nominalFramePeriodNanos: Long,
+    ): Boolean {
+        require(end >= start); require(rawDeltaNanos >= 0); require(nominalFramePeriodNanos > 0)
+        val lateness = if (rawDeltaNanos > nominalFramePeriodNanos) {
+            subtractExact(rawDeltaNanos, nominalFramePeriodNanos)
+        } else {
+            0L
+        }
         val union = mergedRanges(start, end, spans)
         val work = union.fold(0L) { total, range -> addExact(total, subtractExact(range.upper, range.lower)) }
         return lateness > 0 && work >= lateness
@@ -105,7 +114,13 @@ internal object PreparedProseInstrumentation {
             sample.nominalFrameCount += classification.nominalFrameCount
             if (classification.isDelayed) {
                 sample.delayedIntervalCount++
-                val caused = viewerCaused(previous, frameTimeNanos, spans, NOMINAL_FRAME_PERIOD_NANOS)
+                val caused = viewerCaused(
+                    previous,
+                    frameTimeNanos,
+                    spans,
+                    rawDelta,
+                    NOMINAL_FRAME_PERIOD_NANOS,
+                )
                 val interval = DelayedInterval(previous, frameTimeNanos, rawDelta, clippedWork(previous, frameTimeNanos, spans, ViewerWorkKind.LAYOUT), clippedWork(previous, frameTimeNanos, spans, ViewerWorkKind.DRAW), caused)
                 if (caused) sample.viewerCausedDelayedIntervals += interval
             }
