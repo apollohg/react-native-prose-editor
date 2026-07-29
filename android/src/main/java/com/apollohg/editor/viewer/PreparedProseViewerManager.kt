@@ -23,6 +23,16 @@ import com.facebook.yoga.YogaMeasureOutput
 import java.util.WeakHashMap
 import kotlin.math.roundToInt
 
+internal fun fabricConstraintPixels(value: Float): Int? {
+    if (!value.isFinite() || value <= 0f || value > Int.MAX_VALUE.toFloat()) return null
+    return value.roundToInt().takeIf { it > 0 }
+}
+
+internal fun fabricPixelsToDp(value: Float, density: Float): Float? {
+    if (!value.isFinite() || value < 0f || !density.isFinite() || density <= 0f) return null
+    return value / density
+}
+
 /** Fabric ViewManager; Yoga measurement creates the artifact and mounting only acquires it. */
 @ReactModule(name = PreparedProseViewerManager.REACT_CLASS)
 internal class PreparedProseViewerManager :
@@ -167,7 +177,7 @@ internal class PreparedProseViewerManager :
             // same surface; recycle and surface-stop own terminal cleanup.
             return YogaMeasureOutput.make(0f, 0f)
         }
-        val widthPx = widthToPixels(width, density)
+        val widthPx = fabricConstraintPixels(width)
         // The registry begins and scopes this exact surface/component sidecar
         // around preparation, so an LRU miss cannot borrow another surface.
         val artifact = if (
@@ -178,11 +188,12 @@ internal class PreparedProseViewerManager :
         } else {
             PreparedProseLayoutRegistry.shared.measure(request, widthPx, density, fabricSurface = surface, fabricLeaseHandle = leaseHandle, fontScale = fontScale)
         }
-        val measuredWidth = artifact.widthPx / density
-        val intrinsicHeight = artifact.heightPx / density
+        val measuredWidth = fabricPixelsToDp(artifact.widthPx.toFloat(), density) ?: 0f
+        val intrinsicHeight = fabricPixelsToDp(artifact.heightPx.toFloat(), density) ?: 0f
+        val constrainedHeight = fabricPixelsToDp(height, density)
         val measuredHeight = when (heightMode) {
-            YogaMeasureMode.EXACTLY -> height
-            YogaMeasureMode.AT_MOST -> minOf(intrinsicHeight, height)
+            YogaMeasureMode.EXACTLY -> constrainedHeight ?: 0f
+            YogaMeasureMode.AT_MOST -> constrainedHeight?.let { minOf(intrinsicHeight, it) } ?: intrinsicHeight
             else -> intrinsicHeight
         }
         return YogaMeasureOutput.make(measuredWidth, measuredHeight)
@@ -204,7 +215,7 @@ internal class PreparedProseViewerManager :
             return
         }
         val density = view.resources.displayMetrics.density
-        val widthPx = widthToPixels(view.width / density, density) ?: run {
+        val widthPx = fabricConstraintPixels(view.width.toFloat()) ?: run {
             state.finishWithoutMountedReplacement(view)
             return
         }
@@ -316,13 +327,6 @@ internal class PreparedProseViewerManager :
         val surfaceId = data.longOrZero("surfaceId").toInt()
         val componentTag = data.longOrZero("componentTag").toInt()
         return if (surfaceId > 0 && componentTag > 0) FabricSurfaceToken(surfaceId, componentTag) else null
-    }
-
-    private fun widthToPixels(widthDip: Float, density: Float): Int? {
-        if (!widthDip.isFinite() || widthDip <= 0f || !density.isFinite() || density <= 0f) return null
-        val pixels = widthDip.toDouble() * density.toDouble()
-        if (!pixels.isFinite() || pixels <= 0 || pixels > Int.MAX_VALUE.toDouble()) return null
-        return pixels.roundToInt().takeIf { it > 0 }
     }
 
     private fun ReadableMap.stringOrNull(key: String): String? =

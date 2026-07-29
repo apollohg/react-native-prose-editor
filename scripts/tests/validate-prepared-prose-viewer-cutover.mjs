@@ -116,6 +116,16 @@ assert.deepEqual(
     'React Native config must not disable or redirect package-root iOS autolinking',
 );
 assert.doesNotMatch(read('expo-module.config.json'), /NativeProseViewer/);
+const expoModuleConfig = JSON.parse(read('expo-module.config.json'));
+assert.equal(
+    expoModuleConfig.android.name,
+    'apollohg_react-native-prose-editor',
+    'Expo and React Native autolinking must share one Android Gradle project',
+);
+assert.ok(
+    !exists('android/src/main/jni/ReactNativeProseEditorSpec.cpp'),
+    'React Native codegen owns the Android TurboModule provider implementation',
+);
 
 assert.ok(exists('ReactNativeProseEditor.podspec'), 'package-root podspec is required for Expo/RN codegen discovery');
 assert.ok(!exists('ios/ReactNativeProseEditor.podspec'), 'legacy nested podspec must not shadow package-root codegen discovery');

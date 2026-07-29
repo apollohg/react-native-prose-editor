@@ -40,10 +40,12 @@ folly::dynamic toDynamic(const PreparedProseViewerProps& props) {
 folly::dynamic toState(
     uint64_t attachmentRevision,
     uint64_t nativeFontRevision,
+    double nativeFontScale,
     uint64_t leaseHandle) {
   return folly::dynamic::object
       ("attachmentRevision", static_cast<int64_t>(attachmentRevision))
       ("nativeFontRevision", static_cast<int64_t>(nativeFontRevision))
+      ("nativeFontScale", nativeFontScale)
       ("leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
 }
 
@@ -73,7 +75,11 @@ class AndroidLeaseLifecycleBridge final {
         registerLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
             "registerNativeLease")),
         finalizeLease_(bridgeClass_->getStaticMethod<void(jint, jint, jlong)>(
-            "finalizeNativeLease")) {}
+            "finalizeNativeLease")),
+        beginNativeMeasure_(
+            bridgeClass_->getStaticMethod<void(jlong)>("beginNativeMeasure")),
+        endNativeMeasure_(
+            bridgeClass_->getStaticMethod<void()>("endNativeMeasure")) {}
 
   void registerLease(SurfaceId surfaceId, Tag componentTag, uint64_t leaseHandle) const {
     registerLease_(bridgeClass_, static_cast<jint>(surfaceId),
@@ -87,10 +93,20 @@ class AndroidLeaseLifecycleBridge final {
                    static_cast<jlong>(leaseHandle));
   }
 
+  void beginNativeMeasure(uint64_t leaseHandle) const {
+    beginNativeMeasure_(bridgeClass_, static_cast<jlong>(leaseHandle));
+  }
+
+  void endNativeMeasure() const {
+    endNativeMeasure_(bridgeClass_);
+  }
+
  private:
   facebook::jni::global_ref<facebook::jni::JClass> bridgeClass_;
   facebook::jni::JStaticMethod<void(jint, jint, jlong)> registerLease_;
   facebook::jni::JStaticMethod<void(jint, jint, jlong)> finalizeLease_;
+  facebook::jni::JStaticMethod<void(jlong)> beginNativeMeasure_;
+  facebook::jni::JStaticMethod<void()> endNativeMeasure_;
 };
 
 } // namespace
@@ -172,19 +188,17 @@ Size PreparedProseMeasurementsManager::measure(
                                   jfloat,
                                   jfloat,
                                   jfloat)>("measure");
-    static auto beginNativeMeasure = facebook::jni::findClassStatic(
-        "com/apollohg/editor/viewer/FabricLeaseHandleBridge")
-        ->getStaticMethod<void(jlong)>("beginNativeMeasure");
-    static auto endNativeMeasure = facebook::jni::findClassStatic(
-        "com/apollohg/editor/viewer/FabricLeaseHandleBridge")
-        ->getStaticMethod<void()>("endNativeMeasure");
-    const auto localData = folly::dynamic::object
+    auto& leaseBridge = AndroidLeaseLifecycleBridge::processLifetime();
+    folly::dynamic localData = folly::dynamic::object
         ("surfaceId", static_cast<int64_t>(surfaceId))
         ("componentTag", static_cast<int64_t>(componentTag))
         ("leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
-    const auto propsDynamic = toDynamic(props);
-    const auto stateDynamic = toState(attachmentRevision, nativeFontRevision, leaseHandle)
-        ("nativeFontScale", nativeFontScale);
+    auto propsDynamic = toDynamic(props);
+    auto stateDynamic = toState(
+        attachmentRevision,
+        nativeFontRevision,
+        nativeFontScale,
+        leaseHandle);
     const auto localDataNative = ReadableNativeMap::newObjectCxxArgs(localData);
     const auto propsNative = ReadableNativeMap::newObjectCxxArgs(propsDynamic);
     const auto stateNative = ReadableNativeMap::newObjectCxxArgs(stateDynamic);
@@ -193,7 +207,7 @@ Size PreparedProseMeasurementsManager::measure(
     const auto stateMap = make_local(reinterpret_cast<ReadableMap::javaobject>(stateNative.get()));
     const auto componentName = make_jstring("PreparedProseViewer");
     const auto width = effectiveWidth;
-    beginNativeMeasure(static_cast<int64_t>(leaseHandle));
+    leaseBridge.beginNativeMeasure(leaseHandle);
     try {
       const auto result = yogaMeassureToSize(measure(
           fabricUIManager,
@@ -206,12 +220,12 @@ Size PreparedProseMeasurementsManager::measure(
           width,
           0,
           std::numeric_limits<Float>::infinity()));
-      endNativeMeasure();
+      leaseBridge.endNativeMeasure();
       return result;
     } catch (...) {
       // Still inside ThreadScope, so this is the only safe place to clear the
       // Java thread-local handoff after FabricUIManager.measure throws.
-      endNativeMeasure();
+      leaseBridge.endNativeMeasure();
       return {};
     }
   } catch (...) {

@@ -37,6 +37,48 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(registry.layoutPreparationCount, 1)
     }
 
+    func testFrameBasedLayoutPreparesAndInstallsWithoutPriorMeasurement() throws {
+        var preparations = 0
+        let registry = makeRegistry { document, key, width, scale in
+            preparations += 1
+            return try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let viewer = ProseViewerView(layoutRegistry: registry)
+
+        XCTAssertTrue(viewer.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
+        viewer.frame = CGRect(x: 0, y: 0, width: 160, height: 200)
+        viewer.setNeedsLayout()
+        viewer.layoutIfNeeded()
+
+        let first = try XCTUnwrap(viewer.drawingViewForTesting.layout)
+        XCTAssertGreaterThan(first.size.height, 0)
+        XCTAssertFalse(first.blocks.isEmpty)
+        XCTAssertEqual(preparations, 1)
+
+        viewer.setNeedsLayout()
+        viewer.layoutIfNeeded()
+        XCTAssertTrue(viewer.drawingViewForTesting.layout === first)
+        XCTAssertEqual(preparations, 1)
+
+        viewer.frame.size.width = 120
+        viewer.setNeedsLayout()
+        viewer.layoutIfNeeded()
+        let second = try XCTUnwrap(viewer.drawingViewForTesting.layout)
+        XCTAssertFalse(second === first)
+        XCTAssertEqual(preparations, 2)
+
+        viewer.frame.size.width = 160
+        viewer.setNeedsLayout()
+        viewer.layoutIfNeeded()
+        XCTAssertTrue(viewer.drawingViewForTesting.layout === first)
+        XCTAssertEqual(preparations, 2)
+    }
+
     func testChangedPhysicalWidthPreparesOneAdditionalArtifact() {
         var preparations = 0
         let registry = makeRegistry { document, key, width, scale in
@@ -1431,6 +1473,26 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(shadow.contains("return 0;"))
     }
 
+    func testFabricComponentRetriesInstallationAfterWindowAttachmentStaticContract() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let component = try String(
+            contentsOf: root.appendingPathComponent("ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm"),
+            encoding: .utf8
+        )
+        let callback = try XCTUnwrap(component.range(of: "- (void)didMoveToWindow"))
+        let installGate = try XCTUnwrap(
+            component.range(
+                of: "[self installMeasuredArtifactIfAttached]",
+                range: callback.lowerBound ..< component.endIndex
+            )
+        )
+
+        XCTAssertLessThan(callback.lowerBound, installGate.lowerBound)
+    }
+
     func testNeverMountedFabricStateBindsExactTerminalCleanupStaticContract() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1485,6 +1547,9 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertTrue(jni.contains("Every object allocation, class lookup, and Java invocation below can run"))
         XCTAssertTrue(jni.contains("Still inside ThreadScope"))
         XCTAssertTrue(jni.contains("std::to_string(static_cast<int64_t>(leaseHandle))"))
+        XCTAssertTrue(jni.contains("folly::dynamic localData"))
+        XCTAssertTrue(jni.contains("beginNativeMeasure_(bridgeClass_"))
+        XCTAssertTrue(jni.contains("endNativeMeasure_(bridgeClass_)"))
     }
 
     func testFabricCommitPermitsOnlyItsCanonicalGeneration() {

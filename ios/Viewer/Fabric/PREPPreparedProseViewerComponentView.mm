@@ -320,6 +320,16 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   [_drawingView updateConfiguredImagesForVisibleWindow];
 }
 
+- (void)didMoveToWindow
+{
+  [super didMoveToWindow];
+  if (self.window == nil) {
+    return;
+  }
+  [self installMeasuredArtifactIfAttached];
+  [_drawingView updateConfiguredImagesForVisibleWindow];
+}
+
 - (void)prepareForRecycle
 {
   [self releaseAllFabricOwnership];
@@ -421,7 +431,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (void)installMeasuredArtifactIfAttached
 {
   // This is a deliberate lifecycle test seam: updateProps, updateState,
-  // updateLayoutMetrics, and didMoveToSuperview all enter through this gate.
+  // updateLayoutMetrics, didMoveToSuperview, and didMoveToWindow all enter
+  // through this gate.
   // It must never acquire or dispatch while the component is detached.
   if (self.superview == nil || !_viewerProps || !_viewerState ||
       !_hasReceivedUsableLayoutMetrics || !HasUsableLayoutMetrics(_layoutMetrics)) {

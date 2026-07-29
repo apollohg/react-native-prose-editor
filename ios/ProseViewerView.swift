@@ -18,7 +18,7 @@ public extension ProseViewerInteractionDelegate {
     func proseViewer(_ view: ProseViewerView, didFail error: ProseViewerError) {}
 }
 
-/// A direct Core Text viewer. Measurement prepares an immutable artifact; layout only installs it.
+/// A direct Core Text viewer. Its first finite measurement or layout prepares an immutable artifact.
 public final class ProseViewerView: UIView {
     public weak var interactionDelegate: ProseViewerInteractionDelegate?
 
@@ -226,7 +226,14 @@ public final class ProseViewerView: UIView {
     public override func layoutSubviews() {
         super.layoutSubviews()
         drawingView.frame = bounds
-        drawingView.install(layout: ownedLayout)
+        let scale = displayScale
+        if let request,
+           let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: bounds.width, scale: scale),
+           !ownedLayoutMatches(request: request, widthPixels: widthPixels, scale: scale) {
+            _ = preparedLayout(width: bounds.width, scale: scale)
+        } else {
+            drawingView.install(layout: ownedLayout)
+        }
         requestVisibleImageAttachments()
     }
 
@@ -264,6 +271,13 @@ public final class ProseViewerView: UIView {
     private var displayScale: CGFloat {
         let scale = window?.screen.scale ?? UIScreen.main.scale
         return scale.isFinite && scale > 0 ? scale : 1
+    }
+
+    private func ownedLayoutMatches(request: ProseViewerRequest, widthPixels: Int, scale: CGFloat) -> Bool {
+        guard let ownedLayout else { return false }
+        return ownedLayout.key.generationIdentity == request.generationIdentity
+            && ownedLayout.key.widthPixels == widthPixels
+            && ownedLayout.key.displayScaleBits == Double(scale).bitPattern
     }
 
     @discardableResult
