@@ -61,17 +61,13 @@ jobs:
 
       # The compiled core is a build output, not a tracked file. It is built
       # here from the pinned toolchain so the published binary provably comes
-      # from the source in this commit. This has to precede `pod install`,
-      # which resolves the podspec's vendored EditorCore.xcframework path.
+      # from the source in this commit. Package validation generates the
+      # example projects and installs CocoaPods after these frameworks exist.
       - name: Build editor-core for all shipping targets
         run: npm run build:rust
 
       - name: Verify generated bindings are current
         run: git diff --exit-code -- rust/bindings ios/Generated_editor_core.swift ios/editor_coreFFI
-
-      - name: Install CocoaPods dependencies
-        run: pod install --no-repo-update
-        working-directory: example/ios
 
       - name: Typecheck package
         run: npm run typecheck
