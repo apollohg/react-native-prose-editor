@@ -92,7 +92,7 @@ impl Drop for OutboxReservation {
 
 /// Reserved capacity for protocol replies (Sync Step responses). Replies
 /// share the outbox ceilings so a saturated queue rejects before any
-/// irreversible protocol work; Task 9 consumes a reservation through the
+/// irreversible protocol work; consumes a reservation through the
 /// infallible [`CollaborationOutbox::install_protocol_replies`].
 #[derive(Debug)]
 pub struct ProtocolReplyReservation {

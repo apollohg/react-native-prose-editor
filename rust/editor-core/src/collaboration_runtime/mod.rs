@@ -1,18 +1,16 @@
-//! Collaboration runtime host (production since the Task 16C cutover
-//! removed the staging gate).
+//! Collaboration runtime host.
 //!
-//! Task 7 added the bounded pre-commit document outbox plus attachment
-//! plumbing on `EditorSession`; Task 8 added the generation-owned transport
-//! state machine ([`state::TransportStateMachine`], session-owned per the
-//! established split); Task 9 added strict standard y-sync protocol
-//! handling ([`protocol`]) that composes those seams with the engine's
-//! sealed remote-update surface; Task 10 added runtime awareness ownership
-//! ([`awareness`]): desired local state, peer projections, and the
-//! deterministic renewal/expiry clocks, all wired through the engine-owned
-//! `AwarenessCodec`. The runtime owns no `yrs::Doc`, no awareness object,
-//! and cannot apply Yrs mutations directly; for dependency-pending updates
-//! it retains only byte-unit work accounting — the payload bytes stay
-//! quarantined inside the engine.
+//! Adds the bounded pre-commit document outbox plus attachment plumbing on
+//! `EditorSession`; added the generation-owned transport state machine
+//! ([`state::TransportStateMachine`], session-owned per the established
+//! split); added strict standard y-sync protocol handling ([`protocol`])
+//! that composes those seams with the engine's sealed remote-update
+//! surface; added runtime awareness ownership ([`awareness`]): desired
+//! local state, peer projections, and the deterministic renewal/expiry
+//! clocks, all wired through the engine-owned `AwarenessCodec`. The runtime
+//! owns no `yrs::Doc`, no awareness object, and cannot apply Yrs mutations
+//! directly; for dependency-pending updates it retains only byte-unit work
+//! accounting — the payload bytes stay quarantined inside the engine.
 
 pub mod awareness;
 pub mod outbox;

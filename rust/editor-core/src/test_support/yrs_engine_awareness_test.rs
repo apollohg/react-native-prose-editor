@@ -1,4 +1,4 @@
-//! Task 6: engine-owned awareness codec sealed behind `YrsDocumentEngine`.
+//! Engine-owned awareness codec sealed behind `YrsDocumentEngine`.
 //!
 //! Wire-compatibility fixtures use an independent raw `yrs::sync::Awareness`
 //! instance so both encode/apply directions are proven against the standard
@@ -695,7 +695,7 @@ fn same_store_replacement_preserves_awareness_binding_and_peers() {
         .apply_remote_update_v1(&raw_update_bytes(&raw), &limits)
         .unwrap();
 
-    // Task 5 same-store whole-document replacement must NOT drop awareness.
+    // Same-store whole-document replacement must NOT drop awareness.
     engine
         .prepare_root_replacement_json(
             20,
@@ -918,10 +918,9 @@ fn query_awareness_answer_covers_all_alive_states() {
     assert_eq!(entries.len(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// Task 18A: security-review findings C1 (unbounded remote tombstones), I1
-// (remote clock overflow), I2 (presence suppression via clock squatting).
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------:
+// security-review findings C1 (unbounded remote tombstones), I1 (remote clock
+// overflow), I2 (presence suppression via clock squatting).
 
 #[test]
 fn unknown_tombstone_storms_are_dropped_without_growing_state() {

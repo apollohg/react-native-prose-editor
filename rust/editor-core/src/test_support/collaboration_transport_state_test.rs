@@ -1,11 +1,11 @@
-//! Task 8: generation-owned transport transitions.
+//! Generation-owned transport transitions.
 //!
 //! Covers the design's required-transition table as an exhaustive
 //! document-state x transport-state x action matrix (including destroy rows
 //! and pre-acquired handles), generation discipline (monotonic increments,
 //! stale callbacks as observable no-ops), Rust-owned retry disposition with
-//! the `Incompatible` detach/reattach escape hatch, the Task 5 replacement
-//! policy gate driven by real transitions, and outbox preservation across
+//! the `Incompatible` detach/reattach escape hatch, the replacement policy
+//! gate driven by real transitions, and outbox preservation across
 //! transport teardown.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -706,7 +706,7 @@ fn replacement_policy_gate_follows_real_transport_transitions() {
     );
     let _ = generation;
 
-    // Incompatible is an allowed replacement row of the Task 5 matrix.
+    // Incompatible is an allowed replacement row of the matrix.
     transport_detach(id, 154).unwrap();
     transport_reattach(id, 154).unwrap();
     let generation = drive_generation(id, 154).unwrap();
@@ -774,10 +774,10 @@ fn transport_teardown_never_drops_pending_outbox_entries() {
     bridge::destroy_session(id);
 }
 
-/// Task 10 extension of the teardown matrix rows above: the same
-/// transitions that preserve the pending outbox entry clear the
-/// transport-scoped awareness peers while the desired local awareness
-/// survives every one of them.
+/// Extension of the teardown matrix rows above: the same transitions
+/// that preserve the pending outbox entry clear the transport-scoped
+/// awareness peers while the desired local awareness survives every
+/// one of them.
 #[test]
 fn transport_teardown_clears_awareness_peers_and_retains_desired_awareness() {
     use crate::session_initialization_test_support::{
@@ -994,8 +994,8 @@ fn mark_synchronized_guard(id: u64, generation: u64) {
 /// empty Update-v1.
 const NOOP_SYNC_UPDATE_MESSAGE: [u8; 5] = [0, 2, 2, 0, 0];
 
-/// Task 9: `receive_message` obeys the same generation discipline as every
-/// other callback — stale generations and non-frame-accepting states refuse
+/// `receive_message` obeys the same generation discipline as every other
+/// callback — stale generations and non-frame-accepting states refuse
 /// before any decode work, leaving the full audit untouched.
 #[test]
 fn receive_message_is_generation_gated_across_all_live_transport_states() {
@@ -1065,7 +1065,7 @@ fn receive_message_is_generation_gated_across_all_live_transport_states() {
     }
 }
 
-/// Task 9: destroyed sessions refuse `receive_message` with the frozen
+/// Destroyed sessions refuse `receive_message` with the frozen
 /// lifecycle codes, exactly like every other transport verb.
 #[test]
 fn receive_message_refuses_destroyed_sessions_with_lifecycle_codes() {

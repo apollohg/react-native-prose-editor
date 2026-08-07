@@ -1,4 +1,4 @@
-//! Task 12: golden tests for the complete UniFFI v2 staging surface.
+//! Golden tests for the complete UniFFI v2 staging surface.
 //!
 //! Every `editor_v2_*` entry point is exercised through the real proc-macro
 //! exports: success shapes with exact nullability, every reachable error
@@ -37,9 +37,6 @@ const FRAGMENT_NAME: &str = "prosemirror";
 const JSON_SEED: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"ffi seed"}]}]}"#;
 const SEED_HTML: &str = "<p>html seed</p>";
 
-// ---------------------------------------------------------------------------
-// Result unwrapping and error assertions
-// ---------------------------------------------------------------------------
 
 fn ok_json(result: &FfiJsonResult) -> Value {
     assert!(
@@ -125,9 +122,6 @@ fn ok_unit(result: &crate::ffi_v2::types::FfiUnitResult) {
     assert_eq!(result.value, Some(true));
 }
 
-// ---------------------------------------------------------------------------
-// Handle helpers
-// ---------------------------------------------------------------------------
 
 fn create_handle(config: Value) -> String {
     create_handle_with_state(config, None)
@@ -269,9 +263,6 @@ fn ffi_lease_ids_and_deadlines_are_canonical_decimal_strings() {
     destroy_handle(&id);
 }
 
-// ---------------------------------------------------------------------------
-// Envelope builders
-// ---------------------------------------------------------------------------
 
 fn input_envelope(request_id: u64, base_revision: u64, text: &str) -> String {
     json!({
@@ -322,9 +313,7 @@ fn history_envelope(request_id: u64) -> String {
     json!({ "version": 1, "requestId": request_id.to_string() }).to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Room/snapshot fixtures and the raw-peer idiom (mirrors the protocol suite)
-// ---------------------------------------------------------------------------
 
 fn snapshot_source() -> DocumentSnapshot {
     let mut source = YrsDocumentEngine::new(YrsEngineConfig {
@@ -571,9 +560,6 @@ fn synchronize_v2(id: &str, server: &RawPeer) -> String {
     generation.to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle and getters
-// ---------------------------------------------------------------------------
 
 #[test]
 fn create_local_editor_exposes_full_state_surface_and_destroy_lifecycle() {
@@ -711,9 +697,6 @@ fn create_room_with_snapshot_bytes_and_pairing_rules() {
     assert_error(&error, "boundary", "CONFIG_INVALID", None);
 }
 
-// ---------------------------------------------------------------------------
-// Handle parsing and unknown ids
-// ---------------------------------------------------------------------------
 
 #[test]
 fn malformed_handles_fail_with_structured_boundary_errors() {
@@ -826,9 +809,6 @@ fn unknown_editor_id_fails_every_entry_with_a_lifecycle_error() {
     )));
 }
 
-// ---------------------------------------------------------------------------
-// Destroy race
-// ---------------------------------------------------------------------------
 
 #[test]
 fn destroy_during_in_flight_calls_refuses_without_partial_work() {
@@ -919,9 +899,6 @@ fn destroy_during_in_flight_calls_refuses_without_partial_work() {
     destroy_handle(&fresh);
 }
 
-// ---------------------------------------------------------------------------
-// Mutation outcomes
-// ---------------------------------------------------------------------------
 
 #[test]
 fn apply_input_command_selection_and_local_api_outcome_matrix() {
@@ -1240,9 +1217,6 @@ fn input_filter_preserves_exact_semantics_and_replays_compile_errors() {
     destroy_handle(&id);
 }
 
-// ---------------------------------------------------------------------------
-// Collaboration flow
-// ---------------------------------------------------------------------------
 
 #[test]
 fn create_room_attaches_the_collaboration_runtime() {
@@ -1900,9 +1874,6 @@ fn leased_outbound_drains_protocol_replies_before_document_updates() {
     destroy_handle(&id);
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot export/restore
-// ---------------------------------------------------------------------------
 
 #[test]
 fn snapshot_export_restore_round_trip_and_policy_errors() {
@@ -2017,9 +1988,6 @@ fn snapshot_export_restore_round_trip_and_policy_errors() {
     destroy_handle(&id);
 }
 
-// ---------------------------------------------------------------------------
-// The full drive
-// ---------------------------------------------------------------------------
 
 #[test]
 fn full_drive_local_editing_to_synchronized_room() {
@@ -2077,9 +2045,7 @@ fn full_drive_local_editing_to_synchronized_room() {
     destroy_handle(&id);
 }
 
-// ---------------------------------------------------------------------------
 // Oversize inputs and error-envelope nullability
-// ---------------------------------------------------------------------------
 
 #[test]
 fn oversize_inputs_fail_with_structured_limit_errors() {
@@ -2177,18 +2143,17 @@ fn error_envelopes_pin_nullability_and_decimal_request_ids() {
     destroy_handle(&id);
 }
 
-// ---------------------------------------------------------------------------
-// Task 16B/16C: v2 render/selection/position accessor
+// ---------------------------------------------------------------------------/16C:
+// v2 render/selection/position accessor
 //
 // The accessor derives, from the live v2 session alone, everything the
 // (since-deleted) stateless legacy render probe provided to the staging
 // adapters: full render blocks, toolbar active state, the mirrored scalar
 // selection resolved to doc positions, the lenient doc<->scalar position
 // mapping (including the u32::MAX extent query), and the document's scalar
-// extent. Task 16C deleted the legacy runtime, so the probe-parity fixture
-// matrix went with it; these tests pin the accessor's own wire shape, its
-// v2-native history/revision facts, and its structured errors.
-// ---------------------------------------------------------------------------
+// extent. deleted the legacy runtime, so the probe-parity fixture matrix went
+// with it; these tests pin the accessor's own wire shape, its v2-native
+// history/revision facts, and its structured errors.
 
 use crate::ffi_v2::render as v2_render;
 
@@ -2388,8 +2353,8 @@ fn render_update_cannot_mix_fields_with_a_concurrent_mutation() {
     destroy_handle(&id);
 }
 
-// Task 7 hard cutover: without a mirror, the snapshot carries and evaluates
-// the authoritative engine selection. A supplied mirror explicitly replaces
+// Hard cutover: without a mirror, the snapshot carries and evaluates the
+// authoritative engine selection. A supplied mirror explicitly replaces
 // that selection for the snapshot.
 const ACTIVE_STATE_DOC: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"plain "},{"type":"text","text":"bold","marks":[{"type":"bold"}]}]}]}"#;
 
@@ -2815,9 +2780,6 @@ fn a_blank_line_added_with_return_stops_the_document_being_empty() {
     destroy_handle(&id);
 }
 
-// ---------------------------------------------------------------------------
-// Imported mark order
-// ---------------------------------------------------------------------------
 
 fn marked_text_document(marks: Value) -> Value {
     json!({

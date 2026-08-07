@@ -133,9 +133,6 @@ fn doc(blocks: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({ "type": "doc", "content": blocks })
 }
 
-// ---------------------------------------------------------------------------
-// 1. Typing sentences, adding marks
-// ---------------------------------------------------------------------------
 
 /// Type a sentence, switch bold on mid-way, then italic, exactly as a user
 /// tapping toolbar buttons between words would.
@@ -219,9 +216,7 @@ fn stacking_bold_and_italic_then_clearing_both_returns_to_plain_typing() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 2. Line returns, with and against marks
-// ---------------------------------------------------------------------------
 
 /// Return at the end of a bold run, then typing on the new line: the new line
 /// must inherit the stored bold, and the first line must keep its own runs.
@@ -270,9 +265,6 @@ fn return_inside_a_marked_run_splits_it_across_both_lines() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 3. Backspace
-// ---------------------------------------------------------------------------
 
 /// The ordinary case: backspace removes characters one at a time from the end
 /// of a marked run without disturbing the run in front of it.
@@ -446,9 +438,7 @@ fn holding_backspace_walks_back_through_marks_and_line_returns_to_an_empty_docum
     );
 }
 
-// ---------------------------------------------------------------------------
 // 4. Lists
-// ---------------------------------------------------------------------------
 //
 // Scalar offsets in a two-item bullet list `one` / `two`, verified against the
 // engine rather than derived on paper: offsets 0-2 all resolve to the head of
@@ -789,9 +779,6 @@ fn backspacing_a_lone_list_item_away_returns_to_an_empty_document() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 5. Blockquotes
-// ---------------------------------------------------------------------------
 
 #[test]
 fn toggling_a_blockquote_wraps_the_current_paragraph() {
@@ -912,9 +899,6 @@ fn backspace_at_the_start_of_a_blockquote_below_a_paragraph_lifts_the_line_out()
     );
 }
 
-// ---------------------------------------------------------------------------
-// 6. Marks inside structures
-// ---------------------------------------------------------------------------
 
 #[test]
 fn bold_carries_across_return_inside_a_list_item() {

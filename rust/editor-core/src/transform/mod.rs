@@ -2,9 +2,9 @@ pub mod apply;
 pub mod mapping;
 pub mod steps;
 
-// Re-export apply_step for use by the backend module.
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Re-export apply_step for use by the backend module. Not reachable from
+// production call paths after the legacy runtime removal; exercised by crate
+// tests.
 #[allow(unused_imports)]
 pub use apply::apply_step;
 pub(crate) use apply::DocumentStats;
@@ -24,9 +24,6 @@ use crate::schema::Schema;
 
 pub use mapping::StepMap;
 
-// ---------------------------------------------------------------------------
-// TransformError
-// ---------------------------------------------------------------------------
 
 /// Errors that can occur when applying a transaction to a document.
 #[derive(Debug)]
@@ -58,14 +55,11 @@ impl std::fmt::Display for TransformError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Source
-// ---------------------------------------------------------------------------
 
 /// The origin of a transaction, used for filtering and history bookkeeping.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 pub enum Source {
     /// User keyboard/IME input.
@@ -82,9 +76,6 @@ pub enum Source {
     Reconciliation,
 }
 
-// ---------------------------------------------------------------------------
-// Step
-// ---------------------------------------------------------------------------
 
 /// A single atomic document transformation.
 ///
@@ -116,8 +107,6 @@ pub enum Step {
         mark_type: String,
     },
 
-    // ---- Declared but not yet implemented (4b) ----
-    /// Split a block node at a position, creating a new block of the given type.
     SplitBlock {
         pos: u32,
         node_type: String,
@@ -127,8 +116,6 @@ pub enum Step {
     /// Join two adjacent block nodes at the given boundary position.
     JoinBlocks { pos: u32 },
 
-    // ---- Declared but not yet implemented (4c) ----
-    /// Wrap a range of blocks in a list structure.
     WrapInList {
         from: u32,
         to: u32,
@@ -151,8 +138,6 @@ pub enum Step {
     /// Decrease the nesting level of the list item at `pos`.
     OutdentListItem { pos: u32 },
 
-    // ---- Declared but not yet implemented (4d) ----
-    /// Insert a complete node at a position.
     InsertNode { pos: u32, node: Node },
 
     /// Replace the attrs of a node without changing its content.
@@ -169,9 +154,6 @@ pub enum Step {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Transaction
-// ---------------------------------------------------------------------------
 
 /// A batch of steps to apply atomically to a document.
 ///
@@ -179,8 +161,8 @@ pub enum Step {
 /// validated against the schema. If validation fails, the entire transaction
 /// is rejected.
 #[derive(Debug)]
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 pub struct Transaction {
     pub steps: Vec<Step>,

@@ -1,5 +1,4 @@
-//! Task 9: strict standard y-sync frame handling with server Step 2
-//! initialization.
+//! Strict standard y-sync frame handling with server Step 2 initialization.
 //!
 //! Covers the frozen receive flow (bounded classification/decode, reply
 //! prebuild + reservation before any engine commit, infallible reply
@@ -854,10 +853,6 @@ fn reply_aggregate_ceiling_has_exact_and_one_over_behavior() {
 
 #[test]
 fn reply_reservation_failures_close_before_any_engine_commit() {
-    // A message coupling a Step 1 (reply owed) with a genuine remote update:
-    // if the reply cannot be reserved, the update must NOT have been
-    // committed — reservation strictly precedes the engine commit, which is
-    // what makes reply failure after a remote commit impossible.
     let coupled_message = |id: u64| {
         let server = RawPeer::from_snapshot(&snapshot_source());
         server.push_text(" coupled");
@@ -1378,10 +1373,8 @@ fn update_exchange_converges_with_an_independent_raw_peer() {
     destroy_session(id);
 }
 
-// ---------------------------------------------------------------------------
 // Dependency-quarantine byte/work ceilings are charged from the prepared
 // post-state before commit can mutate the live quarantine.
-// ---------------------------------------------------------------------------
 
 /// `(prefix, delta_b, delta_c)`: both deltas depend on content only present
 /// in earlier states, so a receiver holding the seed must quarantine each

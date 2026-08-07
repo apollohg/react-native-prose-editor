@@ -1148,8 +1148,8 @@ fn structural_replacement(parent_path: Vec<u32>) -> crate::yrs_engine::Structura
     )
 }
 
-// Task 16B: deterministic structural-target ceilings are operation limits,
-// not allocation-class resource exhaustion.
+// Deterministic structural-target ceilings are operation limits, not
+// allocation-class resource exhaustion.
 #[test]
 fn structural_target_depth_excess_is_an_operation_limit_not_resource_exhaustion() {
     let engine = engine(PLAIN);

@@ -289,8 +289,8 @@ fn record_cached_full_transition() {
 }
 
 #[inline]
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 fn record_legacy_safe_patch_full_render_pass() {
     #[cfg(test)]
@@ -1412,8 +1412,8 @@ pub fn flatten_render_blocks(blocks: &[Vec<RenderElement>]) -> Vec<RenderElement
     elements
 }
 
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 pub fn contiguous_render_blocks_patch(
     old_doc: &Document,

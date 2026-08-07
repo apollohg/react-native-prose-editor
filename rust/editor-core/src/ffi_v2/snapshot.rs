@@ -1,10 +1,9 @@
-//! Task 12: UniFFI v2 snapshot entry points (production since the Task 16C
-//! cutover removed the staging gate).
+//! UniFFI v2 snapshot entry points.
 //!
 //! Export returns the five-field manifest as JSON plus the encoded state as
 //! direct bytes; restore takes the same two halves separately, so binary
-//! state never appears inside JSON. Restore runs the Task 11 session
-//! policy gate (transport, outbox, manifest validation before decode).
+//! state never appears inside JSON. Restore runs the session policy gate
+//! (transport, outbox, manifest validation before decode).
 
 #![allow(
     clippy::result_large_err,

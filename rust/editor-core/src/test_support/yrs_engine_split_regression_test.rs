@@ -246,11 +246,9 @@ fn split_before_first_text_after_atom_keeps_a_left_insertion_gap() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Return-at-end-of-block (E1): the v2 lowering must accept a SplitBlock whose
 // boundary is the very end of a block (empty suffix) and materialize the
 // right sibling from the compiler preview.
-// ---------------------------------------------------------------------------
 
 fn import(engine: &mut YrsDocumentEngine, json: &str) {
     engine

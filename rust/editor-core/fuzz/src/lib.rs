@@ -1,11 +1,11 @@
-//! White-box fuzz harness library (Task 16C).
+//! White-box fuzz harness library.
 //!
 //! The Yrs engine and its supporting modules are crate-private since the
 //! production cutover (the shipped surface is the UniFFI v2 ABI plus the
 //! version query), so this fuzz crate compiles the retained engine sources
 //! directly via `#[path]` — the exact same files `editor-core` compiles —
 //! under the `editor_core` library name the fuzz targets import. No legacy
-//! code is included; the legacy runtime was deleted in Task 16C.
+//! code is included; the legacy runtime was deleted in.
 #![allow(dead_code)]
 #![allow(unused_imports)]
 

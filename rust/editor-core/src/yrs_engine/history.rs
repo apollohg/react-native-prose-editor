@@ -65,8 +65,8 @@ fn set_event_replacement_reservation_failure_for_test(enabled: bool) {
     FAIL_EVENT_REPLACEMENT_RESERVATION.with(|fail| fail.set(enabled));
 }
 
-/// Fallible allocation seam (Task 16B): reserving the replay roll baseline is
-/// a genuine allocation site, so it keeps the allocation-class
+/// Fallible allocation seam: reserving the replay roll baseline is a genuine
+/// allocation site, so it keeps the allocation-class
 /// `OPERATION_RESOURCE_EXHAUSTED` code.
 fn reserve_replay_roll_baseline(
     request_id: u64,

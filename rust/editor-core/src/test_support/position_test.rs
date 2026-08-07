@@ -9,9 +9,7 @@ use crate::schema::presets::tiptap_schema;
 use crate::schema::Schema;
 use crate::transform::{Source, Step, StepMap, Transaction};
 
-// ---------------------------------------------------------------------------
 // Helper builders (matching model_test.rs conventions)
-// ---------------------------------------------------------------------------
 
 fn text(s: &str) -> Node {
     Node::text(s.to_string(), vec![])
@@ -107,9 +105,7 @@ fn task_list_schema() -> Schema {
     .expect("task list schema should parse")
 }
 
-// ===========================================================================
 // Test 1: Single paragraph — <doc><p>Hello</p></doc>
-// ===========================================================================
 //
 // Doc layout:
 //   doc.open | p.open | H e l l o | p.close | doc.close
@@ -218,9 +214,7 @@ fn test_single_paragraph_roundtrip() {
     }
 }
 
-// ===========================================================================
 // Test 2: Two paragraphs — <doc><p>Hello</p><p>World</p></doc>
-// ===========================================================================
 //
 // Doc layout:
 //   p1.open | Hello | p1.close | p2.open | World | p2.close
@@ -397,9 +391,7 @@ fn test_two_paragraphs_roundtrip() {
     }
 }
 
-// ===========================================================================
 // Test 3: Bullet list — <doc><ul><li><p>A</p></li><li><p>B</p></li></ul></doc>
-// ===========================================================================
 //
 // Doc layout (positions inside doc content):
 //   0: before bulletList
@@ -597,9 +589,7 @@ fn test_task_list_content_positions_account_for_checkbox_prefixes() {
     assert_eq!(map.scalar_to_doc(7, &document), second.doc_end);
 }
 
-// ===========================================================================
 // Test 4: Void nodes — <doc><p>He<br>llo</p></doc>
-// ===========================================================================
 //
 // Doc layout:
 //   p.open | H(1) e(1) | hardBreak(1) | l(1) l(1) o(1) | p.close
@@ -722,9 +712,7 @@ fn test_void_inline_roundtrip() {
     }
 }
 
-// ===========================================================================
 // Test 5: Horizontal rule — <doc><p>A</p><hr><p>B</p></doc>
-// ===========================================================================
 //
 // Doc layout:
 //   p1.open | A | p1.close | hr | p2.open | B | p2.close
@@ -836,9 +824,7 @@ fn test_horizontal_rule_doc_to_scalar() {
     assert_eq!(map.doc_to_scalar(6, &document), 5, "doc 6 -> scalar 5");
 }
 
-// ===========================================================================
 // Test 6: Emoji — <doc><p>Hi 👨‍👩‍👧‍👦!</p></doc>
-// ===========================================================================
 //
 // Text: "Hi 👨‍👩‍👧‍👦!" where the family emoji is 7 Unicode scalars
 // Total text scalars: 3 + 7 + 1 = 11
@@ -894,9 +880,7 @@ fn test_emoji_scalar_to_doc_roundtrip() {
     }
 }
 
-// ===========================================================================
 // Test 7: Empty paragraph — <doc><p></p></doc>
-// ===========================================================================
 //
 // Doc layout:
 //   p.open | (empty) | p.close
@@ -952,9 +936,6 @@ fn test_empty_paragraph_scalar_to_doc() {
     assert_eq!(map.scalar_to_doc(1, &document), 1);
 }
 
-// ===========================================================================
-// normalize_cursor_pos tests
-// ===========================================================================
 
 #[test]
 fn test_normalize_cursor_pos_inside_text() {
@@ -1031,9 +1012,6 @@ fn test_normalize_cursor_pos_nested_list() {
     );
 }
 
-// ===========================================================================
-// DeltaTree unit tests
-// ===========================================================================
 
 #[test]
 fn test_delta_tree_empty() {
@@ -1118,9 +1096,6 @@ fn test_delta_tree_clear() {
     assert_eq!(dt.accumulated_delta(5), (0, 0));
 }
 
-// ===========================================================================
-// Incremental update test
-// ===========================================================================
 
 #[test]
 fn test_incremental_update_insert_text_in_first_block() {
@@ -1234,9 +1209,6 @@ fn test_incremental_update_preserves_roundtrip() {
     }
 }
 
-// ===========================================================================
-// Compact tests
-// ===========================================================================
 
 #[test]
 fn test_compact_folds_deltas() {
@@ -1278,9 +1250,7 @@ fn test_compact_folds_deltas() {
     );
 }
 
-// ===========================================================================
 // Edge case: multiple text nodes in one paragraph
-// ===========================================================================
 
 #[test]
 fn test_multiple_text_nodes_single_paragraph() {
@@ -1303,9 +1273,7 @@ fn test_multiple_text_nodes_single_paragraph() {
     }
 }
 
-// ===========================================================================
 // Edge case: three paragraphs with breaks
-// ===========================================================================
 
 #[test]
 fn test_three_paragraphs() {
@@ -1337,9 +1305,7 @@ fn test_three_paragraphs() {
     }
 }
 
-// ===========================================================================
 // Full rebuild via update with structural change
-// ===========================================================================
 
 #[test]
 fn test_update_fallback_to_rebuild() {
@@ -1374,7 +1340,6 @@ fn test_update_fallback_to_rebuild() {
     );
 }
 
-// ===========================================================================
 // Renderer / position-map marker desync regression tests
 //
 // The renderer (`render::task_list_marker_metadata`) and the position map
@@ -1385,7 +1350,6 @@ fn test_update_fallback_to_rebuild() {
 // the expected marker-prefixed scalar length purely from that render output
 // (not from a hand re-derivation of the heuristic) — then assert the
 // position map maps that scalar back to the correct document position.
-// ===========================================================================
 
 /// A `checked` attr on an item in a NON-task list must not desync the
 /// position map from the rendered text: whatever marker the renderer emits,

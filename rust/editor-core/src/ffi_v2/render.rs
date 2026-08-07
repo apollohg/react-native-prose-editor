@@ -1,14 +1,13 @@
-//! Task 16B: v2 render/selection/position accessor (production since the
-//! Task 16C cutover removed the `ffi-v2-staging` gate).
+//! v2 render/selection/position accessor.
 //!
-//! The Task 12 v2 boundary returns structured mutation outcomes (revisions,
-//! history) but no render payload, resolved selection, or position mapping,
-//! so the Task 15 staging adapters derived those through a STATELESS legacy
-//! render probe (create a throwaway legacy editor, feed it the authoritative
-//! v2 document JSON, probe, destroy — on every derivation). This module is
-//! the probe's replacement: every value the probe provided is derived here
-//! directly from the live v2 session, reusing the exact legacy derivation
-//! and serialization code paths so the wire output is probe-identical:
+//! The v2 boundary returns structured mutation outcomes (revisions, history)
+//! but no render payload, resolved selection, or position mapping, so the
+//! staging adapters derived those through a STATELESS legacy render probe
+//! (create a throwaway legacy editor, feed it the authoritative v2 document
+//! JSON, probe, destroy — on every derivation). This module is the probe's
+//! replacement: every value the probe provided is derived here directly from
+//! the live v2 session, reusing the exact legacy derivation and serialization
+//! code paths so the wire output is probe-identical:
 //!
 //! - `editor_v2_render_update` — one atomic current-state snapshot containing
 //!   `renderBlocks` (full blocks; `renderPatch` is null), authoritative or
@@ -24,15 +23,15 @@
 //! and stored marks. A mirror maps through the lenient scalar->doc mapping
 //! plus cursor normalization and replaces selection only for that snapshot.
 //!
-//! The wire shape is JSON inside the frozen `FfiJsonResult` envelope (never
-//! a new exception channel): the native views already consume the legacy
-//! update JSON shape, so the accessor emits that shape verbatim and the
-//! frozen Task 12 envelope invariants are untouched.
+//! The wire shape is JSON inside the frozen `FfiJsonResult` envelope (never a
+//! new exception channel): the native views already consume the legacy update
+//! JSON shape, so the accessor emits that shape verbatim and the frozen
+//! envelope invariants are untouched.
 //!
-//! The accessor needs the session schema (render blocks and active state
-//! are schema-derived) but the engine keeps it private; the create path
-//! therefore registers the already-resolved schema per session id here, and
-//! destroy unregisters it.
+//! The accessor needs the session schema (render blocks and active state are
+//! schema-derived) but the engine keeps it private; the create path therefore
+//! registers the already-resolved schema per session id here, and destroy
+//! unregisters it.
 
 #![allow(
     clippy::result_large_err,
@@ -406,11 +405,9 @@ pub fn editor_v2_scalar_to_doc(editor_id: String, scalar: u32) -> FfiJsonResult 
     }))
 }
 
-// ---------------------------------------------------------------------------
 // Legacy update-JSON serializers (hoisted from the pre-cutover lib.rs during
-// the Task 16C cutover; this module is their only retained consumer — the
-// v2 render accessor emits the exact legacy update JSON shape by design).
-// ---------------------------------------------------------------------------
+// the cutover; this module is their only retained consumer — the v2 render
+// accessor emits the exact legacy update JSON shape by design).
 fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde_json::Value {
     let items: Vec<serde_json::Value> = elements
         .iter()

@@ -22,8 +22,8 @@ use crate::yrs_engine::{
 pub(crate) struct DocumentApiFacade;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 pub(crate) struct ContentSnapshot {
     html: String,
@@ -193,8 +193,8 @@ fn resolve_schema(config: &EditorSessionConfig) -> Result<Schema, SessionError> 
         .map_err(SessionError::from)
 }
 
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 fn with_session<T>(
     id: SessionId,
@@ -691,7 +691,7 @@ pub mod session_initialization_test_support {
         with_live(id, |session| Ok(session.remote_dependency_accounting()))
     }
 
-    /// Public mirror of one Task 10 awareness peer projection.
+    /// Public mirror of one awareness peer projection.
     #[derive(Debug, Clone, PartialEq)]
     pub struct AwarenessPeerInfo {
         pub client_id: u64,
@@ -703,7 +703,7 @@ pub mod session_initialization_test_support {
         pub cursor: Option<(u32, u32)>,
     }
 
-    /// Task 10: publish the desired local awareness state.
+    /// Publish the desired local awareness state.
     pub fn set_desired_awareness_for_test(
         id: u64,
         request_id: u64,
@@ -714,12 +714,12 @@ pub mod session_initialization_test_support {
         })
     }
 
-    /// Task 10: withdraw the desired local awareness state.
+    /// Withdraw the desired local awareness state.
     pub fn clear_desired_awareness(id: u64, request_id: u64) -> Result<(), TestError> {
         with_live(id, |session| session.clear_desired_awareness(request_id))
     }
 
-    /// Task 10: the retained desired local awareness state, if any.
+    /// The retained desired local awareness state, if any.
     pub fn desired_awareness(id: u64) -> Result<Option<serde_json::Value>, TestError> {
         with_live(id, |session| session.desired_awareness())
     }

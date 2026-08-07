@@ -610,14 +610,13 @@ pub(crate) struct SessionPolicy {
     allow_base64_images: bool,
 }
 
-/// Lifecycle owned by the session until Task 7 adds transaction translation.
+/// Lifecycle owned by the session until adds transaction translation.
 pub(crate) struct NativeBridgeLifecycle {
     active: bool,
     lifecycle_test_calls: usize,
 }
 
-/// Lifecycle plus the optionally attached collaboration runtime (Task 7:
-/// outbox host; Task 8: the generation-owned transport state machine).
+/// Lifecycle plus the optionally attached collaboration runtime.
 pub(crate) struct CollaborationLifecycle {
     active: bool,
     limits: CollaborationLimits,
@@ -1298,13 +1297,13 @@ impl EditorSession {
         runtime.set_awareness_selection(request_id, selection_json, context)
     }
 
-    /// Task 10: withdraw the desired local awareness state.
+    /// Withdraw the desired local awareness state.
     pub(crate) fn clear_desired_awareness(&mut self, request_id: u64) -> Result<(), SessionError> {
         let (runtime, context) = self.awareness_runtime_and_context()?;
         runtime.clear_desired_awareness(request_id, context)
     }
 
-    /// Task 10: the retained desired local awareness state, if any.
+    /// The retained desired local awareness state, if any.
     pub(crate) fn desired_awareness(&self) -> Result<Option<serde_json::Value>, SessionError> {
         let runtime = self
             .collaboration

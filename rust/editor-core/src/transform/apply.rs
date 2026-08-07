@@ -41,9 +41,6 @@ use super::steps::{
 };
 use super::{Step, TransformError};
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
 
 /// Apply a single step to a document, producing a new document and step map.
 ///
@@ -215,9 +212,6 @@ pub(crate) fn canonicalize_yrs_document_with_evidence(
     }
 }
 
-// ---------------------------------------------------------------------------
-// InsertText
-// ---------------------------------------------------------------------------
 
 fn apply_insert_text(
     doc: &Document,
@@ -347,9 +341,6 @@ fn insert_text_in_children(
     merge_adjacent_text_nodes(new_children)
 }
 
-// ---------------------------------------------------------------------------
-// DeleteRange
-// ---------------------------------------------------------------------------
 
 fn apply_delete_range(
     doc: &Document,
@@ -457,9 +448,6 @@ fn delete_in_children(parent: &Node, from_offset: u32, to_offset: u32) -> Vec<No
     merge_adjacent_text_nodes(new_children)
 }
 
-// ---------------------------------------------------------------------------
-// AddMark
-// ---------------------------------------------------------------------------
 
 fn apply_add_mark(
     doc: &Document,
@@ -568,9 +556,6 @@ fn add_mark_in_children(
     merge_adjacent_text_nodes(new_children)
 }
 
-// ---------------------------------------------------------------------------
-// RemoveMark
-// ---------------------------------------------------------------------------
 
 fn apply_remove_mark(
     doc: &Document,
@@ -663,9 +648,6 @@ fn remove_mark_in_children(
     merge_adjacent_text_nodes(new_children)
 }
 
-// ---------------------------------------------------------------------------
-// SplitBlock
-// ---------------------------------------------------------------------------
 
 fn apply_split_block(
     doc: &Document,
@@ -851,9 +833,6 @@ fn split_children_at(parent: &Node, offset: u32) -> (Vec<Node>, Vec<Node>) {
     )
 }
 
-// ---------------------------------------------------------------------------
-// JoinBlocks
-// ---------------------------------------------------------------------------
 
 fn apply_join_blocks(doc: &Document, pos: u32) -> Result<(Document, StepMap), TransformError> {
     let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
@@ -950,9 +929,6 @@ fn apply_join_blocks(doc: &Document, pos: u32) -> Result<(Document, StepMap), Tr
     Ok((new_doc, map))
 }
 
-// ---------------------------------------------------------------------------
-// WrapInList
-// ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
 fn apply_wrap_in_list(
@@ -1088,9 +1064,6 @@ fn apply_wrap_in_list(
     Ok((new_doc, map))
 }
 
-// ---------------------------------------------------------------------------
-// UnwrapFromList
-// ---------------------------------------------------------------------------
 
 fn apply_unwrap_from_list(
     doc: &Document,
@@ -1351,9 +1324,6 @@ fn apply_unwrap_from_list(
     }
 }
 
-// ---------------------------------------------------------------------------
-// InsertNode
-// ---------------------------------------------------------------------------
 
 fn apply_insert_node(
     doc: &Document,
@@ -1815,9 +1785,6 @@ fn insert_node_in_children(parent: &Node, offset: u32, insert_node: &Node) -> Ve
     merge_adjacent_text_nodes(new_children)
 }
 
-// ---------------------------------------------------------------------------
-// ReplaceRange
-// ---------------------------------------------------------------------------
 
 fn apply_replace_range(
     doc: &Document,
@@ -1989,9 +1956,6 @@ fn insert_nodes_in_children(parent: &Node, offset: u32, fragment: &Fragment) -> 
     merge_adjacent_text_nodes(new_children)
 }
 
-// ---------------------------------------------------------------------------
-// Cross-parent deletion
-// ---------------------------------------------------------------------------
 
 use crate::model::ResolvedPos;
 
@@ -2142,9 +2106,6 @@ fn common_prefix_len(a: &[u32], b: &[u32]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
-// ---------------------------------------------------------------------------
-// Tree rebuilding
-// ---------------------------------------------------------------------------
 
 /// Replace a node at the given path in the tree with two new nodes, returning
 /// a new root. The node at `path` is removed and replaced by `first` and
@@ -2260,9 +2221,6 @@ fn replace_node_at_path(root: &Node, path: &[u32], replacement: &Node) -> Node {
     rebuild_element(root, new_children)
 }
 
-// ---------------------------------------------------------------------------
-// Document validation
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DocumentStats {

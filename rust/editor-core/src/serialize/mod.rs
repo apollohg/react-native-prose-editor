@@ -3,13 +3,13 @@ pub mod html_out;
 pub mod json_in;
 pub mod json_out;
 
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(unused_imports)]
 pub use html_in::{from_html, from_html_with_limits, FromHtmlOptions, ParseError};
 pub use html_out::to_html;
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(unused_imports)]
 pub use json_in::{
     from_prosemirror_json, from_prosemirror_json_with_limits, JsonParseError, UnknownTypeMode,

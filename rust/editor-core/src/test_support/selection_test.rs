@@ -6,9 +6,7 @@ use crate::schema::presets::tiptap_schema;
 use crate::selection::Selection;
 use crate::transform::{Source, Step, StepMap, Transaction};
 
-// ---------------------------------------------------------------------------
 // Helper builders (matching conventions from other test files)
-// ---------------------------------------------------------------------------
 
 fn text(s: &str) -> Node {
     Node::text(s.to_string(), vec![])
@@ -30,9 +28,6 @@ fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
 }
 
-// ===========================================================================
-// TextSelection: creation and accessors
-// ===========================================================================
 
 #[test]
 fn test_text_selection_creation() {
@@ -94,9 +89,6 @@ fn test_text_selection_is_not_empty_when_range() {
     );
 }
 
-// ===========================================================================
-// Cursor (collapsed text selection)
-// ===========================================================================
 
 #[test]
 fn test_cursor_creation() {
@@ -135,9 +127,6 @@ fn test_cursor_from_to_equal() {
     );
 }
 
-// ===========================================================================
-// NodeSelection
-// ===========================================================================
 
 #[test]
 fn test_node_selection_creation() {
@@ -195,9 +184,6 @@ fn test_node_selection_from_to() {
     assert_eq!(sel.to(&document), 4, "node selection to() == pos");
 }
 
-// ===========================================================================
-// AllSelection
-// ===========================================================================
 
 #[test]
 fn test_all_selection_resolves_to_full_content() {
@@ -261,9 +247,7 @@ fn test_all_selection_multi_block() {
     );
 }
 
-// ===========================================================================
 // Normalization: structural positions snap to cursorable
-// ===========================================================================
 
 #[test]
 fn test_normalize_cursor_on_structural_position() {
@@ -385,9 +369,6 @@ fn test_normalize_position_past_end_snaps_to_last_content() {
     }
 }
 
-// ===========================================================================
-// Map through StepMap: insertion
-// ===========================================================================
 
 #[test]
 fn test_map_cursor_after_insert_text() {
@@ -508,9 +489,6 @@ fn test_map_text_range_spanning_insertion() {
     }
 }
 
-// ===========================================================================
-// Map through StepMap: deletion
-// ===========================================================================
 
 #[test]
 fn test_map_cursor_after_delete() {
@@ -599,9 +577,7 @@ fn test_map_selection_spanning_deleted_range() {
     }
 }
 
-// ===========================================================================
 // Map through StepMap: AllSelection is unaffected
-// ===========================================================================
 
 #[test]
 fn test_map_all_selection_stays_all() {
@@ -616,9 +592,6 @@ fn test_map_all_selection_stays_all() {
     );
 }
 
-// ===========================================================================
-// Map through StepMap: NodeSelection
-// ===========================================================================
 
 #[test]
 fn test_map_node_selection_after_insert_before() {
@@ -641,9 +614,6 @@ fn test_map_node_selection_after_insert_before() {
     }
 }
 
-// ===========================================================================
-// Selection equality and clone
-// ===========================================================================
 
 #[test]
 fn test_selection_equality() {

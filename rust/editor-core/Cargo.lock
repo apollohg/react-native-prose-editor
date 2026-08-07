@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "editor-core"
-version = "0.5.25"
+version = "1.0.0-alpha"
 dependencies = [
  "ego-tree",
  "memchr",

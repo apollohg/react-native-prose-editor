@@ -959,7 +959,7 @@ pub(crate) fn preflight_mutation_work_for_test<T: ReadTxn>(
     Ok(plan.expected_preflight_work)
 }
 
-#[allow(dead_code)] // Task 7 calls this after installing atomic production application.
+#[allow(dead_code)] // calls this after installing atomic production application.
 fn validate_signature<T: ReadTxn>(
     request_id: u64,
     operation_index: usize,

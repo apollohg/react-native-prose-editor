@@ -1,5 +1,4 @@
-//! Task 7: `NativeTransactionBridge` — the only production local mutation
-//! entrance.
+//! `NativeTransactionBridge` — the only production local mutation entrance.
 //!
 //! Covers versioned data-only envelope admission (version, size, unknown and
 //! forged-origin fields), bridge-assigned trusted origins, read-only and

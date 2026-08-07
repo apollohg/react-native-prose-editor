@@ -8,17 +8,10 @@ use std::hint::black_box;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-// Task 16C: the Yrs engine and its supporting modules are crate-private
-// since the production cutover (the public surface is the UniFFI v2 ABI plus
-// the version query). This white-box benchmark harness therefore compiles the
-// retained engine sources directly via `#[path]` — the exact same files the
-// shipped crate compiles — instead of importing them through the crate API.
-// No legacy code is included: the legacy runtime (`editor`, `backend`,
-// `history`, `collaboration`) was deleted in Task 16C, and the legacy
-// benchmark cases/fixtures it served were removed with it (user directive
-// 2026-07-20). Expected-output verification below is derived from the same
-// retained render/position/active-state code paths the v2 render accessor
-// uses, keeping every assertion as strong as the legacy-fixture era.
+// The engine modules are crate-private, so this white-box harness compiles
+// them directly via `#[path]` — the same files the shipped crate compiles —
+// rather than through the crate API. Expectations below are derived from the
+// same render/position/active-state paths the v2 render accessor uses.
 #[path = "../src/boundary.rs"]
 mod boundary;
 #[path = "../src/collaboration_runtime/mod.rs"]
@@ -1448,10 +1441,10 @@ fn build_editing_case_expectation(before: &Value, after: Value) -> EditingCaseEx
     }
 }
 
-/// Task 16C v2-native expected fixture: the pre-cutover harness derived
-/// expected selections, active state, and render blocks from a throwaway
-/// legacy `Editor`. Those derivations are the same retained code paths the
-/// v2 render accessor uses today (serializer -> `PositionMap` ->
+/// v2-native expected fixture: the pre-cutover harness derived expected
+/// selections, active state, and render blocks from a throwaway legacy
+/// `Editor`. Those derivations are the same retained code paths the v2
+/// render accessor uses today (serializer -> `PositionMap` ->
 /// `editor_state` -> `render::incremental`), so the expectations are
 /// computed from the expected document directly.
 struct ExpectedEditingFixture {

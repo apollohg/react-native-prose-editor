@@ -1,4 +1,4 @@
-//! Task 11: document-scoped snapshot lifecycle policy at the session level.
+//! Document-scoped snapshot lifecycle policy at the session level.
 //!
 //! Covers connected read-only export, the restore policy gate (active and
 //! `Incompatible` transports reject `SNAPSHOT_RESTORE_CONNECTED`, pending
@@ -282,7 +282,7 @@ fn full_audit(id: u64) -> FullAudit {
 }
 
 /// Serialize a sticky cursor anchored at `utf16_index` of the seed text on a
-/// raw doc sharing the session's lineage (the Task 10 projection idiom).
+/// raw doc sharing the session's lineage (the projection idiom).
 fn sticky_cursor_json(doc: &Doc, utf16_index: u32) -> serde_json::Value {
     let txn = doc.transact();
     let fragment = txn.get_xml_fragment(FRAGMENT_NAME).unwrap();

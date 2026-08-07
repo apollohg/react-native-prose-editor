@@ -16,9 +16,7 @@ fn document_stats_remains_constructible_with_the_original_public_fields() {
     assert_eq!(stats.max_depth, 2);
 }
 
-// ---------------------------------------------------------------------------
 // Helper builders (matching model_test.rs conventions)
-// ---------------------------------------------------------------------------
 
 fn bold() -> Mark {
     Mark::new("bold".to_string(), HashMap::new())
@@ -69,9 +67,6 @@ fn doc_and_schema(root: Node) -> (Document, crate::schema::Schema) {
     (Document::new(root), tiptap_schema())
 }
 
-// ===========================================================================
-// InsertText tests
-// ===========================================================================
 
 #[test]
 fn test_insert_text_middle_of_word() {
@@ -253,9 +248,6 @@ fn test_insert_text_merges_with_adjacent_same_marks() {
     }
 }
 
-// ===========================================================================
-// DeleteRange tests
-// ===========================================================================
 
 #[test]
 fn test_delete_range_middle_of_text() {
@@ -339,9 +331,6 @@ fn test_delete_across_differently_marked_text_nodes() {
     );
 }
 
-// ===========================================================================
-// AddMark tests
-// ===========================================================================
 
 #[test]
 fn test_add_bold_to_range() {
@@ -458,9 +447,6 @@ fn test_add_italic_to_bold_text() {
     );
 }
 
-// ===========================================================================
-// RemoveMark tests
-// ===========================================================================
 
 #[test]
 fn test_remove_bold_from_bold_text() {
@@ -555,9 +541,6 @@ fn test_remove_bold_preserves_italic() {
     }
 }
 
-// ===========================================================================
-// Content validation tests
-// ===========================================================================
 
 #[test]
 fn test_insert_text_directly_into_doc_is_error() {
@@ -595,9 +578,6 @@ fn test_valid_transaction_passes_validation() {
     );
 }
 
-// ===========================================================================
-// StepMap tests
-// ===========================================================================
 
 #[test]
 fn test_step_map_after_insert_text() {
@@ -679,9 +659,6 @@ fn test_step_map_composing_multiple_steps() {
     );
 }
 
-// ===========================================================================
-// SplitBlock tests
-// ===========================================================================
 
 #[test]
 fn test_split_block_middle_of_text() {
@@ -985,9 +962,6 @@ fn test_split_block_empty_paragraph() {
     assert_eq!(new_doc.root().child(1).unwrap().text_content(), "");
 }
 
-// ===========================================================================
-// JoinBlocks tests
-// ===========================================================================
 
 #[test]
 fn test_join_blocks_two_paragraphs() {
@@ -1202,9 +1176,6 @@ fn test_join_blocks_list_items() {
     assert_eq!(li.child(1).unwrap().text_content(), "llo");
 }
 
-// ===========================================================================
-// SplitBlock + JoinBlocks StepMap tests
-// ===========================================================================
 
 #[test]
 fn test_step_map_split_block() {
@@ -1285,9 +1256,7 @@ fn test_step_map_join_blocks() {
     );
 }
 
-// ===========================================================================
 // SplitBlock then JoinBlocks round-trip test
-// ===========================================================================
 
 #[test]
 fn test_split_then_join_round_trip() {
@@ -1322,9 +1291,6 @@ fn test_split_then_join_round_trip() {
     );
 }
 
-// ===========================================================================
-// WrapInList tests
-// ===========================================================================
 
 #[test]
 fn test_wrap_single_paragraph_in_bullet_list() {
@@ -1607,9 +1573,6 @@ fn test_wrap_invalid_list_type_errors() {
     );
 }
 
-// ===========================================================================
-// UnwrapFromList tests
-// ===========================================================================
 
 #[test]
 fn test_unwrap_only_list_item() {
@@ -1924,9 +1887,7 @@ fn test_outdent_top_level_list_item_is_noop() {
     assert_eq!(new_doc.root().child(0).unwrap().child_count(), 2);
 }
 
-// ===========================================================================
 // WrapInList + UnwrapFromList round-trip tests
-// ===========================================================================
 
 #[test]
 fn test_wrap_then_unwrap_round_trip_single_paragraph() {
@@ -2031,9 +1992,7 @@ fn test_wrap_then_unwrap_round_trip_two_paragraphs() {
     assert_eq!(final_doc.root().child(1).unwrap().text_content(), "B");
 }
 
-// ===========================================================================
 // WrapInList / UnwrapFromList StepMap tests
-// ===========================================================================
 
 #[test]
 fn test_step_map_wrap_in_list() {
@@ -2109,9 +2068,7 @@ fn test_step_map_unwrap_last_list_item_preserves_lifted_content_position() {
     );
 }
 
-// ===========================================================================
 // InsertNode / ReplaceRange now implemented — verify they work
-// ===========================================================================
 
 #[test]
 fn test_insert_node_at_doc_start() {
@@ -2148,9 +2105,6 @@ fn test_replace_range_inline_content() {
     assert_eq!(new_doc.root().text_content(), "B");
 }
 
-// ===========================================================================
-// Transaction source and meta
-// ===========================================================================
 
 #[test]
 fn test_transaction_source_variants() {
@@ -2176,9 +2130,6 @@ fn test_transaction_meta() {
     );
 }
 
-// ===========================================================================
-// InsertNode tests
-// ===========================================================================
 
 fn hard_break() -> Node {
     Node::void("hardBreak".to_string(), HashMap::new())
@@ -2411,9 +2362,6 @@ fn test_insert_paragraph_node_between_blocks() {
     );
 }
 
-// ===========================================================================
-// ReplaceRange tests
-// ===========================================================================
 
 #[test]
 fn test_replace_range_replace_selection_with_text() {
@@ -2614,9 +2562,7 @@ fn test_replace_range_step_map() {
     );
 }
 
-// ===========================================================================
 // InsertNode + DeleteRange round-trip tests
-// ===========================================================================
 
 #[test]
 fn test_insert_node_then_delete_restores_original_block() {
@@ -2682,9 +2628,6 @@ fn test_insert_node_then_delete_restores_original_inline() {
     );
 }
 
-// ===========================================================================
-// Edge cases
-// ===========================================================================
 
 #[test]
 fn test_delete_range_invalid_range_returns_error() {

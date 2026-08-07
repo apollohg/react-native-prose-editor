@@ -7,9 +7,7 @@ use crate::render::incremental::{contiguous_render_blocks_patch, incremental, re
 use crate::render::{ListContext, RenderElement, RenderMark};
 use crate::tiptap_schema;
 
-// ---------------------------------------------------------------------------
 // Helper builders (reuse patterns from model_test.rs)
-// ---------------------------------------------------------------------------
 
 fn bold() -> Mark {
     Mark::new("bold".to_string(), HashMap::new())
@@ -90,10 +88,8 @@ fn block_visible_text(elements: &[RenderElement]) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // Test 1: Plain paragraph
 // <p>Hello</p> -> [BlockStart("paragraph"), TextRun("Hello", []), BlockEnd]
-// ---------------------------------------------------------------------------
 #[test]
 fn test_plain_paragraph() {
     let schema = tiptap_schema();
@@ -120,10 +116,8 @@ fn test_plain_paragraph() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 2: Formatted text with partial bold
 // <p>H<b>ell</b>o</p>
-// ---------------------------------------------------------------------------
 #[test]
 fn test_formatted_text_partial_bold() {
     let schema = tiptap_schema();
@@ -162,10 +156,8 @@ fn test_formatted_text_partial_bold() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 3: Multiple marks (bold + italic)
 // <p><b><i>text</i></b></p>
-// ---------------------------------------------------------------------------
 #[test]
 fn test_multiple_marks_bold_italic() {
     let schema = tiptap_schema();
@@ -195,9 +187,6 @@ fn test_multiple_marks_bold_italic() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 4: Two paragraphs
-// ---------------------------------------------------------------------------
 #[test]
 fn test_two_paragraphs() {
     let schema = tiptap_schema();
@@ -307,9 +296,6 @@ fn contiguous_patch_reconstructs_shifted_downstream_atom_positions() {
     assert_eq!(reconstructed, render_blocks(&new_doc, &schema));
 }
 
-// ---------------------------------------------------------------------------
-// Test 5: Bullet list with two items
-// ---------------------------------------------------------------------------
 #[test]
 fn test_bullet_list_two_items() {
     let schema = tiptap_schema();
@@ -381,9 +367,6 @@ fn test_bullet_list_two_items() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 6: Ordered list with start=3
-// ---------------------------------------------------------------------------
 #[test]
 fn test_ordered_list_start_3() {
     let schema = tiptap_schema();
@@ -495,10 +478,8 @@ fn test_ordered_list_start_requires_exact_u32() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 7: HardBreak in paragraph
 // <p>He<br>llo</p>
-// ---------------------------------------------------------------------------
 #[test]
 fn test_hard_break_in_paragraph() {
     let schema = tiptap_schema();
@@ -534,9 +515,7 @@ fn test_hard_break_in_paragraph() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 8: HorizontalRule between paragraphs
-// ---------------------------------------------------------------------------
 #[test]
 fn test_horizontal_rule_between_paragraphs() {
     let schema = tiptap_schema();
@@ -582,9 +561,6 @@ fn test_horizontal_rule_between_paragraphs() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 9: Empty paragraph
-// ---------------------------------------------------------------------------
 #[test]
 fn test_empty_paragraph() {
     let schema = tiptap_schema();
@@ -611,9 +587,7 @@ fn test_empty_paragraph() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 10: Incremental - modify first block only
-// ---------------------------------------------------------------------------
 #[test]
 fn test_incremental_regenerate_first_block_only() {
     let schema = tiptap_schema();
@@ -651,9 +625,7 @@ fn test_incremental_regenerate_first_block_only() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 11: Incremental - consistency with full generation
-// ---------------------------------------------------------------------------
 #[test]
 fn test_incremental_matches_full_generation() {
     let schema = tiptap_schema();
@@ -679,9 +651,7 @@ fn test_incremental_matches_full_generation() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 12: Incremental - middle block only
-// ---------------------------------------------------------------------------
 #[test]
 fn test_incremental_middle_block() {
     let schema = tiptap_schema();
@@ -714,9 +684,6 @@ fn test_incremental_middle_block() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 13: Nested list depth tracking
-// ---------------------------------------------------------------------------
 #[test]
 fn test_list_item_paragraph_depth() {
     let schema = tiptap_schema();
@@ -759,9 +726,7 @@ fn test_list_item_paragraph_depth() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 14: VoidBlock doc_pos is correct with multiple preceding blocks
-// ---------------------------------------------------------------------------
 #[test]
 fn test_void_block_doc_pos_accuracy() {
     let schema = tiptap_schema();
@@ -794,9 +759,6 @@ fn test_void_block_doc_pos_accuracy() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 15: VoidInline doc_pos is correct
-// ---------------------------------------------------------------------------
 #[test]
 fn test_void_inline_doc_pos_accuracy() {
     let schema = tiptap_schema();
@@ -824,9 +786,7 @@ fn test_void_inline_doc_pos_accuracy() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 16: Incremental patches are sorted by block index
-// ---------------------------------------------------------------------------
 #[test]
 fn test_incremental_patches_sorted() {
     let schema = tiptap_schema();
@@ -849,9 +809,7 @@ fn test_incremental_patches_sorted() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 17: Ordered list default start (no attr)
-// ---------------------------------------------------------------------------
 #[test]
 fn test_ordered_list_default_start() {
     let schema = tiptap_schema();
@@ -887,9 +845,7 @@ fn test_ordered_list_default_start() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 18: Empty document (doc with no children)
-// ---------------------------------------------------------------------------
 #[test]
 fn test_empty_document() {
     let schema = tiptap_schema();
@@ -904,9 +860,7 @@ fn test_empty_document() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 19: Multiple marks ordering preserved
-// ---------------------------------------------------------------------------
 #[test]
 fn test_mark_ordering_preserved() {
     let schema = tiptap_schema();
@@ -935,9 +889,7 @@ fn test_mark_ordering_preserved() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Test 20: Complex document - list + paragraphs + hr
-// ---------------------------------------------------------------------------
 #[test]
 fn test_complex_document_mixed_content() {
     let schema = tiptap_schema();
@@ -983,9 +935,6 @@ fn test_complex_document_mixed_content() {
     assert_eq!(void_blocks, 1, "Should have 1 VoidBlock (horizontalRule)");
 }
 
-// ---------------------------------------------------------------------------
-// Test 21: Incremental on list block
-// ---------------------------------------------------------------------------
 #[test]
 fn test_incremental_list_block() {
     let schema = tiptap_schema();
@@ -1019,9 +968,7 @@ fn test_incremental_list_block() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 22: Cross-layer marker-string contract
-// ---------------------------------------------------------------------------
 
 /// The exact marker strings are a cross-layer contract: Android
 /// (LayoutConstants.TASK_LIST_MARKER_*), iOS (RenderBridge.listMarkerString),

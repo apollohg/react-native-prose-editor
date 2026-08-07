@@ -38,7 +38,7 @@ impl XmlParentRef {
         }
     }
 
-    #[allow(dead_code)] // Production execution is consumed by the Task 7 engine boundary.
+    #[allow(dead_code)] // Production execution is consumed by the engine boundary.
     fn remove_range(&self, txn: &mut TransactionMut<'_>, index: u32, len: u32) {
         match self {
             Self::Fragment(parent) => parent.remove_range(txn, index, len),
@@ -46,7 +46,7 @@ impl XmlParentRef {
         }
     }
 
-    #[allow(dead_code)] // Production execution is consumed by the Task 7 engine boundary.
+    #[allow(dead_code)] // Production execution is consumed by the engine boundary.
     fn insert_prepared(&self, txn: &mut TransactionMut<'_>, index: u32, node: PreparedXmlNode) {
         match self {
             Self::Fragment(parent) => insert_prepared_node(parent, txn, index, node),

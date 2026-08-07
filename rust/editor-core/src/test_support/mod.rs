@@ -1,15 +1,15 @@
-//! Crate-internal relocated integration suites (Task 16A).
+//! Crate-internal relocated integration suites.
 //!
 //! Every module here was relocated verbatim from `rust/editor-core/tests/` so that
-//! Task 16C can make `yrs_engine`, model, transform, schema internals, selection,
-//! render, snapshot/operation types crate-private without losing
-//! coverage. Test bodies are unchanged; the only adaptation is `editor_core::` →
-//! `crate::` path rewriting. The legacy differential-oracle and legacy-runtime-only
-//! suites were deleted in Task 16C per the user directive of 2026-07-20 ("We don't
-//! need to keep legacy code"): `test_oracle/legacy/` is gone entirely,
-//! `code_review_fixes_test` (a pure legacy-`Editor` harness suite) was deleted as
-//! redundant with the v2 engine suites, and `boundary_test`/`position_test` were
-//! ported to retained APIs (their legacy-harness tests dropped).
+//! can make `yrs_engine`, model, transform, schema internals, selection, render,
+//! snapshot/operation types crate-private without losing coverage. Test bodies are
+//! unchanged; the only adaptation is `editor_core::` → `crate::` path rewriting.
+//! The legacy differential-oracle and legacy-runtime-only suites were deleted in
+//! per the user directive of 2026-07-20 ("We don't need to keep legacy code"):
+//! `test_oracle/legacy/` is gone entirely, `code_review_fixes_test` (a pure
+//! legacy-`Editor` harness suite) was deleted as redundant with the v2 engine
+//! suites, and `boundary_test`/`position_test` were ported to retained APIs (their
+//! legacy-harness tests dropped).
 
 mod boundary_test;
 mod collaboration_awareness_test;
@@ -49,9 +49,7 @@ mod yrs_engine_transaction_test;
 mod yrs_engine_typing_regression_test;
 mod yrs_engine_upgrade_test;
 
-// ---------------------------------------------------------------------------
 // Session-registry concurrency guard
-// ---------------------------------------------------------------------------
 //
 // The relocated staging suites previously ran as separate test binaries, each
 // with its own process-global session registry. Merged into the lib test

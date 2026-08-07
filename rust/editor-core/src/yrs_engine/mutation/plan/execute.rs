@@ -1,4 +1,4 @@
-#[allow(dead_code)] // Production execution is consumed by the Task 7 engine boundary.
+#[allow(dead_code)] // Production execution is consumed by the engine boundary.
 pub(crate) fn execute_mutation_plan(plan: YrsMutationPlan, txn: &mut TransactionMut<'_>) {
     for action in plan.actions {
         match action {

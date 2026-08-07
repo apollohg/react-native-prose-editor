@@ -1,16 +1,14 @@
-//! Task 10: bounded awareness and peer projections.
+//! Bounded awareness and peer projections.
 //!
-//! Covers awareness/query-awareness handling through the Task 9
-//! `receive_message` classification pipeline, runtime ownership of desired
-//! local awareness across transport lifecycle (including the reconnect
-//! re-publish that mitigates the Task 6 tombstone-migration gap),
+//! Covers awareness/query-awareness handling through the `receive_message` classification
+//! pipeline, runtime ownership of desired local awareness across transport lifecycle
+//! (including the reconnect re-publish that mitigates the tombstone-migration gap),
 //! deterministic renewal/expiry clocks driven exclusively through
 //! `collaboration_drive(now_millis)`, tombstone semantics through the runtime path, sticky
-//! cursor projections that recompute with document revisions, and every
-//! awareness ceiling at its exact and one-over boundary with atomic
-//! rejection. Wire compatibility is proven against independent raw
-//! `yrs::sync::Awareness` peers in both directions; encoded awareness bytes
-//! are hash-map-ordered, so assertions always compare decoded structures.
+//! cursor projections that recompute with document revisions, and every awareness ceiling
+//! at its exact and one-over boundary with atomic rejection. Wire compatibility is proven
+//! against independent raw `yrs::sync::Awareness` peers in both directions; encoded
+//! awareness bytes are hash-map-ordered, so assertions always compare decoded structures.
 
 use std::collections::HashMap;
 
@@ -299,9 +297,7 @@ fn local_peer(id: u64) -> Option<AwarenessPeerInfo> {
         .find(|peer| peer.is_local)
 }
 
-// ---------------------------------------------------------------------------
 // Protocol integration: awareness and query-awareness through receive_message
-// ---------------------------------------------------------------------------
 
 #[test]
 fn awareness_updates_project_peers_without_touching_document_state() {
@@ -504,9 +500,7 @@ fn malformed_awareness_frames_close_the_generation_retryably() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Awareness ceilings: exact and one-over, atomic rejection
-// ---------------------------------------------------------------------------
 
 /// Shared shape of every deterministic awareness-ceiling refusal: the
 /// generation closes as `Incompatible` with the awareness limit code, the
@@ -743,9 +737,7 @@ fn query_awareness_replies_are_bounded_and_reserved_like_every_protocol_reply() 
     destroy_session(id);
 }
 
-// ---------------------------------------------------------------------------
 // Desired local awareness: ownership, validation, lifecycle
-// ---------------------------------------------------------------------------
 
 #[test]
 fn set_desired_awareness_publishes_immediately_and_bounds_the_state_at_set_time() {
@@ -1274,9 +1266,7 @@ fn receive_failure_closes_also_clear_transport_peers() {
     destroy_session(id);
 }
 
-// ---------------------------------------------------------------------------
 // Tombstone semantics through the runtime path
-// ---------------------------------------------------------------------------
 
 #[test]
 fn tombstoned_peers_stay_excluded_until_a_strictly_newer_clock_reappears() {
@@ -1446,9 +1436,7 @@ fn remote_cannot_advance_the_local_client_clock() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Deterministic renewal and expiry clocks
-// ---------------------------------------------------------------------------
 
 #[test]
 fn tick_renews_local_awareness_at_exactly_the_renewal_interval() {
@@ -1814,9 +1802,6 @@ fn renewed_announcements_refresh_the_peer_expiry_deadline() {
     destroy_session(id);
 }
 
-// ---------------------------------------------------------------------------
-// Cursor projections
-// ---------------------------------------------------------------------------
 
 /// Serialize a sticky cursor anchored at `utf16_index` of the seed text on a
 /// raw doc sharing the session's lineage.
@@ -2437,9 +2422,8 @@ fn invalid_sticky_cursors_degrade_to_cursorless_peers_without_errors() {
     destroy_session(id);
 }
 
-// ---------------------------------------------------------------------------
-// Task 18A: security-review findings C1/I1/I2 through the receive pipeline.
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------:
+// security-review findings C1/I1/I2 through the receive pipeline.
 
 #[test]
 fn max_clock_awareness_frames_close_as_incompatible_without_installing() {

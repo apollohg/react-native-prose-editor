@@ -23,7 +23,7 @@ pub(crate) use plan::{
     YrsMutationPlan,
 };
 
-#[allow(unused_imports)] // Production execution is consumed by the Task 7 engine boundary.
+#[allow(unused_imports)] // Production execution is consumed by the engine boundary.
 pub(crate) use plan::execute_mutation_plan;
 
 #[cfg(test)]

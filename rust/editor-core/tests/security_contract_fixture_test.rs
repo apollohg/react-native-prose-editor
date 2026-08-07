@@ -1,7 +1,7 @@
 //! Shared hostile-fixture contract against the v2 UniFFI boundary.
 //!
-//! Task 16C: ported from the deleted legacy `editor_*` ABI to the production
-//! v2 ABI (`editor_v2_create` / `editor_v2_get_document_json` /
+//! Ported from the deleted legacy `editor_*` ABI to the production v2 ABI
+//! (`editor_v2_create` / `editor_v2_get_document_json` /
 //! `editor_v2_destroy`). The fixtures and their expected error codes are
 //! unchanged; the v2 boundary surfaces the same stable codes through the
 //! structured `FfiError` envelope (domain `document` for these cases).

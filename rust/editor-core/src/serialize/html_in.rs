@@ -11,9 +11,6 @@ use crate::schema::{NodeRole, Schema};
 /// Type alias for a node reference in the scraper parse tree.
 type SNodeRef<'a> = ego_tree::NodeRef<'a, scraper::Node>;
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
 
 /// Errors returned by `from_html`.
 #[derive(Debug, Clone)]
@@ -45,9 +42,6 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-// ---------------------------------------------------------------------------
-// Options
-// ---------------------------------------------------------------------------
 
 /// Options for `from_html`.
 #[derive(Debug, Clone, Default)]
@@ -59,9 +53,6 @@ pub struct FromHtmlOptions {
     pub allow_base64_images: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Tag-to-mark mapping
-// ---------------------------------------------------------------------------
 
 /// Map HTML tag names to mark type names.
 fn tag_to_mark_type(tag: &str) -> Option<&'static str> {
@@ -94,9 +85,7 @@ fn mark_from_element(tag: &str, elem: &scraper::node::Element, schema: &Schema) 
     Some(Mark::new(mark_type.to_string(), attrs))
 }
 
-// ---------------------------------------------------------------------------
 // Known void HTML elements (self-closing / no content)
-// ---------------------------------------------------------------------------
 
 const VOID_HTML_ELEMENTS: &[&str] = &[
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
@@ -271,9 +260,6 @@ fn parse_attr_value(key: &str, spec: &crate::schema::AttrSpec, raw: &str) -> ser
     serde_json::Value::String(raw.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Block-level HTML elements
-// ---------------------------------------------------------------------------
 
 const BLOCK_HTML_ELEMENTS: &[&str] = &[
     "address",
@@ -315,9 +301,6 @@ fn is_block_html_element(tag: &str) -> bool {
     BLOCK_HTML_ELEMENTS.contains(&tag)
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 /// Parse an HTML string into a Document tree using the given schema.
 ///
@@ -408,9 +391,6 @@ pub fn from_html_with_limits(
     Ok(Document::new(doc_node))
 }
 
-// ---------------------------------------------------------------------------
-// Internal processing
-// ---------------------------------------------------------------------------
 
 /// Process children of a scraper node, dispatching to block or inline handling.
 fn process_children(
@@ -910,9 +890,6 @@ fn escape_html_to(text: &str, buf: &mut String) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Flush accumulated inline nodes into a paragraph and append to blocks.
 fn flush_inline_acc(inline_acc: &mut Vec<Node>, schema: &Schema, block_acc: &mut Vec<Node>) {

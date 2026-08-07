@@ -17,9 +17,7 @@ mod tests {
     use crate::model::Document;
     use crate::position::PositionMap;
 
-    // -----------------------------------------------------------------------
-    // Predefined text strings with varying Unicode characteristics
-    // -----------------------------------------------------------------------
+        // Predefined text strings with varying Unicode characteristics
 
     const TEXT_POOL: &[&str] = &[
         "Hello world",                                 // ASCII
@@ -34,9 +32,6 @@ mod tests {
         "Line one\nLine two\nLine three",              // multi-line
     ];
 
-    // -----------------------------------------------------------------------
-    // Block type choices
-    // -----------------------------------------------------------------------
 
     #[derive(Debug, Clone, Copy)]
     enum BlockChoice {
@@ -55,9 +50,6 @@ mod tests {
         BlockChoice::BulletList,
     ];
 
-    // -----------------------------------------------------------------------
-    // Byte-driven document builder
-    // -----------------------------------------------------------------------
 
     struct ByteReader<'a> {
         data: &'a [u8],
@@ -190,9 +182,7 @@ mod tests {
         Some(Document::new(root))
     }
 
-    // -----------------------------------------------------------------------
-    // Independent expected-value computation (oracle)
-    // -----------------------------------------------------------------------
+        // Independent expected-value computation (oracle)
 
     fn expected_total_scalars(pmap: &PositionMap) -> u32 {
         pmap.blocks()
@@ -217,9 +207,6 @@ mod tests {
         positions
     }
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
 
     /// Returns true if the given scalar offset falls on an inter-block break
     /// (the synthetic "\n" separator between adjacent blocks).
@@ -238,14 +225,10 @@ mod tests {
         false
     }
 
-    // -----------------------------------------------------------------------
-    // Core invariant checker
-    // -----------------------------------------------------------------------
 
     fn check_invariants(doc: &Document, label: &str) {
         let pmap = PositionMap::build(doc, &crate::schema::presets::tiptap_schema());
 
-        // -- Invariant D --
         let expected = expected_total_scalars(&pmap);
         let actual = pmap.total_scalars();
         assert_eq!(
@@ -259,7 +242,6 @@ mod tests {
             doc.content_size(),
         );
 
-        // -- Invariant A --
         let cursorable = collect_cursorable_positions(&pmap);
         for &pos in &cursorable {
             let scalar = pmap.doc_to_scalar(pos, doc);
@@ -307,7 +289,6 @@ mod tests {
             }
         }
 
-        // -- Invariant C --
         for &pos in &cursorable {
             let result = pmap.resolve(pos, doc);
             assert!(
@@ -327,9 +308,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Tests
-    // -----------------------------------------------------------------------
 
     /// Run invariants against a large number of deterministic pseudo-random
     /// byte sequences covering diverse document structures.

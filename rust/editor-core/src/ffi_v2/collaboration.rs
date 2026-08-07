@@ -1,5 +1,4 @@
-//! Task 12: UniFFI v2 collaboration entry points (production since the
-//! Task 16C cutover removed the staging gate).
+//! UniFFI v2 collaboration entry points.
 //!
 //! Native owns socket I/O; this module exposes Rust's one directive driver
 //! plus a retained ACK/NACK outbound lease. Rust alone owns generations,

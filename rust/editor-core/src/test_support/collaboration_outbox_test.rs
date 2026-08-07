@@ -1,4 +1,4 @@
-//! Task 7: bounded pre-commit collaboration outbox.
+//! Bounded pre-commit collaboration outbox.
 //!
 //! Direct coverage of `CollaborationOutbox` reservation/install/take
 //! semantics plus the session-level attachment contract: only attached

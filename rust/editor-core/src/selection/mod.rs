@@ -4,9 +4,6 @@ use crate::model::Document;
 use crate::position::PositionMap;
 use crate::transform::StepMap;
 
-// ---------------------------------------------------------------------------
-// Selection
-// ---------------------------------------------------------------------------
 
 /// Represents a selection within the document.
 ///
@@ -39,9 +36,6 @@ pub enum Selection {
 }
 
 impl Selection {
-    // -----------------------------------------------------------------------
-    // Constructors
-    // -----------------------------------------------------------------------
 
     /// Create a collapsed text selection (cursor) at `pos`.
     pub fn cursor(pos: u32) -> Self {
@@ -66,9 +60,6 @@ impl Selection {
         Self::All
     }
 
-    // -----------------------------------------------------------------------
-    // Accessors
-    // -----------------------------------------------------------------------
 
     /// The anchor position. For `All`, resolves to `0`.
     pub fn anchor(&self, _doc: &Document) -> u32 {
@@ -113,9 +104,6 @@ impl Selection {
         self.anchor(doc) == self.head(doc)
     }
 
-    // -----------------------------------------------------------------------
-    // Normalization
-    // -----------------------------------------------------------------------
 
     /// Normalize the selection by snapping all positions to the nearest
     /// cursorable position using the `PositionMap`.
@@ -123,9 +111,6 @@ impl Selection {
         normalize::normalize_selection(self, doc, pos_map)
     }
 
-    // -----------------------------------------------------------------------
-    // Mapping through StepMap
-    // -----------------------------------------------------------------------
 
     /// Map this selection through a `StepMap` to get new positions after a
     /// document transformation.

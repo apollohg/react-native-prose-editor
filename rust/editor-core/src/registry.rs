@@ -31,8 +31,8 @@ fn global_session_registry() -> &'static Mutex<HashMap<SessionId, Arc<EditorSess
     SESSION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 pub(crate) fn session_registry_count() -> usize {
     global_session_registry()

@@ -13,8 +13,8 @@ pub enum GenerateError {
     OrderedListIndexOverflow,
 }
 
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
+// Not reachable from production call paths after the legacy runtime removal;
+// exercised by crate tests.
 #[allow(dead_code)]
 fn render_marks(node: &Node) -> Vec<RenderMark> {
     node.marks()

@@ -1526,8 +1526,8 @@ mod whole_root_replacement {
     }
 }
 
-/// Task 7 property extension: every durable local path — typed input
-/// transaction, command, undo, redo, replace (`UndoableBoundary`), and reset
+/// Property extension: every durable local path — typed input transaction,
+/// command, undo, redo, replace (`UndoableBoundary`), and reset
 /// (`ResetAndClear`) — reserves a conservative outbound bound before the
 /// irreversible Yrs write and captures an incremental Update-v1 whose length
 /// never exceeds that admitted bound, while a twin replica fed only by the

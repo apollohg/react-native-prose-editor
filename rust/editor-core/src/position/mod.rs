@@ -14,9 +14,6 @@ use crate::schema::Schema;
 
 use delta_tree::DeltaTree;
 
-// ---------------------------------------------------------------------------
-// BlockMapping
-// ---------------------------------------------------------------------------
 
 /// Maps one "rendered block" between doc positions and scalar offsets.
 ///
@@ -46,9 +43,6 @@ pub struct BlockMapping {
     pub is_void_block: bool,
 }
 
-// ---------------------------------------------------------------------------
-// PositionMap
-// ---------------------------------------------------------------------------
 
 /// Bidirectional index for converting between doc positions and rendered-text
 /// scalar offsets.
@@ -120,9 +114,6 @@ impl PositionMap {
         (block.scalar_start as i64 + sd as i64) as u32
     }
 
-    // -----------------------------------------------------------------------
-    // scalar_to_doc
-    // -----------------------------------------------------------------------
 
     /// Convert a rendered-text scalar offset to a doc position.
     ///
@@ -206,9 +197,6 @@ impl PositionMap {
             .map(|position| (position, block_idx))
     }
 
-    // -----------------------------------------------------------------------
-    // doc_to_scalar
-    // -----------------------------------------------------------------------
 
     /// Convert a doc position to a rendered-text scalar offset.
     ///
@@ -271,9 +259,6 @@ impl PositionMap {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // resolve
-    // -----------------------------------------------------------------------
 
     /// Resolve a doc position to a `ResolvedPos` using the underlying document.
     // Not reachable from production call paths after the Task 16C legacy runtime
@@ -283,9 +268,6 @@ impl PositionMap {
         doc.resolve(doc_pos)
     }
 
-    // -----------------------------------------------------------------------
-    // normalize_cursor_pos
-    // -----------------------------------------------------------------------
 
     /// Snap a doc position to the nearest cursorable position.
     ///
@@ -331,9 +313,6 @@ impl PositionMap {
         self.effective_doc_end(last_idx)
     }
 
-    // -----------------------------------------------------------------------
-    // Block lookup helpers
-    // -----------------------------------------------------------------------
 
     /// Find the block index that contains or is nearest to the given doc position.
     ///
@@ -468,9 +447,7 @@ impl PositionMap {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Intra-block scalar ↔ doc offset conversion
-// ---------------------------------------------------------------------------
 
 /// Walk a text block node's content and convert a scalar offset to a doc
 /// token offset within the block.

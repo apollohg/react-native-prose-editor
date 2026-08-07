@@ -26,9 +26,7 @@ use editor_core::model::node::Node;
 use editor_core::model::Document;
 use editor_core::position::PositionMap;
 
-// ---------------------------------------------------------------------------
 // Predefined text strings with varying Unicode characteristics
-// ---------------------------------------------------------------------------
 
 const TEXT_POOL: &[&str] = &[
     "Hello world",                         // ASCII
@@ -43,9 +41,6 @@ const TEXT_POOL: &[&str] = &[
     "Line one\nLine two\nLine three",      // multi-line
 ];
 
-// ---------------------------------------------------------------------------
-// Block type choices
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 enum BlockChoice {
@@ -69,9 +64,6 @@ const BLOCK_CHOICES: &[BlockChoice] = &[
     BlockChoice::BulletList,
 ];
 
-// ---------------------------------------------------------------------------
-// Byte-driven document builder
-// ---------------------------------------------------------------------------
 
 /// Consumes bytes from `data` to deterministically build a document.
 /// Returns `None` if there aren't enough bytes.
@@ -212,9 +204,6 @@ fn build_random_doc(data: &[u8]) -> Option<Document> {
     Some(Document::new(root))
 }
 
-// ---------------------------------------------------------------------------
-// Invariant checks
-// ---------------------------------------------------------------------------
 
 /// Compute the expected total scalar count by walking the document tree.
 ///
@@ -324,7 +313,6 @@ fn collect_cursorable_positions(pmap: &PositionMap) -> Vec<u32> {
 fn check_invariants(doc: &Document) {
     let pmap = PositionMap::build(doc, &editor_core::schema::presets::tiptap_schema());
 
-    // -- Invariant D: total_scalars matches expected flattened text length --
     let expected = expected_total_scalars(doc);
     let actual = pmap.total_scalars();
     assert_eq!(
@@ -337,8 +325,6 @@ fn check_invariants(doc: &Document) {
         doc.content_size(),
     );
 
-    // -- Invariant A: scalar_to_doc(doc_to_scalar(pos)) == pos --
-    // For all cursorable positions.
     let cursorable = collect_cursorable_positions(&pmap);
     for &pos in &cursorable {
         let scalar = pmap.doc_to_scalar(pos, doc);
@@ -383,7 +369,6 @@ fn check_invariants(doc: &Document) {
         }
     }
 
-    // -- Invariant C: every cursorable position resolves to a valid ResolvedPos --
     for &pos in &cursorable {
         let result = pmap.resolve(pos, doc);
         assert!(
@@ -403,9 +388,6 @@ fn check_invariants(doc: &Document) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Fuzz target entry point
-// ---------------------------------------------------------------------------
 
 fuzz_target!(|data: &[u8]| {
     if let Some(doc) = build_random_doc(data) {

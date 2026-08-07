@@ -1,9 +1,9 @@
 //! editor-core: Yrs-backed rich-text editing engine.
 //!
-//! Since the Task 16C production cutover, the only intentional direct Rust
-//! semver surface is [`editor_core_version`]. Everything else reachable from
-//! the crate is the UniFFI-generated surface declared under [`ffi_v2`]; all
-//! engine internals are crate-private. The legacy pre-Yrs runtime (the legacy
+//! The only intentional direct Rust semver surface is
+//! [`editor_core_version`]. Everything else reachable from the crate is the
+//! UniFFI-generated surface declared under [`ffi_v2`]; all engine internals
+//! are crate-private. The legacy pre-Yrs runtime (the legacy
 //! editor/collaboration FFI, the standalone/document backends, and the legacy
 //! undo history) was deleted from this crate per the 2026-07-20 user
 //! directive ("we don't need to keep legacy code"); no legacy code is

@@ -566,7 +566,7 @@ fn remote_insert_before_relative_cursor_preserves_local_stored_marks() {
     assert!(json.contains("\"type\":\"bold\""));
 }
 
-/// Task 6: prepare/commit split, sealing, and read-only state-vector/diff
+/// Prepare/commit split, sealing, and read-only state-vector/diff
 /// encoding. Everything below is staging-only surface; the default-feature
 /// test count of this file must stay unchanged.
 mod staging {

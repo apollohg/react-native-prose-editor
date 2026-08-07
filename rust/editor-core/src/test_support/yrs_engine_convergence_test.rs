@@ -408,7 +408,7 @@ fn three_replicas_converge_for_six_delta_orders_with_base_first_or_last() {
     );
 }
 
-/// Task 9: a full protocol-driven session — two live registry sessions
+/// A full protocol-driven session — two live registry sessions
 /// exchanging Step 1/Step 2/Update frames exclusively through
 /// `receive_message` and the outbox pickup seams — converging to
 /// state-vector equality with local edits interleaved on both sides.

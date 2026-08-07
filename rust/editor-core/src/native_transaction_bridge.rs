@@ -574,9 +574,8 @@ fn typed_outcome(
 /// Per-character input filter with exact legacy `InputFilter` semantics:
 /// each committed character is kept only if it matches the pattern; a fully
 /// filtered commit drops the insertion entirely. The pattern arrives
-/// pre-compiled from the session policy's once-per-policy cache (Task 12
-/// tracked Minor); a cached compile failure replays the identical
-/// `CONFIG_INVALID` on every request.
+/// pre-compiled from the session policy's once-per-policy cache; a cached
+/// compile failure replays the identical `CONFIG_INVALID` on every request.
 fn apply_input_filter(
     compiled: Option<Result<&regex::Regex, String>>,
     text: &str,

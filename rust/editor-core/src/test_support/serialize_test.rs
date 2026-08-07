@@ -7,9 +7,6 @@ use crate::serialize::{
     JsonParseError, UnknownTypeMode,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn schema() -> Schema {
     crate::tiptap_schema()
@@ -475,9 +472,6 @@ fn doc(children: Vec<Node>) -> Document {
     ))
 }
 
-// ===========================================================================
-// to_html tests
-// ===========================================================================
 
 #[test]
 fn test_to_html_plain_paragraph() {
@@ -773,9 +767,6 @@ fn test_to_html_multiple_paragraphs() {
     assert_eq!(html, "<p>First</p><p>Second</p>");
 }
 
-// ===========================================================================
-// from_html tests
-// ===========================================================================
 
 #[test]
 fn test_from_html_plain_paragraph() {
@@ -1093,9 +1084,6 @@ fn test_from_html_empty_paragraph() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Alternative tag tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_from_html_b_tag_to_bold() {
@@ -1141,9 +1129,6 @@ fn test_from_html_strike_tag_to_strike() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Auto-wrap bare text
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_from_html_bare_text_auto_wrapped() {
@@ -1159,9 +1144,6 @@ fn test_from_html_bare_text_auto_wrapped() {
     assert_eq!(p.text_content(), "Hello world");
 }
 
-// ---------------------------------------------------------------------------
-// Unknown tag handling
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_from_html_unknown_inline_tag_preserved_as_opaque() {
@@ -1259,9 +1241,7 @@ fn test_from_html_strict_mode_rejects_unknown_tag() {
     }
 }
 
-// ===========================================================================
 // Round-trip tests: from_html(to_html(doc)) structure equivalence
-// ===========================================================================
 
 /// Assert that two documents have the same tree structure (type names, text,
 /// marks). We compare recursively since we don't have PartialEq on Node.
@@ -1449,9 +1429,7 @@ fn test_roundtrip_multiple_paragraphs() {
     assert_doc_eq(&original, &parsed);
 }
 
-// ===========================================================================
 // HTML string round-trip: to_html(from_html(html)) == html
-// ===========================================================================
 
 #[test]
 fn test_html_roundtrip_plain_paragraph() {
@@ -1520,9 +1498,6 @@ fn test_html_roundtrip_empty_paragraph() {
     assert_eq!(result, html);
 }
 
-// ===========================================================================
-// Edge cases
-// ===========================================================================
 
 #[test]
 fn test_from_html_li_without_p_wraps_in_paragraph() {
@@ -1617,9 +1592,6 @@ fn test_from_html_del_tag_roundtrips_to_s() {
     assert_eq!(html, "<p><s>Hello</s></p>");
 }
 
-// ===========================================================================
-// to_prosemirror_json tests
-// ===========================================================================
 
 fn pm_schema() -> Schema {
     crate::prosemirror_schema()
@@ -1816,9 +1788,6 @@ fn test_to_json_mark_with_attrs() {
     assert_eq!(marks[0]["attrs"]["href"], "https://example.com");
 }
 
-// ===========================================================================
-// from_prosemirror_json tests
-// ===========================================================================
 
 #[test]
 fn test_from_json_valid_plain_paragraph() {
@@ -2068,9 +2037,6 @@ fn test_from_json_empty_paragraph_empty_content_array() {
     assert_eq!(p.child_count(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Unknown type handling
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_from_json_unknown_type_error_mode() {
@@ -2210,9 +2176,6 @@ fn test_from_json_unknown_mark_preserve_mode_still_rejects() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// Invalid structure tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_from_json_missing_type_field() {
@@ -2241,11 +2204,9 @@ fn test_from_json_not_an_object() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Undeclared attr filtering — parity with the HTML ingestion path
 // (extract_node_attrs), hardened against attrs the schema does not declare
 // for a given node type (e.g. "checked" on a plain listItem).
-// ---------------------------------------------------------------------------
 
 /// set_json must not admit attrs the schema does not declare for the node —
 /// parity with the HTML ingestion path (extract_node_attrs). A declared attr
@@ -2506,9 +2467,7 @@ fn test_from_json_mark_attrs_preserved() {
     );
 }
 
-// ===========================================================================
 // Round-trip tests: from_json(to_json(doc)) equivalence
-// ===========================================================================
 
 /// Assert round-trip: serializing a document to JSON and parsing it back
 /// produces the same tree structure.
@@ -2641,9 +2600,6 @@ fn test_json_roundtrip_complex_document() {
     assert_json_roundtrip(&d, &schema(), "complex_document");
 }
 
-// ---------------------------------------------------------------------------
-// Round-trip with prosemirror schema
-// ---------------------------------------------------------------------------
 
 fn pm_doc(children: Vec<Node>) -> Document {
     Document::new(Node::element(
@@ -2764,9 +2720,7 @@ fn test_json_roundtrip_prosemirror_complex() {
     assert_json_roundtrip(&d, &pm_schema(), "pm_complex");
 }
 
-// ---------------------------------------------------------------------------
 // JSON string round-trip: to_json produces correct JSON, from_json parses it
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_json_string_roundtrip_verify_output_format() {
@@ -2801,9 +2755,7 @@ fn test_json_string_roundtrip_verify_output_format() {
     assert_tree_eq(d.root(), parsed.root(), "json_string_roundtrip");
 }
 
-// ---------------------------------------------------------------------------
 // Cross-format round-trip: JSON -> Doc -> HTML -> Doc -> JSON equivalence
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_cross_format_roundtrip_json_to_html_and_back() {

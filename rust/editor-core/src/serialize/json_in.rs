@@ -10,9 +10,6 @@ use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::content_rule::WorkBudget;
 use crate::schema::Schema;
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
 
 /// Errors returned by `from_prosemirror_json`.
 #[derive(Debug, Clone)]
@@ -48,9 +45,6 @@ impl fmt::Display for JsonParseError {
 
 impl std::error::Error for JsonParseError {}
 
-// ---------------------------------------------------------------------------
-// Options
-// ---------------------------------------------------------------------------
 
 /// How to handle node types that are not found in the schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -68,9 +62,6 @@ pub enum UnknownTypeMode {
     Skip,
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 /// Parse a ProseMirror JSON value into a Document tree using the given schema.
 ///
@@ -137,9 +128,6 @@ impl ParseBudget {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal parsing
-// ---------------------------------------------------------------------------
 
 fn parse_node(
     json: &Value,

@@ -2,9 +2,6 @@ use std::collections::HashMap;
 
 use crate::model::{Document, Fragment, Mark, Node};
 
-// ---------------------------------------------------------------------------
-// Helper builders
-// ---------------------------------------------------------------------------
 
 fn bold() -> Mark {
     Mark::new("bold".to_string(), HashMap::new())
@@ -67,9 +64,6 @@ fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
 }
 
-// ===========================================================================
-// Mark tests
-// ===========================================================================
 
 #[test]
 fn test_mark_creation() {
@@ -109,9 +103,6 @@ fn test_mark_equality_with_attrs() {
     assert_ne!(a, c, "different link attrs should not be equal");
 }
 
-// ===========================================================================
-// Node creation tests
-// ===========================================================================
 
 #[test]
 fn test_text_node_creation() {
@@ -155,9 +146,6 @@ fn test_element_node_creation() {
     assert_eq!(p.child_count(), 1);
 }
 
-// ===========================================================================
-// Fragment tests
-// ===========================================================================
 
 #[test]
 fn test_empty_fragment() {
@@ -190,9 +178,6 @@ fn test_fragment_child_access() {
     assert!(f.child(3).is_none());
 }
 
-// ===========================================================================
-// Node size tests
-// ===========================================================================
 
 #[test]
 fn test_text_node_size() {
@@ -277,9 +262,6 @@ fn test_spec_example_doc_size() {
     );
 }
 
-// ===========================================================================
-// Document wrapper and doc_size tests
-// ===========================================================================
 
 #[test]
 fn test_document_creation() {
@@ -297,9 +279,6 @@ fn test_document_content_size() {
     assert_eq!(document.content_size(), 4);
 }
 
-// ===========================================================================
-// Text content extraction
-// ===========================================================================
 
 #[test]
 fn test_text_content_simple() {
@@ -342,9 +321,6 @@ fn test_text_content_void_node() {
     assert_eq!(p.text_content(), "beforeafter");
 }
 
-// ===========================================================================
-// child / child_count tests
-// ===========================================================================
 
 #[test]
 fn test_node_child_count() {
@@ -374,9 +350,6 @@ fn test_void_node_has_no_children() {
     assert!(hr.child(0).is_none());
 }
 
-// ===========================================================================
-// Complex document size calculations
-// ===========================================================================
 
 #[test]
 fn test_list_document_size() {
@@ -430,9 +403,6 @@ fn test_paragraph_with_hard_break_size() {
     assert_eq!(p.node_size(), 14);
 }
 
-// ===========================================================================
-// ResolvedPos tests
-// ===========================================================================
 
 #[test]
 fn test_resolve_simple_doc() {
@@ -772,9 +742,7 @@ fn test_resolve_node_path_second_child() {
     );
 }
 
-// ===========================================================================
 // Unicode edge cases in position resolution
-// ===========================================================================
 
 #[test]
 fn test_resolve_unicode_emoji() {
@@ -801,9 +769,6 @@ fn test_resolve_unicode_emoji() {
     assert_eq!(r.parent_offset, 7);
 }
 
-// ===========================================================================
-// ResolvedPos parent accessor
-// ===========================================================================
 
 #[test]
 fn test_resolve_parent_node() {
@@ -821,9 +786,6 @@ fn test_resolve_parent_node() {
     assert_eq!(parent.node_type(), "doc");
 }
 
-// ===========================================================================
-// Document: node_at
-// ===========================================================================
 
 #[test]
 fn test_document_node_at() {

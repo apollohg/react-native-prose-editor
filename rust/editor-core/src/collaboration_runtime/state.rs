@@ -1,9 +1,8 @@
-//! Generation-owned transport state machine (production since the Task 16C
-//! cutover removed the staging gate).
+//! Generation-owned transport state machine.
 //!
-//! Task 8 scope: the machine is the single writer of a session's transport
-//! state. Every transition runs under the session lock (callers reach it
-//! only through `EditorSession`, which the registry hands out via the Task 3
+//! Scope: the machine is the single writer of a session's transport state.
+//! Every transition runs under the session lock (callers reach it only
+//! through `EditorSession`, which the registry hands out via the
 //! `with_alive` idiom), every accepted connection attempt increments the
 //! monotonic [`TransportGeneration`] exactly once, and callbacks carrying a
 //! stale generation are refused as observable no-ops. Rust owns retry
@@ -62,7 +61,7 @@ impl TransportGeneration {
 }
 
 /// Rust-owned disposition of a socket close, decided by the caller's error
-/// classification (Task 9) or reported transparently by the native host.
+/// classification or reported transparently by the native host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketCloseDisposition {
     /// The close is retryable: the transport returns to `Disconnected`,

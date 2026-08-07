@@ -1,10 +1,10 @@
 //! Runtime awareness ownership: desired local state, peer projections, and
-//! deterministic renewal/expiry clocks (Task 10).
+//! deterministic renewal/expiry clocks.
 //!
 //! The runtime owns the *lifecycle* of awareness — the desired local state
 //! JSON (validated and size-bounded at set time), per-peer activity
 //! deadlines, and the public peer projections — while ALL wire and clock
-//! state stays sealed inside the engine-owned Task 6
+//! state stays sealed inside the engine-owned
 //! [`crate::yrs_engine::AwarenessCodec`]. This module never constructs a
 //! `yrs::sync::Awareness`, never duplicates the codec's clocks, and never
 //! reads a wall clock: time enters exclusively as the `now_millis` parameter
@@ -221,8 +221,8 @@ impl AwarenessRuntimeState {
 }
 
 /// The session collaborators one awareness operation composes; built by the
-/// session's field-disjoint split borrow, mirroring the Task 9
-/// `ReceiveContext` idiom.
+/// session's field-disjoint split borrow, mirroring the `ReceiveContext`
+/// idiom.
 pub(crate) struct AwarenessContext<'a> {
     pub(crate) engine: &'a mut YrsDocumentEngine,
     pub(crate) transport_state: TransportState,
@@ -317,7 +317,7 @@ fn time_regression_error(request_id: u64, now_millis: u64, last_now_millis: u64)
 /// Outbox refusals for awareness broadcasts never close a generation — the
 /// desired state is already retained and the deterministic renewal clock
 /// re-attempts the broadcast — so they surface as plain retryable transport
-/// errors, split per the Task 9 saturation ruling.
+/// errors, split per the saturation ruling.
 fn broadcast_reservation_error(error: OutboxReservationError, request_id: u64) -> SessionError {
     let mut session_error = match error {
         OutboxReservationError::Saturated {

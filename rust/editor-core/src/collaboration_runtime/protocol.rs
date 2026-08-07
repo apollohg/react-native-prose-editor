@@ -1,4 +1,4 @@
-//! Strict standard y-sync protocol handling (Task 9).
+//! Strict standard y-sync protocol handling.
 //!
 //! One bounded entry point — [`CollaborationRuntime::receive_message`] —
 //! composes the sealed seams built by Tasks 6–8 and owns nothing else:
@@ -16,14 +16,13 @@
 //!
 //! An accepted current-generation Sync Step 2 is the ONLY synchronization
 //! gate, including the server-owned `AwaitRemote -> RoomReady` promotion.
-//! Task 10 extended the same classification pipeline to the standard
-//! y-protocols awareness (tag 1) and query-awareness (tag 3) messages:
-//! awareness payloads apply through the sealed Task 6 `AwarenessCodec`
-//! (never touching document state, revisions, sync gating, or the document
-//! outbox), query replies are prebuilt and reserved exactly like Step 1
-//! replies, and completing the handshake re-publishes the desired local
-//! awareness with a fresh clock. Auth and custom message types remain
-//! protocol errors.
+//! extended the same classification pipeline to the standard y-protocols
+//! awareness (tag 1) and query-awareness (tag 3) messages: awareness
+//! payloads apply through the sealed `AwarenessCodec` (never touching
+//! document state, revisions, sync gating, or the document outbox), query
+//! replies are prebuilt and reserved exactly like Step 1 replies, and
+//! completing the handshake re-publishes the desired local awareness with
+//! a fresh clock. Auth and custom message types remain protocol errors.
 
 #![allow(
     clippy::result_large_err,
@@ -66,9 +65,9 @@ pub const TRANSPORT_REMOTE_INADMISSIBLE: &str = "TRANSPORT_REMOTE_INADMISSIBLE";
 /// Engine-reported dependency-quarantine byte/work accounting exceeded the
 /// configured pending-update ceilings; deterministic, so incompatible.
 pub const TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED: &str = "TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED";
-/// Inbound awareness content exceeded a configured awareness ceiling
-/// (peer count, per-peer bytes, aggregate bytes); deterministic per-message
-/// admission, so incompatible (Task 9 saturation ruling).
+/// Inbound awareness content exceeded a configured awareness ceiling (peer
+/// count, per-peer bytes, aggregate bytes); deterministic per-message
+/// admission, so incompatible.
 pub const TRANSPORT_AWARENESS_LIMIT_EXCEEDED: &str = "TRANSPORT_AWARENESS_LIMIT_EXCEEDED";
 /// Recoverable allocation/reservation exhaustion; retry may succeed.
 pub const TRANSPORT_RESOURCE_EXHAUSTED: &str = "TRANSPORT_RESOURCE_EXHAUSTED";
@@ -553,11 +552,11 @@ pub(crate) fn frame_awareness_message(update_v1: &[u8]) -> Vec<u8> {
     encoder.to_vec()
 }
 
-/// Standard y-protocols framing of one document update:
-/// `[MSG_SYNC, MSG_SYNC_UPDATE, buf(update)]`, byte-identical to
+/// Standard y-protocols framing of one document update: `[MSG_SYNC,
+/// MSG_SYNC_UPDATE, buf(update)]`, byte-identical to
 /// `yrs::sync::Message::Sync(SyncMessage::Update)` encoding. The outbox
-/// stores raw update-v1 bytes (Task 7); wire frames are wrapped only at
-/// pickup time so every outbound frame is a complete y-protocols message.
+/// stores raw update-v1 bytes; wire frames are wrapped only at pickup
+/// time so every outbound frame is a complete y-protocols message.
 pub(crate) fn frame_sync_update_message(update_v1: &[u8]) -> Vec<u8> {
     frame_sync_message(MSG_SYNC_UPDATE, update_v1)
 }
@@ -680,8 +679,8 @@ fn classify_admission_error(
 }
 
 /// Failure-classification law for the sealed awareness codec, mirroring the
-/// Task 9 table: malformed encoding (including non-JSON state payloads) is
-/// a protocol error and closes retryably; the deterministic per-message
+/// table: malformed encoding (including non-JSON state payloads) is a
+/// protocol error and closes retryably; the deterministic per-message
 /// awareness ceilings close as incompatible; residual codec failures close
 /// retryably like every other apply failure.
 fn classify_awareness_code(code: &str) -> (SocketCloseDisposition, &'static str) {

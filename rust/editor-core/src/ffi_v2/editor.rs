@@ -1,5 +1,4 @@
-//! Task 12: UniFFI v2 editor lifecycle, state, and mutation entry points
-//! (production since the Task 16C cutover removed the staging gate).
+//! UniFFI v2 editor lifecycle, state, and mutation entry points.
 //!
 //! Every entry follows the frozen contract: decimal-string handle parsing,
 //! registry lookup, `slot.with_alive` under-lock recheck, and a typed
@@ -8,13 +7,12 @@
 //! while FFI error correlation retains request-id presence separately so an
 //! admitted external `0` remains distinguishable from no request envelope.
 //!
-//! `create` reuses the Task 4 session config format: room initialization
-//! carries `documentId`/`lineageId` plus optional snapshot *metadata* in
-//! the JSON; the snapshot's encoded state rides as direct bytes in the
-//! separate `snapshot_state` parameter (binary values are never JSON
-//! number arrays). Room-bound sessions own a collaboration runtime from
-//! creation, so offline edits queue against the bounded outbox from the
-//! first keystroke.
+//! `create` reuses the session config format: room initialization carries
+//! `documentId`/`lineageId` plus optional snapshot *metadata* in the JSON;
+//! the snapshot's encoded state rides as direct bytes in the separate
+//! `snapshot_state` parameter (binary values are never JSON number arrays).
+//! Room-bound sessions own a collaboration runtime from creation, so
+//! offline edits queue against the bounded outbox from the first keystroke.
 
 #![allow(
     clippy::result_large_err,
@@ -591,9 +589,7 @@ fn admit_create_retained_envelope(json: &str) -> Result<(), SessionError> {
     admit_create_envelope_bytes(retained)
 }
 
-// ---------------------------------------------------------------------------
 // Shared session access (used by the collaboration and snapshot modules too)
-// ---------------------------------------------------------------------------
 
 /// Decimal-string handles at the boundary; malformed handles are structured
 /// boundary errors, never panics.
@@ -673,9 +669,6 @@ pub(crate) fn unit_result(result: Result<(), FfiError>) -> FfiUnitResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Request envelopes
-// ---------------------------------------------------------------------------
 
 fn parse_request_envelope<'a, T: serde::Deserialize<'a>>(
     session: &EditorSession,
@@ -709,7 +702,7 @@ fn config_invalid(request_id: Option<u64>, message: impl Into<String>) -> Sessio
 }
 
 /// Data-only mirror of the replacement history policy (shared wire shape
-/// with the Task 7 bridge local-API envelope).
+/// with the bridge local-API envelope).
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReplaceDocumentEnvelope<'a> {
@@ -850,9 +843,6 @@ where
     Ok(raw)
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
 
 #[uniffi::export]
 pub fn editor_v2_create(config_json: String, snapshot_state: Option<Vec<u8>>) -> FfiJsonResult {
@@ -1259,9 +1249,6 @@ pub fn editor_v2_destroy(editor_id: String) -> FfiUnitResult {
     })())
 }
 
-// ---------------------------------------------------------------------------
-// State getters
-// ---------------------------------------------------------------------------
 
 #[uniffi::export]
 pub fn editor_v2_get_state(editor_id: String) -> FfiJsonResult {
@@ -1314,9 +1301,6 @@ pub fn editor_v2_get_content_snapshot(editor_id: String) -> FfiJsonResult {
     }))
 }
 
-// ---------------------------------------------------------------------------
-// Mutation entries
-// ---------------------------------------------------------------------------
 
 #[uniffi::export]
 pub fn editor_v2_replace_document(editor_id: String, request_json: String) -> FfiJsonResult {

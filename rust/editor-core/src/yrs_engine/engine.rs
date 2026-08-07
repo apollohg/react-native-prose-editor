@@ -3101,7 +3101,7 @@ impl YrsDocumentEngine {
         }
     }
 
-    #[allow(dead_code)] // Task 7 exposes the internal compiler through atomic application.
+    #[allow(dead_code)] // exposes the internal compiler through atomic application.
     pub(crate) fn compile_typed_transaction(
         &self,
         transaction: super::TypedTransaction,

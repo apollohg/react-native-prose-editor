@@ -1,6 +1,6 @@
 //! Boundary admission and resource-limit tests for retained boundary code.
 //!
-//! Task 16C: this suite previously drove the legacy `Editor` harness; per the
+//! This suite previously drove the legacy `Editor` harness; per the
 //! 2026-07-20 user directive the legacy runtime is gone, so only the tests
 //! that exercise retained boundary/serialize/schema code directly remain.
 //! Dropped coverage maps to v2 suites as follows: collaboration FFI admission
