@@ -467,8 +467,14 @@ internal class AndroidCollaborationTransport(
 
     private fun failCurrentSocket(token: Long, callbackGeneration: String, code: Int?) {
         if (!isCurrent(token, callbackGeneration)) return
-        socket?.cancel()
+        retireCurrentSocket()
         reportCurrentSocketClose(callbackGeneration, code)
+    }
+
+    /** Peers reap presence on the close handshake; cancelling alone strands it. */
+    private fun retireCurrentSocket() {
+        val active = socket ?: return
+        if (!active.close(WEBSOCKET_CLOSE_GOING_AWAY, null)) active.cancel()
     }
 
     private fun reportCurrentSocketClose(callbackGeneration: String, code: Int?) {
@@ -644,7 +650,7 @@ internal class AndroidCollaborationTransport(
         protocolAdapterDeadline?.cancel(false)
         protocolAdapterDeadline = null
         socketToken += 1
-        socket?.cancel()
+        retireCurrentSocket()
         socket = null
         generation = null
         inFlightLease = null
@@ -723,5 +729,9 @@ internal class AndroidCollaborationTransport(
         if (Thread.currentThread() === workerThread.get()) return operation()
         val future: Future<T> = executor.submit<T> { operation() }
         return future.get()
+    }
+
+    internal companion object {
+        const val WEBSOCKET_CLOSE_GOING_AWAY = 1001
     }
 }

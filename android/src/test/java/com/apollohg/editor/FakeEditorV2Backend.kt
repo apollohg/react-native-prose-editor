@@ -39,6 +39,9 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         EditorV2CallResult.Ok("""{"outboundChanged":false}""")
     var lastAwarenessSelectionJson: String? = null
 
+    /** Generation `collaborationDrive` asks the transport to open, if any. */
+    var collaborationGenerationToOpen: String? = null
+
     /** Backend call log ("applyInput", "getState", ...), for traffic assertions. */
     val calls = mutableListOf<String>()
 
@@ -439,7 +442,11 @@ internal class FakeEditorV2Backend : EditorV2Backend {
     override fun collaborationDrive(editorId: String, nowMillis: String): EditorV2CallResult<String> {
         calls.add("collaborationDrive")
         liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
-        return EditorV2CallResult.Ok(collaborationDirective("Detached"))
+        val generationToOpen = collaborationGenerationToOpen ?: return EditorV2CallResult.Ok(
+            collaborationDirective("Detached")
+        )
+        collaborationGenerationToOpen = null
+        return EditorV2CallResult.Ok(collaborationDirective("Connecting", generationToOpen))
     }
 
     override fun collaborationSocketOpen(
