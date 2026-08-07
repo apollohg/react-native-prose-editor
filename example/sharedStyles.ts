@@ -1,45 +1,82 @@
 import { StyleSheet } from 'react-native';
 
+import {
+    COLUMN_BASIS,
+    FONT_SIZE,
+    LETTER_SPACING,
+    LINE_HEIGHT,
+    MONO_FONT_FAMILY,
+    SPACE,
+} from './designTokens';
+
 export const sharedStyles = StyleSheet.create({
     sectionLabel: {
-        fontSize: 13,
+        fontSize: FONT_SIZE.section,
         fontWeight: '700',
         textTransform: 'uppercase',
-        letterSpacing: 1,
+        letterSpacing: LETTER_SPACING.section,
     },
-    controlLabel: {
-        fontSize: 14,
+    heading: {
+        fontSize: FONT_SIZE.heading,
+        lineHeight: LINE_HEIGHT.heading,
         fontWeight: '700',
     },
+    controlLabel: {
+        fontSize: FONT_SIZE.label,
+        lineHeight: LINE_HEIGHT.label,
+        fontWeight: '600',
+    },
     controlHint: {
-        fontSize: 13,
-        lineHeight: 18,
+        fontSize: FONT_SIZE.hint,
+        lineHeight: LINE_HEIGHT.hint,
+    },
+    /** Numeric readout beside a control. Tabular so digits do not jitter. */
+    numericValue: {
+        fontSize: FONT_SIZE.value,
+        lineHeight: LINE_HEIGHT.value,
+        fontWeight: '700',
+        fontVariant: ['tabular-nums'],
+    },
+    monoReadout: {
+        fontFamily: MONO_FONT_FAMILY,
+        fontSize: FONT_SIZE.mono,
+        lineHeight: LINE_HEIGHT.mono,
     },
     settingsPanel: {
-        gap: 16,
+        gap: SPACE.lg,
     },
-    inputRow: {
+    /** flexBasis + flexGrow, not a percentage: 48% plus the gap collapsed the row. */
+    columnGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        justifyContent: 'space-between',
-        gap: 12,
+        gap: SPACE.md,
     },
-    inputGroup: {
-        width: '48%',
-        gap: 8,
+    column: {
+        flexBasis: COLUMN_BASIS,
+        flexGrow: 1,
+        minWidth: 0,
+        gap: SPACE.sm,
+    },
+    columnWide: {
+        flexBasis: '100%',
+        flexGrow: 1,
+        minWidth: 0,
+        gap: SPACE.sm,
     },
     sliderHeader: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: 12,
-    },
-    sliderValue: {
-        fontSize: 13,
-        fontWeight: '700',
+        gap: SPACE.md,
     },
     slider: {
         width: '100%',
         height: 36,
+    },
+    switchRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: SPACE.md,
     },
 });

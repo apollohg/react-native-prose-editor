@@ -1,10 +1,17 @@
-import React from 'react';
-import { StyleSheet, Switch, Text, View } from 'react-native';
-import Slider from '@react-native-community/slider';
-import type { ExampleThemePreset } from '../themePresets';
+import React, { useCallback } from 'react';
+import { View } from 'react-native';
+
 import { EXAMPLE_MENTION_SUGGESTIONS } from '../constants';
 import { sharedStyles } from '../sharedStyles';
+import type { ExampleAppChrome, ExampleThemePreset } from '../themePresets';
 import { ColorField } from './ColorField';
+import { PanelSection } from './PanelSection';
+import { SliderField } from './SliderField';
+import { ToggleRow } from './ToggleRow';
+
+const BASE_FONT_MIN = 12;
+const BASE_FONT_MAX = 30;
+const BASE_FONT_STEP = 1;
 
 type EditorSettingsPanelProps = {
     baseFontSize: number;
@@ -16,10 +23,10 @@ type EditorSettingsPanelProps = {
     expandedColor: 'blockquoteBorderColor' | null;
     onExpandedColorChange: (key: 'blockquoteBorderColor' | null) => void;
     sliderTheme: ExampleThemePreset['slider'];
-    appChrome: ExampleThemePreset['appChrome'];
+    chrome: ExampleAppChrome;
 };
 
-export function EditorSettingsPanel({
+function EditorSettingsPanelInner({
     baseFontSize,
     onBaseFontSizeChange,
     mentionsEnabled,
@@ -29,96 +36,61 @@ export function EditorSettingsPanel({
     expandedColor,
     onExpandedColorChange,
     sliderTheme,
-    appChrome,
+    chrome,
 }: EditorSettingsPanelProps) {
+    const toggleBlockquoteColor = useCallback(
+        () =>
+            onExpandedColorChange(
+                expandedColor === 'blockquoteBorderColor' ? null : 'blockquoteBorderColor'
+            ),
+        [expandedColor, onExpandedColorChange]
+    );
+
     return (
         <View style={sharedStyles.settingsPanel}>
-            <View>
-                <View style={sharedStyles.sliderHeader}>
-                    <Text
-                        style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                        Base Font
-                    </Text>
-                    <Text style={[sharedStyles.sliderValue, { color: appChrome.sliderValueColor }]}>
-                        {baseFontSize}px
-                    </Text>
-                </View>
-                <Slider
-                    style={sharedStyles.slider}
-                    minimumValue={12}
-                    maximumValue={30}
-                    step={1}
-                    minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
-                    maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
-                    thumbTintColor={sliderTheme.thumbTintColor}
-                    value={baseFontSize}
-                    onValueChange={onBaseFontSizeChange}
+            <SliderField
+                label='Base font'
+                value={baseFontSize}
+                min={BASE_FONT_MIN}
+                max={BASE_FONT_MAX}
+                step={BASE_FONT_STEP}
+                onCommit={onBaseFontSizeChange}
+                chrome={chrome}
+                sliderTheme={sliderTheme}
+            />
+
+            <PanelSection
+                title='Mentions'
+                hint={`Adds the mentions addon and schema. Suggestions: ${EXAMPLE_MENTION_SUGGESTIONS.map(
+                    (item) => item.label
+                ).join(', ')}.`}
+                chrome={chrome}>
+                <ToggleRow
+                    label='Enable mentions'
+                    hint='Type @ after a space, on a blank line, or after punctuation.'
+                    value={mentionsEnabled}
+                    onChange={onMentionsEnabledChange}
+                    chrome={chrome}
                 />
-            </View>
+            </PanelSection>
 
-            <View style={styles.editorOptionCard}>
-                <View style={styles.switchRow}>
-                    <Text
-                        style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                        Mentions
-                    </Text>
-                    <Switch
-                        value={mentionsEnabled}
-                        onValueChange={onMentionsEnabledChange}
-                        trackColor={{
-                            false: appChrome.tabBorderColor,
-                            true: appChrome.tabActiveBorderColor,
-                        }}
-                        thumbColor={
-                            mentionsEnabled ? appChrome.tabActiveTextColor : appChrome.tabTextColor
-                        }
-                    />
-                </View>
-
-                <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                    Demo suggestions:{' '}
-                    {EXAMPLE_MENTION_SUGGESTIONS.map((item) => item.label).join(', ')}
-                </Text>
-            </View>
-
-            <View style={styles.editorOptionCard}>
-                <Text style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                    Blockquote
-                </Text>
-                <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                    Adjust the quote line color to confirm blockquote theme updates apply live on
-                    both iOS and Android.
-                </Text>
-                <View style={sharedStyles.inputRow}>
+            <PanelSection
+                title='Blockquote'
+                hint='Confirms blockquote theme updates apply live on both platforms.'
+                chrome={chrome}>
+                <View style={sharedStyles.columnGrid}>
                     <ColorField
-                        label='Quote Line'
+                        label='Quote line'
                         value={blockquoteBorderColor}
-                        chrome={appChrome}
+                        chrome={chrome}
                         isExpanded={expandedColor === 'blockquoteBorderColor'}
-                        onToggle={() =>
-                            onExpandedColorChange(
-                                expandedColor === 'blockquoteBorderColor'
-                                    ? null
-                                    : 'blockquoteBorderColor'
-                            )
-                        }
+                        onToggle={toggleBlockquoteColor}
                         onChange={onBlockquoteBorderColorChange}
                     />
                 </View>
-            </View>
+            </PanelSection>
         </View>
     );
 }
 
-const styles = StyleSheet.create({
-    editorOptionCard: {
-        gap: 10,
-        paddingTop: 4,
-    },
-    switchRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingTop: 4,
-    },
-});
+export const EditorSettingsPanel = React.memo(EditorSettingsPanelInner);

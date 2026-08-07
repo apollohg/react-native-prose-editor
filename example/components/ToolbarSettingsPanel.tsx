@@ -1,14 +1,138 @@
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Slider from '@react-native-community/slider';
+import React, { useCallback } from 'react';
+import { View } from 'react-native';
 import type {
     EditorToolbarAppearance,
     EditorToolbarTheme,
 } from '@apollohg/react-native-prose-editor';
-import type { ExampleThemePreset } from '../themePresets';
-import { TOOLBAR_COLOR_FIELDS, type ToolbarColorKey } from '../constants';
+
+import { TOOLBAR_COLOR_FIELDS, type ChoiceOption, type ToolbarColorKey } from '../constants';
 import { sharedStyles } from '../sharedStyles';
+import type { ExampleAppChrome, ExampleThemePreset } from '../themePresets';
+import { ChoiceRow } from './ChoiceRow';
 import { ColorField } from './ColorField';
+import { PanelSection } from './PanelSection';
+import { SliderField } from './SliderField';
+import { ToggleRow } from './ToggleRow';
+
+type ToolbarNumericKey =
+    | 'borderRadius'
+    | 'borderWidth'
+    | 'buttonBorderRadius'
+    | 'keyboardOffset'
+    | 'horizontalInset'
+    | 'marginTop';
+
+const APPEARANCE_OPTIONS: readonly ChoiceOption<EditorToolbarAppearance>[] = [
+    { value: 'custom', label: 'Custom' },
+    { value: 'native', label: 'Native' },
+];
+
+/** Slider bounds per numeric token, plus whether native appearance honours it. */
+const NUMERIC_FIELDS: readonly {
+    key: ToolbarNumericKey;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+    /** Native appearance ignores purely visual tokens. */
+    visualOnly: boolean;
+}[] = [
+    { key: 'borderRadius', label: 'Toolbar radius', min: 0, max: 24, step: 1, visualOnly: true },
+    {
+        key: 'buttonBorderRadius',
+        label: 'Button radius',
+        min: 0,
+        max: 20,
+        step: 1,
+        visualOnly: true,
+    },
+    { key: 'borderWidth', label: 'Border width', min: 0, max: 8, step: 0.5, visualOnly: true },
+    {
+        key: 'keyboardOffset',
+        label: 'Keyboard offset',
+        min: 0,
+        max: 24,
+        step: 1,
+        visualOnly: false,
+    },
+    {
+        key: 'horizontalInset',
+        label: 'Horizontal inset',
+        min: 0,
+        max: 32,
+        step: 1,
+        visualOnly: false,
+    },
+    { key: 'marginTop', label: 'Inline margin', min: 0, max: 24, step: 1, visualOnly: false },
+];
+
+/** Rows own their closures so the memo on SliderField and ColorField holds. */
+const ToolbarNumericRow = React.memo(function ToolbarNumericRow({
+    field,
+    value,
+    onCommitKey,
+    chrome,
+    sliderTheme,
+}: {
+    field: (typeof NUMERIC_FIELDS)[number];
+    value: number;
+    onCommitKey: (key: ToolbarNumericKey, value: number) => void;
+    chrome: ExampleAppChrome;
+    sliderTheme: ExampleThemePreset['slider'];
+}) {
+    const handleCommit = useCallback(
+        (next: number) => onCommitKey(field.key, next),
+        [field.key, onCommitKey]
+    );
+    return (
+        <View style={sharedStyles.column}>
+            <SliderField
+                label={field.label}
+                value={value}
+                min={field.min}
+                max={field.max}
+                step={field.step}
+                onCommit={handleCommit}
+                chrome={chrome}
+                sliderTheme={sliderTheme}
+            />
+        </View>
+    );
+});
+
+const ToolbarColorRow = React.memo(function ToolbarColorRow({
+    colorKey,
+    label,
+    value,
+    isExpanded,
+    onToggleKey,
+    onChangeKey,
+    chrome,
+}: {
+    colorKey: ToolbarColorKey;
+    label: string;
+    value: string;
+    isExpanded: boolean;
+    onToggleKey: (key: ToolbarColorKey) => void;
+    onChangeKey: (key: ToolbarColorKey, value: string) => void;
+    chrome: ExampleAppChrome;
+}) {
+    const handleToggle = useCallback(() => onToggleKey(colorKey), [colorKey, onToggleKey]);
+    const handleChange = useCallback(
+        (next: string) => onChangeKey(colorKey, next),
+        [colorKey, onChangeKey]
+    );
+    return (
+        <ColorField
+            label={label}
+            value={value}
+            chrome={chrome}
+            isExpanded={isExpanded}
+            onToggle={handleToggle}
+            onChange={handleChange}
+        />
+    );
+});
 
 type ToolbarSettingsPanelProps = {
     toolbarTheme: Required<EditorToolbarTheme>;
@@ -18,391 +142,123 @@ type ToolbarSettingsPanelProps = {
     expandedColor: ToolbarColorKey | null;
     onExpandedColorChange: (key: ToolbarColorKey | null) => void;
     sliderTheme: ExampleThemePreset['slider'];
-    appChrome: ExampleThemePreset['appChrome'];
+    chrome: ExampleAppChrome;
 };
 
-export function ToolbarSettingsPanel({
+function ToolbarSettingsPanelInner({
     toolbarTheme,
     onToolbarThemeChange,
     expandedColor,
     onExpandedColorChange,
     sliderTheme,
-    appChrome,
+    chrome,
 }: ToolbarSettingsPanelProps) {
-    const updateNumeric = (
-        key:
-            | 'borderRadius'
-            | 'borderWidth'
-            | 'buttonBorderRadius'
-            | 'keyboardOffset'
-            | 'horizontalInset'
-            | 'marginTop',
-        value: number
-    ) => {
-        onToolbarThemeChange((current) => ({ ...current, [key]: value }));
-    };
-
-    const updateColor = (key: ToolbarColorKey, value: string) => {
-        onToolbarThemeChange((current) => ({ ...current, [key]: value }));
-    };
-    const updateBoolean = (key: 'showTopBorder', value: boolean) => {
-        onToolbarThemeChange((current) => ({ ...current, [key]: value }));
-    };
-    const updateAppearance = (appearance: EditorToolbarAppearance) => {
-        onToolbarThemeChange((current) => ({ ...current, appearance }));
-    };
     const isNativeAppearance = toolbarTheme.appearance === 'native';
+
+    const updateAppearance = useCallback(
+        (appearance: EditorToolbarAppearance) => {
+            onToolbarThemeChange((current) => ({ ...current, appearance }));
+        },
+        [onToolbarThemeChange]
+    );
+
+    const updateShowTopBorder = useCallback(
+        (showTopBorder: boolean) => {
+            onToolbarThemeChange((current) => ({ ...current, showTopBorder }));
+        },
+        [onToolbarThemeChange]
+    );
+
+    const commitNumeric = useCallback(
+        (key: ToolbarNumericKey, value: number) => {
+            onToolbarThemeChange((current) => ({ ...current, [key]: value }));
+        },
+        [onToolbarThemeChange]
+    );
+
+    const toggleColorKey = useCallback(
+        (key: ToolbarColorKey) => {
+            onExpandedColorChange(expandedColor === key ? null : key);
+        },
+        [expandedColor, onExpandedColorChange]
+    );
+
+    const changeColorKey = useCallback(
+        (key: ToolbarColorKey, value: string) => {
+            onToolbarThemeChange((current) => ({ ...current, [key]: value }));
+        },
+        [onToolbarThemeChange]
+    );
+
+    const numericFields = NUMERIC_FIELDS.filter(
+        (field) => !isNativeAppearance || !field.visualOnly
+    );
 
     return (
         <View style={sharedStyles.settingsPanel}>
-            <View style={styles.toolbarCard}>
-                <Text style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                    Toolbar Theme
-                </Text>
-                <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                    Tweak every toolbar token and confirm the styling applies on the native keyboard
-                    toolbar and the inline bubble.
-                </Text>
+            <PanelSection
+                title='Appearance'
+                hint={
+                    isNativeAppearance
+                        ? 'Native uses platform chrome and ignores the colour and radius tokens. Layout tokens below still apply.'
+                        : 'Custom honours every token below on both the keyboard toolbar and the inline bubble.'
+                }
+                chrome={chrome}>
+                <ChoiceRow
+                    fill
+                    options={APPEARANCE_OPTIONS}
+                    value={toolbarTheme.appearance}
+                    onChange={updateAppearance}
+                    chrome={chrome}
+                    accessibilityLabel='Toolbar appearance'
+                />
+            </PanelSection>
 
-                <View style={styles.appearanceRow}>
-                    {(['custom', 'native'] as const).map((appearance) => {
-                        const selected = toolbarTheme.appearance === appearance;
-                        return (
-                            <Pressable
-                                key={appearance}
-                                onPress={() => updateAppearance(appearance)}
-                                style={[
-                                    styles.appearanceChip,
-                                    {
-                                        borderColor: selected
-                                            ? appChrome.chipActiveBorderColor
-                                            : appChrome.chipBorderColor,
-                                        backgroundColor: selected
-                                            ? appChrome.chipActiveBackgroundColor
-                                            : appChrome.chipBackgroundColor,
-                                    },
-                                ]}>
-                                <Text
-                                    style={[
-                                        styles.appearanceChipText,
-                                        {
-                                            color: selected
-                                                ? appChrome.chipActiveTextColor
-                                                : appChrome.chipTextColor,
-                                        },
-                                    ]}>
-                                    {appearance === 'custom' ? 'Custom' : 'Native'}
-                                </Text>
-                            </Pressable>
-                        );
-                    })}
-                </View>
-
-                {isNativeAppearance ? (
-                    <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                        Native appearance uses platform chrome and ignores the visual color and
-                        radius tokens below. Layout-only controls like keyboard offset, horizontal
-                        inset, inline margin, and the inline top border still apply.
-                    </Text>
-                ) : (
-                    <View style={sharedStyles.inputRow}>
-                        <View style={sharedStyles.inputGroup}>
-                            <View style={sharedStyles.sliderHeader}>
-                                <Text
-                                    style={[
-                                        sharedStyles.controlLabel,
-                                        { color: appChrome.controlLabelColor },
-                                    ]}>
-                                    Toolbar Radius
-                                </Text>
-                                <Text
-                                    style={[
-                                        sharedStyles.sliderValue,
-                                        { color: appChrome.sliderValueColor },
-                                    ]}>
-                                    {toolbarTheme.borderRadius}px
-                                </Text>
-                            </View>
-                            <Slider
-                                style={sharedStyles.slider}
-                                minimumValue={0}
-                                maximumValue={24}
-                                step={1}
-                                minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
-                                maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
-                                thumbTintColor={sliderTheme.thumbTintColor}
-                                value={toolbarTheme.borderRadius}
-                                onValueChange={(value) => updateNumeric('borderRadius', value)}
-                            />
-                        </View>
-
-                        <View style={sharedStyles.inputGroup}>
-                            <View style={sharedStyles.sliderHeader}>
-                                <Text
-                                    style={[
-                                        sharedStyles.controlLabel,
-                                        { color: appChrome.controlLabelColor },
-                                    ]}>
-                                    Button Radius
-                                </Text>
-                                <Text
-                                    style={[
-                                        sharedStyles.sliderValue,
-                                        { color: appChrome.sliderValueColor },
-                                    ]}>
-                                    {toolbarTheme.buttonBorderRadius}px
-                                </Text>
-                            </View>
-                            <Slider
-                                style={sharedStyles.slider}
-                                minimumValue={0}
-                                maximumValue={20}
-                                step={1}
-                                minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
-                                maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
-                                thumbTintColor={sliderTheme.thumbTintColor}
-                                value={toolbarTheme.buttonBorderRadius}
-                                onValueChange={(value) =>
-                                    updateNumeric('buttonBorderRadius', value)
-                                }
-                            />
-                        </View>
-                    </View>
-                )}
-
-                <View style={sharedStyles.inputRow}>
-                    {!isNativeAppearance ? (
-                        <View style={sharedStyles.inputGroup}>
-                            <View style={sharedStyles.sliderHeader}>
-                                <Text
-                                    style={[
-                                        sharedStyles.controlLabel,
-                                        { color: appChrome.controlLabelColor },
-                                    ]}>
-                                    Border Width
-                                </Text>
-                                <Text
-                                    style={[
-                                        sharedStyles.sliderValue,
-                                        { color: appChrome.sliderValueColor },
-                                    ]}>
-                                    {toolbarTheme.borderWidth}px
-                                </Text>
-                            </View>
-                            <Slider
-                                style={sharedStyles.slider}
-                                minimumValue={0}
-                                maximumValue={8}
-                                step={0.5}
-                                minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
-                                maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
-                                thumbTintColor={sliderTheme.thumbTintColor}
-                                value={toolbarTheme.borderWidth}
-                                onValueChange={(value) => updateNumeric('borderWidth', value)}
-                            />
-                        </View>
-                    ) : null}
-
-                    <View style={sharedStyles.inputGroup}>
-                        <View style={sharedStyles.sliderHeader}>
-                            <Text
-                                style={[
-                                    sharedStyles.controlLabel,
-                                    { color: appChrome.controlLabelColor },
-                                ]}>
-                                Keyboard Offset
-                            </Text>
-                            <Text
-                                style={[
-                                    sharedStyles.sliderValue,
-                                    { color: appChrome.sliderValueColor },
-                                ]}>
-                                {toolbarTheme.keyboardOffset}px
-                            </Text>
-                        </View>
-                        <Slider
-                            style={sharedStyles.slider}
-                            minimumValue={0}
-                            maximumValue={24}
-                            step={1}
-                            minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
-                            maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
-                            thumbTintColor={sliderTheme.thumbTintColor}
-                            value={toolbarTheme.keyboardOffset}
-                            onValueChange={(value) => updateNumeric('keyboardOffset', value)}
+            <PanelSection title='Metrics' chrome={chrome}>
+                <View style={sharedStyles.columnGrid}>
+                    {numericFields.map((field) => (
+                        <ToolbarNumericRow
+                            key={field.key}
+                            field={field}
+                            value={toolbarTheme[field.key]}
+                            onCommitKey={commitNumeric}
+                            chrome={chrome}
+                            sliderTheme={sliderTheme}
                         />
-                    </View>
-
-                    <View style={sharedStyles.inputGroup}>
-                        <View style={sharedStyles.sliderHeader}>
-                            <Text
-                                style={[
-                                    sharedStyles.controlLabel,
-                                    { color: appChrome.controlLabelColor },
-                                ]}>
-                                Horizontal Inset
-                            </Text>
-                            <Text
-                                style={[
-                                    sharedStyles.sliderValue,
-                                    { color: appChrome.sliderValueColor },
-                                ]}>
-                                {toolbarTheme.horizontalInset}px
-                            </Text>
-                        </View>
-                        <Slider
-                            style={sharedStyles.slider}
-                            minimumValue={0}
-                            maximumValue={32}
-                            step={1}
-                            minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
-                            maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
-                            thumbTintColor={sliderTheme.thumbTintColor}
-                            value={toolbarTheme.horizontalInset}
-                            onValueChange={(value) => updateNumeric('horizontalInset', value)}
-                        />
-                    </View>
+                    ))}
                 </View>
+                <ToggleRow
+                    label='Inline top border'
+                    hint='Only affects the inline toolbar placement.'
+                    value={toolbarTheme.showTopBorder}
+                    onChange={updateShowTopBorder}
+                    chrome={chrome}
+                />
+            </PanelSection>
 
-                <View style={sharedStyles.inputRow}>
-                    <View style={sharedStyles.inputGroup}>
-                        <View style={sharedStyles.sliderHeader}>
-                            <Text
-                                style={[
-                                    sharedStyles.controlLabel,
-                                    { color: appChrome.controlLabelColor },
-                                ]}>
-                                Inline Margin
-                            </Text>
-                            <Text
-                                style={[
-                                    sharedStyles.sliderValue,
-                                    { color: appChrome.sliderValueColor },
-                                ]}>
-                                {toolbarTheme.marginTop}px
-                            </Text>
-                        </View>
-                        <Slider
-                            style={sharedStyles.slider}
-                            minimumValue={0}
-                            maximumValue={24}
-                            step={1}
-                            minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
-                            maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
-                            thumbTintColor={sliderTheme.thumbTintColor}
-                            value={toolbarTheme.marginTop}
-                            onValueChange={(value) => updateNumeric('marginTop', value)}
-                        />
-                    </View>
-
-                    <View style={sharedStyles.inputGroup}>
-                        <Text
-                            style={[
-                                sharedStyles.controlLabel,
-                                { color: appChrome.controlLabelColor },
-                            ]}>
-                            Inline Top Border
-                        </Text>
-                        <View style={styles.booleanChipRow}>
-                            {[
-                                { label: 'Off', value: false },
-                                { label: 'On', value: true },
-                            ].map((option) => {
-                                const selected = toolbarTheme.showTopBorder === option.value;
-                                return (
-                                    <Pressable
-                                        key={option.label}
-                                        onPress={() => updateBoolean('showTopBorder', option.value)}
-                                        style={[
-                                            styles.booleanChip,
-                                            {
-                                                borderColor: selected
-                                                    ? appChrome.chipActiveBorderColor
-                                                    : appChrome.chipBorderColor,
-                                                backgroundColor: selected
-                                                    ? appChrome.chipActiveBackgroundColor
-                                                    : appChrome.chipBackgroundColor,
-                                            },
-                                        ]}>
-                                        <Text
-                                            style={[
-                                                styles.booleanChipText,
-                                                {
-                                                    color: selected
-                                                        ? appChrome.chipActiveTextColor
-                                                        : appChrome.chipTextColor,
-                                                },
-                                            ]}>
-                                            {option.label}
-                                        </Text>
-                                    </Pressable>
-                                );
-                            })}
-                        </View>
-                    </View>
-                </View>
-
-                {!isNativeAppearance ? (
-                    <View style={styles.colorGrid}>
+            {isNativeAppearance ? null : (
+                <PanelSection
+                    title='Colours'
+                    hint='Tap a swatch to open its channel sliders. The theme commits on release.'
+                    chrome={chrome}>
+                    <View style={sharedStyles.columnGrid}>
                         {TOOLBAR_COLOR_FIELDS.map(({ key, label }) => (
-                            <ColorField
+                            <ToolbarColorRow
                                 key={key}
+                                colorKey={key}
                                 label={label}
                                 value={toolbarTheme[key]}
-                                chrome={appChrome}
                                 isExpanded={expandedColor === key}
-                                onToggle={() =>
-                                    onExpandedColorChange(expandedColor === key ? null : key)
-                                }
-                                onChange={(value) => updateColor(key, value)}
+                                onToggleKey={toggleColorKey}
+                                onChangeKey={changeColorKey}
+                                chrome={chrome}
                             />
                         ))}
                     </View>
-                ) : null}
-            </View>
+                </PanelSection>
+            )}
         </View>
     );
 }
 
-const styles = StyleSheet.create({
-    toolbarCard: {
-        gap: 12,
-        paddingTop: 4,
-    },
-    appearanceRow: {
-        flexDirection: 'row',
-        gap: 10,
-    },
-    appearanceChip: {
-        borderWidth: 1,
-        borderRadius: 999,
-        paddingHorizontal: 14,
-        paddingVertical: 8,
-    },
-    appearanceChipText: {
-        fontSize: 13,
-        fontWeight: '700',
-    },
-    booleanChipRow: {
-        flexDirection: 'row',
-        gap: 10,
-    },
-    booleanChip: {
-        flex: 1,
-        borderWidth: 1,
-        borderRadius: 999,
-        paddingHorizontal: 14,
-        paddingVertical: 8,
-        alignItems: 'center',
-    },
-    booleanChipText: {
-        fontSize: 13,
-        fontWeight: '700',
-    },
-    colorGrid: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-});
+export const ToolbarSettingsPanel = React.memo(ToolbarSettingsPanelInner);

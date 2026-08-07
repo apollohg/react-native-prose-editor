@@ -1,7 +1,14 @@
 import React, { useEffect, useRef } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import type { ExampleThemePreset } from '../themePresets';
+import { Modal, StyleSheet, Text, TextInput, View } from 'react-native';
+
+import { FONT_SIZE, RADIUS, SPACE } from '../designTokens';
 import { sharedStyles } from '../sharedStyles';
+import type { ExampleAppChrome } from '../themePresets';
+import { ActionButton } from './ActionButton';
+
+/** URL prompt driven by `onRequestLink`. */
+
+const BACKDROP_COLOR = 'rgba(8, 6, 4, 0.45)';
 
 type LinkEditorModalProps = {
     visible: boolean;
@@ -11,10 +18,10 @@ type LinkEditorModalProps = {
     onClose: () => void;
     onRemove: () => void;
     onApply: () => void;
-    appChrome: ExampleThemePreset['appChrome'];
+    chrome: ExampleAppChrome;
 };
 
-export function LinkEditorModal({
+function LinkEditorModalInner({
     visible,
     isActive,
     linkDraft,
@@ -22,7 +29,7 @@ export function LinkEditorModal({
     onClose,
     onRemove,
     onApply,
-    appChrome,
+    chrome,
 }: LinkEditorModalProps) {
     const inputRef = useRef<TextInput>(null);
 
@@ -39,95 +46,62 @@ export function LinkEditorModal({
     }, [visible]);
 
     return (
-        <Modal animationType='fade' transparent visible={visible} onRequestClose={onClose}>
+        <Modal
+            animationType='fade'
+            transparent
+            visible={visible}
+            onRequestClose={onClose}
+            accessibilityViewIsModal>
             <View style={styles.backdrop}>
-                <View
-                    style={[
-                        styles.card,
-                        {
-                            backgroundColor: appChrome.cardBackgroundColor,
-                            borderColor: appChrome.tabBorderColor,
-                        },
-                    ]}>
+                <View style={[styles.card, { backgroundColor: chrome.cardBackgroundColor }]}>
                     <Text
-                        style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                        {isActive ? 'Edit Link' : 'Add Link'}
+                        accessibilityRole='header'
+                        style={[sharedStyles.heading, { color: chrome.controlLabelColor }]}>
+                        {isActive ? 'Edit link' : 'Add link'}
                     </Text>
 
-                    <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                        Enter a URL to apply to the current selection. Clear it to remove the link.
+                    <Text style={[sharedStyles.controlHint, { color: chrome.controlHintColor }]}>
+                        Applies to the current selection. Saving an empty value removes the link.
                     </Text>
 
                     <TextInput
                         ref={inputRef}
+                        accessibilityLabel='Link URL'
                         autoCapitalize='none'
                         autoCorrect={false}
                         keyboardType='url'
                         placeholder='https://example.com'
-                        placeholderTextColor={appChrome.controlHintColor}
+                        placeholderTextColor={chrome.controlHintColor}
                         style={[
                             styles.input,
                             {
-                                color: appChrome.titleColor,
-                                backgroundColor: appChrome.cardSecondaryBackgroundColor,
-                                borderColor: appChrome.tabBorderColor,
+                                color: chrome.controlLabelColor,
+                                backgroundColor: chrome.controlSurfaceColor,
                             },
                         ]}
                         value={linkDraft}
                         onChangeText={onLinkDraftChange}
                         onSubmitEditing={onApply}
+                        returnKeyType='done'
                     />
 
                     <View style={styles.buttonRow}>
-                        <Pressable
-                            style={[
-                                styles.actionButton,
-                                styles.linkButton,
-                                { backgroundColor: appChrome.actionButtonBackgroundColor },
-                            ]}
-                            onPress={onClose}>
-                            <Text
-                                style={[
-                                    styles.actionButtonText,
-                                    { color: appChrome.actionButtonTextColor },
-                                ]}>
-                                Cancel
-                            </Text>
-                        </Pressable>
-
+                        <ActionButton
+                            label='Cancel'
+                            tone='secondary'
+                            onPress={onClose}
+                            chrome={chrome}
+                        />
                         {isActive ? (
-                            <Pressable
-                                style={[
-                                    styles.actionButton,
-                                    styles.linkButton,
-                                    { backgroundColor: appChrome.actionButtonBackgroundColor },
-                                ]}
-                                onPress={onRemove}>
-                                <Text
-                                    style={[
-                                        styles.actionButtonText,
-                                        { color: appChrome.actionButtonTextColor },
-                                    ]}>
-                                    Remove
-                                </Text>
-                            </Pressable>
+                            <ActionButton
+                                label='Remove'
+                                tone='secondary'
+                                onPress={onRemove}
+                                chrome={chrome}
+                                accessibilityHint='Removes the link but keeps the text.'
+                            />
                         ) : null}
-
-                        <Pressable
-                            style={[
-                                styles.actionButton,
-                                styles.linkButton,
-                                { backgroundColor: appChrome.actionButtonBackgroundColor },
-                            ]}
-                            onPress={onApply}>
-                            <Text
-                                style={[
-                                    styles.actionButtonText,
-                                    { color: appChrome.actionButtonTextColor },
-                                ]}>
-                                Save
-                            </Text>
-                        </Pressable>
+                        <ActionButton label='Save' onPress={onApply} chrome={chrome} />
                     </View>
                 </View>
             </View>
@@ -135,42 +109,31 @@ export function LinkEditorModal({
     );
 }
 
+export const LinkEditorModal = React.memo(LinkEditorModalInner);
+
 const styles = StyleSheet.create({
     backdrop: {
         flex: 1,
-        backgroundColor: 'rgba(18, 14, 10, 0.3)',
+        backgroundColor: BACKDROP_COLOR,
         justifyContent: 'center',
-        paddingHorizontal: 20,
+        paddingHorizontal: SPACE.xl,
     },
     card: {
-        borderWidth: 1,
-        borderRadius: 20,
-        padding: 20,
-        gap: 16,
+        borderRadius: RADIUS,
+        padding: SPACE.xl,
+        gap: SPACE.md,
     },
     input: {
-        borderWidth: 1,
-        borderRadius: 12,
-        paddingHorizontal: 14,
-        paddingVertical: 12,
-        fontSize: 15,
+        borderRadius: RADIUS,
+        paddingHorizontal: SPACE.lg,
+        paddingVertical: SPACE.md,
+        fontSize: FONT_SIZE.label,
     },
     buttonRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 12,
+        gap: SPACE.sm,
         justifyContent: 'flex-end',
-    },
-    linkButton: {
-        minWidth: 88,
-        alignItems: 'center',
-    },
-    actionButton: {
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-        borderRadius: 999,
-    },
-    actionButtonText: {
-        fontWeight: '700',
+        paddingTop: SPACE.xs,
     },
 });

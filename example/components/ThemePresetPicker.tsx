@@ -1,77 +1,57 @@
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { ExampleThemePreset } from '../themePresets';
+import React, { useMemo } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+
+import type { ChoiceOption } from '../constants';
+import { SPACE } from '../designTokens';
 import { sharedStyles } from '../sharedStyles';
+import type { ExampleAppChrome, ExampleThemePreset } from '../themePresets';
+import { ChoiceRow } from './ChoiceRow';
 
 type ThemePresetPickerProps = {
     presets: readonly ExampleThemePreset[];
     selectedId: string;
     onSelect: (id: string) => void;
-    appChrome: ExampleThemePreset['appChrome'];
+    chrome: ExampleAppChrome;
 };
 
-export function ThemePresetPicker({
-    presets,
-    selectedId,
-    onSelect,
-    appChrome,
-}: ThemePresetPickerProps) {
+function ThemePresetPickerInner({ presets, selectedId, onSelect, chrome }: ThemePresetPickerProps) {
+    const options = useMemo<readonly ChoiceOption<string>[]>(
+        () => presets.map((preset) => ({ value: preset.id, label: preset.label })),
+        [presets]
+    );
+
+    // Presets differ in geometry too, so which one is selected changes what a render proves.
+    const covers = presets.find((preset) => preset.id === selectedId)?.covers;
+
     return (
         <View style={styles.container}>
-            <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                Pick a preset to reload the editor and toolbar defaults.
+            <Text style={[sharedStyles.controlHint, { color: chrome.controlHintColor }]}>
+                Each preset covers the whole token surface, colours and geometry both. Picking one
+                reloads the editor and toolbar defaults; they are coverage fixtures, not recommended
+                themes.
             </Text>
 
-            <View style={styles.themePicker}>
-                {presets.map((preset) => (
-                    <Pressable
-                        key={preset.id}
-                        style={[
-                            styles.themeOption,
-                            {
-                                borderColor: appChrome.chipBorderColor,
-                                backgroundColor: appChrome.chipBackgroundColor,
-                            },
-                            selectedId === preset.id && {
-                                borderColor: appChrome.chipActiveBorderColor,
-                                backgroundColor: appChrome.chipActiveBackgroundColor,
-                            },
-                        ]}
-                        onPress={() => onSelect(preset.id)}>
-                        <Text
-                            style={[
-                                styles.themeOptionText,
-                                { color: appChrome.chipTextColor },
-                                selectedId === preset.id && {
-                                    color: appChrome.chipActiveTextColor,
-                                },
-                            ]}>
-                            {preset.label}
-                        </Text>
-                    </Pressable>
-                ))}
-            </View>
+            <ChoiceRow
+                options={options}
+                value={selectedId}
+                onChange={onSelect}
+                chrome={chrome}
+                accessibilityLabel='Theme preset'
+            />
+
+            {covers != null ? (
+                <Text style={[sharedStyles.controlHint, { color: chrome.sectionLabelColor }]}>
+                    {covers}
+                </Text>
+            ) : null}
         </View>
     );
 }
 
+export const ThemePresetPicker = React.memo(ThemePresetPickerInner);
+
 const styles = StyleSheet.create({
     container: {
-        gap: 12,
-    },
-    themePicker: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 10,
-    },
-    themeOption: {
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-        borderRadius: 999,
-        borderWidth: 1,
-    },
-    themeOptionText: {
-        fontSize: 13,
-        fontWeight: '700',
+        gap: SPACE.md,
     },
 });

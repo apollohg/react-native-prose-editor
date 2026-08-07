@@ -1,56 +1,102 @@
-import React from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Slider from '@react-native-community/slider';
-import type { ExampleThemePreset } from '../themePresets';
+
+import {
+    CHANNEL_MAX,
+    CHANNEL_MIN,
+    clampChannel,
+    parseHexColor,
+    toHexColor,
+    type ChannelKey,
+    type RGBColor,
+} from '../colorHex';
+import {
+    FONT_SIZE,
+    LETTER_SPACING,
+    MAX_NUMERIC_FONT_SCALE,
+    MIN_TOUCH_TARGET,
+    RADIUS,
+    SPACE,
+} from '../designTokens';
 import { sharedStyles } from '../sharedStyles';
+import type { ExampleAppChrome } from '../themePresets';
+import type { ColorFieldProps } from './ColorField.shared';
 
-type RGBColor = {
-    r: number;
-    g: number;
-    b: number;
+/** Android colour field: RGB sliders. iOS uses the system picker. */
+
+const CHANNEL_STEP = 1;
+const SWATCH_SIZE = 28;
+
+const CHANNELS: readonly { key: ChannelKey; label: string; name: string }[] = [
+    { key: 'r', label: 'R', name: 'red' },
+    { key: 'g', label: 'G', name: 'green' },
+    { key: 'b', label: 'B', name: 'blue' },
+];
+
+type ChannelSliderProps = {
+    channel: ChannelKey;
+    channelLabel: string;
+    channelName: string;
+    fieldLabel: string;
+    value: number;
+    trackColor: string;
+    activeColor: string;
+    chrome: ExampleAppChrome;
+    onDrag: (channel: ChannelKey, value: number) => void;
+    onCommit: (channel: ChannelKey, value: number) => void;
 };
 
-function clampChannel(value: number): number {
-    return Math.max(0, Math.min(255, Math.round(value)));
-}
+/** Owns its per-channel closures so the memo holds. */
+const ChannelSlider = React.memo(function ChannelSlider({
+    channel,
+    channelLabel,
+    channelName,
+    fieldLabel,
+    value,
+    trackColor,
+    activeColor,
+    chrome,
+    onDrag,
+    onCommit,
+}: ChannelSliderProps) {
+    const handleDrag = useCallback((next: number) => onDrag(channel, next), [channel, onDrag]);
+    const handleCommit = useCallback(
+        (next: number) => onCommit(channel, next),
+        [channel, onCommit]
+    );
 
-function parseHexColor(hex: string): RGBColor {
-    const normalized = hex.trim().replace('#', '');
-    const expanded =
-        normalized.length === 3
-            ? normalized
-                  .split('')
-                  .map((char) => `${char}${char}`)
-                  .join('')
-            : normalized;
+    return (
+        <View style={styles.channelRow}>
+            <Text
+                maxFontSizeMultiplier={MAX_NUMERIC_FONT_SCALE}
+                style={[styles.channelLabel, { color: chrome.channelLabelColor }]}>
+                {channelLabel}
+            </Text>
+            <Slider
+                accessibilityLabel={`${fieldLabel} ${channelName} channel`}
+                accessibilityValue={{ min: CHANNEL_MIN, max: CHANNEL_MAX, now: value }}
+                style={styles.channelSlider}
+                minimumValue={CHANNEL_MIN}
+                maximumValue={CHANNEL_MAX}
+                step={CHANNEL_STEP}
+                minimumTrackTintColor={activeColor}
+                maximumTrackTintColor={trackColor}
+                thumbTintColor={activeColor}
+                value={value}
+                onValueChange={handleDrag}
+                onSlidingComplete={handleCommit}
+            />
+            <Text
+                maxFontSizeMultiplier={MAX_NUMERIC_FONT_SCALE}
+                style={[styles.channelValue, { color: chrome.channelValueColor }]}>
+                {value}
+            </Text>
+        </View>
+    );
+});
 
-    if (!/^[0-9a-fA-F]{6}$/.test(expanded)) {
-        return { r: 0, g: 0, b: 0 };
-    }
-
-    return {
-        r: parseInt(expanded.slice(0, 2), 16),
-        g: parseInt(expanded.slice(2, 4), 16),
-        b: parseInt(expanded.slice(4, 6), 16),
-    };
-}
-
-function toHexColor({ r, g, b }: RGBColor): string {
-    return `#${[r, g, b]
-        .map((value) => clampChannel(value).toString(16).padStart(2, '0'))
-        .join('')}`;
-}
-
-type ColorFieldProps = {
-    label: string;
-    value: string;
-    chrome: ExampleThemePreset['appChrome'];
-    isExpanded: boolean;
-    onToggle: () => void;
-    onChange: (value: string) => void;
-};
-
-export function ColorField({
+function ColorFieldInner({
     label,
     value,
     chrome,
@@ -58,165 +104,155 @@ export function ColorField({
     onToggle,
     onChange,
 }: ColorFieldProps) {
-    const color = parseHexColor(value);
+    /** Dragging lives here, not in the theme: one `onChange` on release. */
+    const [draftColor, setDraftColor] = useState<RGBColor | null>(null);
+    const draftRef = useRef<RGBColor | null>(null);
 
-    const updateChannel = (channel: keyof RGBColor, nextValue: number) => {
-        onChange(
-            toHexColor({
-                ...color,
-                [channel]: nextValue,
-            })
-        );
+    const committedColor = parseHexColor(value);
+    const color = draftColor ?? committedColor;
+
+    const handleDrag = useCallback(
+        (channel: ChannelKey, next: number) => {
+            const base = draftRef.current ?? parseHexColor(value);
+            const updated = { ...base, [channel]: clampChannel(next) };
+            draftRef.current = updated;
+            setDraftColor(updated);
+        },
+        [value]
+    );
+
+    const handleCommit = useCallback(
+        (channel: ChannelKey, next: number) => {
+            const base = draftRef.current ?? parseHexColor(value);
+            const updated = { ...base, [channel]: clampChannel(next) };
+            draftRef.current = null;
+            setDraftColor(null);
+            onChange(toHexColor(updated));
+        },
+        [onChange, value]
+    );
+
+    const channelColors: Record<ChannelKey, string> = {
+        r: chrome.channelRedColor,
+        g: chrome.channelGreenColor,
+        b: chrome.channelBlueColor,
     };
 
+    const displayHex = toHexColor(color).toUpperCase();
+
     return (
-        <View style={[styles.colorField, isExpanded && styles.colorFieldExpanded]}>
+        <View style={isExpanded ? sharedStyles.columnWide : sharedStyles.column}>
             <Pressable
+                accessibilityRole='button'
+                accessibilityLabel={`${label} colour, ${displayHex}`}
+                accessibilityState={{ expanded: isExpanded }}
+                accessibilityHint={
+                    isExpanded ? 'Hides the channel sliders.' : 'Shows red, green and blue sliders.'
+                }
                 style={[
                     styles.colorTrigger,
                     {
-                        borderColor: chrome.colorTriggerBorderColor,
-                        backgroundColor: chrome.colorTriggerBackgroundColor,
-                    },
-                    isExpanded && {
-                        borderColor: chrome.colorTriggerExpandedBorderColor,
-                        backgroundColor: chrome.colorTriggerExpandedBackgroundColor,
+                        backgroundColor: isExpanded
+                            ? chrome.controlExpandedColor
+                            : chrome.controlSurfaceColor,
                     },
                 ]}
                 onPress={onToggle}>
-                <View style={[styles.colorSwatch, { backgroundColor: value }]} />
+                <View
+                    style={[
+                        styles.colorSwatch,
+                        { backgroundColor: displayHex, borderColor: chrome.swatchBorderColor },
+                    ]}
+                />
                 <View style={styles.colorTriggerText}>
-                    <Text style={[sharedStyles.controlLabel, { color: chrome.controlLabelColor }]}>
+                    <Text
+                        numberOfLines={1}
+                        style={[sharedStyles.controlLabel, { color: chrome.controlLabelColor }]}>
                         {label}
                     </Text>
-                    <Text style={[styles.colorValue, { color: chrome.colorValueColor }]}>
-                        {value.toUpperCase()}
+                    <Text
+                        maxFontSizeMultiplier={MAX_NUMERIC_FONT_SCALE}
+                        style={[styles.colorValue, { color: chrome.colorValueColor }]}>
+                        {displayHex}
                     </Text>
                 </View>
             </Pressable>
 
-            {isExpanded && (
+            {isExpanded ? (
                 <View style={styles.channelGroup}>
-                    <View style={styles.channelRow}>
-                        <Text style={[styles.channelLabel, { color: chrome.channelLabelColor }]}>
-                            R
-                        </Text>
-                        <Slider
-                            style={styles.channelSlider}
-                            minimumValue={0}
-                            maximumValue={255}
-                            step={1}
-                            minimumTrackTintColor='#d94b4b'
-                            maximumTrackTintColor='#ead6d6'
-                            thumbTintColor='#b52f2f'
-                            value={color.r}
-                            onValueChange={(nextValue) => updateChannel('r', nextValue)}
+                    {CHANNELS.map(({ key, label: channelLabel, name }) => (
+                        <ChannelSlider
+                            key={key}
+                            channelLabel={channelLabel}
+                            channelName={name}
+                            fieldLabel={label}
+                            value={color[key]}
+                            trackColor={chrome.channelTrackColor}
+                            activeColor={channelColors[key]}
+                            chrome={chrome}
+                            channel={key}
+                            onDrag={handleDrag}
+                            onCommit={handleCommit}
                         />
-                        <Text style={[styles.channelValue, { color: chrome.channelValueColor }]}>
-                            {color.r}
-                        </Text>
-                    </View>
-
-                    <View style={styles.channelRow}>
-                        <Text style={[styles.channelLabel, { color: chrome.channelLabelColor }]}>
-                            G
-                        </Text>
-                        <Slider
-                            style={styles.channelSlider}
-                            minimumValue={0}
-                            maximumValue={255}
-                            step={1}
-                            minimumTrackTintColor='#4aa768'
-                            maximumTrackTintColor='#d7eadf'
-                            thumbTintColor='#2f7b49'
-                            value={color.g}
-                            onValueChange={(nextValue) => updateChannel('g', nextValue)}
-                        />
-                        <Text style={[styles.channelValue, { color: chrome.channelValueColor }]}>
-                            {color.g}
-                        </Text>
-                    </View>
-
-                    <View style={styles.channelRow}>
-                        <Text style={[styles.channelLabel, { color: chrome.channelLabelColor }]}>
-                            B
-                        </Text>
-                        <Slider
-                            style={styles.channelSlider}
-                            minimumValue={0}
-                            maximumValue={255}
-                            step={1}
-                            minimumTrackTintColor='#4b7bd9'
-                            maximumTrackTintColor='#d7dff1'
-                            thumbTintColor='#2f56a8'
-                            value={color.b}
-                            onValueChange={(nextValue) => updateChannel('b', nextValue)}
-                        />
-                        <Text style={[styles.channelValue, { color: chrome.channelValueColor }]}>
-                            {color.b}
-                        </Text>
-                    </View>
+                    ))}
                 </View>
-            )}
+            ) : null}
         </View>
     );
 }
 
+export const ColorField = React.memo(ColorFieldInner);
+
 const styles = StyleSheet.create({
-    colorField: {
-        width: '48%',
-        gap: 8,
-    },
-    colorFieldExpanded: {
-        width: '100%',
-    },
     colorTrigger: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 14,
-        borderWidth: 1,
+        gap: SPACE.md,
+        paddingHorizontal: SPACE.md,
+        paddingVertical: SPACE.sm,
+        minHeight: MIN_TOUCH_TARGET,
+        borderRadius: RADIUS,
     },
     colorSwatch: {
-        width: 28,
-        height: 28,
-        borderRadius: 8,
+        width: SWATCH_SIZE,
+        height: SWATCH_SIZE,
+        borderRadius: RADIUS,
         borderWidth: 1,
-        borderColor: 'rgba(0,0,0,0.08)',
     },
     colorTriggerText: {
-        gap: 8,
+        flexShrink: 1,
+        gap: SPACE.xs,
     },
     colorValue: {
-        fontSize: 12,
+        fontSize: FONT_SIZE.value,
         fontWeight: '700',
-        letterSpacing: 0.6,
-        textTransform: 'uppercase',
+        fontVariant: ['tabular-nums'],
+        letterSpacing: LETTER_SPACING.value,
     },
     channelGroup: {
-        gap: 8,
-        paddingHorizontal: 6,
+        gap: SPACE.sm,
+        paddingHorizontal: SPACE.xs,
     },
     channelRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
+        gap: SPACE.sm,
     },
     channelLabel: {
-        width: 14,
-        fontSize: 12,
+        // minWidth, not width: a fixed column clips the glyph at 2x font scale.
+        minWidth: 16,
+        fontSize: FONT_SIZE.value,
         fontWeight: '700',
     },
     channelSlider: {
         flex: 1,
-        height: 32,
+        height: 36,
     },
     channelValue: {
-        width: 32,
-        fontSize: 12,
+        minWidth: 36,
+        fontSize: FONT_SIZE.value,
         fontWeight: '700',
+        fontVariant: ['tabular-nums'],
         textAlign: 'right',
     },
 });

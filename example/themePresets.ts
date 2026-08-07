@@ -1,71 +1,97 @@
 import type {
+    EditorContentInsets,
+    EditorFontWeight,
     EditorHeadingTheme,
-    EditorTheme,
+    EditorHorizontalRuleTheme,
+    EditorLinkTheme,
+    EditorListTheme,
     EditorMentionTheme,
+    EditorTextStyle,
+    EditorTheme,
     EditorToolbarTheme,
 } from '@apollohg/react-native-prose-editor';
+
+/**
+ * App chrome tokens. Text is held at >= 4.5:1 on every background it renders on
+ * and UI indicators at >= 3:1. Editor content colours are separate fixtures and
+ * may fail contrast on purpose.
+ */
+export interface ExampleAppChrome {
+    screenBackgroundColor: string;
+    cardBackgroundColor: string;
+    cardSecondaryBackgroundColor: string;
+    titleColor: string;
+    subtitleColor: string;
+    sectionLabelColor: string;
+    controlLabelColor: string;
+    controlHintColor: string;
+    /** Accent on the screen. Navigation bar tint and bar actions. */
+    accentColor: string;
+    /** Structural rule. The navigation bar hairline. */
+    separatorColor: string;
+    /** Resting surface of every touchable. >= 1.25:1 against the card, since nothing outlines it. */
+    controlSurfaceColor: string;
+    controlSurfaceTextColor: string;
+    /** Selected chip. A fill, not a tint: nothing else marks selection. */
+    controlSelectedColor: string;
+    controlSelectedTextColor: string;
+    /** Colour trigger while its channel sliders are open. */
+    controlExpandedColor: string;
+    switchTrackColor: string;
+    switchTrackActiveColor: string;
+    switchThumbColor: string;
+    sliderValueColor: string;
+    colorValueColor: string;
+    channelLabelColor: string;
+    channelValueColor: string;
+    /** Unfilled portion of a slider track. Deliberately subtle (~1.9:1). */
+    channelTrackColor: string;
+    channelRedColor: string;
+    channelGreenColor: string;
+    channelBlueColor: string;
+    /** The one load-bearing border: a swatch matching the card would vanish. */
+    swatchBorderColor: string;
+    /** Removal and rejection affordances. Held at >= 3:1 against the card. */
+    destructiveColor: string;
+    actionButtonBackgroundColor: string;
+    actionButtonTextColor: string;
+    outputCardBackgroundColor: string;
+    outputTextColor: string;
+}
+
+/** `EditorBlockquoteTheme` is not exported from the package index. */
+export interface ExampleBlockquoteTheme {
+    indent: number;
+    borderColor: string;
+    borderWidth: number;
+    markerGap: number;
+}
+
+/** `fontSize` comes from the live base size; `fontFamily` stays inherited because
+ * 'System' is not a real Android family. */
+export type ExampleLinkTheme = Omit<Required<EditorLinkTheme>, 'fontSize' | 'fontFamily'>;
 
 export interface ExampleThemePreset {
     id: string;
     label: string;
+    /** Colour strategy plus what this fixture covers. Rendered under the picker. */
+    covers: string;
     statusBarStyle: 'dark' | 'light';
     textColor: string;
     backgroundColor: string;
-    appChrome: {
-        screenBackgroundColor: string;
-        cardBackgroundColor: string;
-        cardSecondaryBackgroundColor: string;
-        eyebrowColor: string;
-        titleColor: string;
-        subtitleColor: string;
-        sectionLabelColor: string;
-        controlLabelColor: string;
-        controlHintColor: string;
-        tabBorderColor: string;
-        tabBackgroundColor: string;
-        tabActiveBorderColor: string;
-        tabActiveBackgroundColor: string;
-        tabTextColor: string;
-        tabActiveTextColor: string;
-        chipBorderColor: string;
-        chipBackgroundColor: string;
-        chipActiveBorderColor: string;
-        chipActiveBackgroundColor: string;
-        chipTextColor: string;
-        chipActiveTextColor: string;
-        sliderValueColor: string;
-        colorValueColor: string;
-        channelLabelColor: string;
-        channelValueColor: string;
-        colorTriggerBorderColor: string;
-        colorTriggerBackgroundColor: string;
-        colorTriggerExpandedBorderColor: string;
-        colorTriggerExpandedBackgroundColor: string;
-        actionButtonBackgroundColor: string;
-        actionButtonTextColor: string;
-        outputCardBackgroundColor: string;
-        outputTextColor: string;
-    };
+    placeholderColor: string;
+    editorBorderRadius: number;
+    contentInsets: Required<EditorContentInsets>;
+    appChrome: ExampleAppChrome;
     paragraphSpacingAfter: number;
+    /** Multiplied by the live base font size, because `lineHeight` is in points. */
+    lineHeightRatio: number;
     headings: EditorHeadingTheme;
-    blockquote: {
-        indent: number;
-        borderColor: string;
-        borderWidth: number;
-        markerGap: number;
-    };
-    list: {
-        indent: number;
-        itemSpacing: number;
-        markerColor: string;
-        markerScale: number;
-    };
-    horizontalRule: {
-        color: string;
-        thickness: number;
-        verticalMargin: number;
-    };
+    blockquote: ExampleBlockquoteTheme;
+    list: Required<EditorListTheme>;
+    horizontalRule: Required<EditorHorizontalRuleTheme>;
     mentions: EditorMentionTheme;
+    links: ExampleLinkTheme;
     toolbar: Required<EditorToolbarTheme>;
     slider: {
         minimumTrackTintColor: string;
@@ -78,432 +104,561 @@ export interface ExampleEditorThemeOverrides {
     blockquoteBorderColor?: string;
 }
 
-export const DEFAULT_EXAMPLE_THEME_PRESET_ID = 'sand';
+export const DEFAULT_EXAMPLE_THEME_PRESET_ID = 'press';
 
-const DEFAULT_PARAGRAPH_SPACING_AFTER = 16;
+interface HeadingScale {
+    /** h1 through h6, largest first. */
+    sizes: readonly [number, number, number, number, number, number];
+    /** Space below a heading, as a fraction of that heading's own size. */
+    spacingRatio: number;
+}
 
-const DEFAULT_LIST_THEME = {
-    indent: 18,
-    itemSpacing: 8,
-    markerScale: 1.5,
-} as const;
+const HEADING_WEIGHTS: readonly EditorFontWeight[] = ['700', '700', '700', '600', '600', '600'];
 
-const DEFAULT_HORIZONTAL_RULE_THEME = {
-    thickness: 1,
-    verticalMargin: 12,
-} as const;
+function buildHeadingTheme(color: string, scale: HeadingScale): EditorHeadingTheme {
+    const style = (index: number): EditorTextStyle => {
+        const fontSize = scale.sizes[index];
+        return {
+            color,
+            fontSize,
+            fontWeight: HEADING_WEIGHTS[index],
+            spacingAfter: Math.round(fontSize * scale.spacingRatio),
+        };
+    };
 
-const DEFAULT_BLOCKQUOTE_THEME = {
-    indent: 18,
-    borderWidth: 3,
-    markerGap: 8,
-} as const;
-
-const DEFAULT_EDITOR_CONTENT_INSETS = {
-    top: 16,
-    right: 16,
-    bottom: 16,
-    left: 16,
-} as const;
-
-const DEFAULT_EDITOR_BORDER_RADIUS = 16;
-
-function buildHeadingTheme(color: string): EditorHeadingTheme {
     return {
-        h1: { color, fontSize: 32, fontWeight: '700', spacingAfter: 14 },
-        h2: { color, fontSize: 28, fontWeight: '700', spacingAfter: 12 },
-        h3: { color, fontSize: 24, fontWeight: '700', spacingAfter: 10 },
-        h4: { color, fontSize: 20, fontWeight: '600', spacingAfter: 10 },
-        h5: { color, fontSize: 18, fontWeight: '600', spacingAfter: 8 },
-        h6: { color, fontSize: 16, fontWeight: '600', spacingAfter: 8 },
+        h1: style(0),
+        h2: style(1),
+        h3: style(2),
+        h4: style(3),
+        h5: style(4),
+        h6: style(5),
     };
 }
 
-const WARM_APP_CHROME = {
-    screenBackgroundColor: '#ebe4da',
-    cardBackgroundColor: '#fffaf4',
-    cardSecondaryBackgroundColor: '#fffdf8',
-    eyebrowColor: '#8d5b3d',
-    titleColor: '#20170f',
-    subtitleColor: '#5e4d41',
-    sectionLabelColor: '#7b6859',
-    controlLabelColor: '#2d2117',
-    controlHintColor: '#6b5748',
-    tabBorderColor: '#dcc8b5',
-    tabBackgroundColor: '#fffdf8',
-    tabActiveBorderColor: '#9a4f2d',
-    tabActiveBackgroundColor: '#f7e6d8',
-    tabTextColor: '#6b5748',
-    tabActiveTextColor: '#6c3218',
-    chipBorderColor: '#dcc8b5',
-    chipBackgroundColor: '#fffdf8',
-    chipActiveBorderColor: '#9a4f2d',
-    chipActiveBackgroundColor: '#f7e6d8',
-    chipTextColor: '#6b5748',
-    chipActiveTextColor: '#6c3218',
-    sliderValueColor: '#7b6859',
-    colorValueColor: '#7b6859',
-    channelLabelColor: '#6b5748',
-    channelValueColor: '#7b6859',
-    colorTriggerBorderColor: '#dcc8b5',
-    colorTriggerBackgroundColor: '#ffffff',
-    colorTriggerExpandedBorderColor: '#9a4f2d',
-    colorTriggerExpandedBackgroundColor: '#fff7ef',
-    actionButtonBackgroundColor: '#2d2117',
-    actionButtonTextColor: '#fff8ef',
-    outputCardBackgroundColor: '#1e2024',
-    outputTextColor: '#eef4ff',
-} as const;
+/* Press: restrained, light, square. Every radius is 0, the falsy-zero fixture. */
+const PRESS_APP_CHROME: ExampleAppChrome = {
+    screenBackgroundColor: '#e0e5dc',
+    cardBackgroundColor: '#f6f9f4',
+    cardSecondaryBackgroundColor: '#fbfdfa',
+    titleColor: '#13180f',
+    subtitleColor: '#4f5549',
+    sectionLabelColor: '#545b4e',
+    controlLabelColor: '#1c2118',
+    controlHintColor: '#545b4e',
+    accentColor: '#285a2d',
+    separatorColor: '#c6cdc0',
+    controlSurfaceColor: '#d8ddd3',
+    controlSurfaceTextColor: '#545b4e',
+    controlSelectedColor: '#306d37',
+    controlSelectedTextColor: '#eff4eb',
+    controlExpandedColor: '#c4cfbb',
+    switchTrackColor: '#c6cdc0',
+    switchTrackActiveColor: '#2a6431',
+    switchThumbColor: '#f3f6f1',
+    sliderValueColor: '#545b4e',
+    colorValueColor: '#4f5549',
+    channelLabelColor: '#545b4e',
+    channelValueColor: '#545b4e',
+    channelTrackColor: '#b6b8b3',
+    channelRedColor: '#b6322b',
+    channelGreenColor: '#187e36',
+    channelBlueColor: '#006bbb',
+    swatchBorderColor: '#c6cdc0',
+    destructiveColor: '#b32228',
+    actionButtonBackgroundColor: '#1c2118',
+    actionButtonTextColor: '#f3f6f1',
+    outputCardBackgroundColor: '#181c15',
+    outputTextColor: '#d3dacd',
+};
 
+/* Poster: committed. Vermilion chrome around a pale editor, loose geometry. */
+const POSTER_APP_CHROME: ExampleAppChrome = {
+    screenBackgroundColor: '#f5e9dc',
+    cardBackgroundColor: '#95210d',
+    cardSecondaryBackgroundColor: '#ad301c',
+    titleColor: '#37120c',
+    subtitleColor: '#7a3528',
+    sectionLabelColor: '#f5e5d3',
+    controlLabelColor: '#fcf4ea',
+    controlHintColor: '#ebdbc9',
+    accentColor: '#9e2511',
+    separatorColor: '#c74d38',
+    controlSurfaceColor: '#720600',
+    controlSurfaceTextColor: '#f5e5d3',
+    controlSelectedColor: '#f8e8d6',
+    controlSelectedTextColor: '#5e0000',
+    controlExpandedColor: '#590000',
+    switchTrackColor: '#c74d38',
+    switchTrackActiveColor: '#e9d0b1',
+    switchThumbColor: '#fbf0e4',
+    sliderValueColor: '#f5e5d3',
+    colorValueColor: '#f6e9d9',
+    channelLabelColor: '#f5e5d3',
+    channelValueColor: '#f5e5d3',
+    channelTrackColor: '#b4695a',
+    channelRedColor: '#ffb2b2',
+    channelGreenColor: '#74e791',
+    channelBlueColor: '#85c3ff',
+    swatchBorderColor: '#ede3d6',
+    destructiveColor: '#ffa6b6',
+    actionButtonBackgroundColor: '#f8e8d6',
+    actionButtonTextColor: '#5c0400',
+    outputCardBackgroundColor: '#2c0804',
+    outputTextColor: '#eee3d5',
+};
+
+/* Signal: full palette on a green-black ground. The only native toolbar. */
+const SIGNAL_APP_CHROME: ExampleAppChrome = {
+    screenBackgroundColor: '#09100d',
+    cardBackgroundColor: '#141e1a',
+    cardSecondaryBackgroundColor: '#1b2722',
+    titleColor: '#e4eee9',
+    subtitleColor: '#86978f',
+    sectionLabelColor: '#86978f',
+    controlLabelColor: '#cedbd5',
+    controlHintColor: '#809189',
+    accentColor: '#ca9d42',
+    separatorColor: '#303e38',
+    controlSurfaceColor: '#24352d',
+    controlSurfaceTextColor: '#92a39b',
+    controlSelectedColor: '#c08f22',
+    controlSelectedTextColor: '#181003',
+    controlExpandedColor: '#152920',
+    switchTrackColor: '#303e38',
+    switchTrackActiveColor: '#c6952c',
+    switchThumbColor: '#e4eee9',
+    sliderValueColor: '#86978f',
+    colorValueColor: '#92a39b',
+    channelLabelColor: '#809189',
+    channelValueColor: '#86978f',
+    channelTrackColor: '#404b45',
+    channelRedColor: '#d75072',
+    channelGreenColor: '#23b374',
+    channelBlueColor: '#537bd9',
+    swatchBorderColor: '#2f3b35',
+    destructiveColor: '#d75072',
+    actionButtonBackgroundColor: '#c6952c',
+    actionButtonTextColor: '#0f0800',
+    outputCardBackgroundColor: '#050a07',
+    outputTextColor: '#bfcfc7',
+};
+
+/* Oxblood: drenched. Every surface carries chroma. */
+const OXBLOOD_APP_CHROME: ExampleAppChrome = {
+    screenBackgroundColor: '#19030e',
+    cardBackgroundColor: '#290a1b',
+    cardSecondaryBackgroundColor: '#341023',
+    titleColor: '#f8e6ed',
+    subtitleColor: '#ac8a99',
+    sectionLabelColor: '#ac8a99',
+    controlLabelColor: '#e7d0da',
+    controlHintColor: '#a58493',
+    accentColor: '#ee83af',
+    separatorColor: '#472335',
+    controlSurfaceColor: '#481c33',
+    controlSurfaceTextColor: '#b593a2',
+    controlSelectedColor: '#e573a3',
+    controlSelectedTextColor: '#1e0914',
+    controlExpandedColor: '#3d0a27',
+    switchTrackColor: '#472335',
+    switchTrackActiveColor: '#ec79a9',
+    switchThumbColor: '#f8e6ed',
+    sliderValueColor: '#ac8a99',
+    colorValueColor: '#b593a2',
+    channelLabelColor: '#a58493',
+    channelValueColor: '#ac8a99',
+    channelTrackColor: '#5a3a49',
+    channelRedColor: '#ee7746',
+    channelGreenColor: '#43b966',
+    channelBlueColor: '#5488ec',
+    swatchBorderColor: '#552f42',
+    destructiveColor: '#f56b76',
+    actionButtonBackgroundColor: '#ec79a9',
+    actionButtonTextColor: '#17010c',
+    outputCardBackgroundColor: '#110208',
+    outputTextColor: '#e6d1da',
+};
+
+/**
+ * Four fixtures: four colour strategies, four geometry profiles. They must not
+ * share geometry constants, or the numeric half of the theme API goes untested.
+ */
 export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
     {
-        id: 'sand',
-        label: 'Sand',
+        id: 'press',
+        label: 'Press',
+        covers: 'Restrained palette, zero radii, flush toolbar. Catches a falsy 0 read as unset.',
         statusBarStyle: 'dark',
-        backgroundColor: '#f6f1e8',
-        textColor: '#2a2118',
-        appChrome: WARM_APP_CHROME,
-        paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
-        headings: buildHeadingTheme(WARM_APP_CHROME.titleColor),
+        backgroundColor: '#f2f5ef',
+        textColor: '#181c14',
+        placeholderColor: '#83887f',
+        editorBorderRadius: 0,
+        contentInsets: { top: 12, right: 12, bottom: 12, left: 12 },
+        appChrome: PRESS_APP_CHROME,
+        paragraphSpacingAfter: 10,
+        lineHeightRatio: 1.35,
+        headings: buildHeadingTheme(PRESS_APP_CHROME.titleColor, {
+            sizes: [26, 23, 20, 18, 16, 15],
+            spacingRatio: 0.3,
+        }),
         blockquote: {
-            ...DEFAULT_BLOCKQUOTE_THEME,
-            borderColor: '#c38d68',
+            indent: 12,
+            borderColor: '#56895a',
+            borderWidth: 2,
+            markerGap: 6,
         },
         list: {
-            ...DEFAULT_LIST_THEME,
-            markerColor: '#9a4f2d',
+            indent: 14,
+            baseIndentMultiplier: 1,
+            itemSpacing: 4,
+            markerColor: '#2a6431',
+            markerScale: 1.2,
         },
         horizontalRule: {
-            ...DEFAULT_HORIZONTAL_RULE_THEME,
-            color: '#c38d68',
+            color: '#c0c7ba',
+            thickness: 1,
+            verticalMargin: 8,
+        },
+        links: {
+            color: '#195c24',
+            backgroundColor: '#f2f5ef',
+            underline: true,
+            fontWeight: '600',
+            fontStyle: 'normal',
         },
         mentions: {
-            textColor: '#7b2d12',
-            backgroundColor: '#f4d8c7',
-            borderColor: '#d8b19a',
+            node: {
+                textColor: '#003f0d',
+                backgroundColor: '#d2edd3',
+                borderColor: '#aac7ab',
+                borderWidth: 1,
+                borderRadius: 0,
+                fontWeight: '700',
+            },
+            suggestions: {
+                backgroundColor: '#fbfdfa',
+                borderColor: '#c6cdc0',
+                borderWidth: 1,
+                borderRadius: 0,
+                shadowColor: '#13180f',
+                option: {
+                    textColor: '#1c2118',
+                    secondaryTextColor: '#545b4e',
+                    backgroundColor: '#d2edd3',
+                    borderColor: '#aac7ab',
+                    borderWidth: 1,
+                    borderRadius: 0,
+                    fontWeight: '700',
+                    highlightedBackgroundColor: '#d2edd3',
+                    highlightedTextColor: '#003f0d',
+                },
+            },
+        },
+        toolbar: {
+            appearance: 'custom',
+            height: 36,
+            backgroundColor: '#fbfdfa',
+            borderColor: '#c6cdc0',
             borderWidth: 1,
-            borderRadius: 10,
+            borderRadius: 0,
+            marginTop: 4,
+            showTopBorder: true,
+            keyboardOffset: 0,
+            horizontalInset: 0,
+            separatorColor: '#dbe0d7',
+            buttonColor: '#424b3a',
+            buttonActiveColor: '#003f0d',
+            buttonDisabledColor: '#a8aca5',
+            buttonActiveBackgroundColor: '#d2edd3',
+            buttonBorderRadius: 0,
+        },
+        slider: {
+            minimumTrackTintColor: '#2a6431',
+            maximumTrackTintColor: PRESS_APP_CHROME.channelTrackColor,
+            thumbTintColor: '#0f4418',
+        },
+    },
+    {
+        id: 'poster',
+        label: 'Poster',
+        covers: 'Committed palette. Saturated chrome around a pale editor, at the loose end of the geometry range.',
+        statusBarStyle: 'dark',
+        backgroundColor: '#faf0e5',
+        textColor: '#2e100b',
+        placeholderColor: '#a4685c',
+        editorBorderRadius: 24,
+        contentInsets: { top: 22, right: 22, bottom: 22, left: 22 },
+        appChrome: POSTER_APP_CHROME,
+        paragraphSpacingAfter: 22,
+        lineHeightRatio: 1.7,
+        headings: buildHeadingTheme(POSTER_APP_CHROME.titleColor, {
+            sizes: [38, 33, 28, 24, 21, 18],
+            spacingRatio: 0.5,
+        }),
+        blockquote: {
+            indent: 26,
+            borderColor: '#c43922',
+            borderWidth: 6,
+            markerGap: 12,
+        },
+        list: {
+            indent: 28,
+            baseIndentMultiplier: 1.5,
+            itemSpacing: 10,
+            markerColor: '#b3260e',
+            markerScale: 1.7,
+        },
+        horizontalRule: {
+            color: '#d9553f',
+            thickness: 3,
+            verticalMargin: 20,
+        },
+        links: {
+            color: '#9b1400',
+            backgroundColor: '#ffc8bb',
+            underline: false,
             fontWeight: '700',
-            popoverBackgroundColor: '#fff8ef',
-            popoverBorderColor: '#dcc8b5',
-            popoverBorderWidth: 1,
-            popoverBorderRadius: 18,
-            popoverShadowColor: '#6c3218',
-            optionTextColor: '#2d2117',
-            optionSecondaryTextColor: '#7b6859',
-            optionHighlightedBackgroundColor: '#f7e6d8',
-            optionHighlightedTextColor: '#6c3218',
+            fontStyle: 'normal',
+        },
+        mentions: {
+            node: {
+                textColor: '#6f0100',
+                backgroundColor: '#ffc8bb',
+                borderColor: '#e37e6a',
+                borderWidth: 2,
+                borderRadius: 14,
+                fontWeight: '700',
+            },
+            suggestions: {
+                backgroundColor: '#f9ecdd',
+                borderColor: '#d6b894',
+                borderWidth: 2,
+                borderRadius: 22,
+                shadowColor: '#37120c',
+                option: {
+                    textColor: '#40140c',
+                    secondaryTextColor: '#874033',
+                    backgroundColor: '#ffc8bb',
+                    borderColor: '#e37e6a',
+                    borderWidth: 2,
+                    borderRadius: 14,
+                    fontWeight: '700',
+                    highlightedBackgroundColor: '#ffc8bb',
+                    highlightedTextColor: '#6f0100',
+                },
+            },
+        },
+        toolbar: {
+            appearance: 'custom',
+            height: 48,
+            backgroundColor: '#7c1403',
+            borderColor: '#c74d38',
+            borderWidth: 2,
+            borderRadius: 24,
+            marginTop: 12,
+            showTopBorder: false,
+            keyboardOffset: 10,
+            horizontalInset: 20,
+            separatorColor: '#b23a26',
+            buttonColor: '#f5e5d3',
+            buttonActiveColor: '#fef3e7',
+            buttonDisabledColor: '#bb6f60',
+            buttonActiveBackgroundColor: '#c43922',
+            buttonBorderRadius: 18,
+        },
+        slider: {
+            minimumTrackTintColor: '#f8e8d6',
+            maximumTrackTintColor: POSTER_APP_CHROME.channelTrackColor,
+            thumbTintColor: '#fcf4ea',
+        },
+    },
+    {
+        id: 'signal',
+        label: 'Signal',
+        covers: 'Full palette. Four role hues on one dark ground, and the only native toolbar appearance.',
+        statusBarStyle: 'light',
+        backgroundColor: '#0d1612',
+        textColor: '#d5e2db',
+        placeholderColor: '#5f6d66',
+        editorBorderRadius: 12,
+        contentInsets: { top: 16, right: 16, bottom: 16, left: 16 },
+        appChrome: SIGNAL_APP_CHROME,
+        paragraphSpacingAfter: 16,
+        lineHeightRatio: 1.5,
+        headings: buildHeadingTheme(SIGNAL_APP_CHROME.titleColor, {
+            sizes: [32, 28, 24, 20, 18, 16],
+            spacingRatio: 0.42,
+        }),
+        blockquote: {
+            indent: 18,
+            borderColor: '#358e61',
+            borderWidth: 3,
+            markerGap: 8,
+        },
+        list: {
+            indent: 20,
+            baseIndentMultiplier: 1.2,
+            itemSpacing: 8,
+            markerColor: '#c6952c',
+            markerScale: 1.4,
+        },
+        horizontalRule: {
+            color: '#293630',
+            thickness: 2,
+            verticalMargin: 14,
+        },
+        links: {
+            color: '#4dae7b',
+            backgroundColor: '#0d1612',
+            underline: true,
+            fontWeight: '500',
+            fontStyle: 'italic',
+        },
+        mentions: {
+            node: {
+                textColor: '#deaf56',
+                backgroundColor: '#332405',
+                borderColor: '#5a4414',
+                borderWidth: 1,
+                borderRadius: 6,
+                fontWeight: '700',
+            },
+            suggestions: {
+                backgroundColor: '#141e1a',
+                borderColor: '#303e38',
+                borderWidth: 1,
+                borderRadius: 12,
+                shadowColor: '#09100d',
+                option: {
+                    textColor: '#cedbd5',
+                    secondaryTextColor: '#809189',
+                    backgroundColor: '#332405',
+                    borderColor: '#5a4414',
+                    borderWidth: 1,
+                    borderRadius: 6,
+                    fontWeight: '700',
+                    highlightedBackgroundColor: '#332405',
+                    highlightedTextColor: '#deaf56',
+                },
+            },
         },
         toolbar: {
             appearance: 'native',
-            height: 40,
-            backgroundColor: '#fff8ef',
-            borderColor: '#dcc8b5',
+            height: 42,
+            backgroundColor: '#141e1a',
+            borderColor: '#303e38',
             borderWidth: 1,
-            borderRadius: 20,
+            borderRadius: 12,
             marginTop: 8,
             showTopBorder: false,
             keyboardOffset: 6,
             horizontalInset: 12,
-            separatorColor: '#e6d4c4',
-            buttonColor: '#7b4a30',
-            buttonActiveColor: '#7b2d12',
-            buttonDisabledColor: '#c7b29f',
-            buttonActiveBackgroundColor: '#f4d8c7',
-            buttonBorderRadius: 12,
-        },
-        slider: {
-            minimumTrackTintColor: '#9a4f2d',
-            maximumTrackTintColor: '#dcc8b5',
-            thumbTintColor: '#6c3218',
-        },
-    },
-    {
-        id: 'slate',
-        label: 'Slate',
-        statusBarStyle: 'dark',
-        backgroundColor: '#f0f2f5',
-        textColor: '#1c2128',
-        appChrome: {
-            screenBackgroundColor: '#e4e7ec',
-            cardBackgroundColor: '#f6f7f9',
-            cardSecondaryBackgroundColor: '#fafbfc',
-            eyebrowColor: '#2d7a6a',
-            titleColor: '#1c2128',
-            subtitleColor: '#586069',
-            sectionLabelColor: '#6b7785',
-            controlLabelColor: '#24292f',
-            controlHintColor: '#57606a',
-            tabBorderColor: '#cdd3db',
-            tabBackgroundColor: '#f6f7f9',
-            tabActiveBorderColor: '#2d7a6a',
-            tabActiveBackgroundColor: '#daf0eb',
-            tabTextColor: '#656d76',
-            tabActiveTextColor: '#1a5c4f',
-            chipBorderColor: '#cdd3db',
-            chipBackgroundColor: '#f6f7f9',
-            chipActiveBorderColor: '#2d7a6a',
-            chipActiveBackgroundColor: '#daf0eb',
-            chipTextColor: '#656d76',
-            chipActiveTextColor: '#1a5c4f',
-            sliderValueColor: '#6b7785',
-            colorValueColor: '#6b7785',
-            channelLabelColor: '#57606a',
-            channelValueColor: '#6b7785',
-            colorTriggerBorderColor: '#cdd3db',
-            colorTriggerBackgroundColor: '#ffffff',
-            colorTriggerExpandedBorderColor: '#2d7a6a',
-            colorTriggerExpandedBackgroundColor: '#edf7f4',
-            actionButtonBackgroundColor: '#24292f',
-            actionButtonTextColor: '#f6f8fa',
-            outputCardBackgroundColor: '#161b22',
-            outputTextColor: '#e6edf3',
-        },
-        paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
-        headings: buildHeadingTheme('#1c2128'),
-        blockquote: {
-            ...DEFAULT_BLOCKQUOTE_THEME,
-            borderColor: '#89b9ad',
-        },
-        list: {
-            ...DEFAULT_LIST_THEME,
-            markerColor: '#2d7a6a',
-        },
-        horizontalRule: {
-            ...DEFAULT_HORIZONTAL_RULE_THEME,
-            color: '#d0d7de',
-        },
-        mentions: {
-            textColor: '#1a5c4f',
-            backgroundColor: '#daf0eb',
-            borderColor: '#a8d5cb',
-            borderWidth: 1,
-            borderRadius: 8,
-            fontWeight: '700',
-            popoverBackgroundColor: '#f6f7f9',
-            popoverBorderColor: '#cdd3db',
-            popoverBorderWidth: 1,
-            popoverBorderRadius: 14,
-            popoverShadowColor: '#1c2128',
-            optionTextColor: '#24292f',
-            optionSecondaryTextColor: '#57606a',
-            optionHighlightedBackgroundColor: '#daf0eb',
-            optionHighlightedTextColor: '#1a5c4f',
-        },
-        toolbar: {
-            appearance: 'custom',
-            height: 40,
-            backgroundColor: '#f6f7f9',
-            borderColor: '#cdd3db',
-            borderWidth: 1,
-            borderRadius: 14,
-            marginTop: 8,
-            showTopBorder: false,
-            keyboardOffset: 6,
-            horizontalInset: 12,
-            separatorColor: '#d8dee4',
-            buttonColor: '#424a53',
-            buttonActiveColor: '#2d7a6a',
-            buttonDisabledColor: '#9aa5b1',
-            buttonActiveBackgroundColor: '#daf0eb',
+            separatorColor: '#1e2924',
+            buttonColor: '#86978f',
+            buttonActiveColor: '#deaf56',
+            buttonDisabledColor: '#3b4540',
+            buttonActiveBackgroundColor: '#332405',
             buttonBorderRadius: 8,
         },
         slider: {
-            minimumTrackTintColor: '#2d7a6a',
-            maximumTrackTintColor: '#cdd3db',
-            thumbTintColor: '#1a5c4f',
+            minimumTrackTintColor: '#c6952c',
+            maximumTrackTintColor: SIGNAL_APP_CHROME.channelTrackColor,
+            thumbTintColor: '#deaf56',
         },
     },
     {
-        id: 'midnight',
-        label: 'Midnight',
+        id: 'oxblood',
+        label: 'Oxblood',
+        covers: 'Drenched palette. Every surface carries chroma, so a grey fallback cannot hide.',
         statusBarStyle: 'light',
-        backgroundColor: '#161a24',
-        textColor: '#dce3f0',
-        appChrome: {
-            screenBackgroundColor: '#0e1117',
-            cardBackgroundColor: '#1a1e28',
-            cardSecondaryBackgroundColor: '#1e2230',
-            eyebrowColor: '#6b9bff',
-            titleColor: '#e8edf6',
-            subtitleColor: '#8892a8',
-            sectionLabelColor: '#7a8499',
-            controlLabelColor: '#c8d0e0',
-            controlHintColor: '#737e96',
-            tabBorderColor: '#2e3548',
-            tabBackgroundColor: '#1a1e28',
-            tabActiveBorderColor: '#4d7fff',
-            tabActiveBackgroundColor: '#1e2d4e',
-            tabTextColor: '#6b7894',
-            tabActiveTextColor: '#7faaff',
-            chipBorderColor: '#2e3548',
-            chipBackgroundColor: '#1a1e28',
-            chipActiveBorderColor: '#4d7fff',
-            chipActiveBackgroundColor: '#1e2d4e',
-            chipTextColor: '#6b7894',
-            chipActiveTextColor: '#7faaff',
-            sliderValueColor: '#7a8499',
-            colorValueColor: '#7a8499',
-            channelLabelColor: '#737e96',
-            channelValueColor: '#7a8499',
-            colorTriggerBorderColor: '#2e3548',
-            colorTriggerBackgroundColor: '#161a24',
-            colorTriggerExpandedBorderColor: '#4d7fff',
-            colorTriggerExpandedBackgroundColor: '#1a2440',
-            actionButtonBackgroundColor: '#4d7fff',
-            actionButtonTextColor: '#0e1117',
-            outputCardBackgroundColor: '#0a0d12',
-            outputTextColor: '#c0cadc',
-        },
-        paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
-        headings: buildHeadingTheme('#e8edf6'),
+        backgroundColor: '#210715',
+        textColor: '#ecd7e0',
+        placeholderColor: '#805d6d',
+        editorBorderRadius: 26,
+        contentInsets: { top: 20, right: 20, bottom: 20, left: 20 },
+        appChrome: OXBLOOD_APP_CHROME,
+        paragraphSpacingAfter: 20,
+        lineHeightRatio: 1.65,
+        headings: buildHeadingTheme(OXBLOOD_APP_CHROME.titleColor, {
+            sizes: [34, 30, 26, 22, 19, 17],
+            spacingRatio: 0.46,
+        }),
         blockquote: {
-            ...DEFAULT_BLOCKQUOTE_THEME,
-            borderColor: '#cc8f59',
+            indent: 24,
+            borderColor: '#bb5c84',
+            borderWidth: 5,
+            markerGap: 12,
         },
         list: {
-            ...DEFAULT_LIST_THEME,
-            markerColor: '#4d7fff',
+            indent: 26,
+            baseIndentMultiplier: 1.4,
+            itemSpacing: 10,
+            markerColor: '#ec79a9',
+            markerScale: 1.6,
         },
         horizontalRule: {
-            ...DEFAULT_HORIZONTAL_RULE_THEME,
-            color: '#2e3548',
+            color: '#4c283a',
+            thickness: 2,
+            verticalMargin: 18,
+        },
+        links: {
+            color: '#e177a3',
+            backgroundColor: '#210715',
+            underline: true,
+            fontWeight: '600',
+            fontStyle: 'normal',
         },
         mentions: {
-            textColor: '#7faaff',
-            backgroundColor: '#1e2d4e',
-            borderColor: '#304a7a',
-            borderWidth: 1,
-            borderRadius: 10,
-            fontWeight: '700',
-            popoverBackgroundColor: '#1a1e28',
-            popoverBorderColor: '#2e3548',
-            popoverBorderWidth: 1,
-            popoverBorderRadius: 18,
-            popoverShadowColor: '#000000',
-            optionTextColor: '#c8d0e0',
-            optionSecondaryTextColor: '#737e96',
-            optionHighlightedBackgroundColor: '#1e2d4e',
-            optionHighlightedTextColor: '#7faaff',
+            node: {
+                textColor: '#ff99c2',
+                backgroundColor: '#4e1530',
+                borderColor: '#7f3556',
+                borderWidth: 1,
+                borderRadius: 12,
+                fontWeight: '700',
+            },
+            suggestions: {
+                backgroundColor: '#290a1b',
+                borderColor: '#472335',
+                borderWidth: 1,
+                borderRadius: 20,
+                shadowColor: '#19030e',
+                option: {
+                    textColor: '#e7d0da',
+                    secondaryTextColor: '#a58493',
+                    backgroundColor: '#4e1530',
+                    borderColor: '#7f3556',
+                    borderWidth: 1,
+                    borderRadius: 12,
+                    fontWeight: '700',
+                    highlightedBackgroundColor: '#4e1530',
+                    highlightedTextColor: '#ff99c2',
+                },
+            },
         },
         toolbar: {
             appearance: 'custom',
-            height: 40,
-            backgroundColor: '#1a1e28',
-            borderColor: '#2e3548',
+            height: 46,
+            backgroundColor: '#290a1b',
+            borderColor: '#472335',
             borderWidth: 1,
-            borderRadius: 20,
-            marginTop: 8,
+            borderRadius: 23,
+            marginTop: 10,
             showTopBorder: false,
-            keyboardOffset: 6,
-            horizontalInset: 12,
-            separatorColor: '#252a38',
-            buttonColor: '#8892a8',
-            buttonActiveColor: '#7faaff',
-            buttonDisabledColor: '#3a4258',
-            buttonActiveBackgroundColor: '#1e2d4e',
-            buttonBorderRadius: 12,
+            keyboardOffset: 8,
+            horizontalInset: 18,
+            separatorColor: '#3b192a',
+            buttonColor: '#ac8a99',
+            buttonActiveColor: '#ff99c2',
+            buttonDisabledColor: '#573746',
+            buttonActiveBackgroundColor: '#4e1530',
+            buttonBorderRadius: 16,
         },
         slider: {
-            minimumTrackTintColor: '#4d7fff',
-            maximumTrackTintColor: '#2e3548',
-            thumbTintColor: '#7faaff',
-        },
-    },
-    {
-        id: 'ember',
-        label: 'Ember',
-        statusBarStyle: 'light',
-        backgroundColor: '#1a1614',
-        textColor: '#e4dbd0',
-        appChrome: {
-            screenBackgroundColor: '#121010',
-            cardBackgroundColor: '#201c18',
-            cardSecondaryBackgroundColor: '#251f1a',
-            eyebrowColor: '#d4903a',
-            titleColor: '#ede5d8',
-            subtitleColor: '#918478',
-            sectionLabelColor: '#847768',
-            controlLabelColor: '#d4c8b8',
-            controlHintColor: '#7e7268',
-            tabBorderColor: '#362e26',
-            tabBackgroundColor: '#201c18',
-            tabActiveBorderColor: '#c07a2a',
-            tabActiveBackgroundColor: '#3a2a16',
-            tabTextColor: '#7e7268',
-            tabActiveTextColor: '#e0a04a',
-            chipBorderColor: '#362e26',
-            chipBackgroundColor: '#201c18',
-            chipActiveBorderColor: '#c07a2a',
-            chipActiveBackgroundColor: '#3a2a16',
-            chipTextColor: '#7e7268',
-            chipActiveTextColor: '#e0a04a',
-            sliderValueColor: '#847768',
-            colorValueColor: '#847768',
-            channelLabelColor: '#7e7268',
-            channelValueColor: '#847768',
-            colorTriggerBorderColor: '#362e26',
-            colorTriggerBackgroundColor: '#1a1614',
-            colorTriggerExpandedBorderColor: '#c07a2a',
-            colorTriggerExpandedBackgroundColor: '#2e2214',
-            actionButtonBackgroundColor: '#d4903a',
-            actionButtonTextColor: '#121010',
-            outputCardBackgroundColor: '#0e0c0a',
-            outputTextColor: '#c8baa8',
-        },
-        paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
-        headings: buildHeadingTheme('#ede5d8'),
-        blockquote: {
-            ...DEFAULT_BLOCKQUOTE_THEME,
-            borderColor: '#a48fa7',
-        },
-        list: {
-            ...DEFAULT_LIST_THEME,
-            markerColor: '#d4903a',
-        },
-        horizontalRule: {
-            ...DEFAULT_HORIZONTAL_RULE_THEME,
-            color: '#362e26',
-        },
-        mentions: {
-            textColor: '#e0a04a',
-            backgroundColor: '#3a2a16',
-            borderColor: '#5c4220',
-            borderWidth: 1,
-            borderRadius: 10,
-            fontWeight: '700',
-            popoverBackgroundColor: '#201c18',
-            popoverBorderColor: '#362e26',
-            popoverBorderWidth: 1,
-            popoverBorderRadius: 18,
-            popoverShadowColor: '#000000',
-            optionTextColor: '#d4c8b8',
-            optionSecondaryTextColor: '#7e7268',
-            optionHighlightedBackgroundColor: '#3a2a16',
-            optionHighlightedTextColor: '#e0a04a',
-        },
-        toolbar: {
-            appearance: 'custom',
-            height: 40,
-            backgroundColor: '#201c18',
-            borderColor: '#362e26',
-            borderWidth: 1,
-            borderRadius: 16,
-            marginTop: 8,
-            showTopBorder: false,
-            keyboardOffset: 6,
-            horizontalInset: 12,
-            separatorColor: '#2c2620',
-            buttonColor: '#918478',
-            buttonActiveColor: '#e0a04a',
-            buttonDisabledColor: '#443c32',
-            buttonActiveBackgroundColor: '#3a2a16',
-            buttonBorderRadius: 10,
-        },
-        slider: {
-            minimumTrackTintColor: '#c07a2a',
-            maximumTrackTintColor: '#362e26',
-            thumbTintColor: '#e0a04a',
+            minimumTrackTintColor: '#ec79a9',
+            maximumTrackTintColor: OXBLOOD_APP_CHROME.channelTrackColor,
+            thumbTintColor: '#ff99c2',
         },
     },
 ] as const;
@@ -520,14 +675,17 @@ export function buildExampleEditorTheme(
 ): EditorTheme {
     return {
         backgroundColor: preset.backgroundColor,
-        borderRadius: DEFAULT_EDITOR_BORDER_RADIUS,
-        contentInsets: DEFAULT_EDITOR_CONTENT_INSETS,
+        borderRadius: preset.editorBorderRadius,
+        contentInsets: preset.contentInsets,
+        placeholderColor: preset.placeholderColor,
         text: {
             color: preset.textColor,
             fontSize,
         },
         paragraph: {
             spacingAfter: preset.paragraphSpacingAfter,
+            // `lineHeight` is absolute points, so it tracks the live font size.
+            lineHeight: Math.round(fontSize * preset.lineHeightRatio),
         },
         headings: preset.headings,
         blockquote: {
@@ -536,7 +694,10 @@ export function buildExampleEditorTheme(
         },
         list: preset.list,
         horizontalRule: preset.horizontalRule,
-        mentions: preset.mentions,
+        links: {
+            ...preset.links,
+            fontSize,
+        },
         toolbar: toolbarTheme,
     };
 }

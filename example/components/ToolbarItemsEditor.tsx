@@ -1,14 +1,30 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
-import { type EditorToolbarItem } from '@apollohg/react-native-prose-editor';
-import { EXAMPLE_DEFAULT_TOOLBAR_ITEMS } from '../constants';
-import type { ExampleThemePreset } from '../themePresets';
+import {
+    DEFAULT_EDITOR_TOOLBAR_ITEMS,
+    type EditorToolbarItem,
+} from '@apollohg/react-native-prose-editor';
+
+import { FONT_SIZE, MIN_TOUCH_TARGET, RADIUS, SPACE } from '../designTokens';
 import { sharedStyles } from '../sharedStyles';
+import type { ExampleAppChrome } from '../themePresets';
+
+/** Reorderable editor for `toolbarItems`, pooled from the package's own defaults. */
+
+const ITEM_HEIGHT = MIN_TOUCH_TARGET;
+const ITEM_GAP = SPACE.xs;
+const ITEM_STRIDE = ITEM_HEIGHT + ITEM_GAP;
+const DRAG_LIFT_SCALE = 1.03;
+const DRAG_HANDLE_WIDTH = 36;
+const REMOVE_BUTTON_SIZE = MIN_TOUCH_TARGET;
+const DRAG_HANDLE_GLYPH = '≡';
+const REMOVE_GLYPH = '×';
 
 type ToolbarItemsEditorProps = {
     items: readonly EditorToolbarItem[];
     onItemsChange: (items: EditorToolbarItem[]) => void;
-    appChrome: ExampleThemePreset['appChrome'];
+    onReset: () => void;
+    chrome: ExampleAppChrome;
 };
 
 function getItemId(item: EditorToolbarItem): string {
@@ -49,11 +65,12 @@ function getItemLabel(item: EditorToolbarItem): string {
     }
 }
 
-const ITEM_HEIGHT = 36;
-const ITEM_GAP = 4;
-const ITEM_STRIDE = ITEM_HEIGHT + ITEM_GAP;
-
-export function ToolbarItemsEditor({ items, onItemsChange, appChrome }: ToolbarItemsEditorProps) {
+function ToolbarItemsEditorInner({
+    items,
+    onItemsChange,
+    onReset,
+    chrome,
+}: ToolbarItemsEditorProps) {
     // Refs so PanResponder closures always read latest values
     const itemsRef = useRef(items);
     itemsRef.current = items;
@@ -114,7 +131,7 @@ export function ToolbarItemsEditor({ items, onItemsChange, appChrome }: ToolbarI
                     setDragIndex(index);
                     panY.setValue(0);
                     Animated.spring(dragScale, {
-                        toValue: 1.03,
+                        toValue: DRAG_LIFT_SCALE,
                         useNativeDriver: true,
                     }).start();
                 },
@@ -130,8 +147,7 @@ export function ToolbarItemsEditor({ items, onItemsChange, appChrome }: ToolbarI
                     const count = itemsRef.current.length;
                     const to = clampHover(index, gesture.dy);
 
-                    // Reset all native animated values and commit reorder in the
-                    // same JS frame so React batches the re-render — no flash.
+                    // Reset animated values and commit in one JS frame so React batches, no flash.
                     resetAnimations(count);
 
                     if (index !== to) {
@@ -158,7 +174,7 @@ export function ToolbarItemsEditor({ items, onItemsChange, appChrome }: ToolbarI
 
     const availableItems = useMemo(() => {
         const activeIds = new Set(items.map(getItemId));
-        return EXAMPLE_DEFAULT_TOOLBAR_ITEMS.filter((item) => !activeIds.has(getItemId(item)));
+        return DEFAULT_EDITOR_TOOLBAR_ITEMS.filter((item) => !activeIds.has(getItemId(item)));
     }, [items]);
 
     const removeItem = useCallback(
@@ -183,25 +199,21 @@ export function ToolbarItemsEditor({ items, onItemsChange, appChrome }: ToolbarI
 
     return (
         <View style={styles.container}>
-            <Text style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                Toolbar Items
-            </Text>
-            <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                Drag to reorder, or tap x to remove.
+            <Text style={[sharedStyles.controlHint, { color: chrome.controlHintColor }]}>
+                Drag the handle to reorder, tap {REMOVE_GLYPH} to remove. The editor receives this
+                exact array as `toolbarItems`.
             </Text>
 
             <View style={styles.itemList}>
                 {items.map((item, index) => {
                     const isDragged = dragIndex === index;
+                    const label = getItemLabel(item);
                     return (
                         <Animated.View
                             key={`${getItemId(item)}:${index}`}
                             style={[
                                 styles.itemRow,
-                                {
-                                    borderColor: appChrome.tabBorderColor,
-                                    backgroundColor: appChrome.cardBackgroundColor,
-                                },
+                                { backgroundColor: chrome.controlSurfaceColor },
                                 isDragged
                                     ? {
                                           transform: [{ translateY: panY }, { scale: dragScale }],
@@ -210,66 +222,68 @@ export function ToolbarItemsEditor({ items, onItemsChange, appChrome }: ToolbarI
                                     : { transform: [{ translateY: shiftValues.current[index] }] },
                             ]}>
                             <View
+                                accessible
+                                accessibilityRole='adjustable'
+                                accessibilityLabel={`Reorder ${label}, position ${index + 1} of ${items.length}`}
                                 style={styles.dragHandle}
                                 {...respondersRef.current[index].panHandlers}>
-                                <Text
-                                    style={[
-                                        styles.dragIcon,
-                                        { color: appChrome.controlHintColor },
-                                    ]}>
-                                    {'\u2261'}
+                                <Text style={[styles.dragIcon, { color: chrome.controlHintColor }]}>
+                                    {DRAG_HANDLE_GLYPH}
                                 </Text>
                             </View>
 
                             <Text
                                 style={[
                                     styles.itemLabelText,
-                                    { color: appChrome.controlLabelColor },
+                                    { color: chrome.controlLabelColor },
                                     item.type === 'separator' && {
-                                        color: appChrome.controlHintColor,
+                                        color: chrome.controlHintColor,
                                         fontStyle: 'italic',
                                     },
                                 ]}
                                 numberOfLines={1}>
-                                {getItemLabel(item)}
+                                {label}
                             </Text>
 
-                            <Text style={[styles.itemType, { color: appChrome.controlHintColor }]}>
+                            <Text style={[styles.itemType, { color: chrome.controlHintColor }]}>
                                 {item.type}
                             </Text>
 
                             <Pressable
+                                accessibilityRole='button'
+                                accessibilityLabel={`Remove ${label}`}
                                 style={styles.removeButton}
-                                onPress={() => removeItem(index)}
-                                hitSlop={6}>
-                                <Text style={styles.removeText}>{'\u00D7'}</Text>
+                                onPress={() => removeItem(index)}>
+                                <Text
+                                    style={[styles.removeText, { color: chrome.destructiveColor }]}>
+                                    {REMOVE_GLYPH}
+                                </Text>
                             </Pressable>
                         </Animated.View>
                     );
                 })}
             </View>
 
-            {availableItems.length > 0 && (
+            {availableItems.length > 0 ? (
                 <View style={styles.addSection}>
-                    <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                        Available items
+                    <Text style={[sharedStyles.sectionLabel, { color: chrome.sectionLabelColor }]}>
+                        Available
                     </Text>
                     <View style={styles.addPool}>
                         {availableItems.map((item) => (
                             <Pressable
                                 key={getItemId(item)}
+                                accessibilityRole='button'
+                                accessibilityLabel={`Add ${getItemLabel(item)}`}
                                 style={[
                                     styles.addChip,
-                                    {
-                                        borderColor: appChrome.chipBorderColor,
-                                        backgroundColor: appChrome.chipBackgroundColor,
-                                    },
+                                    { backgroundColor: chrome.controlSurfaceColor },
                                 ]}
                                 onPress={() => addItem(item)}>
                                 <Text
                                     style={[
                                         styles.addChipText,
-                                        { color: appChrome.chipTextColor },
+                                        { color: chrome.controlSurfaceTextColor },
                                     ]}>
                                     + {getItemLabel(item)}
                                 </Text>
@@ -277,30 +291,38 @@ export function ToolbarItemsEditor({ items, onItemsChange, appChrome }: ToolbarI
                         ))}
                     </View>
                 </View>
-            )}
+            ) : null}
 
-            <Pressable
-                style={[
-                    styles.addChip,
-                    {
-                        borderColor: appChrome.chipBorderColor,
-                        backgroundColor: appChrome.chipBackgroundColor,
-                        alignSelf: 'flex-start',
-                    },
-                ]}
-                onPress={addSeparator}>
-                <Text style={[styles.addChipText, { color: appChrome.chipTextColor }]}>
-                    + Separator
-                </Text>
-            </Pressable>
+            <View style={styles.footerRow}>
+                <Pressable
+                    accessibilityRole='button'
+                    accessibilityLabel='Add separator'
+                    style={[styles.addChip, { backgroundColor: chrome.controlSurfaceColor }]}
+                    onPress={addSeparator}>
+                    <Text style={[styles.addChipText, { color: chrome.controlSurfaceTextColor }]}>
+                        + Separator
+                    </Text>
+                </Pressable>
+
+                <Pressable
+                    accessibilityRole='button'
+                    accessibilityLabel='Reset toolbar items to package defaults'
+                    style={[styles.addChip, { backgroundColor: chrome.controlSurfaceColor }]}
+                    onPress={onReset}>
+                    <Text style={[styles.addChipText, { color: chrome.controlSurfaceTextColor }]}>
+                        Reset to defaults
+                    </Text>
+                </Pressable>
+            </View>
         </View>
     );
 }
 
+export const ToolbarItemsEditor = React.memo(ToolbarItemsEditorInner);
+
 const styles = StyleSheet.create({
     container: {
-        gap: 12,
-        paddingTop: 4,
+        gap: SPACE.md,
     },
     itemList: {
         gap: ITEM_GAP,
@@ -309,57 +331,59 @@ const styles = StyleSheet.create({
         height: ITEM_HEIGHT,
         flexDirection: 'row',
         alignItems: 'center',
-        borderWidth: 1,
-        borderRadius: 8,
-        paddingRight: 4,
+        borderRadius: RADIUS,
+        paddingRight: SPACE.xs,
     },
     dragHandle: {
-        width: 32,
+        width: DRAG_HANDLE_WIDTH,
         height: ITEM_HEIGHT,
         justifyContent: 'center',
         alignItems: 'center',
     },
     dragIcon: {
-        fontSize: 18,
-        lineHeight: 20,
+        fontSize: FONT_SIZE.heading,
         fontWeight: '700',
     },
     itemLabelText: {
         flex: 1,
-        fontSize: 13,
+        fontSize: FONT_SIZE.hint,
         fontWeight: '600',
     },
     itemType: {
-        fontSize: 11,
-        marginRight: 4,
+        fontSize: FONT_SIZE.section,
+        marginRight: SPACE.xs,
     },
     removeButton: {
-        width: 28,
-        height: 28,
+        width: REMOVE_BUTTON_SIZE,
+        height: REMOVE_BUTTON_SIZE,
         justifyContent: 'center',
         alignItems: 'center',
     },
     removeText: {
-        fontSize: 16,
+        fontSize: FONT_SIZE.heading,
         fontWeight: '600',
-        color: '#c44',
     },
     addSection: {
-        gap: 8,
+        gap: SPACE.sm,
     },
     addPool: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 8,
+        gap: SPACE.sm,
+    },
+    footerRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: SPACE.sm,
     },
     addChip: {
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-        borderRadius: 999,
-        borderWidth: 1,
+        paddingHorizontal: SPACE.md,
+        minHeight: MIN_TOUCH_TARGET,
+        justifyContent: 'center',
+        borderRadius: RADIUS,
     },
     addChipText: {
-        fontSize: 12,
+        fontSize: FONT_SIZE.hint,
         fontWeight: '600',
     },
 });

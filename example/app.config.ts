@@ -7,6 +7,8 @@ export default {
         version: rootPackage.version,
         plugins: [
             '@apollohg/react-native-prose-editor',
+            'expo-font',
+            'expo-status-bar',
             [
                 'expo-image-picker',
                 {
