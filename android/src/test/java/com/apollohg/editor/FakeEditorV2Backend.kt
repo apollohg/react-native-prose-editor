@@ -622,6 +622,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
             .put("documentVersion", session.revision.toString())
             .put("stateRevision", session.revision.toString())
             .put("scalarLength", text.codePointCount(0, text.length))
+            .put("documentIsEmpty", text.isEmpty())
         return EditorV2CallResult.Ok(update.toString())
     }
 

@@ -503,6 +503,7 @@ internal data class PreparedProseTheme(
     val listItemSpacingPx: Int,
     val listMarkerColor: Int,
     val listMarkerScale: Float,
+    val listMarkerGapPx: Int,
     val quoteIndentPx: Int,
     val quoteBorderColor: Int,
     val quoteBorderWidthPx: Int,
@@ -565,6 +566,7 @@ internal data class PreparedProseTheme(
                 density, scaledDensity, text, paragraph, headings, quote, paint(theme.effectiveTextStyle("codeBlock"), codeFallback),
                 px(theme.contentInsets?.top ?: 0f, 0f), px(theme.contentInsets?.right ?: 0f, 0f), px(theme.contentInsets?.bottom ?: 0f, 0f), px(theme.contentInsets?.left ?: 0f, 0f),
                 px(theme.list?.indent ?: 28f, 28f), theme.list?.baseIndentMultiplier ?: 1f, px(theme.list?.itemSpacing ?: 4f, 4f), theme.list?.markerColor ?: text.color, theme.list?.markerScale ?: 1f,
+                px(theme.list?.markerGap ?: PREPARED_LIST_MARKER_GAP_DP, PREPARED_LIST_MARKER_GAP_DP),
                 px(theme.blockquote?.indent ?: 16f, 16f), theme.blockquote?.borderColor ?: 0xFFC7C7CC.toInt(), px(theme.blockquote?.borderWidth ?: 3f, 3f), px(theme.blockquote?.markerGap ?: 10f, 10f),
                 theme.codeBlock?.backgroundColor ?: 0xFFF2F2F7.toInt(), (theme.codeBlock?.borderRadius ?: 8f) * density, px(theme.codeBlock?.paddingHorizontal ?: 12f, 12f), px(theme.codeBlock?.paddingVertical ?: 8f, 8f),
                 theme.horizontalRule?.color ?: 0xFFC7C7CC.toInt(), max(1, px(theme.horizontalRule?.thickness ?: 1f, 1f)), px(theme.horizontalRule?.verticalMargin ?: 12f, 12f),
@@ -596,7 +598,19 @@ private data class PreparedAtomSpec(
     val labelLayout: StaticLayout,
     val labelBaselinePx: Int,
 )
-private data class PreparedMarker(val layout: StaticLayout?, val label: String, val widthPx: Int, val heightPx: Int, val ascentPx: Int, val descentPx: Int, val baselinePx: Int, val checked: Boolean)
+private data class PreparedMarker(val layout: StaticLayout?, val label: String, val widthPx: Int, val heightPx: Int, val ascentPx: Int, val baselinePx: Int, val checked: Boolean)
+
+internal const val PREPARED_LIST_MARKER_GAP_DP = 6f
+
+internal data class PreparedMarkerInk(val ascentPx: Int, val heightPx: Int)
+
+internal fun preparedMarkerInk(glyphBounds: Rect, layoutAscentPx: Int, layoutDescentPx: Int): PreparedMarkerInk {
+    if (glyphBounds.isEmpty) {
+        val ascent = max(0, -layoutAscentPx)
+        return PreparedMarkerInk(ascent, max(1, ascent + max(0, layoutDescentPx)))
+    }
+    return PreparedMarkerInk(-glyphBounds.top, max(1, glyphBounds.bottom - glyphBounds.top))
+}
 
 private class AtomMetricSpan(
     private val widthPx: Int,
@@ -713,7 +727,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             prepared.attachment?.let(imageAttachments::add)
             prepared.block
         }
-        val height = max(0, cursorY + theme.insetBottomPx)
+        val height = max(0, max(cursorY, blocks.maxOfOrNull { it.bounds.bottom } ?: cursorY) + theme.insetBottomPx)
         interactions.sortWith(compareBy<PreparedProseInteraction> { it.rects.firstOrNull()?.top ?: Int.MAX_VALUE }.thenBy { it.rects.firstOrNull()?.left ?: Int.MAX_VALUE })
         val nodes = interactions.mapIndexed { index, interaction ->
             PreparedProseAccessibilityNode(
@@ -736,9 +750,8 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val ancestors = listItemAncestors(block)
         val ancestorMarkers = ancestors.mapNotNull { ancestor -> measuredMarkers[ancestor.identity]?.let { ancestor to it } }
         val firstMarkers = ancestorMarkers.filter { (ancestor, _) -> ancestor.isFirstRenderableLeaf }
-        val markerTopInset = firstMarkers.maxOfOrNull { (_, marker) -> max(0, marker.baselinePx - paint.newTextPaint().fontMetricsInt.run { -ascent }) } ?: 0
         val baseListInset = if (ancestors.isEmpty()) 0 else max(0, (theme.listIndentPx * theme.listBaseIndentMultiplier).toInt())
-        val ancestorGutters = ancestorMarkers.associate { (ancestor, marker) -> ancestor.identity to max(6, marker.widthPx + 6) }
+        val ancestorGutters = ancestorMarkers.associate { (ancestor, marker) -> ancestor.identity to max(theme.listMarkerGapPx, marker.widthPx + theme.listMarkerGapPx) }
         // A nested leaf owns every outer list column too: each ancestor adds
         // its list indent and independently measured marker gutter.
         val listInset = baseListInset + ancestorMarkers.sumOf { (ancestor, _) -> theme.listIndentPx + (ancestorGutters[ancestor.identity] ?: 0) }
@@ -766,7 +779,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             return textX - codeInset
         }
         if (block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule") {
-            val ruleTop = cursorY + markerTopInset + theme.ruleMarginPx
+            val ruleTop = cursorY + theme.ruleMarginPx
             val ruleLeft = theme.insetLeftPx + listInset + quoteInset
             val ruleRight = max(ruleLeft + 1, theme.insetLeftPx + contentWidth - listInset - quoteInset)
             val rule = Rect(ruleLeft, ruleTop, ruleRight, ruleTop + theme.ruleThicknessPx)
@@ -774,7 +787,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             val end = rule.bottom + theme.ruleMarginPx
             if (block.inBlockquote) fragments += PreparedProseFragment(PreparedProseFragmentKind.BORDER, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + theme.quoteBorderWidthPx, end), color = theme.quoteBorderColor)
             firstMarkers.forEach { (ancestor, marker) ->
-                fragments += markerFragment(marker, markerAnchor(ancestor), max(cursorY + marker.baselinePx, ruleTop + theme.ruleThicknessPx), ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
+                fragments += markerFragment(marker, markerAnchor(ancestor), cursorY, end, ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
             }
             return finishBlock(fragments, emptyList(), Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, end), end, itemSpacing)
         }
@@ -782,11 +795,12 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val availableWidth = max(1, contentWidth - listInset - quoteInset - codeInset * 2)
         val attributed = attributed(block.inlines, paint, theme, warningSemanticGeneration)
         val layout = staticLayout(attributed.text, paint, availableWidth)
-        val firstBaseline = layout.getLineBaseline(0)
-        // A marker can be taller than the first text line. Reserve its excess
-        // ascent before publishing geometry so no marker has a negative top.
-        val markerTextInset = firstMarkers.maxOfOrNull { (_, marker) -> max(0, marker.baselinePx - firstBaseline) } ?: 0
-        val textTop = cursorY + markerTextInset + if (block.nodeType == "codeBlock") theme.codePaddingVerticalPx else 0
+        val codeTopInset = if (block.nodeType == "codeBlock") theme.codePaddingVerticalPx else 0
+        val firstLineHeight = layout.getLineBottom(0) - layout.getLineTop(0)
+        val markerTopProtection = firstMarkers.maxOfOrNull { (_, marker) ->
+            max(0, ceil((marker.heightPx - firstLineHeight) / 2f).toInt() - codeTopInset)
+        } ?: 0
+        val textTop = cursorY + codeTopInset + if (cursorY == theme.insetTopPx) markerTopProtection else 0
         val textHeight = max(1, layout.height)
         val totalEnd = textTop + textHeight + if (block.nodeType == "codeBlock") theme.codePaddingVerticalPx else 0
         val fragments = mutableListOf<PreparedProseFragment>()
@@ -844,8 +858,10 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             )
         }
         if (block.inBlockquote) fragments += PreparedProseFragment(PreparedProseFragmentKind.BORDER, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + theme.quoteBorderWidthPx, totalEnd), color = theme.quoteBorderColor)
+        val firstLineTop = textTop + layout.getLineTop(0)
+        val firstLineBottom = textTop + layout.getLineBottom(0)
         firstMarkers.forEach { (ancestor, marker) ->
-            fragments += markerFragment(marker, markerAnchor(ancestor), textTop + firstBaseline, ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
+            fragments += markerFragment(marker, markerAnchor(ancestor), firstLineTop, firstLineBottom, ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
         }
         val interactions = attributed.semanticRanges.zip(interactionRects).mapNotNull { (semantic, rects) ->
             if (rects.isEmpty()) null else when (semantic) {
@@ -873,7 +889,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private fun finishBlock(fragments: List<PreparedProseFragment>, interactions: List<PreparedProseInteraction>, seed: Rect, end: Int, spacing: Int, extraBytes: Long = 0): BlockResult {
         val bounds = fragments.fold(seed) { acc, fragment -> Rect(acc).apply { union(fragment.bounds) } }
-        return BlockResult(PreparedProseBlock(fragments.toList(), bounds), interactions, null, max(end, bounds.bottom) + spacing, extraBytes)
+        return BlockResult(PreparedProseBlock(fragments.toList(), bounds), interactions, null, end + spacing, extraBytes)
     }
 
     private fun selectionRectsForLine(
@@ -903,10 +919,6 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             if (piece.intersect(lineClip) && !piece.isEmpty) result += piece
         } while (measure.nextContour())
         if (result.isEmpty()) {
-            // Robolectric and a small number of OEM text implementations can
-            // return an empty selection path for an otherwise valid range.
-            // Preserve shaped contours whenever they exist; only then derive
-            // per-direction visual runs from StaticLayout's own positions.
             result += fallbackSelectionRectsForLine(layout, start, end, line, width)
         }
         return result.sortedWith(compareBy<Rect> { it.top }.thenBy { it.left })
@@ -979,9 +991,6 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private fun href(marks: List<uniffi.editor_core.FfiViewerMark>): String? = marks.firstOrNull { it.markType == "link" }
         ?.let { runCatching { org.json.JSONObject(it.attrsJson).optString("href") }.getOrNull()?.takeIf(String::isNotEmpty) }
-
-    private fun org.json.JSONObject.optionalString(key: String): String? =
-        if (has(key) && !isNull(key)) optString(key) else null
 
     private fun markSpans(marks: List<uniffi.editor_core.FfiViewerMark>, base: PreparedTextPaint, theme: PreparedProseTheme, warningSemanticGeneration: String): List<Any> {
         var explicitColor: Int? = null
@@ -1059,29 +1068,32 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private fun markerFor(context: ViewerListContext, textPaint: PreparedTextPaint, theme: PreparedProseTheme): PreparedMarker {
         val label = when { context.kind == "task" -> ""; context.ordered -> "${context.index}."; else -> "•" }
-        val markerPaint = textPaint.copy(sizePx = max(1f, textPaint.sizePx * max(0.01f, theme.listMarkerScale)), color = theme.listMarkerColor)
+        val markerScale = if (!context.ordered && context.kind != "task") max(0.01f, theme.listMarkerScale) else 1f
+        val markerPaint = textPaint.copy(sizePx = max(1f, textPaint.sizePx * markerScale), color = theme.listMarkerColor)
         if (label.isEmpty()) {
             val side = max(markerPaint.sizePx.toInt(), markerPaint.newTextPaint().fontMetricsInt.descent - markerPaint.newTextPaint().fontMetricsInt.ascent)
-            return PreparedMarker(null, label, side, side, side, 0, side, context.checked)
+            return PreparedMarker(null, label, side, side, side / 2, 0, context.checked)
         }
-        val layout = staticLayout(SpannableString(label), markerPaint, max(1, ceil(markerPaint.newTextPaint().measureText(label)).toInt()))
-        val ascent = min(layout.height, max(0, -layout.getLineAscent(0)))
-        val descent = min(max(0, layout.height - ascent), max(0, layout.getLineDescent(0)))
-        val baseline = layout.getLineBaseline(0).coerceIn(ascent, max(ascent, layout.height - descent))
-        return PreparedMarker(layout, label, layout.width, layout.height, ascent, descent, baseline, context.checked)
+        val text = markerPaint.newTextPaint()
+        val layout = staticLayout(SpannableString(label), markerPaint, max(1, ceil(text.measureText(label)).toInt()))
+        val glyphBounds = Rect()
+        text.getTextBounds(label, 0, label.length, glyphBounds)
+        val ink = preparedMarkerInk(glyphBounds, layout.getLineAscent(0), layout.getLineDescent(0))
+        return PreparedMarker(layout, label, layout.width, ink.heightPx, ink.ascentPx, layout.getLineBaseline(0), context.checked)
     }
 
-    private fun markerFragment(marker: PreparedMarker, textX: Int, baseline: Int, gutter: Int, color: Int): PreparedProseFragment {
-        val x = textX - gutter + (gutter - marker.widthPx)
-        val y = baseline - marker.baselinePx
-        return PreparedProseFragment(PreparedProseFragmentKind.MARKER, Rect(x, y, x + marker.widthPx, y + marker.heightPx), marker.layout, x, y, color = color, label = marker.label, checked = marker.checked)
+    private fun markerFragment(marker: PreparedMarker, textX: Int, verticalTop: Int, verticalBottom: Int, gutter: Int, color: Int): PreparedProseFragment {
+        val x = textX - gutter
+        val markerTop = verticalTop + (verticalBottom - verticalTop - marker.heightPx) / 2
+        val layoutY = markerTop + marker.ascentPx - marker.baselinePx
+        return PreparedProseFragment(PreparedProseFragmentKind.MARKER, Rect(x, markerTop, x + marker.widthPx, markerTop + marker.heightPx), marker.layout, x, layoutY, color = color, label = marker.label, checked = marker.checked)
     }
 
     private fun atomAppearance(nodeType: String, attrsJson: String, base: PreparedTextPaint, theme: PreparedProseTheme): PreparedAtomAppearance {
         if (nodeType == "mention") {
             val values = runCatching { org.json.JSONObject(attrsJson) }.getOrNull()
             val local = EditorMentionTheme.fromJson(values?.optJSONObject("mentionTheme"))
-            val mention = theme.mention?.mergedWith(local) ?: local
+            val mention = (theme.mention?.mergedWith(local) ?: local)?.node
             val weighted = mention?.fontWeight?.let { EditorTextStyle(fontWeight = it).typefaceStyle() } ?: base.typeface.style
             return PreparedAtomAppearance(
                 base.copy(typeface = Typeface.create(base.typeface, weighted), color = mention?.textColor ?: base.color),

@@ -312,7 +312,6 @@ class NativeEditorModule : Module() {
             NativeCollaborationTransportRegistry.destroyAll()
         }
 
-        // ── v2 engine surface (the only construction path) ─────────────
 
         Function("editorV2Create") { configJson: String, snapshotState: ByteArray? ->
             createEditorV2FromModule(configJson, snapshotState)
@@ -353,7 +352,7 @@ class NativeEditorModule : Module() {
         Function("editorV2Redo") { editorId: String, requestJson: String ->
             mutationResult(editorId, editorV2Redo(editorId, requestJson))
         }
-        Function("editorV2RenderUpdate") { editorId: String, mirrorScalarAnchor: Number?, mirrorScalarHead: Number? ->
+        Function("editorV2RenderUpdate") { editorId: String, mirrorScalarAnchor: Double?, mirrorScalarHead: Double? ->
             // The render accessor for the interactive component: after a
             // JS-driven engine change the component fetches the current
             // render update here and pushes it to the bound view.
@@ -365,7 +364,6 @@ class NativeEditorModule : Module() {
             editorV2RenderUpdate(editorId, anchor, head).toJSMap()
         }
 
-        // ── v2 collaboration runtime ─────────────────────────────────────
 
         Function("editorV2CollaborationConfigureTransport") {
             editorId: String,
@@ -408,7 +406,6 @@ class NativeEditorModule : Module() {
         Function("editorV2CollaborationPeers") { editorId: String ->
             editorV2CollaborationPeers(editorId).toJSMap()
         }
-        // ── v2 snapshots ───────────────────────────────────────────────
 
         Function("editorV2SnapshotExport") { editorId: String ->
             editorV2SnapshotExport(editorId).toJSMap()
@@ -495,7 +492,7 @@ class NativeEditorModule : Module() {
             Prop("editorUpdateEditorId") { view: NativeEditorExpoView, editorUpdateEditorId: String? ->
                 view.setPendingEditorUpdateEditorHandle(canonicalV2U64(editorUpdateEditorId))
             }
-            Prop("editorUpdateRevision") { view: NativeEditorExpoView, editorUpdateRevision: Number? ->
+            Prop("editorUpdateRevision") { view: NativeEditorExpoView, editorUpdateRevision: Double? ->
                 view.setPendingEditorUpdateRevision(
                     exactV2U32(editorUpdateRevision)?.toLong()
                         ?: throw IllegalArgumentException("editorUpdateRevision must be an exact u32"),
@@ -507,7 +504,7 @@ class NativeEditorModule : Module() {
             Prop("editorResetUpdateEditorId") { view: NativeEditorExpoView, editorResetUpdateEditorId: String? ->
                 view.setPendingEditorResetUpdateEditorHandle(canonicalV2U64(editorResetUpdateEditorId))
             }
-            Prop("editorResetUpdateRevision") { view: NativeEditorExpoView, editorResetUpdateRevision: Number? ->
+            Prop("editorResetUpdateRevision") { view: NativeEditorExpoView, editorResetUpdateRevision: Double? ->
                 view.setPendingEditorResetUpdateRevision(
                     exactV2U32(editorResetUpdateRevision)?.toLong()
                         ?: throw IllegalArgumentException("editorResetUpdateRevision must be an exact u32"),

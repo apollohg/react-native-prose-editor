@@ -1,5 +1,6 @@
 package com.apollohg.editor.viewer
 
+import android.util.Log
 import com.apollohg.editor.BuildConfig
 import org.json.JSONArray
 import org.json.JSONObject
@@ -81,6 +82,7 @@ internal object PreparedProseInstrumentation {
             .put("invalidations", JSONObject(invalidations as Map<*, *>))
     }
 
+    const val LOG_TAG = "NativeProseViewer"
     const val NOMINAL_FRAME_PERIOD_NANOS = 16_666_667L
     const val SINGLE_TICK_TOLERANCE_NANOS = 1_000_000L
     private const val SAMPLE_LIMIT = 20_000; private val lock = Any()
@@ -112,6 +114,11 @@ internal object PreparedProseInstrumentation {
         val union = mergedRanges(start, end, spans)
         val work = union.fold(0L) { total, range -> addExact(total, subtractExact(range.upper, range.lower)) }
         return lateness > 0 && work >= lateness
+    }
+
+    inline fun trace(boundary: String, detail: () -> String) {
+        if (!BuildConfig.PREPARED_PROSE_INSTRUMENTATION) return
+        Log.w(LOG_TAG, "$boundary: ${detail()}")
     }
 
     fun beginBenchmark() { if (BuildConfig.PREPARED_PROSE_INSTRUMENTATION) synchronized(lock) { enabled = true; resetLocked() } }

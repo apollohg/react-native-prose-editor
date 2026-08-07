@@ -234,12 +234,19 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
 
 private val CONTAINER_BLOCKS = setOf("doc", "blockquote", "bulletList", "orderedList", "taskList", "listItem")
 
-private fun listContext(json: String?): ViewerListContext? = runCatching {
+internal fun listContext(json: String?): ViewerListContext? = runCatching {
     json ?: return@runCatching null
     val value = JSONObject(json)
     val index = if (value.has("index")) u32(value.opt("index")) else 1L
-    ViewerListContext(value.optBoolean("ordered"), index, value.optString("kind", null), value.optBoolean("checked"))
+    ViewerListContext(value.optBoolean("ordered"), index, value.optionalString("kind"), value.optBoolean("checked"))
 }.getOrNull()
+
+/**
+ * `optString(key, null)` cannot express an absent value: its fallback is
+ * declared non-null, and a present JSON null coerces to the string "null".
+ */
+internal fun JSONObject.optionalString(key: String): String? =
+    if (isNull(key)) null else optString(key)
 
 /** JSON and UniFFI may expose Rust u32 values through different Kotlin number types. */
 private fun u32(value: Any?): Long {
@@ -251,7 +258,7 @@ private fun u32(value: Any?): Long {
 
 private fun mentionPrefix(configJson: String): String? = runCatching {
     val root = JSONObject(configJson)
-    root.optJSONObject("mentions")?.optString("prefix", null) ?: root.optString("mentionPrefix", null)
+    root.optJSONObject("mentions")?.optionalString("prefix") ?: root.optionalString("mentionPrefix")
 }.getOrNull()
 
 internal fun sha256(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

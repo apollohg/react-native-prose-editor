@@ -3,6 +3,7 @@ package com.apollohg.editor
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
@@ -809,7 +810,8 @@ class NativeEditorExpoView(
         val editorId: String,
         /** Captured canonical document revision used by TS echo suppression. */
         val documentRevision: String,
-        val updateJSON: String
+        val viewUpdateJSON: String,
+        val atomicUpdateJSON: String
     )
 
     private data class EditorErrorBinding(
@@ -916,6 +918,8 @@ class NativeEditorExpoView(
     /** Permanently rejected reset revisions are consumed per bound editor. */
     private var consumedEditorResetUpdateRevision = 0L
     private var consumedEditorResetUpdateEditorId: Long? = null
+    private var lastEditorUpdateJsonProp: String? = null
+    private var lastEditorUpdateEditorIdProp: Long? = null
     private var lastEditorResetUpdateJsonProp: String? = null
     private var lastEditorResetUpdateEditorIdProp: Long? = null
     private var pendingEditorUpdateRetryScheduled = false
@@ -1317,16 +1321,19 @@ class NativeEditorExpoView(
     }
 
     fun setPendingEditorUpdateJson(editorUpdateJson: String?) {
+        lastEditorUpdateJsonProp = editorUpdateJson
         pendingEditorUpdateJson = editorUpdateJson
     }
 
     fun setPendingEditorUpdateEditorHandle(editorUpdateEditorHandle: String?) {
-        pendingEditorUpdateEditorId = editorUpdateEditorHandle
-            ?.let(EditorV2Registry::viewTokenForHandle)
+        val viewToken = editorUpdateEditorHandle?.let(EditorV2Registry::viewTokenForHandle)
+        lastEditorUpdateEditorIdProp = viewToken
+        pendingEditorUpdateEditorId = viewToken
     }
 
     /** Internal widget/test hook; production props always use decimal handles. */
     internal fun setPendingEditorUpdateEditorId(viewToken: Long?) {
+        lastEditorUpdateEditorIdProp = viewToken
         pendingEditorUpdateEditorId = viewToken
     }
 
@@ -1334,6 +1341,12 @@ class NativeEditorExpoView(
         if (pendingEditorUpdateRevision != editorUpdateRevision) {
             pendingEditorUpdateRetryAttempts = 0
             pendingEditorUpdateForcedRecoveryAttempted = false
+        }
+        if (editorUpdateRevision != 0L && pendingEditorUpdateJson == null) {
+            pendingEditorUpdateJson = lastEditorUpdateJsonProp
+        }
+        if (editorUpdateRevision != 0L && pendingEditorUpdateEditorId == null) {
+            pendingEditorUpdateEditorId = lastEditorUpdateEditorIdProp
         }
         pendingEditorUpdateRevision = editorUpdateRevision
     }
@@ -1491,13 +1504,21 @@ class NativeEditorExpoView(
     }
 
     fun applyPendingEditorUpdateIfNeeded() {
-        if (handleDestroyedCurrentEditorIfNeeded()) return
-        if (pendingEditorUpdateRevision == 0L) return
+        if (handleDestroyedCurrentEditorIfNeeded()) {
+            return
+        }
+        if (pendingEditorUpdateRevision == 0L) {
+            return
+        }
         val revision = pendingEditorUpdateRevision
         val editorId = richTextView.editorId
         val expectedEditorId = pendingEditorUpdateEditorId
-        if (expectedEditorId == null) return
-        if (expectedEditorId != editorId) return
+        if (expectedEditorId == null) {
+            return
+        }
+        if (expectedEditorId != editorId) {
+            return
+        }
         if (isConsumedEditorUpdateRevision(editorId, revision)) {
             clearPendingEditorUpdateState(resetAppliedRevision = false)
             refreshReadyStateIfSettled()
@@ -1515,7 +1536,9 @@ class NativeEditorExpoView(
             refreshReadyStateIfSettled()
             return
         }
-        if (editorId != 0L && !isAttachedToNativeWindow) return
+        if (editorId != 0L && !isAttachedToNativeWindow) {
+            return
+        }
         val apply = Runnable {
             if (editorId != richTextView.editorId) return@Runnable
             if (expectedEditorId != richTextView.editorId) return@Runnable
@@ -2188,6 +2211,8 @@ class NativeEditorExpoView(
         pendingEditorResetUpdateEditorId = null
         pendingEditorResetUpdateRevision = 0L
         appliedEditorResetUpdateRevision = 0L
+        lastEditorUpdateJsonProp = null
+        lastEditorUpdateEditorIdProp = null
         lastEditorResetUpdateJsonProp = null
         lastEditorResetUpdateEditorIdProp = null
         lastDocumentVersion = null
@@ -2571,7 +2596,9 @@ class NativeEditorExpoView(
         val adoptedUpdateJson = preflight.adoptedUpdateJSON ?: if (adapter == null) {
             updateJson
         } else {
-            adapter.adoptExternalRender(updateJson) ?: return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+            adapter.adoptExternalRender(updateJson) ?: run {
+                return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+            }
         }
         isApplyingJSUpdate = true
         return try {
@@ -2661,12 +2688,24 @@ class NativeEditorExpoView(
             return
         }
         val sourceEditorId = eventEditorId(richTextView.editorId)
+        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
+        val cachedAtomicUpdateJSON =
+            adapter?.atomicRenderJson(matchingDocumentRevision = documentRevision)
+        if (adapter != null && cachedAtomicUpdateJSON == null) {
+            richTextView.editorEditText.recordImeTraceForTesting(
+                "nativeViewEditorUpdateSkipped",
+                "reason=missingAtomicSnapshot documentRevision=$documentRevision"
+            )
+            return
+        }
+        val atomicUpdateJSON = cachedAtomicUpdateJSON ?: updateJSON
         if (isApplyingJSUpdate) {
             dispatchEditorUpdate(
                 PendingEditorUpdateEvent(
                     editorId = sourceEditorId,
                     documentRevision = documentRevision,
-                    updateJSON = updateJSON
+                    viewUpdateJSON = updateJSON,
+                    atomicUpdateJSON = atomicUpdateJSON
                 ),
                 emitToJS = false
             )
@@ -2676,7 +2715,8 @@ class NativeEditorExpoView(
             PendingEditorUpdateEvent(
                 editorId = sourceEditorId,
                 documentRevision = documentRevision,
-                updateJSON = updateJSON
+                viewUpdateJSON = updateJSON,
+                atomicUpdateJSON = atomicUpdateJSON
             )
         )
         richTextView.editorEditText.recordImeTraceForTesting(
@@ -2734,7 +2774,7 @@ class NativeEditorExpoView(
     }
 
     private fun dispatchEditorUpdate(event: PendingEditorUpdateEvent, emitToJS: Boolean) {
-        val updateJSON = event.updateJSON
+        val updateJSON = event.viewUpdateJSON
         val startedAt = System.nanoTime()
         noteDocumentVersionFromUpdateJSON(updateJSON)
         val noteNanos = System.nanoTime() - startedAt
@@ -2761,7 +2801,7 @@ class NativeEditorExpoView(
         val emitStartedAt = System.nanoTime()
         if (emitToJS) {
             val payload = mapOf<String, Any>(
-                "updateJson" to updateJSON,
+                "updateJson" to event.atomicUpdateJSON,
                 "editorId" to event.editorId,
                 "documentRevision" to event.documentRevision,
             )
@@ -3200,34 +3240,39 @@ class NativeEditorExpoView(
         applyPendingThemeIfNeeded()
     }
 
-    private fun isTouchInsideStandaloneToolbar(event: MotionEvent): Boolean {
-        val visibleWindowFrame = Rect()
-        getWindowVisibleDisplayFrame(visibleWindowFrame)
-        return isPointInsideStandaloneToolbar(event.rawX, event.rawY, visibleWindowFrame)
+    private fun isTouchInsideStandaloneToolbar(event: MotionEvent): Boolean =
+        isPointInsideStandaloneToolbar(event.rawX, event.rawY, windowOriginOnScreen())
+
+    private fun windowOriginOnScreen(): Point {
+        val onScreen = IntArray(2)
+        val inWindow = IntArray(2)
+        getLocationOnScreen(onScreen)
+        getLocationInWindow(inWindow)
+        return Point(onScreen[0] - inWindow[0], onScreen[1] - inWindow[1])
     }
 
     internal fun isPointInsideStandaloneToolbarForTesting(
         rawX: Float,
         rawY: Float,
-        visibleWindowFrame: Rect
-    ): Boolean = isPointInsideStandaloneToolbar(rawX, rawY, visibleWindowFrame)
+        windowOriginOnScreen: Point
+    ): Boolean = isPointInsideStandaloneToolbar(rawX, rawY, windowOriginOnScreen)
 
     private fun isPointInsideStandaloneToolbar(
         rawX: Float,
         rawY: Float,
-        visibleWindowFrame: Rect
+        windowOriginOnScreen: Point
     ): Boolean {
         if (toolbarFramesInWindow.isEmpty()) {
             return false
         }
-        // toolbarFrame is in DP from React Native's measureInWindow, while
-        // rawX/rawY are screen pixels. Normalize the event into the visible
-        // window before comparing so shifted fallback rectangles cannot
-        // preserve focus for unrelated outside taps.
+        // toolbarFrame is in DP from Fabric's measureInWindow, which offsets by
+        // the surface's getLocationInWindow. rawX/rawY are screen pixels, so
+        // normalize them into the same window space rather than the visible
+        // display frame, whose top also excludes the status bar and cutout.
         val density = resources.displayMetrics.density
         val hitSlopPx = TOOLBAR_HIT_SLOP_DP * density
-        val eventX = rawX - visibleWindowFrame.left
-        val eventY = rawY - visibleWindowFrame.top
+        val eventX = rawX - windowOriginOnScreen.x
+        val eventY = rawY - windowOriginOnScreen.y
         for (toolbarFrame in toolbarFramesInWindow) {
             val windowFrameInPx = RectF(
                 toolbarFrame.left * density,

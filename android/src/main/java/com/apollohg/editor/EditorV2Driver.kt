@@ -18,7 +18,6 @@ internal data class EditorV2SplitRender(
  * traffic for paired editors.
  */
 internal interface EditorV2Driver {
-    // ── Typing / IME / autocorrect commits (one typed transaction each) ──
     fun insertText(text: String, atScalarPos: Int): String?
     fun replaceTextRange(scalarFrom: Int, scalarTo: Int, text: String): String?
     fun deleteScalarRange(scalarFrom: Int, scalarTo: Int): String?
@@ -26,7 +25,6 @@ internal interface EditorV2Driver {
     fun splitBlockAt(scalarPos: Int): EditorV2SplitRender?
     fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): EditorV2SplitRender?
 
-    // ── Structural commands at the synced selection ──
     fun insertNode(nodeType: String, anchor: Int, head: Int): String?
     fun insertContentHtmlAtSelection(html: String, anchor: Int, head: Int): String?
     fun insertContentJsonAtSelection(json: String, anchor: Int, head: Int): String?
@@ -43,11 +41,9 @@ internal interface EditorV2Driver {
     fun toggleTaskItemCheckedAtSelection(anchor: Int, head: Int): String?
     fun resizeImageAtDocPos(docPos: Int, width: Int, height: Int): String?
 
-    // ── History ──
     fun undo(): String?
     fun redo(): String?
 
-    // ── Selection sync and position mapping ──
     /** Sync the scalar selection and return [docAnchor, docHead], or null on structured failure. */
     fun syncSelection(anchor: Int, head: Int): IntArray?
     /** Selection sync where no doc mapping is consumed. */
@@ -55,7 +51,6 @@ internal interface EditorV2Driver {
     fun scalarPositionForDoc(docPos: Int): Int?
     fun docPositionForScalar(scalar: Int): Int?
 
-    // ── State reads (legacy update/state JSON shapes) ──
     fun currentStateJson(): String?
     fun documentHtml(): String?
     fun documentJson(): String?
@@ -64,7 +59,6 @@ internal interface EditorV2Driver {
     fun historyCanRedo(): Boolean?
     fun selectionJson(): String?
 
-    // ── Controlled content (local-API, passes read-only per Source::Api parity) ──
     fun setContentHtml(html: String): String?
     fun setContentJson(json: String): String?
 

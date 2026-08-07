@@ -89,6 +89,7 @@ class EditorV2StagingViewTest {
             .put("documentVersion", revision)
             .put("stateRevision", revision)
             .put("scalarLength", text.length)
+            .put("documentIsEmpty", text.isEmpty())
             .toString()
 
     @Test

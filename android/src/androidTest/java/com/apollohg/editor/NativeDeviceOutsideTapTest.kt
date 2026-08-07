@@ -900,7 +900,7 @@ class NativeDeviceOutsideTapTest {
             .invoke(reactContext, activity)
 
         val modulesProvider = object : ModulesProvider {
-            override fun getModulesList(): List<Class<out Module>> = emptyList()
+            override fun getModulesMap(): Map<Class<out Module>, String?> = emptyMap()
         }
         val constructor = AppContext::class.java.constructors.first { constructor ->
             constructor.parameterTypes.size == 3

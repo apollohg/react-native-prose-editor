@@ -366,6 +366,62 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `Fabric mount accepts a one pixel grid rounding difference and prepares nothing new`() {
+        val engine = CountingLayoutEngine()
+        val registry = testRegistry(engine)
+        val request = request("pixel grid rounding")
+        val measuredWidthPx = 896
+        val laidOutWidthPx = 897
+        val surface = FabricSurfaceToken(surfaceId = 1, componentTag = 1902)
+        val generation = FabricGenerationToken(surface, request.generationIdentity, 2)
+
+        registry.registerFabricLease(surface, generation.leaseHandle)
+        val measured = registry.measure(
+            request,
+            widthPx = measuredWidthPx,
+            density = 2.625f,
+            fabricSurface = surface,
+            fabricLeaseHandle = generation.leaseHandle,
+        )
+        val mounted = registry.acquireForFabricMount(generation, request, laidOutWidthPx, 2.625f)
+
+        assertTrue(mounted === measured)
+        assertEquals(measuredWidthPx, mounted!!.widthPx)
+        assertEquals(1, engine.preparationCount)
+    }
+
+    @Test
+    fun `Fabric mount rejects a width beyond the pixel grid rounding slack`() {
+        val engine = CountingLayoutEngine()
+        val registry = testRegistry(engine)
+        val request = request("beyond pixel grid slack")
+        val surface = FabricSurfaceToken(surfaceId = 1, componentTag = 1903)
+        val generation = FabricGenerationToken(surface, request.generationIdentity, 2)
+
+        registry.registerFabricLease(surface, generation.leaseHandle)
+        registry.measure(request, widthPx = 896, density = 2.625f, fabricSurface = surface, fabricLeaseHandle = generation.leaseHandle)
+
+        assertEquals(null, registry.acquireForFabricMount(generation, request, 894, 2.625f))
+        assertEquals(null, registry.acquireForFabricMount(generation, request, 898, 2.625f))
+        assertNotNull(registry.acquireForFabricMount(generation, request, 895, 2.625f))
+    }
+
+    @Test
+    fun `Fabric mount prefers the exactly measured width over a rounding neighbour`() {
+        val engine = CountingLayoutEngine()
+        val registry = testRegistry(engine)
+        val request = request("exact width preference")
+        val surface = FabricSurfaceToken(surfaceId = 1, componentTag = 1904)
+        val generation = FabricGenerationToken(surface, request.generationIdentity, 2)
+
+        registry.registerFabricLease(surface, generation.leaseHandle)
+        registry.measure(request, widthPx = 895, density = 2.625f, fabricSurface = surface, fabricLeaseHandle = generation.leaseHandle)
+        val exact = registry.measure(request, widthPx = 896, density = 2.625f, fabricSurface = surface, fabricLeaseHandle = generation.leaseHandle)
+
+        assertTrue(registry.acquireForFabricMount(generation, request, 896, 2.625f) === exact)
+    }
+
+    @Test
     fun `Fabric revision fields produce distinct measurement identities`() {
         val engine = CountingLayoutEngine()
         val registry = testRegistry(engine)
@@ -416,7 +472,7 @@ class PreparedProseLayoutTest {
         registry.registerFabricLease(surface, generation.leaseHandle)
         registry.measure(request, 320, 1f, surface, fabricLeaseHandle = generation.leaseHandle)
 
-        assertEquals(null, registry.acquireForFabricMount(generation, request, 321, 1f))
+        assertEquals(null, registry.acquireForFabricMount(generation, request, 330, 1f))
         registry.releaseFabricMountMiss(generation, 320, 1f)
 
         assertEquals(0, registry.fabricGenerationPinCountForTesting)

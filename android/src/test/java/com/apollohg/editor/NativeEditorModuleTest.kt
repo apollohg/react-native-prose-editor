@@ -864,7 +864,7 @@ class NativeEditorModuleTest {
             .getConstructor(Context::class.java)
             .newInstance(context) as Context
         val modulesProvider = object : ModulesProvider {
-            override fun getModulesList(): List<Class<out Module>> = emptyList()
+            override fun getModulesMap(): Map<Class<out Module>, String?> = emptyMap()
         }
         val constructor = AppContext::class.java.constructors.first { candidate ->
             candidate.parameterTypes.size == 3

@@ -5,6 +5,9 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
+
+internal const val PIXEL_GRID_ROUNDING_SLACK_PX = 1
 
 /** Byte-bounded unmounted LRU plus exact Fabric and direct immutable owners. */
 internal class PreparedProseLayoutCache(
@@ -98,9 +101,12 @@ internal class PreparedProseLayoutCache(
 
     /** Fabric consumes only the exact Yoga-created pending handoff. */
     fun acquireForFabricMount(generation: FabricGenerationToken, widthPx: Int, densityBits: Long): PreparedProseLayout? = synchronized(lock) {
-        val lease = pendingLeases.entries.firstOrNull { (key, layout) ->
-            key.generation == generation && layout.key.widthPx == widthPx && layout.key.densityBits == densityBits
-        } ?: return@synchronized null
+        val lease = pendingLeases.entries
+            .filter { (key, layout) ->
+                key.generation == generation && layout.key.densityBits == densityBits &&
+                    abs(layout.key.widthPx - widthPx) <= PIXEL_GRID_ROUNDING_SLACK_PX
+            }
+            .minByOrNull { abs(it.value.key.widthPx - widthPx) } ?: return@synchronized null
         pendingLeases.remove(lease.key)
         mountedLeases.keys
             .filter { it.owner == lease.key.owner && it != lease.key }

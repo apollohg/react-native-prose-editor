@@ -247,6 +247,10 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
     override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = provider
 
+    // The replacement constructors are API 30 and this module's minSdk is 24;
+    // on API 30+ obtain() only delegates to them. setBoundsInParent has no
+    // replacement at all, and API 24-28 services still read it.
+    @Suppress("DEPRECATION")
     private val provider = object : AccessibilityNodeProvider() {
         override fun createAccessibilityNodeInfo(id: Int): AccessibilityNodeInfo? {
             if (id == View.NO_ID) return AccessibilityNodeInfo.obtain(this@PreparedProseDrawingView).also(::onInitializeAccessibilityNodeInfo)
@@ -306,6 +310,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         return true
     }
 
+    // AccessibilityEvent(Int) is API 30; see the node provider above.
+    @Suppress("DEPRECATION")
     private fun sendVirtualAccessibilityEvent(id: Int, type: Int) {
         if (!accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(type).apply {
@@ -317,6 +323,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     }
 
     /** Publishes a logical prepared-subtree transition without changing its artifact. */
+    @Suppress("DEPRECATION")
     internal fun announceAccessibilitySubtreeChanged() {
         if (!publishesAccessibilitySubtree || !accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply {

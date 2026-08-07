@@ -29,7 +29,6 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class PositionBridgeTest {
 
-    // ── UTF-16 -> Scalar: ASCII ─────────────────────────────────────────
 
     /** ASCII characters are 1 UTF-16 code unit = 1 scalar each. */
     @Test
@@ -59,7 +58,6 @@ class PositionBridgeTest {
         )
     }
 
-    // ── UTF-16 -> Scalar: BMP Characters ────────────────────────────────
 
     /** BMP characters (e.g. U+00E9, e-acute) are 1 UTF-16 code unit, 1 scalar. */
     @Test
@@ -71,7 +69,6 @@ class PositionBridgeTest {
         )
     }
 
-    // ── UTF-16 -> Scalar: Surrogate Pairs ───────────────────────────────
 
     /**
      * Characters above U+FFFF (supplementary plane) are encoded as
@@ -123,7 +120,6 @@ class PositionBridgeTest {
         )
     }
 
-    // ── UTF-16 -> Scalar: CJK ──────────────────────────────────────────
 
     /** CJK characters in the BMP: 1 UTF-16 = 1 scalar. */
     @Test
@@ -152,7 +148,6 @@ class PositionBridgeTest {
         )
     }
 
-    // ── UTF-16 -> Scalar: Mixed Content ─────────────────────────────────
 
     /** Mixed ASCII, emoji, and CJK in one string. */
     @Test
@@ -169,7 +164,6 @@ class PositionBridgeTest {
         assertEquals("End of mixed string", 6, PositionBridge.utf16ToScalar(7, text))
     }
 
-    // ── UTF-16 -> Scalar: Flag Emoji ────────────────────────────────────
 
     /**
      * Flag emoji are composed of two regional indicator symbols.
@@ -189,7 +183,6 @@ class PositionBridgeTest {
         assertEquals("After 'B'", 4, PositionBridge.utf16ToScalar(6, text))
     }
 
-    // ── Scalar -> UTF-16: ASCII ─────────────────────────────────────────
 
     @Test
     fun `scalarToUtf16 - ASCII only`() {
@@ -208,7 +201,6 @@ class PositionBridgeTest {
         )
     }
 
-    // ── Scalar -> UTF-16: Surrogate Pairs ───────────────────────────────
 
     @Test
     fun `scalarToUtf16 - surrogate pair`() {
@@ -230,7 +222,6 @@ class PositionBridgeTest {
         )
     }
 
-    // ── Scalar -> UTF-16: Family Emoji ──────────────────────────────────
 
     @Test
     fun `scalarToUtf16 - family emoji`() {
@@ -242,7 +233,6 @@ class PositionBridgeTest {
         )
     }
 
-    // ── Roundtrip Consistency ───────────────────────────────────────────
 
     /** Verify that scalar->utf16->scalar roundtrips exactly. */
     @Test
@@ -296,7 +286,6 @@ class PositionBridgeTest {
         }
     }
 
-    // ── Grapheme Boundary Snapping ──────────────────────────────────────
 
     /** Snapping at an already-valid boundary returns the same offset. */
     @Test
@@ -415,7 +404,6 @@ class PositionBridgeTest {
         assertEquals(0 to 2, PositionBridge.snapRangeToScalarBoundaries(1, 1, text))
     }
 
-    // ── Edge Cases ──────────────────────────────────────────────────────
 
     /** Offset beyond string length should be clamped. */
     @Test

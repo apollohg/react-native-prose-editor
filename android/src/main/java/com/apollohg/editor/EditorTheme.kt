@@ -58,7 +58,8 @@ data class EditorListTheme(
     val baseIndentMultiplier: Float? = null,
     val itemSpacing: Float? = null,
     val markerColor: Int? = null,
-    val markerScale: Float? = null
+    val markerScale: Float? = null,
+    val markerGap: Float? = null
 ) {
     companion object {
         fun fromJson(json: JSONObject?): EditorListTheme? {
@@ -68,7 +69,8 @@ data class EditorListTheme(
                 baseIndentMultiplier = json.optNullableFloat("baseIndentMultiplier"),
                 itemSpacing = json.optNullableFloat("itemSpacing"),
                 markerColor = parseColor(json.optNullableString("markerColor")),
-                markerScale = json.optNullableFloat("markerScale")
+                markerScale = json.optNullableFloat("markerScale"),
+                markerGap = json.optNullableFloat("markerGap")
             )
         }
     }
@@ -167,24 +169,15 @@ data class EditorLinkTheme(
         )
 }
 
-data class EditorMentionTheme(
+data class EditorMentionNodeTheme(
     val textColor: Int? = null,
     val backgroundColor: Int? = null,
     val borderColor: Int? = null,
     val borderWidth: Float? = null,
     val borderRadius: Float? = null,
-    val fontWeight: String? = null,
-    val popoverBackgroundColor: Int? = null,
-    val popoverBorderColor: Int? = null,
-    val popoverBorderWidth: Float? = null,
-    val popoverBorderRadius: Float? = null,
-    val popoverShadowColor: Int? = null,
-    val optionTextColor: Int? = null,
-    val optionSecondaryTextColor: Int? = null,
-    val optionHighlightedBackgroundColor: Int? = null,
-    val optionHighlightedTextColor: Int? = null
+    val fontWeight: String? = null
 ) {
-    fun mergedWith(other: EditorMentionTheme?): EditorMentionTheme {
+    fun mergedWith(other: EditorMentionNodeTheme?): EditorMentionNodeTheme {
         other ?: return this
         return copy(
             textColor = other.textColor ?: textColor,
@@ -192,18 +185,117 @@ data class EditorMentionTheme(
             borderColor = other.borderColor ?: borderColor,
             borderWidth = other.borderWidth ?: borderWidth,
             borderRadius = other.borderRadius ?: borderRadius,
+            fontWeight = other.fontWeight ?: fontWeight
+        )
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject?): EditorMentionNodeTheme? {
+            json ?: return null
+            return EditorMentionNodeTheme(
+                textColor = parseColor(json.optNullableString("textColor")),
+                backgroundColor = parseColor(json.optNullableString("backgroundColor")),
+                borderColor = parseColor(json.optNullableString("borderColor")),
+                borderWidth = json.optNullableFloat("borderWidth"),
+                borderRadius = json.optNullableFloat("borderRadius"),
+                fontWeight = json.optNullableString("fontWeight")
+            )
+        }
+    }
+}
+
+data class EditorMentionSuggestionOptionTheme(
+    val textColor: Int? = null,
+    val secondaryTextColor: Int? = null,
+    val backgroundColor: Int? = null,
+    val borderColor: Int? = null,
+    val borderWidth: Float? = null,
+    val borderRadius: Float? = null,
+    val fontWeight: String? = null,
+    val highlightedBackgroundColor: Int? = null,
+    val highlightedTextColor: Int? = null
+) {
+    fun mergedWith(
+        other: EditorMentionSuggestionOptionTheme?
+    ): EditorMentionSuggestionOptionTheme {
+        other ?: return this
+        return copy(
+            textColor = other.textColor ?: textColor,
+            secondaryTextColor = other.secondaryTextColor ?: secondaryTextColor,
+            backgroundColor = other.backgroundColor ?: backgroundColor,
+            borderColor = other.borderColor ?: borderColor,
+            borderWidth = other.borderWidth ?: borderWidth,
+            borderRadius = other.borderRadius ?: borderRadius,
             fontWeight = other.fontWeight ?: fontWeight,
-            popoverBackgroundColor = other.popoverBackgroundColor ?: popoverBackgroundColor,
-            popoverBorderColor = other.popoverBorderColor ?: popoverBorderColor,
-            popoverBorderWidth = other.popoverBorderWidth ?: popoverBorderWidth,
-            popoverBorderRadius = other.popoverBorderRadius ?: popoverBorderRadius,
-            popoverShadowColor = other.popoverShadowColor ?: popoverShadowColor,
-            optionTextColor = other.optionTextColor ?: optionTextColor,
-            optionSecondaryTextColor = other.optionSecondaryTextColor ?: optionSecondaryTextColor,
-            optionHighlightedBackgroundColor =
-                other.optionHighlightedBackgroundColor ?: optionHighlightedBackgroundColor,
-            optionHighlightedTextColor =
-                other.optionHighlightedTextColor ?: optionHighlightedTextColor
+            highlightedBackgroundColor =
+                other.highlightedBackgroundColor ?: highlightedBackgroundColor,
+            highlightedTextColor = other.highlightedTextColor ?: highlightedTextColor
+        )
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject?): EditorMentionSuggestionOptionTheme? {
+            json ?: return null
+            return EditorMentionSuggestionOptionTheme(
+                textColor = parseColor(json.optNullableString("textColor")),
+                secondaryTextColor = parseColor(json.optNullableString("secondaryTextColor")),
+                backgroundColor = parseColor(json.optNullableString("backgroundColor")),
+                borderColor = parseColor(json.optNullableString("borderColor")),
+                borderWidth = json.optNullableFloat("borderWidth"),
+                borderRadius = json.optNullableFloat("borderRadius"),
+                fontWeight = json.optNullableString("fontWeight"),
+                highlightedBackgroundColor =
+                    parseColor(json.optNullableString("highlightedBackgroundColor")),
+                highlightedTextColor = parseColor(json.optNullableString("highlightedTextColor"))
+            )
+        }
+    }
+}
+
+data class EditorMentionSuggestionsTheme(
+    val backgroundColor: Int? = null,
+    val borderColor: Int? = null,
+    val borderWidth: Float? = null,
+    val borderRadius: Float? = null,
+    val shadowColor: Int? = null,
+    val option: EditorMentionSuggestionOptionTheme? = null
+) {
+    fun mergedWith(other: EditorMentionSuggestionsTheme?): EditorMentionSuggestionsTheme {
+        other ?: return this
+        return copy(
+            backgroundColor = other.backgroundColor ?: backgroundColor,
+            borderColor = other.borderColor ?: borderColor,
+            borderWidth = other.borderWidth ?: borderWidth,
+            borderRadius = other.borderRadius ?: borderRadius,
+            shadowColor = other.shadowColor ?: shadowColor,
+            option = option?.mergedWith(other.option) ?: other.option
+        )
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject?): EditorMentionSuggestionsTheme? {
+            json ?: return null
+            return EditorMentionSuggestionsTheme(
+                backgroundColor = parseColor(json.optNullableString("backgroundColor")),
+                borderColor = parseColor(json.optNullableString("borderColor")),
+                borderWidth = json.optNullableFloat("borderWidth"),
+                borderRadius = json.optNullableFloat("borderRadius"),
+                shadowColor = parseColor(json.optNullableString("shadowColor")),
+                option = EditorMentionSuggestionOptionTheme.fromJson(json.optJSONObject("option"))
+            )
+        }
+    }
+}
+
+data class EditorMentionTheme(
+    val node: EditorMentionNodeTheme? = null,
+    val suggestions: EditorMentionSuggestionsTheme? = null
+) {
+    fun mergedWith(other: EditorMentionTheme?): EditorMentionTheme {
+        other ?: return this
+        return copy(
+            node = node?.mergedWith(other.node) ?: other.node,
+            suggestions = suggestions?.mergedWith(other.suggestions) ?: other.suggestions
         )
     }
 
@@ -211,21 +303,9 @@ data class EditorMentionTheme(
         fun fromJson(json: JSONObject?): EditorMentionTheme? {
             json ?: return null
             return EditorMentionTheme(
-                textColor = parseColor(json.optNullableString("textColor")),
-                backgroundColor = parseColor(json.optNullableString("backgroundColor")),
-                borderColor = parseColor(json.optNullableString("borderColor")),
-                borderWidth = json.optNullableFloat("borderWidth"),
-                borderRadius = json.optNullableFloat("borderRadius"),
-                fontWeight = json.optNullableString("fontWeight"),
-                popoverBackgroundColor = parseColor(json.optNullableString("popoverBackgroundColor")),
-                popoverBorderColor = parseColor(json.optNullableString("popoverBorderColor")),
-                popoverBorderWidth = json.optNullableFloat("popoverBorderWidth"),
-                popoverBorderRadius = json.optNullableFloat("popoverBorderRadius"),
-                popoverShadowColor = parseColor(json.optNullableString("popoverShadowColor")),
-                optionTextColor = parseColor(json.optNullableString("optionTextColor")),
-                optionSecondaryTextColor = parseColor(json.optNullableString("optionSecondaryTextColor")),
-                optionHighlightedBackgroundColor = parseColor(json.optNullableString("optionHighlightedBackgroundColor")),
-                optionHighlightedTextColor = parseColor(json.optNullableString("optionHighlightedTextColor"))
+                node = EditorMentionNodeTheme.fromJson(json.optJSONObject("node")),
+                suggestions =
+                    EditorMentionSuggestionsTheme.fromJson(json.optJSONObject("suggestions"))
             )
         }
     }

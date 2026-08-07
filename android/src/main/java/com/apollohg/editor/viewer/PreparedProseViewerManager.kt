@@ -8,14 +8,15 @@ import com.apollohg.editor.ProseViewerSource
 import com.apollohg.editor.ImageLoadingPolicy
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
-import com.facebook.react.uimanager.BaseViewManager
-import com.facebook.react.uimanager.LayoutShadowNode
 import com.facebook.react.uimanager.ReactStylesDiffMap
+import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.StateWrapper
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.UIManagerHelper
 import com.facebook.react.uimanager.ViewManagerDelegate
+import com.facebook.react.uimanager.events.Event
 import com.facebook.react.viewmanagers.PreparedProseViewerManagerDelegate
 import com.facebook.react.viewmanagers.PreparedProseViewerManagerInterface
 import com.facebook.yoga.YogaMeasureMode
@@ -36,7 +37,7 @@ internal fun fabricPixelsToDp(value: Float, density: Float): Float? {
 /** Fabric ViewManager; Yoga measurement creates the artifact and mounting only acquires it. */
 @ReactModule(name = PreparedProseViewerManager.REACT_CLASS)
 internal class PreparedProseViewerManager :
-    BaseViewManager<PreparedProseDrawingView, LayoutShadowNode>(),
+    SimpleViewManager<PreparedProseDrawingView>(),
     PreparedProseViewerManagerInterface<PreparedProseDrawingView> {
     private val delegate: ViewManagerDelegate<PreparedProseDrawingView> =
         PreparedProseViewerManagerDelegate(this)
@@ -68,12 +69,6 @@ internal class PreparedProseViewerManager :
             }
             state.imagePipeline.onResourceFailure = { attachment -> dispatchResourceError(view, attachment) }
         }
-
-    override fun createShadowNodeInstance(): LayoutShadowNode = LayoutShadowNode()
-
-    override fun getShadowNodeClass(): Class<LayoutShadowNode> = LayoutShadowNode::class.java
-
-    override fun updateExtraData(root: PreparedProseDrawingView, extraData: Any?) = Unit
 
     override fun onDropViewInstance(view: PreparedProseDrawingView) {
         states.remove(view)?.let { state ->
@@ -169,12 +164,16 @@ internal class PreparedProseViewerManager :
         // A state snapshot can outlive its C++ family. Only the synchronous
         // native thread-local handle proves this Yoga callback still belongs
         // to an active exact state incarnation.
-        if (surface != null && leaseHandle <= 0L) return YogaMeasureOutput.make(0f, 0f)
+        if (surface != null && leaseHandle <= 0L) {
+            PreparedProseInstrumentation.trace("measure") { "declined: $surface has no live native lease handle" }
+            return YogaMeasureOutput.make(0f, 0f)
+        }
         val request = requestFrom(props, state, leaseHandle)
         if (request == null) {
             // An incomplete/stale Yoga callback has not named an exact
             // generation. It must never tear down a newer incarnation on the
             // same surface; recycle and surface-stop own terminal cleanup.
+            PreparedProseInstrumentation.trace("measure") { "declined: state named no exact generation (surface=$surface, handle=$leaseHandle)" }
             return YogaMeasureOutput.make(0f, 0f)
         }
         val widthPx = fabricConstraintPixels(width)
@@ -196,6 +195,10 @@ internal class PreparedProseViewerManager :
             YogaMeasureMode.AT_MOST -> constrainedHeight?.let { minOf(intrinsicHeight, it) } ?: intrinsicHeight
             else -> intrinsicHeight
         }
+        PreparedProseInstrumentation.trace("measure") {
+            "surface=$surface handle=$leaseHandle $widthMode widthPx=$widthPx $heightMode heightPx=$height " +
+                "-> artifact ${artifact.widthPx}x${artifact.heightPx}px, yoga ${measuredWidth}x${measuredHeight}dp"
+        }
         return YogaMeasureOutput.make(measuredWidth, measuredHeight)
     }
 
@@ -207,15 +210,23 @@ internal class PreparedProseViewerManager :
     }
 
     private fun installCachedLayout(view: PreparedProseDrawingView) {
-        val state = states[view] ?: return
-        val request = state.requestOrNull() ?: return
+        val state = states[view] ?: run {
+            PreparedProseInstrumentation.trace("mount") { "declined: no view state (tag=${view.id})" }
+            return
+        }
+        val request = state.requestOrNull() ?: run {
+            PreparedProseInstrumentation.trace("mount") { "declined: props/state have not yet named a request (tag=${view.id})" }
+            return
+        }
         val surfaceId = UIManagerHelper.getSurfaceId(view)
         if (surfaceId < 0 || view.id <= 0 || view.width <= 0) {
+            PreparedProseInstrumentation.trace("mount") { "declined: surfaceId=$surfaceId tag=${view.id} width=${view.width}px height=${view.height}px" }
             state.finishWithoutMountedReplacement(view)
             return
         }
         val density = view.resources.displayMetrics.density
         val widthPx = fabricConstraintPixels(view.width.toFloat()) ?: run {
+            PreparedProseInstrumentation.trace("mount") { "declined: unrepresentable width ${view.width}px (tag=${view.id})" }
             state.finishWithoutMountedReplacement(view)
             return
         }
@@ -224,10 +235,12 @@ internal class PreparedProseViewerManager :
         state.bindFabricAttachmentState(generation)
         val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(generation, request, widthPx, density)
         if (artifact == null) {
+            PreparedProseInstrumentation.trace("mount") { "miss: no Yoga handoff for $generation at widthPx=$widthPx density=$density" }
             PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation, widthPx, density)
             state.finishWithoutMountedReplacement(view)
             return
         }
+        PreparedProseInstrumentation.trace("mount") { "installed: $generation widthPx=$widthPx heightPx=${artifact.heightPx}" }
         state.installMountedReplacement(view, artifact)
         state.beginImages(view, artifact, request)
         artifact.error?.let { dispatchError(view, request, it) }
@@ -240,50 +253,47 @@ internal class PreparedProseViewerManager :
     ) {
         val state = states[view] ?: return
         if (!state.errorReporter.shouldReport(request.semanticGenerationIdentity)) return
-        val context = UIManagerHelper.getReactContext(view)
-        context.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java).receiveEvent(
-            view.id,
-            "topError",
-            Arguments.createMap().apply {
-                putString("domain", error.domain)
-                putString("code", error.code.value)
-                putString("message", error.message)
-                putBoolean("fatal", true)
-            },
-        )
+        dispatchViewerEvent(view, EVENT_ERROR, Arguments.createMap().apply {
+            putString("domain", error.domain)
+            putString("code", error.code.value)
+            putString("message", error.message)
+            putBoolean("fatal", true)
+        })
     }
 
     private fun dispatchResourceError(view: PreparedProseDrawingView, attachment: ViewerImageAttachment) {
         val state = states[view] ?: return
-        val request = state.requestOrNull() ?: return
+        state.requestOrNull() ?: return
         if (!state.recordResourceFailure(attachment.ordinal)) return
-        UIManagerHelper.getReactContext(view)
-            .getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java)
-            .receiveEvent(view.id, "topError", Arguments.createMap().apply {
-                putString("domain", "viewer.resource")
-                putString("code", "RESOURCE_LOAD_FAILED")
-                putString("message", "An image resource could not be loaded.")
-                putBoolean("fatal", false)
-            })
+        dispatchViewerEvent(view, EVENT_ERROR, Arguments.createMap().apply {
+            putString("domain", "viewer.resource")
+            putString("code", "RESOURCE_LOAD_FAILED")
+            putString("message", "An image resource could not be loaded.")
+            putBoolean("fatal", false)
+        })
     }
 
     private fun dispatchInteraction(view: PreparedProseDrawingView, interaction: PreparedProseInteraction): Boolean {
-        val context = UIManagerHelper.getReactContext(view)
-        context.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java).receiveEvent(
-            view.id,
-            if (interaction.kind == PreparedProseInteraction.Kind.LINK) "topPressLink" else "topPressMention",
-            Arguments.createMap().apply {
-                if (interaction.kind == PreparedProseInteraction.Kind.LINK) {
-                    putString("href", interaction.href)
-                    putString("text", interaction.visibleText)
-                } else {
-                    putDouble("docPos", (interaction.docPos ?: return false).toDouble())
-                    putString("label", interaction.label)
-                    putString("attrsJson", interaction.attrsJson ?: return false)
-                }
-            },
-        )
+        val isLink = interaction.kind == PreparedProseInteraction.Kind.LINK
+        val payload = Arguments.createMap().apply {
+            if (isLink) {
+                putString("href", interaction.href)
+                putString("text", interaction.visibleText)
+            } else {
+                putDouble("docPos", (interaction.docPos ?: return false).toDouble())
+                putString("label", interaction.label)
+                putString("attrsJson", interaction.attrsJson ?: return false)
+            }
+        }
+        dispatchViewerEvent(view, if (isLink) EVENT_PRESS_LINK else EVENT_PRESS_MENTION, payload)
         return true
+    }
+
+    private fun dispatchViewerEvent(view: PreparedProseDrawingView, eventName: String, payload: WritableMap) {
+        val context = UIManagerHelper.getReactContext(view)
+        UIManagerHelper.getEventDispatcher(context)?.dispatchEvent(
+            PreparedProseViewerEvent(UIManagerHelper.getSurfaceId(view), view.id, eventName, payload)
+        )
     }
 
     private fun requestFrom(props: ReadableMap?, state: ReadableMap?, nativeLeaseHandle: Long = 0): ProseViewerRequest? {
@@ -562,7 +572,28 @@ internal class PreparedProseViewerManager :
 
     companion object {
         const val REACT_CLASS = "PreparedProseViewer"
+        private const val EVENT_ERROR = "topError"
+        private const val EVENT_PRESS_LINK = "topPressLink"
+        private const val EVENT_PRESS_MENTION = "topPressMention"
     }
+}
+
+/**
+ * Fabric direct event carrying an already-built payload. Every viewer event
+ * reports a discrete outcome, so coalescing stays off: two link presses or two
+ * distinct resource failures on one view must both reach JS.
+ */
+private class PreparedProseViewerEvent(
+    surfaceId: Int,
+    viewTag: Int,
+    private val name: String,
+    private val payload: WritableMap,
+) : Event<PreparedProseViewerEvent>(surfaceId, viewTag) {
+    override fun getEventName(): String = name
+
+    override fun getEventData(): WritableMap = payload
+
+    override fun canCoalesce(): Boolean = false
 }
 
 /**

@@ -153,6 +153,7 @@ class EditorV2AdapterTest {
             .put("documentVersion", revision)
             .put("stateRevision", revision)
             .put("scalarLength", text.codePointCount(0, text.length))
+            .put("documentIsEmpty", text.isEmpty())
             .toString()
 
     private fun adoptExternalRender(adapter: EditorV2Adapter, snapshot: String): String? =
@@ -336,6 +337,9 @@ class EditorV2AdapterTest {
 
         val deleted = adapter.deleteBackwardAtSelection(2, 2)
         assertEquals("a", renderedText(deleted))
+        val backwardSelection = JSONObject(deleted).getJSONObject("selection")
+        assertEquals(1, backwardSelection.getInt("anchorScalar"))
+        assertEquals(1, backwardSelection.getInt("headScalar"))
 
         val split = adapter.splitBlockAt(1)
         assertNotNull(split)
@@ -347,6 +351,19 @@ class EditorV2AdapterTest {
         assertNotNull(update)
         assertTrue(update!!.committed)
         assertEquals("a\nd", renderedText(update.updateJson))
+    }
+
+    @Test
+    fun `range deletion render carries post-delete caret`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>abcd</p>")
+
+        val deleted = adapter.deleteScalarRange(1, 3)
+
+        assertEquals("ad", renderedText(deleted))
+        val selection = JSONObject(deleted).getJSONObject("selection")
+        assertEquals(1, selection.getInt("anchorScalar"))
+        assertEquals(1, selection.getInt("headScalar"))
     }
 
     @Test
@@ -629,6 +646,57 @@ class EditorV2AdapterTest {
         assertNull(adoptExternalRender(adapter, malformed))
         assertEquals(revisionBefore, adapter.baseDocumentRevision)
         assertEquals("FFI_RESULT_INVALID", errors.single().code)
+    }
+
+    @Test
+    fun `atomic external snapshot accepts an inserted mention carrying node attrs`() {
+        // Rust emits `attrs` on every void/opaque element, so an inserted
+        // mention must survive validation on its way back to the view.
+        val adapter = makeAdapter()
+        val mention = JSONObject()
+            .put("type", "opaqueInlineAtom")
+            .put("nodeType", "mention")
+            .put("label", "@Alice Chen")
+            .put("docPos", 1)
+            .put(
+                "attrs",
+                JSONObject()
+                    .put("id", "user-alice")
+                    .put("label", "Alice Chen")
+                    .put("mentionSuggestionChar", "@")
+                    .put("type", "user")
+            )
+            .put(
+                "mentionTheme",
+                JSONObject().put("node", JSONObject().put("textColor", "#336EC1"))
+            )
+        val snapshot = JSONObject(atomicRenderSnapshot("base", "7", selectionScalar = 1))
+            .put(
+                "renderBlocks",
+                org.json.JSONArray().put(org.json.JSONArray().put(mention))
+            )
+            .toString()
+
+        assertNotNull(adoptExternalRender(adapter, snapshot))
+    }
+
+    @Test
+    fun `atomic external snapshot rejects an opaque atom with non object attrs`() {
+        val adapter = makeAdapter()
+        val mention = JSONObject()
+            .put("type", "opaqueInlineAtom")
+            .put("nodeType", "mention")
+            .put("label", "Ada")
+            .put("docPos", 1)
+            .put("attrs", org.json.JSONArray())
+        val snapshot = JSONObject(atomicRenderSnapshot("base", "7", selectionScalar = 1))
+            .put(
+                "renderBlocks",
+                org.json.JSONArray().put(org.json.JSONArray().put(mention))
+            )
+            .toString()
+
+        assertNull(adoptExternalRender(adapter, snapshot))
     }
 
     @Test

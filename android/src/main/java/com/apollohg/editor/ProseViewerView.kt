@@ -507,6 +507,9 @@ class ProseViewerView @JvmOverloads constructor(
     override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider =
         annotationNodeProvider
 
+    // The replacement constructors are API 30 and this module's minSdk is 24;
+    // on API 30+ obtain() only delegates to them.
+    @Suppress("DEPRECATION")
     private val annotationNodeProvider = object : AccessibilityNodeProvider() {
         override fun createAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? {
             if (virtualViewId == View.NO_ID) {
@@ -530,6 +533,9 @@ class ProseViewerView @JvmOverloads constructor(
         linkTapsEnabled || it.role != com.apollohg.editor.viewer.PreparedProseAccessibilityNode.Role.LINK
     }
 
+    // AccessibilityNodeInfo() is API 30; setBoundsInParent has no replacement
+    // and API 24-28 services still read it.
+    @Suppress("DEPRECATION")
     private fun preparedAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? {
         val node = preparedAccessibleNodes().getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return null
         val parentBounds = Rect(node.bounds).apply { offset(preparedDrawingView.left, preparedDrawingView.top) }
@@ -608,6 +614,8 @@ class ProseViewerView @JvmOverloads constructor(
         return true
     }
 
+    // AccessibilityEvent(Int) is API 30; see the node provider above.
+    @Suppress("DEPRECATION")
     private fun sendVirtualAccessibilityEvent(virtualViewId: Int, eventType: Int) {
         if (!accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(eventType).apply {
@@ -618,6 +626,7 @@ class ProseViewerView @JvmOverloads constructor(
         parent?.requestSendAccessibilityEvent(this, event)
     }
 
+    @Suppress("DEPRECATION")
     private fun notifyAccessibilitySubtreeChanged() {
         if (!accessibilityManager.isEnabled) return
         val event = AccessibilityEvent.obtain(

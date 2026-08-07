@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+
 import org.json.JSONObject
 import org.json.JSONArray
 
@@ -55,6 +56,8 @@ internal class EditorV2Adapter private constructor(
     private var cachedActiveState: JSONObject? = null
     private var cachedHistoryState: JSONObject? = null
     private var cachedViewUpdateJson: String? = null
+    private var cachedAtomicRenderJson: String? = null
+    private var cachedAtomicRenderDocumentRevision: ULong? = null
     internal var renderUpdateCallCountForTesting = 0
         private set
     private var destroyed = false
@@ -107,7 +110,6 @@ internal class EditorV2Adapter private constructor(
         return error
     }
 
-    // ── Envelopes ──
 
     private fun requestIdExhaustedError(): EditorV2Error =
         EditorV2Error(
@@ -173,7 +175,6 @@ internal class EditorV2Adapter private constructor(
                 .put("head", positionEnvelope(head, affinity)),
         )
 
-    // ── Structured reads ──
 
     internal fun bindAutonomousErrorOwner(
         token: Long,
@@ -272,15 +273,48 @@ internal class EditorV2Adapter private constructor(
         return checked == null || checked === JSONObject.NULL || exactBool(checked) != null
     }
 
-    private fun validMentionTheme(value: Any?): Boolean {
+    private fun validMentionThemeSection(
+        value: Any?,
+        stringKeys: Set<String>,
+        extraKeys: Set<String>
+    ): Boolean {
         val object_ = value as? JSONObject ?: return false
-        val stringKeys = setOf("textColor", "backgroundColor", "borderColor", "popoverBackgroundColor", "popoverBorderColor", "popoverShadowColor", "optionTextColor", "optionSecondaryTextColor", "optionHighlightedBackgroundColor", "optionHighlightedTextColor")
-        val numberKeys = setOf("borderWidth", "borderRadius", "popoverBorderWidth", "popoverBorderRadius")
-        if (!onlyKeys(object_, stringKeys + numberKeys + "fontWeight")) return false
+        val numberKeys = setOf("borderWidth", "borderRadius")
+        if (!onlyKeys(object_, stringKeys + numberKeys + extraKeys)) return false
         if (stringKeys.any { object_.has(it) && object_.opt(it) !is String }) return false
         if (numberKeys.any { object_.has(it) && (object_.opt(it) !is Number || !(object_.opt(it) as Number).toDouble().isFinite()) }) return false
         val weight = object_.opt("fontWeight")
         return weight == null || weight in setOf("normal", "bold", "100", "200", "300", "400", "500", "600", "700", "800", "900")
+    }
+
+    private fun validMentionTheme(value: Any?): Boolean {
+        val object_ = value as? JSONObject ?: return false
+        if (!onlyKeys(object_, setOf("node", "suggestions"))) return false
+
+        if (object_.has("node") && !validMentionThemeSection(
+                object_.opt("node"),
+                setOf("textColor", "backgroundColor", "borderColor"),
+                setOf("fontWeight")
+            )
+        ) {
+            return false
+        }
+        if (!object_.has("suggestions")) return true
+        val suggestions = object_.opt("suggestions")
+        if (!validMentionThemeSection(
+                suggestions,
+                setOf("backgroundColor", "borderColor", "shadowColor"),
+                setOf("option")
+            )
+        ) {
+            return false
+        }
+        val option = (suggestions as? JSONObject)?.opt("option") ?: return true
+        return validMentionThemeSection(
+            option,
+            setOf("textColor", "secondaryTextColor", "backgroundColor", "borderColor", "highlightedBackgroundColor", "highlightedTextColor"),
+            setOf("fontWeight")
+        )
     }
 
     private fun validRenderElement(value: Any?): Boolean {
@@ -293,11 +327,13 @@ internal class EditorV2Adapter private constructor(
             "blockEnd" -> exactKeys(object_, setOf("type"))
             "voidInline", "voidBlock" -> onlyKeys(object_, setOf("type", "nodeType", "docPos", "attrs")) && object_.opt("nodeType") is String &&
                 scalarField(object_, "docPos") != null && (!object_.has("attrs") || object_.opt("attrs") is JSONObject)
-            "opaqueInlineAtom" -> onlyKeys(object_, setOf("type", "nodeType", "label", "docPos", "mentionTheme")) &&
+            "opaqueInlineAtom" -> onlyKeys(object_, setOf("type", "nodeType", "label", "docPos", "attrs", "mentionTheme")) &&
                 object_.opt("nodeType") is String && object_.opt("label") is String && scalarField(object_, "docPos") != null &&
+                (!object_.has("attrs") || object_.opt("attrs") is JSONObject) &&
                 (!object_.has("mentionTheme") || validMentionTheme(object_.opt("mentionTheme")))
-            "opaqueBlockAtom" -> exactKeys(object_, setOf("type", "nodeType", "label", "docPos")) &&
-                object_.opt("nodeType") is String && object_.opt("label") is String && scalarField(object_, "docPos") != null
+            "opaqueBlockAtom" -> onlyKeys(object_, setOf("type", "nodeType", "label", "docPos", "attrs")) &&
+                object_.opt("nodeType") is String && object_.opt("label") is String && scalarField(object_, "docPos") != null &&
+                (!object_.has("attrs") || object_.opt("attrs") is JSONObject)
             else -> false
         }
     }
@@ -373,9 +409,10 @@ internal class EditorV2Adapter private constructor(
     private fun parseAtomicRenderSnapshot(json: String): AtomicRenderSnapshot? {
         return try {
             val object_ = JSONObject(json)
-            if (!exactKeys(object_, setOf("renderBlocks", "renderPatch", "selection", "activeState", "historyState", "documentVersion", "stateRevision", "scalarLength")) ||
+            if (!exactKeys(object_, setOf("renderBlocks", "renderPatch", "selection", "activeState", "historyState", "documentVersion", "stateRevision", "scalarLength", "documentIsEmpty")) ||
                 !validRenderBlocks(object_.opt("renderBlocks")) || !validRenderPatch(object_.opt("renderPatch")) ||
-                !validSelection(object_.opt("selection")) || !validActiveState(object_.opt("activeState"))
+                !validSelection(object_.opt("selection")) || !validActiveState(object_.opt("activeState")) ||
+                exactBool(object_.opt("documentIsEmpty")) == null
             ) return null
             val history = object_.opt("historyState") as? JSONObject ?: return null
             if (!exactKeys(history, setOf("canUndo", "canRedo")) || exactBool(history.opt("canUndo")) == null || exactBool(history.opt("canRedo")) == null) return null
@@ -408,14 +445,19 @@ internal class EditorV2Adapter private constructor(
         stateRevision = snapshot.stateRevision
         cachedScalarLength = snapshot.scalarLength
         cachedAuthoritativeScalarSelection = snapshot.scalarSelection?.copyOf()
-        // The frozen atomic snapshot is also the engine-authoritative answer
-        // for local selection suppression. Keeping the old mirror here would
-        // let an external selection be silently skipped by the next input.
         lastSyncedScalarSelection = snapshot.scalarSelection?.copyOf()
         cachedActiveState = snapshot.activeState
         cachedHistoryState = snapshot.historyState
         cachedViewUpdateJson = updateJson
+        cachedAtomicRenderJson = snapshot.atomicRenderJson
+        cachedAtomicRenderDocumentRevision = snapshot.documentRevision
         return updateJson
+    }
+
+    internal fun atomicRenderJson(matchingDocumentRevision: String): String? {
+        val revision = matchingDocumentRevision.toULongOrNull() ?: return null
+        if (cachedAtomicRenderDocumentRevision != revision) return null
+        return cachedAtomicRenderJson
     }
 
     internal fun adoptExternalRender(renderJson: String): String? {
@@ -451,7 +493,6 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
-    // ── Render derivation (v2 render accessor) ──
 
     private fun refreshInternal(
         mirrorSelection: IntArray?,
@@ -554,7 +595,6 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
-    // ── Selection sync and position mapping ──
 
     private sealed interface SelectionSyncOutcome {
         object Ok : SelectionSyncOutcome
@@ -573,6 +613,8 @@ internal class EditorV2Adapter private constructor(
         cachedActiveState = null
         cachedHistoryState = null
         cachedViewUpdateJson = null
+        cachedAtomicRenderJson = null
+        cachedAtomicRenderDocumentRevision = null
     }
 
     private fun ensureSelection(anchor: Int, head: Int): SelectionSyncOutcome {
@@ -615,6 +657,8 @@ internal class EditorV2Adapter private constructor(
                 // mutation supplies its next locked snapshot.
                 cachedActiveState = null
                 cachedViewUpdateJson = null
+                cachedAtomicRenderJson = null
+                cachedAtomicRenderDocumentRevision = null
                 SelectionSyncOutcome.Ok
             }
             is EditorV2CallResult.Err -> {
@@ -757,7 +801,6 @@ internal class EditorV2Adapter private constructor(
             } catch (error: Exception) { null }
         }
 
-    // ── Mutation driver ──
 
     private sealed interface MutationOutcome {
         data class Transaction(val changed: Boolean, val revision: ULong) : MutationOutcome
@@ -943,7 +986,6 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
-    // ── Native transport wake ──
 
     private fun notifyCollaborationMutation() {
         if (!roomBound) return
@@ -953,7 +995,6 @@ internal class EditorV2Adapter private constructor(
         )
     }
 
-    // ── Typed verbs ──
 
     override fun insertText(text: String, atScalarPos: Int): String? {
         if (text.isEmpty()) return currentStateJson()
@@ -997,7 +1038,10 @@ internal class EditorV2Adapter private constructor(
         val clampedFrom = clampScalar(scalarFrom)
         val clampedTo = clampScalar(scalarTo)
         if (clampedFrom >= clampedTo) return currentStateJson()
-        return performMutation(postSelectionMirror = intArrayOf(clampedFrom, clampedFrom)) {
+        return performMutation(
+            postSelectionMirror = intArrayOf(clampedFrom, clampedFrom),
+            includeSelectionInUpdate = true,
+        ) {
             callWithEnvelope(
                 JSONObject().put(
                     "command",
@@ -1021,6 +1065,7 @@ internal class EditorV2Adapter private constructor(
         return performMutation(
             preSelection = intArrayOf(anchor, head),
             postSelectionMirror = intArrayOf(postCaret, postCaret),
+            includeSelectionInUpdate = true,
         ) {
             callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "deleteBackward"))) { requestJson ->
                 backend.applyCommand(editorId, requestJson)
@@ -1148,7 +1193,6 @@ internal class EditorV2Adapter private constructor(
     override fun redo(): String? =
         performHistoryMutation { requestJson -> backend.redo(editorId, requestJson) }
 
-    // ── Controlled content ──
 
     override fun setContentHtml(html: String): String? =
         performMutation(postSelectionMirror = intArrayOf(0, 0), includeSelectionInUpdate = true) {

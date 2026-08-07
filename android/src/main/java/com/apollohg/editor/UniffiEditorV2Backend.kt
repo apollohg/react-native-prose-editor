@@ -176,7 +176,6 @@ internal object UniffiEditorV2Backend : EditorV2Backend {
         return EditorV2CallResult.Err(contractError("v2 result must carry exactly one of value/error"))
     }
 
-    // ── v2 render/selection/position accessor ──
 
     override fun renderUpdate(
         editorId: String,

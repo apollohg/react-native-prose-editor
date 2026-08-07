@@ -4,6 +4,10 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Looper
 import android.view.View
+import androidx.appcompat.R as AppCompatR
+import androidx.appcompat.view.ContextThemeWrapper
+import com.google.android.material.R as MaterialR
+import com.google.android.material.color.MaterialColors
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -388,8 +392,12 @@ class NativeToolbarTest {
                 org.json.JSONObject(
                     """
                     {
-                      "backgroundColor": "#d7e4ff",
-                      "optionTextColor": "#1a2c48"
+                      "suggestions": {
+                        "option": {
+                          "backgroundColor": "#d7e4ff",
+                          "textColor": "#1a2c48"
+                        }
+                      }
                     }
                     """.trimIndent()
                 )
@@ -576,6 +584,35 @@ class NativeToolbarTest {
         assertEquals(20f * density, toolbar.appliedButtonCornerRadiusPx)
         assertEquals(0f, toolbar.appliedChromeElevationPx)
         assertTrue(toolbar.clipToOutline)
+    }
+
+    @Test
+    @Config(sdk = [30])
+    fun `native toolbar uses material 3 colors when dynamic colors are unavailable`() {
+        val application = RuntimeEnvironment.getApplication()
+        val appCompatContext = ContextThemeWrapper(
+            application,
+            AppCompatR.style.Theme_AppCompat_Light_NoActionBar
+        )
+        val material3Context = ContextThemeWrapper(
+            application,
+            MaterialR.style.Theme_Material3_DayNight
+        )
+        val expectedSurface = MaterialColors.getColor(
+            material3Context,
+            MaterialR.attr.colorSurfaceContainer,
+            Color.TRANSPARENT
+        )
+        val toolbar = EditorKeyboardToolbarView(appCompatContext)
+
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.NATIVE
+            )
+        )
+
+        assertNotEquals(Color.TRANSPARENT, expectedSurface)
+        assertEquals(expectedSurface, toolbar.appliedChromeColor)
     }
 
     @Test

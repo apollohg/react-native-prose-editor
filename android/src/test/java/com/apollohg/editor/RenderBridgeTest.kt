@@ -181,12 +181,10 @@ class RenderBridgeTest {
         method.invoke(editor)
     }
 
-    // ── Test Fixtures ───────────────────────────────────────────────────
 
     private val baseFontSize = 16f
     private val textColor = Color.BLACK
 
-    // ── Plain Text Rendering ────────────────────────────────────────────
 
     /** A single paragraph with unstyled text should produce the text content. */
     @Test
@@ -214,7 +212,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Bold Text Rendering ─────────────────────────────────────────────
 
     /** Bold mark should produce a StyleSpan with Typeface.BOLD. */
     @Test
@@ -241,7 +238,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Italic Text Rendering ───────────────────────────────────────────
 
     @Test
     fun `render - italic text`() {
@@ -265,7 +261,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Bold + Italic Combined ──────────────────────────────────────────
 
     @Test
     fun `render - bold italic`() {
@@ -287,7 +282,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Underline ───────────────────────────────────────────────────────
 
     @Test
     fun `render - underline`() {
@@ -310,7 +304,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Strikethrough ───────────────────────────────────────────────────
 
     @Test
     fun `render - strikethrough`() {
@@ -333,7 +326,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Code Mark (Monospace) ───────────────────────────────────────────
 
     @Test
     fun `render - code inline`() {
@@ -364,7 +356,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Hard Break (Void Inline) ────────────────────────────────────────
 
     /** A hardBreak void inline should render as a newline character. */
     @Test
@@ -387,7 +378,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Horizontal Rule (Void Block) ────────────────────────────────────
 
     /** A horizontalRule should render as FFFC with a HorizontalRuleSpan. */
     @Test
@@ -651,7 +641,6 @@ class RenderBridgeTest {
         assertEquals(4, RenderImageDecoder.calculateInSampleSize(width = 8192, height = 4096))
     }
 
-    // ── Multiple Paragraphs ─────────────────────────────────────────────
 
     /** Two consecutive paragraphs should be separated by a newline. */
     @Test
@@ -675,7 +664,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Mixed Marks in Same Paragraph ───────────────────────────────────
 
     @Test
     fun `render - mixed marks in paragraph`() {
@@ -711,7 +699,6 @@ class RenderBridgeTest {
         assertNotNull("'bold' should have BOLD StyleSpan", boldSpan)
     }
 
-    // ── Mark Aliases ────────────────────────────────────────────────────
 
     @Test
     fun `render - strong alias for bold`() {
@@ -760,7 +747,6 @@ class RenderBridgeTest {
         assertTrue("'strikethrough' should produce StrikethroughSpan", strikeSpans.isNotEmpty())
     }
 
-    // ── All Marks Combined ──────────────────────────────────────────────
 
     @Test
     fun `render - all marks combined`() {
@@ -785,7 +771,6 @@ class RenderBridgeTest {
         assertTrue("Should have strikethrough", strikeSpans.isNotEmpty())
     }
 
-    // ── Ordered List ────────────────────────────────────────────────────
 
     @Test
     fun `render - ordered list item`() {
@@ -849,7 +834,6 @@ class RenderBridgeTest {
         }
     }
 
-    // ── Unordered List ──────────────────────────────────────────────────
 
     @Test
     fun `render - unordered list item`() {
@@ -897,7 +881,6 @@ class RenderBridgeTest {
         assertEquals(baseFontSize.toInt(), textSpans[0].size)
     }
 
-    // ── Task List ───────────────────────────────────────────────────────
 
     @Test
     fun `task list marker carries the task marker annotation`() {
@@ -926,7 +909,6 @@ class RenderBridgeTest {
         assertEquals(2, result.getSpanEnd(annotations[0]))
     }
 
-    // ── Opaque Atoms ────────────────────────────────────────────────────
 
     @Test
     fun `render - opaque inline atom`() {
@@ -961,9 +943,11 @@ class RenderBridgeTest {
         """.trimIndent()
         val theme = EditorTheme(
             mentions = EditorMentionTheme(
-                textColor = 0xff112233.toInt(),
-                backgroundColor = 0xffddeeff.toInt(),
-                fontWeight = "bold"
+                node = EditorMentionNodeTheme(
+                    textColor = 0xff112233.toInt(),
+                    backgroundColor = 0xffddeeff.toInt(),
+                    fontWeight = "bold"
+                )
             )
         )
 
@@ -989,16 +973,18 @@ class RenderBridgeTest {
                 "nodeType": "mention",
                 "label": "@Alice",
                 "docPos": 1,
-                "mentionTheme": {"textColor": "#445566"}
+                "mentionTheme": {"node": {"textColor": "#445566"}}
             },
             {"type": "blockEnd"}
         ]
         """.trimIndent()
         val theme = EditorTheme(
             mentions = EditorMentionTheme(
-                textColor = 0xff112233.toInt(),
-                backgroundColor = 0xffddeeff.toInt(),
-                fontWeight = "bold"
+                node = EditorMentionNodeTheme(
+                    textColor = 0xff112233.toInt(),
+                    backgroundColor = 0xffddeeff.toInt(),
+                    fontWeight = "bold"
+                )
             )
         )
 
@@ -1036,7 +1022,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Invalid / Edge Cases ────────────────────────────────────────────
 
     @Test
     fun `render - invalid JSON`() {
@@ -1056,7 +1041,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── List Marker Generation ──────────────────────────────────────────
 
     @Test
     fun `list marker - ordered`() {
@@ -1075,7 +1059,6 @@ class RenderBridgeTest {
         )
     }
 
-    // ── Link Mark ───────────────────────────────────────────────────────
 
     @Test
     fun `render - link mark`() {
@@ -1148,7 +1131,6 @@ class RenderBridgeTest {
         assertEquals("https://example.com", hrefAnnotations.first().value)
     }
 
-    // ── Depth Indentation ───────────────────────────────────────────────
 
     @Test
     fun `render - nested block indentation`() {
@@ -1600,6 +1582,122 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `render - mention inline atom inherits surrounding block typography`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "h2", "depth": 0},
+            {"type": "textRun", "text": "Hi ", "marks": []},
+            {"type": "opaqueInlineAtom", "nodeType": "mention", "label": "@Alice", "docPos": 4},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Hi ", "marks": []},
+            {"type": "opaqueInlineAtom", "nodeType": "mention", "label": "@Bob", "docPos": 20},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "text": { "fontSize": 18, "fontFamily": "serif" },
+              "headings": { "h2": { "fontSize": 28, "fontWeight": "700" } }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+
+        val rendered = result.toString()
+        val headingTextStart = rendered.indexOf("Hi ")
+        val headingMentionStart = rendered.indexOf("@Alice")
+        val paragraphMentionStart = rendered.indexOf("@Bob")
+        assertTrue(
+            "Expected heading text and both mentions in '$rendered'",
+            headingTextStart >= 0 && headingMentionStart >= 0 && paragraphMentionStart >= 0
+        )
+
+        fun <T : Any> spansOver(start: Int, length: Int, type: Class<T>): List<T> = result
+            .getSpans(start, start + length, type)
+            .filter { result.getSpanStart(it) <= start && result.getSpanEnd(it) >= start + length }
+
+        val headingTextSizes =
+            spansOver(headingTextStart, 3, AbsoluteSizeSpan::class.java).map { it.size }
+        val headingMentionSizes =
+            spansOver(headingMentionStart, "@Alice".length, AbsoluteSizeSpan::class.java).map { it.size }
+        val paragraphMentionSizes =
+            spansOver(paragraphMentionStart, "@Bob".length, AbsoluteSizeSpan::class.java).map { it.size }
+        val headingMentionFamilies =
+            spansOver(headingMentionStart, "@Alice".length, TypefaceSpan::class.java).map { it.family }
+        val headingMentionStyles =
+            spansOver(headingMentionStart, "@Alice".length, StyleSpan::class.java).map { it.style }
+
+        assertEquals(
+            "Heading text should render at the themed heading size. Spans: $headingTextSizes",
+            listOf(28),
+            headingTextSizes
+        )
+        assertEquals(
+            "Mention in an h2 should inherit the heading font size, not the view base size. Spans: $headingMentionSizes",
+            listOf(28),
+            headingMentionSizes
+        )
+        assertEquals(
+            "Mention in a paragraph should inherit the themed body font size. Spans: $paragraphMentionSizes",
+            listOf(18),
+            paragraphMentionSizes
+        )
+        assertEquals(
+            "Mention should inherit the themed font family. Spans: $headingMentionFamilies",
+            listOf("serif"),
+            headingMentionFamilies
+        )
+        assertEquals(
+            "Mention should inherit the heading font weight. Spans: $headingMentionStyles",
+            listOf(Typeface.BOLD),
+            headingMentionStyles
+        )
+    }
+
+    @Test
+    fun `render - mention theme font weight overrides the surrounding block weight`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "h2", "depth": 0},
+            {
+                "type": "opaqueInlineAtom",
+                "nodeType": "mention",
+                "label": "@Alice",
+                "docPos": 1,
+                "mentionTheme": {"node": {"fontWeight": "400"}}
+            },
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "headings": { "h2": { "fontSize": 28, "fontWeight": "700" } }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java).map { it.style }
+        val sizeSpans = result.getSpans(0, result.length, AbsoluteSizeSpan::class.java).map { it.size }
+
+        assertEquals(
+            "A regular-weight mention theme should override the bold heading weight. Spans: $styleSpans",
+            emptyList<Int>(),
+            styleSpans
+        )
+        assertEquals(
+            "Overriding the weight should leave the inherited heading size intact. Spans: $sizeSpans",
+            listOf(28),
+            sizeSpans
+        )
+    }
+
+    @Test
     fun `render - paragraph does not inherit text line height when paragraph line height is unset`() {
         val json = """
         [
@@ -1773,6 +1871,35 @@ class RenderBridgeTest {
         val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
         assertTrue(marginSpans.isNotEmpty())
         assertEquals(64, marginSpans[0].getLeadingMargin(true))
+    }
+
+    @Test
+    fun `render - list markerGap sizes the bullet gap and the ordered marker gap`() {
+        fun json(ordered: Boolean) = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": $ordered, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        listOf(4f, 20f).forEach { gap ->
+            val theme = EditorTheme.fromJson("""{"list": {"markerGap": $gap}}""")
+
+            val unordered = RenderBridge.buildSpannable(json(false), baseFontSize, textColor, theme, 2f)
+            val bullet = unordered.getSpans(0, unordered.length, CenteredBulletSpan::class.java).single()
+            assertEquals(gap * 2f, bullet.textSideGapPx(0f), 0.01f)
+
+            val orderedResult = RenderBridge.buildSpannable(json(true), baseFontSize, textColor, theme, 2f)
+            val gapSpan = orderedResult.getSpans(0, orderedResult.length, MarkerGapSpan::class.java).single()
+            assertEquals(
+                kotlin.math.ceil(gap * 2f).toInt(),
+                gapSpan.getSize(TextPaint(), orderedResult, 0, 1, null),
+            )
+        }
     }
 
     @Test
@@ -2160,7 +2287,6 @@ class RenderBridgeTest {
         assertEquals(gapToText, scaledSpan.textSideGapPx(0f), 0.01f)
     }
 
-    // ── Height Measurement ──────────────────────────────────────────────
 
     @Test
     fun `measureHeight returns positive height for single paragraph`() {

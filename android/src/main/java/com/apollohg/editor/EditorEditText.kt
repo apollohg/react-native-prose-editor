@@ -41,29 +41,18 @@ import androidx.appcompat.widget.AppCompatEditText
 import kotlin.math.roundToInt
 
 /**
- * Custom [AppCompatEditText] subclass that intercepts all text input and routes it
- * through the Rust editor-core engine via the [EditorV2Driver] interface.
+ * [AppCompatEditText] that intercepts input and routes it through editor-core
+ * via [EditorV2Driver].
  *
- * Instead of letting Android's EditText internal text storage handle insertions
- * and deletions, this class captures the user's intent (typing, deleting,
- * pasting, autocorrect) and sends it to the Rust editor. The Rust editor
- * returns render elements, which are converted to [android.text.SpannableStringBuilder]
- * via [RenderBridge] and applied back to the EditText.
+ * The EditText is a rendering surface, not a text engine: intent (typing,
+ * deleting, pasting, autocorrect) goes to Rust, which returns render elements
+ * that [RenderBridge] converts back to a SpannableStringBuilder.
  *
- * This is the "input interception" pattern: the EditText is effectively
- * a rendering surface, not a text editing engine.
+ * Composition: the base [InputConnection] renders composing text transiently;
+ * the final commit is routed through Rust against the authorized selection.
  *
- * ## Composition Handling
- *
- * For CJK input methods, swipe keyboards, and some autocorrect flows, composing
- * text is rendered transiently by the base [InputConnection]. The final commit
- * is routed through Rust against the original authorized selection.
- *
- * ## Thread Safety
- *
- * All EditText methods are called on the main thread. The [EditorV2Driver]
- * calls (`insertText`, `deleteScalarRange`, etc.) are synchronous and
- * fast enough for main-thread use.
+ * Every EditText method runs on the main thread, and the driver calls are
+ * synchronous.
  */
 class EditorEditText @JvmOverloads constructor(
     context: Context,
@@ -476,7 +465,6 @@ class EditorEditText @JvmOverloads constructor(
         updateEffectivePadding()
     }
 
-    // ── Custom caret ────────────────────────────────────────────────────────
 
     private var caretBlinkVisible = true
     private val caretPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
@@ -655,7 +643,6 @@ class EditorEditText @JvmOverloads constructor(
         return nextInputType
     }
 
-    // ── InputConnection Override ────────────────────────────────────────
 
     /**
      * Create a custom [EditorInputConnection] that intercepts all input
@@ -850,13 +837,10 @@ class EditorEditText @JvmOverloads constructor(
     /**
      * Whether the document holds nothing the user authored.
      *
-     * The core answers this and the answer arrives on every editor update, so
-     * it is used verbatim. Deriving it here cannot work: an empty list item
-     * contributes no characters, so scanning the rendered content reports it as
-     * empty and leaves the placeholder sitting on top of a visible bullet.
-     *
-     * The character scan below is only the fallback for renders that arrive
-     * without an editor update.
+     * Taken verbatim from the core. Deriving it cannot work: an empty list item
+     * contributes no characters, so scanning the rendered content reports empty
+     * and leaves the placeholder over a visible bullet. The scan below is only
+     * the fallback for renders with no editor update.
      */
     private fun isRenderedContentEmpty(content: CharSequence? = text): Boolean {
         coreReportedDocumentIsEmpty?.let { return it }
@@ -940,7 +924,6 @@ class EditorEditText @JvmOverloads constructor(
         return placeholderHeight + compoundPaddingTop + compoundPaddingBottom
     }
 
-    // ── Editor Binding ──────────────────────────────────────────────────
 
     /**
      * Bind this EditText to a Rust editor instance and optionally apply initial content.
@@ -1229,7 +1212,6 @@ class EditorEditText @JvmOverloads constructor(
         return RectF(left, top, left + 1f, bottom)
     }
 
-    // ── Input Handling: Text Commit ─────────────────────────────────────
 
     /**
      * Handle committed text from the IME (typed characters, autocomplete).
@@ -2135,7 +2117,6 @@ class EditorEditText @JvmOverloads constructor(
         return Character.codePointAt(text, utf16Offset)
     }
 
-    // ── Input Handling: Deletion ────────────────────────────────────────
 
     /**
      * Handle surrounding text deletion from the IME.
@@ -2311,7 +2292,6 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    // ── Input Handling: Return Key ──────────────────────────────────────
 
     /**
      * Handle return/enter key as a block split operation.
@@ -2665,7 +2645,6 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    // ── Input Handling: Paste ────────────────────────────────────────────
 
     /**
      * Intercept paste operations to route content through Rust.
@@ -2793,7 +2772,6 @@ class EditorEditText @JvmOverloads constructor(
         return true
     }
 
-    // ── Selection Change ────────────────────────────────────────────────
 
     /**
      * Override to notify the listener when selection changes.
@@ -2833,7 +2811,6 @@ class EditorEditText @JvmOverloads constructor(
         onSetSelectionScalarInRustForTesting?.invoke(scalarAnchor, scalarHead)
     }
 
-    // ── Rust Integration ────────────────────────────────────────────────
 
     // Samsung Keyboard may call finishComposingText() and then commitText(" ")
     // for one space tap. Defer the render from finishComposingText() by one
@@ -3788,7 +3765,6 @@ class EditorEditText @JvmOverloads constructor(
         insertPlainTextRangeInRust(scalarStart, scalarEnd, text)
     }
 
-    // ── Applying Rust State ─────────────────────────────────────────────
 
     private fun parseRenderPatch(raw: org.json.JSONObject?): ParsedRenderPatch? {
         if (raw == null) return null
@@ -4847,7 +4823,6 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    // ── Reconciliation ─────────────────────────────────────────────────
 
     /**
      * [TextWatcher] that detects when the EditText's text diverges from the

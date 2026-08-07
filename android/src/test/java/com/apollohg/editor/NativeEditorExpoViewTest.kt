@@ -2,6 +2,7 @@ package com.apollohg.editor
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Point
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
@@ -245,6 +246,8 @@ class NativeEditorExpoViewTest {
         val (adapterB, tokenB) = registerAdapter()
         val payloads = mutableListOf<Map<String, Any>>()
         try {
+            assertNotNull(adapterA.adoptExternalRender(atomicRenderUpdateJson("A", "7")))
+            assertNotNull(adapterB.adoptExternalRender(atomicRenderUpdateJson("B", "8")))
             view.onEditorUpdateForTesting = { payloads += it }
             view.onAddonEventForTesting = {}
 
@@ -281,6 +284,7 @@ class NativeEditorExpoViewTest {
         val (adapterB, tokenB) = registerAdapter()
         val payloads = mutableListOf<Map<String, Any>>()
         try {
+            assertNotNull(adapterA.adoptExternalRender(atomicRenderUpdateJson("stale A", "7")))
             view.onEditorUpdateForTesting = { payloads += it }
             view.onAddonEventForTesting = {}
 
@@ -411,29 +415,39 @@ class NativeEditorExpoViewTest {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val density = expoContext.context.resources.displayMetrics.density
-        val visibleWindowFrame = Rect(6, 24, 600, 900)
+        val windowOriginOnScreen = Point(6, 24)
 
         view.setToolbarFrameJson("""{"x":20,"y":40,"width":100,"height":32}""")
 
         assertTrue(
             view.isPointInsideStandaloneToolbarForTesting(
-                rawX = 30f * density + visibleWindowFrame.left,
-                rawY = 50f * density + visibleWindowFrame.top,
-                visibleWindowFrame = visibleWindowFrame
+                rawX = 30f * density + windowOriginOnScreen.x,
+                rawY = 50f * density + windowOriginOnScreen.y,
+                windowOriginOnScreen = windowOriginOnScreen
             )
         )
         assertFalse(
             view.isPointInsideStandaloneToolbarForTesting(
-                rawX = 30f * density,
-                rawY = 50f * density,
-                visibleWindowFrame = visibleWindowFrame
+                rawX = 30f * density + windowOriginOnScreen.x,
+                rawY = 90f * density + windowOriginOnScreen.y,
+                windowOriginOnScreen = windowOriginOnScreen
             )
         )
-        assertFalse(
+    }
+
+    @Test
+    fun `standalone toolbar hit testing matches Fabric measureInWindow under edge to edge`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val density = expoContext.context.resources.displayMetrics.density
+
+        view.setToolbarFrameJson("""{"x":74.2857,"y":483.4286,"width":262.8571,"height":56}""")
+
+        assertTrue(
             view.isPointInsideStandaloneToolbarForTesting(
-                rawX = 30f * density + visibleWindowFrame.left,
-                rawY = 90f * density + visibleWindowFrame.top,
-                visibleWindowFrame = visibleWindowFrame
+                rawX = 165f * density,
+                rawY = 511f * density,
+                windowOriginOnScreen = Point(0, 0)
             )
         )
     }
@@ -1550,6 +1564,71 @@ class NativeEditorExpoViewTest {
         assertEquals("", editText.text?.toString())
         assertNull(view.pendingEditorResetUpdateJsonForTesting())
         assertEquals(0, view.pendingEditorResetUpdateRevisionForTesting())
+
+        NativeEditorViewRegistry.unregister(editorId, view)
+    }
+
+    @Test
+    fun `pending JS editor update applies again when the unchanged editor id prop is not redelivered`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editorId = 778849L
+        val editText = view.richTextView.editorEditText
+
+        view.onAddonEventForTesting = {}
+        view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+        view.onEditorReadyForTesting = {}
+        view.richTextView.setEditorIdWhileDetached(editorId)
+        editText.editorId = editorId
+        view.setAttachedToNativeWindowForTesting(true)
+
+        view.setPendingEditorUpdateJson(renderUpdateJson("first"))
+        view.setPendingEditorUpdateEditorId(editorId)
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        assertEquals("first", editText.text?.toString())
+        assertNull(view.pendingEditorUpdateEditorIdForTesting())
+
+        view.setPendingEditorUpdateJson(renderUpdateJson(""))
+        view.setPendingEditorUpdateRevision(2)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        assertEquals("", editText.text?.toString())
+        assertNull(view.pendingEditorUpdateJsonForTesting())
+        assertEquals(0, view.pendingEditorUpdateRevisionForTesting())
+
+        NativeEditorViewRegistry.unregister(editorId, view)
+    }
+
+    @Test
+    fun `pending JS editor update applies again when only revision changes`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editorId = 778850L
+        val editText = view.richTextView.editorEditText
+
+        view.onAddonEventForTesting = {}
+        view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+        view.onEditorReadyForTesting = {}
+        view.richTextView.setEditorIdWhileDetached(editorId)
+        editText.editorId = editorId
+        view.setAttachedToNativeWindowForTesting(true)
+
+        view.setPendingEditorUpdateJson(renderUpdateJson(""))
+        view.setPendingEditorUpdateEditorId(editorId)
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        assertEquals("", editText.text?.toString())
+
+        editText.applyUpdateJSON(renderUpdateJson("typed"), notifyListener = false)
+        view.setPendingEditorUpdateRevision(2)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        assertEquals("", editText.text?.toString())
+        assertNull(view.pendingEditorUpdateJsonForTesting())
+        assertEquals(0, view.pendingEditorUpdateRevisionForTesting())
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }
@@ -3519,6 +3598,7 @@ class NativeEditorExpoViewTest {
             .put("documentVersion", revision)
             .put("stateRevision", revision)
             .put("scalarLength", text.length)
+            .put("documentIsEmpty", text.isEmpty())
             .toString()
 
     private fun commitBoundText(view: NativeEditorExpoView, text: String): Boolean {
@@ -3640,7 +3720,7 @@ class NativeEditorExpoViewTest {
         }
 
         val modulesProvider = object : ModulesProvider {
-            override fun getModulesList(): List<Class<out Module>> = emptyList()
+            override fun getModulesMap(): Map<Class<out Module>, String?> = emptyMap()
         }
         val constructor = AppContext::class.java.constructors.first { constructor ->
             constructor.parameterTypes.size == 3

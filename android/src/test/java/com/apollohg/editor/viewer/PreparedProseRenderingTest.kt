@@ -146,6 +146,132 @@ class PreparedProseRenderingTest {
     }
 
     @Test
+    fun `scaled list markers stay centered without changing item spacing`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val regular = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerScale":1,"itemSpacing":7}}""", 1f))
+        val scaled = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerScale":3,"itemSpacing":7}}""", 1f))
+
+        listOf(regular, scaled).forEach { layout ->
+            val itemBlocks = layout.blocks.filter { block ->
+                block.fragments.any { it.kind == PreparedProseFragmentKind.MARKER }
+            }
+            assertEquals(2, itemBlocks.size)
+            itemBlocks.forEach { block ->
+                val marker = block.fragments.single { it.kind == PreparedProseFragmentKind.MARKER }
+                val text = block.fragments.single { it.kind == PreparedProseFragmentKind.TEXT }
+                val textLayout = requireNotNull(text.layout)
+                val markerLayout = requireNotNull(marker.layout)
+                val markerLabel = requireNotNull(marker.label)
+                val firstLineTop = text.bounds.top + textLayout.getLineTop(0)
+                val firstLineBottom = text.bounds.top + textLayout.getLineBottom(0)
+                val glyphBounds = Rect()
+                markerLayout.paint.getTextBounds(markerLabel, 0, markerLabel.length, glyphBounds)
+                val ink = preparedMarkerInk(glyphBounds, markerLayout.getLineAscent(0), markerLayout.getLineDescent(0))
+                assertTrue(
+                    "marker=${marker.bounds} firstLine=[$firstLineTop,$firstLineBottom]",
+                    kotlin.math.abs((marker.bounds.top + marker.bounds.bottom) - (firstLineTop + firstLineBottom)) <= 1,
+                )
+                assertEquals(ink.heightPx, marker.bounds.height())
+                assertEquals(
+                    marker.bounds.top + ink.ascentPx,
+                    marker.layoutY + markerLayout.getLineBaseline(0),
+                )
+            }
+        }
+
+        fun textLines(layout: PreparedProseLayout) = layout.blocks.mapNotNull { block ->
+            block.fragments.singleOrNull { it.kind == PreparedProseFragmentKind.TEXT }
+        }
+        val regularLines = textLines(regular)
+        val scaledLines = textLines(scaled)
+        assertEquals(2, regularLines.size)
+        assertEquals(2, scaledLines.size)
+        assertEquals(
+            regularLines[1].bounds.top - regularLines[0].bounds.bottom,
+            scaledLines[1].bounds.top - scaledLines[0].bounds.bottom,
+        )
+    }
+
+    @Test
+    fun `marker ink box follows signed glyph bounds so a bullet is not stretched below its ink`() {
+        val bullet = preparedMarkerInk(Rect(0, -9, 5, -3), layoutAscentPx = -12, layoutDescentPx = 4)
+        assertEquals(9, bullet.ascentPx)
+        assertEquals(6, bullet.heightPx)
+
+        val digit = preparedMarkerInk(Rect(0, -10, 6, 0), layoutAscentPx = -12, layoutDescentPx = 4)
+        assertEquals(10, digit.ascentPx)
+        assertEquals(10, digit.heightPx)
+
+        val descending = preparedMarkerInk(Rect(0, -10, 6, 3), layoutAscentPx = -12, layoutDescentPx = 4)
+        assertEquals(13, descending.heightPx)
+
+        val withoutGlyphBounds = preparedMarkerInk(Rect(), layoutAscentPx = -12, layoutDescentPx = 4)
+        assertEquals(12, withoutGlyphBounds.ascentPx)
+        assertEquals(16, withoutGlyphBounds.heightPx)
+    }
+
+    @Test
+    fun `centred marker ink lands on the line centre`() {
+        val lineTop = 0
+        val lineBottom = 40
+        val ink = preparedMarkerInk(Rect(0, -9, 5, -3), layoutAscentPx = -12, layoutDescentPx = 4)
+        val markerTop = lineTop + (lineBottom - lineTop - ink.heightPx) / 2
+
+        assertEquals((lineTop + lineBottom) / 2, markerTop + ink.heightPx / 2)
+    }
+
+    @Test
+    fun `list markerGap sets the space between the marker and the text`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+
+        listOf(4, 20).forEach { gap ->
+            val layout = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerGap":$gap}}""", 1f))
+            val block = layout.blocks.single { block -> block.fragments.any { it.kind == PreparedProseFragmentKind.MARKER } }
+            val marker = block.fragments.single { it.kind == PreparedProseFragmentKind.MARKER }
+            val text = block.fragments.single { it.kind == PreparedProseFragmentKind.TEXT }
+
+            assertEquals(gap, text.bounds.left - marker.bounds.right)
+        }
+    }
+
+    @Test
+    fun `list markerGap keeps the marker column left edge fixed`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val narrow = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerGap":4}}""", 1f))
+        val wide = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerGap":20}}""", 1f))
+        fun markerLeft(layout: PreparedProseLayout) =
+            layout.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.MARKER }.bounds.left
+        fun textLeft(layout: PreparedProseLayout) =
+            layout.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.TEXT }.bounds.left
+
+        assertEquals(markerLeft(narrow), markerLeft(wide))
+        assertEquals(16, textLeft(wide) - textLeft(narrow))
+    }
+
+    @Test
+    fun `list marker scale does not resize ordered numbers`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val regular = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerScale":1}}""", 1f))
+        val scaled = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerScale":3}}""", 1f))
+        val regularMarker = regular.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.MARKER }
+        val scaledMarker = scaled.blocks.flatMap { it.fragments }.single { it.kind == PreparedProseFragmentKind.MARKER }
+
+        assertEquals(requireNotNull(regularMarker.layout).paint.textSize, requireNotNull(scaledMarker.layout).paint.textSize)
+    }
+
+    @Test
     fun `prepared mark spans affect static layout and paint only geometry is explicit`() {
         val layout = prepare(compile(Fixture.marks))
         val text = layout.blocks.flatMap { it.fragments }.filter { it.kind == PreparedProseFragmentKind.TEXT }
@@ -611,7 +737,7 @@ private data class Fixture(
                     document.blocks[7].inlines.singleOrNull().let { inline -> inline is ViewerInline.Text && inline.text == "third" } &&
                     document.blocks[8].nodeType == "horizontalRule"
             },
-            Fixture("custom atoms task list and snake rule", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"""), customConfig, setOf(PreparedProseFragmentKind.ATOM, PreparedProseFragmentKind.RULE), documentExpectation = "a checked task-list block") { document -> document.blocks.any { it.listContext?.kind == "task" && it.listContext.checked } }
+            Fixture("custom atoms task list and snake rule", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"node":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"""), customConfig, setOf(PreparedProseFragmentKind.ATOM, PreparedProseFragmentKind.RULE), documentExpectation = "a checked task-list block") { document -> document.blocks.any { it.listContext?.kind == "task" && it.listContext.checked } }
         )
         val marks = Fixture("all marks", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]},{"type":"text","text":"italic","marks":[{"type":"italic"}]},{"type":"text","text":"under","marks":[{"type":"underline"}]},{"type":"text","text":"strike","marks":[{"type":"strike"}]},{"type":"text","text":"code","marks":[{"type":"code"}]},{"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"https://example.test"}}]},{"type":"text","text":"red","marks":[{"type":"textColor","attrs":{"color":"#FF0000"}}]},{"type":"text","text":"highlight","marks":[{"type":"highlight","attrs":{"color":"#FFF176"}}]},{"type":"text","text":"sized","marks":[{"type":"textStyle","attrs":{"fontFamily":"monospace","fontSize":19}}]},{"type":"text","text":"combo","marks":[{"type":"code"},{"type":"bold"},{"type":"italic"}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT), documentExpectation = "any compiler document") { true }
         val multiBlockList = Fixture("multi block nested ordered list boundaries", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"orderedList","attrs":{"start":7},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"codeBlock","content":[{"type":"text","text":"second"}]},{"type":"opaqueBlock","attrs":{"label":"third"}},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph"}]}]}]}]}"""), customConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.BACKGROUND, PreparedProseFragmentKind.ATOM), documentExpectation = "a nested ordered-list block with list index 12") { it.blocks.any { block -> block.listContext?.index == 12L } }

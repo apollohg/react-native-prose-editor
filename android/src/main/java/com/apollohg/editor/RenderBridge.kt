@@ -665,6 +665,13 @@ class ParagraphSpacerSpan(
     }
 }
 
+class MarkerGapSpan(private val widthPx: Float) : ReplacementSpan() {
+    override fun getSize(paint: Paint, text: CharSequence, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int =
+        kotlin.math.ceil(widthPx).toInt()
+
+    override fun draw(canvas: Canvas, text: CharSequence, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) = Unit
+}
+
 class CenteredBulletSpan(
     private val textColor: Int,
     private val markerWidthPx: Float,
@@ -1086,6 +1093,15 @@ object RenderBridge {
                                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                             )
                         }
+                        val markerGapPx = (theme?.list?.markerGap ?: LayoutConstants.LIST_MARKER_TEXT_GAP) * density
+                        if ((ordered || isTask) && marker.endsWith(' ')) {
+                            state.result.setSpan(
+                                MarkerGapSpan(markerGapPx),
+                                markerEnd - 1,
+                                markerEnd,
+                                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                            )
+                        }
                         if (!ordered && !isTask) {
                             val markerScale =
                                 theme?.list?.markerScale ?: LayoutConstants.UNORDERED_LIST_MARKER_FONT_SCALE
@@ -1097,7 +1113,7 @@ object RenderBridge {
                                     markerWidthPx = markerWidth,
                                     bulletRadiusPx = bulletRadius,
                                     bodyFontSizePx = resolvedMarkerBaseSize,
-                                    markerGapToTextPx = LayoutConstants.LIST_MARKER_TEXT_GAP * density
+                                    markerGapToTextPx = markerGapPx
                                 ),
                                 markerStart,
                                 markerEnd,
@@ -1445,19 +1461,37 @@ object RenderBridge {
         builder.append(text)
         val end = builder.length
         val resolvedMentionTheme = if (isMention) {
-            theme?.mentions?.mergedWith(mentionTheme) ?: mentionTheme
+            (theme?.mentions?.mergedWith(mentionTheme) ?: mentionTheme)?.node
         } else {
             null
         }
+        // Atoms carry no marks, so the block text style is their only typography
+        // source; a mention theme weight overrides that block weight.
+        val inlineTextStyle = resolveInlineTextStyle(blockStack, theme).mergedWith(
+            resolvedMentionTheme?.fontWeight?.let { EditorTextStyle(fontWeight = it) }
+        )
         val inlineTextColor = if (isMention) {
-            resolvedMentionTheme?.textColor ?: resolveInlineTextColor(blockStack, textColor, theme)
+            resolvedMentionTheme?.textColor ?: inlineTextStyle.color ?: textColor
         } else {
-            resolveInlineTextColor(blockStack, textColor, theme)
+            inlineTextStyle.color ?: textColor
         }
         builder.setSpan(
             ForegroundColorSpan(inlineTextColor),
             start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
+        builder.setSpan(
+            AbsoluteSizeSpan(
+                (inlineTextStyle.fontSize?.times(density) ?: baseFontSize).toInt(),
+                false
+            ),
+            start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        inlineTextStyle.fontFamily?.takeIf { it.isNotBlank() }?.let { fontFamily ->
+            builder.setSpan(
+                TypefaceSpan(fontFamily),
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
         builder.setSpan(
             BackgroundColorSpan(
                 if (isMention) {
@@ -1476,11 +1510,10 @@ object RenderBridge {
             Annotation("nativeDocPos", docPos.toString()),
             start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
-        if (isMention && (resolvedMentionTheme?.fontWeight == "bold" ||
-                resolvedMentionTheme?.fontWeight?.toIntOrNull()?.let { it >= 600 } == true)
-        ) {
+        val typefaceStyle = inlineTextStyle.typefaceStyle()
+        if (typefaceStyle != Typeface.NORMAL) {
             builder.setSpan(
-                StyleSpan(Typeface.BOLD),
+                StyleSpan(typefaceStyle),
                 start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
@@ -1879,14 +1912,19 @@ object RenderBridge {
         return theme?.effectiveTextStyle(nodeType, inBlockquote) ?: EditorTextStyle()
     }
 
+    private fun resolveInlineTextStyle(
+        blockStack: List<BlockContext>,
+        theme: EditorTheme?
+    ): EditorTextStyle {
+        val nodeType = effectiveBlockContext(blockStack)?.nodeType ?: "paragraph"
+        return resolveTextStyle(nodeType, theme, blockquoteDepth(blockStack) > 0)
+    }
+
     private fun resolveInlineTextColor(
         blockStack: List<BlockContext>,
         fallbackColor: Int,
         theme: EditorTheme?
-    ): Int {
-        val nodeType = effectiveBlockContext(blockStack)?.nodeType ?: "paragraph"
-        return resolveTextStyle(nodeType, theme, blockquoteDepth(blockStack) > 0).color ?: fallbackColor
-    }
+    ): Int = resolveInlineTextStyle(blockStack, theme).color ?: fallbackColor
 
     fun listMarkerString(listContext: JSONObject): String {
         if (listContext.optString("kind", "") == "task") {

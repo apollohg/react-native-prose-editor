@@ -12,6 +12,7 @@ import android.view.ViewOutlineProvider
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import androidx.appcompat.R as AppCompatR
+import androidx.appcompat.view.ContextThemeWrapper
 import androidx.appcompat.widget.AppCompatButton
 import androidx.appcompat.widget.PopupMenu
 import androidx.appcompat.widget.AppCompatTextView
@@ -487,7 +488,10 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     var onPressItem: ((NativeToolbarItem) -> Unit)? = null
     var onSelectMentionSuggestion: ((NativeMentionSuggestion) -> Unit)? = null
 
-    private val themedContext: Context = DynamicColors.wrapContextIfAvailable(context)
+    private val customThemedContext: Context = DynamicColors.wrapContextIfAvailable(context)
+    private val nativeThemedContext: Context = DynamicColors.wrapContextIfAvailable(
+        ContextThemeWrapper(context, MaterialR.style.Theme_Material3_DayNight)
+    )
     private val rootRow = LinearLayout(context)
     private val startRow = LinearLayout(context)
     private val centerScrollView = HorizontalScrollView(context)
@@ -589,7 +593,13 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     }
 
     fun applyTheme(theme: EditorToolbarTheme?) {
+        val previousAppearance = this.theme?.appearance ?: EditorToolbarAppearance.CUSTOM
+        val nextAppearance = theme?.appearance ?: EditorToolbarAppearance.CUSTOM
         this.theme = theme
+        if (previousAppearance != nextAppearance) {
+            rebuildContent()
+            return
+        }
         updateChrome()
         separators.forEach { separator ->
             separator.setBackgroundColor(resolveSeparatorColor())
@@ -707,6 +717,7 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     }
 
     private fun rebuildButtonPlacement(items: List<NativeToolbarItem>, container: LinearLayout) {
+        val themedContext = currentThemedContext()
         for (item in items) {
             if (item.type == ToolbarItemKind.separator) {
                 val separator = View(context)
@@ -757,8 +768,9 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     }
 
     private fun rebuildMentionSuggestions() {
+        val themedContext = currentThemedContext()
         for (suggestion in mentionSuggestions) {
-            val chip = MentionSuggestionChipView(context, suggestion, mentionTrigger).apply {
+            val chip = MentionSuggestionChipView(themedContext, suggestion, mentionTrigger).apply {
                 applyTheme(mentionTheme, theme?.appearance ?: EditorToolbarAppearance.CUSTOM)
                 setOnClickListener { onSelectMentionSuggestion?.invoke(suggestion) }
             }
@@ -774,11 +786,12 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     }
 
     private fun updateMentionSuggestionsInPlace() {
+        val themedContext = currentThemedContext()
         val existingByKey = mentionChips.associateBy { it.suggestion.key }.toMutableMap()
         val nextChips = mentionSuggestions.map { suggestion ->
             existingByKey.remove(suggestion.key)?.also {
                 it.updateSuggestion(suggestion, mentionTrigger)
-            } ?: MentionSuggestionChipView(context, suggestion, mentionTrigger)
+            } ?: MentionSuggestionChipView(themedContext, suggestion, mentionTrigger)
         }
 
         mentionChips.filterNot { existing -> nextChips.any { it === existing } }.forEach {
@@ -879,7 +892,7 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     }
 
     private fun showGroupMenu(anchor: View, item: NativeToolbarItem) {
-        val popupMenu = PopupMenu(themedContext, anchor)
+        val popupMenu = PopupMenu(currentThemedContext(), anchor)
         item.items.forEachIndexed { index, child ->
             val (enabled, active) = buttonState(child, state)
             val menuItem = popupMenu.menu.add(0, index, index, child.label ?: child.key ?: "Item")
@@ -1085,10 +1098,18 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
 
     private fun dp(value: Int): Int = (value * density).toInt()
 
+    private fun currentThemedContext(): Context =
+        if (theme?.appearance == EditorToolbarAppearance.NATIVE) {
+            nativeThemedContext
+        } else {
+            customThemedContext
+        }
+
     private fun resolveColorAttr(vararg attrs: Int): Int =
         resolveColorAttrOrNull(*attrs) ?: Color.TRANSPARENT
 
     private fun resolveColorAttrOrNull(vararg attrs: Int): Int? {
+        val themedContext = currentThemedContext()
         val typedValue = TypedValue()
         for (attr in attrs) {
             if (!themedContext.theme.resolveAttribute(attr, typedValue, true)) {
@@ -1107,6 +1128,7 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
 
     private fun resolveDrawableAttr(attr: Int) =
         TypedValue().let { typedValue ->
+            val themedContext = currentThemedContext()
             if (!themedContext.theme.resolveAttribute(attr, typedValue, true) || typedValue.resourceId == 0) {
                 null
             } else {
@@ -1296,16 +1318,17 @@ internal class MentionSuggestionChipView(
     ) {
         this.theme = theme
         this.toolbarAppearance = toolbarAppearance
+        val option = theme?.suggestions?.option
         val hasSubtitle = !suggestion.subtitle.isNullOrBlank()
         subtitleView.visibility = if (hasSubtitle) View.VISIBLE else View.GONE
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = (if (toolbarAppearance == EditorToolbarAppearance.NATIVE) 20f else (theme?.borderRadius ?: 12f)) * density
+            cornerRadius = (if (toolbarAppearance == EditorToolbarAppearance.NATIVE) 20f else (option?.borderRadius ?: 12f)) * density
             setColor(
                 if (toolbarAppearance == EditorToolbarAppearance.NATIVE) {
                     Color.TRANSPARENT
                 } else {
-                    theme?.backgroundColor ?: resolveColorAttr(
+                    option?.backgroundColor ?: resolveColorAttr(
                         MaterialR.attr.colorSurfaceContainerLow,
                         MaterialR.attr.colorSurfaceVariant,
                         MaterialR.attr.colorSurface,
@@ -1316,16 +1339,17 @@ internal class MentionSuggestionChipView(
             val strokeWidth = if (toolbarAppearance == EditorToolbarAppearance.NATIVE) {
                 0
             } else {
-                ((theme?.borderWidth ?: 0f) * density).toInt()
+                ((option?.borderWidth ?: 0f) * density).toInt()
             }
             if (strokeWidth > 0) {
-                setStroke(strokeWidth, theme?.borderColor ?: Color.TRANSPARENT)
+                setStroke(strokeWidth, option?.borderColor ?: Color.TRANSPARENT)
             }
         }
         updateAppearance(highlighted = false)
     }
 
     private fun updateAppearance(highlighted: Boolean) {
+        val optionTheme = theme?.suggestions?.option
         val backgroundDrawable = background as? GradientDrawable
         val backgroundColor = if (toolbarAppearance == EditorToolbarAppearance.NATIVE) {
             if (highlighted) {
@@ -1339,14 +1363,14 @@ internal class MentionSuggestionChipView(
                 Color.TRANSPARENT
             }
         } else if (highlighted) {
-            theme?.optionHighlightedBackgroundColor ?: resolveColorAttr(
+            optionTheme?.highlightedBackgroundColor ?: resolveColorAttr(
                 MaterialR.attr.colorSecondaryContainer,
                 MaterialR.attr.colorPrimaryContainer,
                 MaterialR.attr.colorSurfaceVariant,
                 android.R.attr.colorAccent
             )
         } else {
-            theme?.backgroundColor ?: resolveColorAttr(
+            optionTheme?.backgroundColor ?: resolveColorAttr(
                 MaterialR.attr.colorSurfaceContainerLow,
                 MaterialR.attr.colorSurfaceVariant,
                 MaterialR.attr.colorSurface,
@@ -1361,8 +1385,8 @@ internal class MentionSuggestionChipView(
                     android.R.attr.textColorPrimary
                 )
             } else if (highlighted) {
-                theme?.optionHighlightedTextColor
-                    ?: theme?.optionTextColor
+                optionTheme?.highlightedTextColor
+                    ?: optionTheme?.textColor
                     ?: resolveColorAttr(
                         MaterialR.attr.colorOnSecondaryContainer,
                         MaterialR.attr.colorOnPrimaryContainer,
@@ -1370,8 +1394,7 @@ internal class MentionSuggestionChipView(
                         android.R.attr.textColorPrimary
                     )
             } else {
-                theme?.optionTextColor
-                    ?: theme?.textColor
+                optionTheme?.textColor
                     ?: resolveColorAttr(
                         MaterialR.attr.colorOnSurface,
                         android.R.attr.textColorPrimary
@@ -1385,7 +1408,7 @@ internal class MentionSuggestionChipView(
                     android.R.attr.textColorSecondary
                 )
             } else {
-                theme?.optionSecondaryTextColor ?: resolveColorAttr(
+                optionTheme?.secondaryTextColor ?: resolveColorAttr(
                     MaterialR.attr.colorOnSurfaceVariant,
                     android.R.attr.textColorSecondary
                 )
