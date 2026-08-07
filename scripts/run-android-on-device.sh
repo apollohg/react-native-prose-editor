@@ -8,14 +8,15 @@ source "$(cd "$(dirname "$0")" && pwd)/require-native-artifacts.sh"
 require_native_artifacts android
 
 project_dir="example/android"
-task=":apollohg-react-native-prose-editor:connectedDebugAndroidTest"
+local_env_file="example/.android-device-test.env"
+task=":apollohg_react-native-prose-editor:connectedDebugAndroidTest"
 device_id="${ANDROID_DEVICE_ID:-${ANDROID_SERIAL:-}}"
 test_class=""
 extra_args=()
 
-if [[ -f "$project_dir/.device-test.env" ]]; then
+if [[ -f "$local_env_file" ]]; then
   # shellcheck disable=SC1090
-  source "$project_dir/.device-test.env"
+  source "$local_env_file"
   device_id="${ANDROID_DEVICE_ID:-${ANDROID_SERIAL:-$device_id}}"
 fi
 
@@ -37,9 +38,9 @@ Environment:
   ANDROID_SERIAL         Standard adb serial override.
 
 Examples:
-  npm run android:test:device
-  npm run android:test:perf:device
-  ANDROID_DEVICE_ID=<serial> npm run android:test:perf:device
+  npm run test:android:device
+  npm run test:android:device:performance
+  ANDROID_DEVICE_ID=<serial> npm run test:android:device:performance
 EOF
 }
 
@@ -76,6 +77,8 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+npm run prebuild:example:android
 
 resolve_device_id() {
   if [[ -n "$device_id" ]]; then

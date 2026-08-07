@@ -4,7 +4,6 @@
         "module": "ESNext",
         "lib": ["ES2020"],
         "jsx": "react-jsx",
-        "baseUrl": ".",
         "moduleResolution": "bundler",
         "allowSyntheticDefaultImports": true,
         "esModuleInterop": true,
@@ -19,7 +18,7 @@
         ],
         "paths": {
             "@expo/vector-icons": ["./example/node_modules/@expo/vector-icons"],
-            "expo-modules-core": ["./example/node_modules/expo-modules-core"],
+            "expo-modules-core": ["./example/node_modules/expo/node_modules/expo-modules-core"],
             "react-native": ["./example/node_modules/react-native"]
         },
         "rootDir": "./src",

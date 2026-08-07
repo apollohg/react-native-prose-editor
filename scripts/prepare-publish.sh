@@ -12,7 +12,7 @@ echo "==> Syncing versioned files..."
 npm run sync:version
 
 echo "==> Validating source security contracts..."
-npm run security:validate
+npm run validate:security
 
 echo "==> Rebuilding Rust artifacts and generated bindings..."
 npm run build:rust
@@ -21,6 +21,6 @@ echo "==> Building JavaScript package..."
 npm run build
 
 echo "==> Validating the packed npm artifact and CocoaPods consumer..."
-npm run package:validate
+npm run validate:package
 
 echo "==> Package publish prep complete."

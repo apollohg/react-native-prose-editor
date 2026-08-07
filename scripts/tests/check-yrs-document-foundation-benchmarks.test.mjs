@@ -14,11 +14,8 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const checker = path.join(repositoryRoot, 'scripts/check-yrs-document-foundation-benchmarks.mjs');
-// Task 16C (user directive 2026-07-20): the legacy runtime and its
-// reference benchmarks were removed; the checker contract keeps only the
-// Yrs cases, with absolute, scaling, and 1.20x baseline-regression gates
-// unchanged. Baselines may still carry the old legacy.* entries; the
-// checker must ignore any case it does not require.
+// The checker must ignore any case it does not require: baselines may still
+// carry legacy.* entries.
 const requiredCases = [
     'yrs.json_import.article.1x',
     'yrs.json_export.article.1x',
@@ -422,15 +419,15 @@ test('package scripts expose the Yrs benchmark entry points', () => {
     );
 
     assert.equal(
-        packageJson.scripts['bench:rust:yrs'],
+        packageJson.scripts['benchmark:rust:yrs'],
         './rust/toolchain-cargo.sh bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --filter yrs-foundation'
     );
     assert.equal(
-        packageJson.scripts['bench:rust:yrs:quick'],
+        packageJson.scripts['benchmark:rust:yrs:quick'],
         './rust/toolchain-cargo.sh bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --quick --filter yrs-foundation'
     );
     assert.equal(
-        packageJson.scripts['bench:rust:yrs:check'],
+        packageJson.scripts['benchmark:rust:yrs:check'],
         'node scripts/check-yrs-document-foundation-benchmarks.mjs --run --baseline rust/editor-core/benches/baselines/yrs-document-foundation.json'
     );
 });

@@ -46,45 +46,33 @@ requireWorkflow(
 );
 
 const workflowLines = publishWorkflow.split(/\r?\n/);
-const podInstallRunPattern = /^(\s*)run:\s*pod\s+install(?:\s+[^\r\n]*)?$/;
 const npmPublishRunPattern = /^\s*run:\s*npm\s+publish(?:\s+[^\r\n]*)?$/;
-const podInstallLineIndex = workflowLines.findIndex((line) => podInstallRunPattern.test(line));
+const packageValidateRunPattern = /^\s*run:\s*npm\s+run\s+validate:package\s*$/;
+const packageValidateLineIndex = workflowLines.findIndex((line) => packageValidateRunPattern.test(line));
 const publishLineIndex = workflowLines.findIndex((line) => npmPublishRunPattern.test(line));
-assert.notEqual(podInstallLineIndex, -1, 'publish job must install CocoaPods dependencies for example/ios');
+assert.notEqual(packageValidateLineIndex, -1, 'publish job must validate the generated native consumers');
 assert.notEqual(publishLineIndex, -1, 'publish job must publish the package to npm');
+assert.ok(packageValidateLineIndex < publishLineIndex, 'native package validation must run before npm publish');
 
-const podInstallIndent = podInstallRunPattern.exec(workflowLines[podInstallLineIndex])[1].length;
-let podInstallStepStart = -1;
-let podInstallStepIndent = -1;
-for (let lineIndex = podInstallLineIndex - 1; lineIndex >= 0; lineIndex -= 1) {
-  const listItem = /^(\s*)-\s+/.exec(workflowLines[lineIndex]);
-  if (listItem && listItem[1].length < podInstallIndent) {
-    podInstallStepStart = lineIndex;
-    podInstallStepIndent = listItem[1].length;
-    break;
-  }
-}
-assert.notEqual(podInstallStepStart, -1, 'CocoaPods install run line must belong to a YAML step');
-
-let podInstallStepEnd = workflowLines.length;
-for (let lineIndex = podInstallLineIndex + 1; lineIndex < workflowLines.length; lineIndex += 1) {
-  const listItem = /^(\s*)-\s+/.exec(workflowLines[lineIndex]);
-  if (listItem && listItem[1].length <= podInstallStepIndent) {
-    podInstallStepEnd = lineIndex;
-    break;
-  }
-}
-const podInstallStep = workflowLines.slice(podInstallStepStart, podInstallStepEnd).join('\n');
-assert.match(
-  podInstallStep,
-  /^\s*working-directory:\s*example\/ios\s*$/m,
-  'CocoaPods install must run in example/ios',
+assert.equal(
+  packageJson.scripts?.['prepare:example:native'],
+  'npm run prebuild:example && npm run install:example:pods',
+  'native package validation must generate both example projects before installing pods',
 );
-assert.ok(podInstallLineIndex < publishLineIndex, 'example/ios CocoaPods install must run before npm publish');
+assert.equal(
+  packageJson.scripts?.['install:example:pods'],
+  'cd example/ios && pod install --no-repo-update',
+  'native package validation must install the generated example CocoaPods project',
+);
+assert.match(
+  packageJson.scripts?.['validate:package'] ?? '',
+  /^npm run prepare:example:native && /,
+  'package validation must prepare generated native projects before consuming them',
+);
 
 assert.equal(
   packageJson.scripts?.prepublishOnly,
-  'npm run publish:prepare',
+  'npm run prepare:publish',
   'standard npm publish must invoke the complete release gate through prepublishOnly',
 );
 

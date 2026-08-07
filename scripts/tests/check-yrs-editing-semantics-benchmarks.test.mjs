@@ -14,11 +14,8 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const checker = path.join(repositoryRoot, 'scripts/check-yrs-editing-semantics-benchmarks.mjs');
-// Task 16C (user directive 2026-07-20): the legacy runtime and its
-// reference benchmarks were removed; the checker contract keeps only the
-// Yrs cases, with absolute, scaling, and 1.20x baseline-regression gates
-// unchanged. Baselines may still carry the old legacy.* entries; the
-// checker must ignore any case it does not require.
+// The checker must ignore any case it does not require: baselines may still
+// carry legacy.* entries.
 const requiredCases = [
     'yrs.edit.insert_char.article.1x',
     'yrs.edit.typing_burst.article.1x',
@@ -419,11 +416,11 @@ test('rejects malformed input and baseline JSON cleanly', async (t) => {
 test('package scripts expose the exact editing benchmark commands', () => {
     const packageJson = JSON.parse(readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
     assert.equal(
-        packageJson.scripts['bench:rust:yrs:editing'],
+        packageJson.scripts['benchmark:rust:yrs:editing'],
         './rust/toolchain-cargo.sh bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --filter yrs-editing'
     );
     assert.equal(
-        packageJson.scripts['bench:rust:yrs:editing:check'],
+        packageJson.scripts['benchmark:rust:yrs:editing:check'],
         'node scripts/check-yrs-editing-semantics-benchmarks.mjs --run --baseline rust/editor-core/benches/baselines/yrs-editing-semantics.json'
     );
 });

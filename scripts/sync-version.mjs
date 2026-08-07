@@ -13,7 +13,7 @@ function writeJson(root, relativePath, updater) {
   writeFileSync(filePath, `${JSON.stringify(json, null, 2)}\n`);
 }
 
-function writeText(root, relativePath, updater) {
+function replaceText(root, relativePath, updater) {
   const filePath = path.join(root, relativePath);
   const current = readFileSync(filePath, 'utf8');
   const next = updater(current);
@@ -44,30 +44,20 @@ export function synchronizeVersion(root, version) {
     }
   });
 
-  writeText(root, 'rust/editor-core/Cargo.toml', (text) =>
+  replaceText(root, 'rust/editor-core/Cargo.toml', (text) =>
     text.replace(
       /(\[package\][\s\S]*?^version = ")([^"]+)(")/m,
       `$1${version}$3`
     )
   );
 
-  writeText(root, 'rust/editor-core/Cargo.lock', (text) =>
+  replaceText(root, 'rust/editor-core/Cargo.lock', (text) =>
     text.replace(
       /(\[\[package\]\]\nname = "editor-core"\nversion = ")([^"]+)(")/,
       `$1${version}$3`
     )
   );
 
-  writeText(root, 'example/ios/NativeEditorExample.xcodeproj/project.pbxproj', (text) =>
-    text.replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${version};`)
-  );
-
-  writeText(root, 'example/ios/Podfile.lock', (text) =>
-    text.replace(
-      /^(\s*- ReactNativeProseEditor )\([^)]+\):$/m,
-      `$1(${version}):`
-    )
-  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

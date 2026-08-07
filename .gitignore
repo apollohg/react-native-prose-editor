@@ -17,11 +17,6 @@ ios-tests/.device-test.env
 coverage
 dist
 
-# Compiled editor-core artifacts. These are build outputs, not source: CI
-# builds them from the pinned Rust toolchain and they are published in the
-# npm tarball. Run `npm run build:rust` (or `:ios` / `:android`) locally
-# before any task that links them — the iOS test workspace, the example app,
-# and the Android connected tests.
 rust/android/*/libeditor_core.so
 rust/ios/EditorCore.xcframework
 rust/ios/sim-fat

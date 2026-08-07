@@ -5,12 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// Task 16C (user directive 2026-07-20): the legacy runtime was deleted, so
-// the legacy.* reference cases and the legacy-relative ratio gates (5.0x
-// import, 3.0x export) are removed with it. The absolute import ceiling
-// (2.5 ms), the 2x scaling gates, and the 1.20x baseline-regression gate
-// are UNCHANGED. Frozen baseline files may still carry legacy.* entries;
-// they are ignored here (see indexResults).
+// Frozen baselines may still carry legacy.* entries; indexResults ignores them.
 const REQUIRED_CASES = [
     'yrs.json_import.article.1x',
     'yrs.json_export.article.1x',

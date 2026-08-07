@@ -29,6 +29,19 @@ require_file() {
   [[ -s "$root/$relative_path" ]] || fail "missing or empty $relative_path under $root"
 }
 
+resolve_single_artifact() {
+  local directory="$1"
+  local pattern="$2"
+  local label="$3"
+  local matches=()
+  local path
+  while IFS= read -r path; do
+    matches+=("$path")
+  done < <(find "$directory" -maxdepth 1 -type f -name "$pattern" -print)
+  [[ "${#matches[@]}" -eq 1 ]] || fail "expected exactly one $label artifact under $directory"
+  printf '%s\n' "${matches[0]}"
+}
+
 manifest_entries() {
   ruby -rjson -e '
     manifest = JSON.parse(File.read(ARGV.fetch(0)))
@@ -306,10 +319,13 @@ validate_ios_consumer() {
   local packed_editor_dir="$ios_consumer/node_modules/@apollohg/react-native-prose-editor"
   local react_native_dir="$repo_root/example/node_modules/react-native"
   local expo_dir="$repo_root/example/node_modules/expo"
-  local react_native_dependencies_archive="$repo_root/example/ios/Pods/ReactNativeDependencies-artifacts/reactnative-dependencies-0.81.5-debug.tar.gz"
-  local react_native_core_archive="$repo_root/example/ios/Pods/ReactNativeCore-artifacts/reactnative-core-0.81.5-debug.tar.gz"
-  local hermes_archive="$repo_root/example/ios/Pods/hermes-engine-artifacts/hermes-ios-0.81.5-debug.tar.gz"
+  local react_native_dependencies_archive
+  local react_native_core_archive
+  local hermes_archive
   local workspace_path resolved_package_json resolved_package_dir
+  react_native_dependencies_archive="$(resolve_single_artifact "$repo_root/example/ios/Pods/ReactNativeDependencies-artifacts" 'reactnative-dependencies-*-debug.tar.gz' 'ReactNativeDependencies debug')"
+  react_native_core_archive="$(resolve_single_artifact "$repo_root/example/ios/Pods/ReactNativeCore-artifacts" 'reactnative-core-*-debug.tar.gz' 'ReactNativeCore debug')"
+  hermes_archive="$(resolve_single_artifact "$repo_root/example/ios/Pods/hermes-engine-artifacts" 'hermes-ios-*-debug.tar.gz' 'Hermes iOS debug')"
   root="$(cd "$root" && pwd -P)"
   tarball_path="$(cd "$(dirname "$tarball_path")" && pwd -P)/$(basename "$tarball_path")"
   [[ -f "$tarball_path" ]] || fail "iOS packed consumer tarball is missing: $tarball_path"
@@ -558,17 +574,19 @@ validate_android_consumer() {
   # file:.., which Expo autolinking would load alongside the extracted module
   # below and produce duplicate Kotlin classes. The symlink still supplies the
   # compatible Expo/RN tooling; only the packed Android project is included.
-  cat > "$android_consumer/package.json" <<'JSON'
-{
-  "name": "packed-tarball-android-consumer",
-  "private": true,
-  "dependencies": {
-    "expo": "~54.0.0",
-    "react": "19.1.0",
-    "react-native": "0.81.5"
-  }
-}
-JSON
+  ruby -rjson -e '
+    example = JSON.parse(File.read(ARGV.fetch(0)))
+    dependencies = example.fetch("dependencies")
+    puts JSON.pretty_generate(
+      "name" => "packed-tarball-android-consumer",
+      "private" => true,
+      "dependencies" => {
+        "expo" => dependencies.fetch("expo"),
+        "react" => dependencies.fetch("react"),
+        "react-native" => dependencies.fetch("react-native"),
+      },
+    )
+  ' "$repo_root/example/package.json" > "$android_consumer/package.json"
   ln -s "$example_node_modules" "$android_consumer/node_modules"
   cat >> "$android_consumer/android/settings.gradle" <<'GRADLE'
 
@@ -807,7 +825,7 @@ ruby -rjson -e '
   source_files = Array(spec.fetch("source_files"))
   abort "podspec must compile Fabric implementation C++ sources" unless source_files.include?("common/cpp/**/*.{h,cpp}")
   abort "podspec must preserve the Fabric compiler header directory" unless spec.fetch("header_dir") == "react/renderer/components/PreparedProseViewer"
-  abort "podspec public Swift module must agree with Expo's pod-name import" unless spec.fetch("name") == "ReactNativeProseEditor" && spec.fetch("module_name") == spec.fetch("name")
+  abort "podspec public Swift module must agree with the Expo pod-name import" unless spec.fetch("name") == "ReactNativeProseEditor" && spec.fetch("module_name") == spec.fetch("name")
 ' "$podspec_json" || fail "packed podspec does not unconditionally vend EditorCore.xcframework"
 
 validate_ios_consumer "$package_dir" "$tarball_path"

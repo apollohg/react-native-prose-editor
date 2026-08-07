@@ -39,11 +39,11 @@ Environment:
                               Xcode scheme override; defaults to NativeEditorTests.
 
 Examples:
-  npm run ios:test
-  npm run ios:test -- -only-testing:NativeEditorTests/RenderBridgeTests
-  IOS_SIMULATOR_NAME="iPhone 17" npm run ios:test
-  IOS_DEVICE_ID="<udid>" IOS_DEVELOPMENT_TEAM="<team>" npm run ios:test
-  NATIVE_EDITOR_IOS_TEST_SCHEME=NativeEditorPreparedProsePerformance npm run ios:test
+  npm run test:ios
+  npm run test:ios -- -only-testing:NativeEditorTests/RenderBridgeTests
+  IOS_SIMULATOR_NAME="iPhone 17" npm run test:ios
+  IOS_DEVICE_ID="<udid>" IOS_DEVELOPMENT_TEAM="<team>" npm run test:ios
+  NATIVE_EDITOR_IOS_TEST_SCHEME=NativeEditorPreparedProsePerformance npm run test:ios
 EOF
 }
 

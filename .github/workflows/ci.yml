@@ -46,7 +46,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       - name: Run Rust tests
-        run: cargo test --manifest-path rust/editor-core/Cargo.toml
+        run: npm run test:rust
 
       - name: Install root dependencies
         run: npm ci
@@ -61,7 +61,7 @@ jobs:
         run: npm run build
 
       - name: Typecheck example
-        run: npm --prefix example run typecheck
+        run: npm run typecheck:example
 
       - name: Run JavaScript tests
         run: npm test
@@ -70,7 +70,7 @@ jobs:
         run: npm pack --dry-run
 
       - name: Run Android unit tests
-        run: npm run android:test
+        run: npm run test:android
 
   ios:
     runs-on: macos-latest

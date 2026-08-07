@@ -18,32 +18,25 @@ try {
   await write('example/package-lock.json', '{"version":"1.0.0","packages":{"":{"version":"1.0.0"},"..":{"version":"1.0.0"}}}\n');
   await write('rust/editor-core/Cargo.toml', '[package]\nname = "editor-core"\nversion = "1.0.0"\n');
   await write('rust/editor-core/Cargo.lock', '[[package]]\nname = "editor-core"\nversion = "1.0.0"\n');
-  await write('example/ios/NativeEditorExample.xcodeproj/project.pbxproj', 'MARKETING_VERSION = 1.0.0;\n');
-  await write(
-    'example/ios/Podfile.lock',
-    [
-      'PODS:',
-      '  - ReactNativeProseEditor (1.0.0):',
-      '    - ExpoModulesCore',
-      'DEPENDENCIES:',
-      '  - ReactNativeProseEditor (from `../../ios`)',
-      'EXTERNAL SOURCES:',
-      '  ReactNativeProseEditor:',
-      '    :path: "../../ios"',
-      'SPEC CHECKSUMS:',
-      '  ReactNativeProseEditor: preserved-checksum',
-    ].join('\n'),
-  );
 
   synchronizeVersion(fixture, '3.0.0');
 
-  const podfileLock = await readFile(path.join(fixture, 'example/ios/Podfile.lock'), 'utf8');
-  assert.match(podfileLock, /^  - ReactNativeProseEditor \(3\.0\.0\):$/m);
-  assert.match(podfileLock, /^  - ReactNativeProseEditor \(from `\.\.\/\.\.\/ios`\)$/m);
-  assert.match(podfileLock, /^    :path: "\.\.\/\.\.\/ios"$/m);
-  assert.match(podfileLock, /^  ReactNativeProseEditor: preserved-checksum$/m);
+  const packageLock = JSON.parse(await readFile(path.join(fixture, 'package-lock.json'), 'utf8'));
+  const examplePackage = JSON.parse(await readFile(path.join(fixture, 'example/package.json'), 'utf8'));
+  const exampleLock = JSON.parse(await readFile(path.join(fixture, 'example/package-lock.json'), 'utf8'));
+  const cargoToml = await readFile(path.join(fixture, 'rust/editor-core/Cargo.toml'), 'utf8');
+  const cargoLock = await readFile(path.join(fixture, 'rust/editor-core/Cargo.lock'), 'utf8');
+
+  assert.equal(packageLock.version, '3.0.0');
+  assert.equal(packageLock.packages[''].version, '3.0.0');
+  assert.equal(examplePackage.version, '3.0.0');
+  assert.equal(exampleLock.version, '3.0.0');
+  assert.equal(exampleLock.packages[''].version, '3.0.0');
+  assert.equal(exampleLock.packages['..'].version, '3.0.0');
+  assert.match(cargoToml, /^version = "3\.0\.0"$/m);
+  assert.match(cargoLock, /name = "editor-core"\nversion = "3\.0\.0"/);
 } finally {
   await rm(fixture, { recursive: true, force: true });
 }
 
-console.log('Version synchronization preserves the local CocoaPods dependency record.');
+console.log('Version synchronization updates tracked package and Rust sources.');
