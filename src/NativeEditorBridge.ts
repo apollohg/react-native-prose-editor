@@ -53,8 +53,14 @@ class NativeEditorLocalAwarenessSelectionValue {
 
 export type NativeEditorLocalAwarenessSelection = NativeEditorLocalAwarenessSelectionValue;
 
+/** What this client publishes to other peers in one awareness update. */
 export interface NativeEditorLocalAwarenessIntent {
+    /**
+     * Application-defined presence payload, e.g. `{ user: { name, color } }`.
+     * Published at the awareness root, so `cursor` and `focused` are reserved.
+     */
     state: Record<string, unknown>;
+    /** Whether this client currently holds editing focus. */
     focused: boolean;
     /**
      * How this intent treats the local cursor. Rust owns it as a sticky

@@ -1941,7 +1941,9 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
         v2_collaboration::editor_v2_collaboration_set_awareness(id.to_string(), intent.to_string());
     assert!(result.error.is_none(), "{result:?}");
     let local = local_peer(id).expect("intent publishes a local peer");
-    assert_eq!(local.state["state"], intent["state"]);
+    assert_eq!(local.state["name"], intent["state"]["name"]);
+    assert_eq!(local.state["color"], intent["state"]["color"]);
+    assert!(local.state.get("state").is_none(), "{local:?}");
     assert_eq!(local.state["focused"], true);
     assert!(local.state["cursor"].is_object(), "{local:?}");
     assert_eq!(local.cursor, Some((7, 7)), "{local:?}");
@@ -1959,6 +1961,10 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
         }),
         json!({
             "state": { "nested": [{ "cursor": "forbidden" }] },
+            "focused": true,
+        }),
+        json!({
+            "state": { "focused": "reserved by the runtime" },
             "focused": true,
         }),
         json!({ "state": { "name": "missing focus" } }),
@@ -2184,7 +2190,9 @@ fn awareness_selection_patch_preserves_state_and_focus_and_queues_one_frame() {
 
     assert_eq!(outcome, json!({"outboundChanged": true}));
     let desired = desired_awareness(id).unwrap().unwrap();
-    assert_eq!(desired["state"], json!({"user": {"name": "Ada"}, "custom": 7}));
+    assert_eq!(desired["user"], json!({"name": "Ada"}));
+    assert_eq!(desired["custom"], json!(7));
+    assert!(desired.get("state").is_none(), "{desired}");
     assert_eq!(desired["focused"], true);
     assert!(desired.get("cursor").is_some());
     assert_eq!(drain_protocol_replies(id, generation).len(), 1);
@@ -2362,7 +2370,8 @@ fn an_explicit_null_selection_clears_the_cursor_while_a_malformed_one_rejects_at
     );
     assert!(result.error.is_none(), "{result:?}");
     let desired = desired_awareness(id).unwrap().unwrap();
-    assert_eq!(desired["state"], json!({ "name": "cursorless" }));
+    assert_eq!(desired["name"], json!("cursorless"));
+    assert!(desired.get("state").is_none(), "{desired}");
     assert!(desired.get("cursor").is_none(), "{desired}");
     assert_eq!(local_peer(id).unwrap().cursor, None);
     destroy_session(id);

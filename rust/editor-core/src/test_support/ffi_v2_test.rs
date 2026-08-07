@@ -1428,11 +1428,8 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
         .iter()
         .find(|peer| peer["isLocal"] == true)
         .expect("a local peer");
-    assert_eq!(
-        local["state"]["state"],
-        json!({ "name": "ffi peer" }),
-        "{local:?}"
-    );
+    assert_eq!(local["state"]["name"], json!("ffi peer"), "{local:?}");
+    assert!(local["state"].get("state").is_none(), "{local:?}");
     assert_eq!(local["state"]["focused"], true, "{local:?}");
     assert_eq!(
         local["cursor"],
@@ -1471,7 +1468,8 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
         .iter()
         .find(|peer| peer["isLocal"] == true)
         .expect("a local peer");
-    assert_eq!(local["state"]["state"], json!({ "name": "cursorless" }));
+    assert_eq!(local["state"]["name"], json!("cursorless"));
+    assert!(local["state"].get("state").is_none(), "{local:?}");
     assert_eq!(local["state"]["focused"], false);
     assert_eq!(local["cursor"], Value::Null, "{local:?}");
     let lease = lease_v2(&id, &generation);

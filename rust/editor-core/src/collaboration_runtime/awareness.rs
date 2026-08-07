@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::ffi_v2::types::{decimal_u64, AWARENESS_CLOCK_EXHAUSTED};
 use crate::session::{CollaborationLimits, ErrorDomain, SessionError, TransportState};
@@ -427,16 +427,26 @@ impl CollaborationRuntime {
                 format!("local awareness intent is invalid: {error}"),
             )
         })?;
-        if !intent.state.is_object() {
+        // Published at the awareness root, per the y-protocols convention.
+        let Value::Object(mut published) = intent.state else {
             return Err(awareness_state_invalid(
                 request_id,
                 "local awareness intent state must be an object",
             ));
-        }
-        if contains_reserved_cursor(&intent.state) {
+        };
+        if published
+            .iter()
+            .any(|(key, value)| key == "cursor" || contains_reserved_cursor(value))
+        {
             return Err(awareness_state_invalid(
                 request_id,
                 "local awareness intent must not contain the reserved cursor key",
+            ));
+        }
+        if published.contains_key("focused") {
+            return Err(awareness_state_invalid(
+                request_id,
+                "local awareness intent must not contain the reserved focused key",
             ));
         }
         let cursor = match intent.selection {
@@ -462,8 +472,6 @@ impl CollaborationRuntime {
                 .cloned()
                 .unwrap_or(Value::Null),
         };
-        let mut published = Map::new();
-        published.insert("state".into(), intent.state);
         published.insert("focused".into(), Value::Bool(intent.focused));
         if !cursor.is_null() {
             published.insert("cursor".into(), cursor);
