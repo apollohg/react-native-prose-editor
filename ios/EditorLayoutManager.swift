@@ -234,6 +234,9 @@ final class EditorLayoutManager: NSLayoutManager {
         let markerWidth = (attrs[RenderBridgeAttributes.listMarkerWidth] as? NSNumber)
             .map { CGFloat(truncating: $0) }
             ?? LayoutConstants.listMarkerWidth
+        let markerGap = (attrs[RenderBridgeAttributes.listMarkerGap] as? NSNumber)
+            .map { CGFloat(truncating: $0) }
+            ?? LayoutConstants.listMarkerTextGap
 
         var lineGlyphRange = NSRange()
         let usedRect = lineFragmentUsedRect(forGlyphAt: startGlyphIndex, effectiveRange: &lineGlyphRange)
@@ -246,7 +249,8 @@ final class EditorLayoutManager: NSLayoutManager {
             markerWidth: markerWidth,
             baselineY: baselineY,
             baseFont: baseFont,
-            origin: textContainerOrigin
+            origin: textContainerOrigin,
+            markerGap: markerGap
         ).insetBy(dx: -10, dy: -8)
 
         return markerRect.contains(tapPoint) ? paragraphStart : nil
@@ -327,6 +331,9 @@ final class EditorLayoutManager: NSLayoutManager {
         let markerWidth = (attrs[RenderBridgeAttributes.listMarkerWidth] as? NSNumber)
             .map { CGFloat(truncating: $0) }
             ?? LayoutConstants.listMarkerWidth
+        let markerGap = (attrs[RenderBridgeAttributes.listMarkerGap] as? NSNumber)
+            .map { CGFloat(truncating: $0) }
+            ?? LayoutConstants.listMarkerTextGap
         let ordered = (listContext["ordered"] as? NSNumber)?.boolValue ?? false
         let isTask = (listContext["kind"] as? String) == "task"
 
@@ -340,7 +347,8 @@ final class EditorLayoutManager: NSLayoutManager {
                 markerWidth: markerWidth,
                 baselineY: baselineY,
                 baseFont: baseFont,
-                origin: origin
+                origin: origin,
+                markerGap: markerGap
             )
             drawTaskCheckbox(
                 in: checkboxRect,
@@ -364,7 +372,8 @@ final class EditorLayoutManager: NSLayoutManager {
                 baselineY: baselineY,
                 markerFont: markerFont,
                 markerText: markerText,
-                origin: origin
+                origin: origin,
+                markerGap: markerGap
             )
             let markerAttrs: [NSAttributedString.Key: Any] = [
                 .font: markerFont,
@@ -381,7 +390,8 @@ final class EditorLayoutManager: NSLayoutManager {
             baselineY: baselineY,
             baseFont: baseFont,
             markerScale: markerScale,
-            origin: origin
+            origin: origin,
+            markerGap: markerGap
         )
         let path = UIBezierPath(ovalIn: bulletRect)
         textColor.setFill()
@@ -667,7 +677,8 @@ final class EditorLayoutManager: NSLayoutManager {
         markerWidth: CGFloat,
         baselineY: CGFloat,
         baseFont: UIFont,
-        origin: CGPoint
+        origin: CGPoint,
+        markerGap: CGFloat = LayoutConstants.listMarkerTextGap
     ) -> CGRect {
         let referenceRect = usedRect.height > 0 ? usedRect : lineFragmentRect
         let checkboxSize = min(
@@ -675,7 +686,7 @@ final class EditorLayoutManager: NSLayoutManager {
             max(markerWidth - 4, 24)
         )
         let centerY = baselineY - ((baseFont.ascender + baseFont.descender) / 2.0)
-        let x = origin.x + referenceRect.minX - LayoutConstants.listMarkerTextGap - checkboxSize
+        let x = origin.x + referenceRect.minX - markerGap - checkboxSize
         let y = origin.y + centerY - (checkboxSize / 2.0)
         return CGRect(x: x, y: y, width: checkboxSize, height: checkboxSize)
     }
@@ -687,15 +698,15 @@ final class EditorLayoutManager: NSLayoutManager {
         baselineY: CGFloat,
         markerFont: UIFont,
         markerText: String,
-        origin: CGPoint
+        origin: CGPoint,
+        markerGap: CGFloat = LayoutConstants.listMarkerTextGap
     ) -> CGPoint {
         let referenceRect = usedRect.height > 0 ? usedRect : lineFragmentRect
         let visibleMarkerText = markerText.trimmingCharacters(in: .whitespaces)
         let markerSize = (visibleMarkerText as NSString).size(withAttributes: [
             .font: markerFont,
         ])
-        let rightInset: CGFloat = 4.0
-        let x = origin.x + referenceRect.minX - rightInset - ceil(markerSize.width)
+        let x = origin.x + referenceRect.minX - markerGap - ceil(markerSize.width)
         let y = origin.y + baselineY - markerFont.ascender
         return CGPoint(x: x, y: y)
     }
@@ -720,7 +731,8 @@ final class EditorLayoutManager: NSLayoutManager {
         baselineY: CGFloat,
         baseFont: UIFont,
         markerScale: CGFloat,
-        origin: CGPoint
+        origin: CGPoint,
+        markerGap: CGFloat = LayoutConstants.listMarkerTextGap
     ) -> CGRect {
         let markerFont = baseFont.withSize(baseFont.pointSize * markerScale)
         let bulletBounds = unorderedBulletGlyphBounds(for: markerFont)
@@ -728,8 +740,7 @@ final class EditorLayoutManager: NSLayoutManager {
         let targetCenterAboveBaseline = (baseFont.xHeight > 0 ? baseFont.xHeight : baseFont.capHeight) / 2.0
         let centerY = baselineY - targetCenterAboveBaseline
         let referenceRect = usedRect.height > 0 ? usedRect : lineFragmentRect
-        let rightInset = LayoutConstants.listMarkerTextGap
-        let x = origin.x + referenceRect.minX - rightInset - bulletDiameter
+        let x = origin.x + referenceRect.minX - markerGap - bulletDiameter
         let y = origin.y + centerY - (bulletDiameter / 2.0)
 
         return CGRect(

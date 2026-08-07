@@ -1234,9 +1234,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         }
         let theme = PreparedProseTheme.resolve(
             themeJSON: request.configuration.themeJSON,
-            fontScale: request.nativeFontRevision > 0
-                ? request.nativeFontScale
-                : ViewerFontEnvironment.shared.fontScale(for: request.fontEnvironmentRevision),
+            fontScale: request.nativeFontScale,
             semanticGeneration: request.semanticGenerationIdentity
         )
         themesByGeneration[request.generationIdentity] = theme

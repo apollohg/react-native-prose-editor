@@ -77,6 +77,8 @@ final class EditorV2Adapter {
     private var cachedActiveState: [String: Any]?
     private var cachedHistoryState: (canUndo: Bool, canRedo: Bool)?
     private var cachedViewUpdateJSON: String?
+    private var cachedAtomicRenderJSON: String?
+    private var cachedAtomicRenderDocumentRevision: UInt64?
     /// Diagnostics: structured notes for adapter-path failures
     /// (mismatch refreshes, derivation failures) that never surface as
     /// autonomous error events.
@@ -387,6 +389,7 @@ final class EditorV2Adapter {
     }
 
     private struct AtomicRenderSnapshot {
+        let atomicRenderJSON: String
         let viewUpdateJSON: String
         let documentRevision: UInt64
         let stateRevision: UInt64
@@ -418,24 +421,30 @@ final class EditorV2Adapter {
         "insertableNodes",
     ]
 
-    private static let mentionThemeStringKeys: Set<String> = [
+    private static let mentionNodeStringKeys: Set<String> = [
         "textColor",
         "backgroundColor",
         "borderColor",
-        "popoverBackgroundColor",
-        "popoverBorderColor",
-        "popoverShadowColor",
-        "optionTextColor",
-        "optionSecondaryTextColor",
-        "optionHighlightedBackgroundColor",
-        "optionHighlightedTextColor",
+    ]
+
+    private static let mentionOptionStringKeys: Set<String> = [
+        "textColor",
+        "secondaryTextColor",
+        "backgroundColor",
+        "borderColor",
+        "highlightedBackgroundColor",
+        "highlightedTextColor",
+    ]
+
+    private static let mentionSuggestionsStringKeys: Set<String> = [
+        "backgroundColor",
+        "borderColor",
+        "shadowColor",
     ]
 
     private static let mentionThemeNumberKeys: Set<String> = [
         "borderWidth",
         "borderRadius",
-        "popoverBorderWidth",
-        "popoverBorderRadius",
     ]
 
     private static let mentionThemeFontWeights: Set<String> = [
@@ -509,13 +518,16 @@ final class EditorV2Adapter {
         return true
     }
 
-    private static func isValidMentionTheme(_ value: Any) -> Bool {
+    private static func isValidMentionThemeSection(
+        _ value: Any,
+        stringKeys: Set<String>,
+        extraKeys: Set<String>
+    ) -> Bool {
         guard let object = value as? [String: Any] else { return false }
-        let allowed = mentionThemeStringKeys
-            .union(mentionThemeNumberKeys)
-            .union(["fontWeight"])
-        guard hasOnlyKeys(object, allowed) else { return false }
-        for key in mentionThemeStringKeys where object[key] != nil {
+        guard hasOnlyKeys(object, stringKeys.union(mentionThemeNumberKeys).union(extraKeys)) else {
+            return false
+        }
+        for key in stringKeys where object[key] != nil {
             guard object[key] is String else { return false }
         }
         for key in mentionThemeNumberKeys where object[key] != nil {
@@ -529,6 +541,35 @@ final class EditorV2Adapter {
             }
         }
         return true
+    }
+
+    private static func isValidMentionTheme(_ value: Any) -> Bool {
+        guard let object = value as? [String: Any] else { return false }
+        guard hasOnlyKeys(object, ["node", "suggestions"]) else { return false }
+
+        if let node = object["node"] {
+            guard isValidMentionThemeSection(
+                node,
+                stringKeys: mentionNodeStringKeys,
+                extraKeys: ["fontWeight"]
+            ) else {
+                return false
+            }
+        }
+        guard let suggestions = object["suggestions"] else { return true }
+        guard isValidMentionThemeSection(
+            suggestions,
+            stringKeys: mentionSuggestionsStringKeys,
+            extraKeys: ["option"]
+        ) else {
+            return false
+        }
+        guard let option = (suggestions as? [String: Any])?["option"] else { return true }
+        return isValidMentionThemeSection(
+            option,
+            stringKeys: mentionOptionStringKeys,
+            extraKeys: ["fontWeight"]
+        )
     }
 
     private static func isValidRenderElement(_ value: Any) -> Bool {
@@ -565,19 +606,27 @@ final class EditorV2Adapter {
             }
             return object["attrs"].map { $0 is [String: Any] } ?? true
         case "opaqueInlineAtom":
-            guard hasOnlyKeys(object, ["type", "nodeType", "label", "docPos", "mentionTheme"]),
+            guard hasOnlyKeys(
+                      object,
+                      ["type", "nodeType", "label", "docPos", "attrs", "mentionTheme"]
+                  ),
+                  object["nodeType"] is String,
+                  object["label"] is String,
+                  uint32Field(object, "docPos") != nil,
+                  object["attrs"].map({ $0 is [String: Any] }) ?? true
+            else {
+                return false
+            }
+            return object["mentionTheme"].map(isValidMentionTheme) ?? true
+        case "opaqueBlockAtom":
+            guard hasOnlyKeys(object, ["type", "nodeType", "label", "docPos", "attrs"]),
                   object["nodeType"] is String,
                   object["label"] is String,
                   uint32Field(object, "docPos") != nil
             else {
                 return false
             }
-            return object["mentionTheme"].map(isValidMentionTheme) ?? true
-        case "opaqueBlockAtom":
-            return Set(object.keys) == ["type", "nodeType", "label", "docPos"]
-                && object["nodeType"] is String
-                && object["label"] is String
-                && uint32Field(object, "docPos") != nil
+            return object["attrs"].map { $0 is [String: Any] } ?? true
         default:
             return false
         }
@@ -717,6 +766,7 @@ final class EditorV2Adapter {
             return nil
         }
         return AtomicRenderSnapshot(
+            atomicRenderJSON: json,
             viewUpdateJSON: viewUpdateJSON,
             documentRevision: documentRevision,
             stateRevision: stateRevision,
@@ -787,11 +837,18 @@ final class EditorV2Adapter {
         cachedActiveState = snapshot.activeState
         cachedHistoryState = snapshot.historyState
         cachedViewUpdateJSON = updateJSON
+        cachedAtomicRenderJSON = snapshot.atomicRenderJSON
+        cachedAtomicRenderDocumentRevision = snapshot.documentRevision
         // This is the engine's selection from the locked snapshot. Keep it
         // distinct from a caller-provided mirror: treating it as a mirror on
         // the next refresh would change the frozen no-mirror render shape.
         cachedAuthoritativeScalarSelection = snapshot.selection
         return EditorV2DerivedUpdate(updateJSON: updateJSON, scalarLength: snapshot.scalarLength)
+    }
+
+    func atomicRenderJSON(matchingDocumentRevision documentRevision: UInt64) -> String? {
+        guard cachedAtomicRenderDocumentRevision == documentRevision else { return nil }
+        return cachedAtomicRenderJSON
     }
 
     /// Atomically parse and adopt a render supplied by JS before the paired

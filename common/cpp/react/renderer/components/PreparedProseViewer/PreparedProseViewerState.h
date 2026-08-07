@@ -8,6 +8,8 @@
 #include <functional>
 #include <mutex>
 
+#include <react/renderer/core/ReactPrimitives.h>
+
 #ifdef ANDROID
 #include <folly/dynamic.h>
 #endif
@@ -62,6 +64,8 @@ struct PreparedProseViewerState final {
   // Opaque, native-owned Fabric handoff incarnation. The shadow node mints it
   // once and component views must pass this exact value back to the registry.
   uint64_t leaseHandle{0};
+  SurfaceId surfaceId{0};
+  Tag componentTag{0};
   // This is deliberately C++-only state. Dynamic platform updates retain the
   // previous lifecycle when they omit the native-owned handle.
   std::shared_ptr<PreparedProseViewerLeaseLifecycle> leaseLifecycle{};
@@ -76,6 +80,8 @@ struct PreparedProseViewerState final {
         nativeFontRevision(revisionValue(data, "nativeFontRevision")),
         nativeFontScale(scaleValue(data, "nativeFontScale")),
         leaseHandle(handleValue(data, "leaseHandle", previousState.leaseHandle)),
+        surfaceId(previousState.surfaceId),
+        componentTag(previousState.componentTag),
         leaseLifecycle(lifecycleValue(previousState, leaseHandle)) {}
 
   folly::dynamic getDynamic() const {

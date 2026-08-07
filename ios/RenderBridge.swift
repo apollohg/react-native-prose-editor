@@ -29,6 +29,7 @@ enum RenderBridgeAttributes {
 
     /// Stores the rendered list marker scale for unordered bullets.
     static let listMarkerScale = NSAttributedString.Key("com.apollohg.editor.listMarkerScale")
+    static let listMarkerGap = NSAttributedString.Key("com.apollohg.editor.listMarkerGap")
 
     /// Stores the paragraph base font used to render the list marker.
     static let listMarkerBaseFont = NSAttributedString.Key("com.apollohg.editor.listMarkerBaseFont")
@@ -815,10 +816,11 @@ final class RenderBridge {
         attrs[RenderBridgeAttributes.docPos] = docPos
         if nodeType == "mention" {
             let resolvedMentionTheme = theme?.mentions?.merged(with: mentionTheme) ?? mentionTheme
-            attrs[.foregroundColor] = resolvedMentionTheme?.textColor ?? blockColor
+            let node = resolvedMentionTheme?.node
+            attrs[.foregroundColor] = node?.textColor ?? blockColor
             attrs[.backgroundColor] =
-                resolvedMentionTheme?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12)
-            if let mentionFont = mentionFont(from: blockFont, theme: resolvedMentionTheme) {
+                node?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12)
+            if let mentionFont = mentionFont(from: blockFont, theme: node) {
                 attrs[.font] = mentionFont
             }
         } else {
@@ -856,7 +858,9 @@ final class RenderBridge {
         return NSAttributedString(string: "[\(label)]", attributes: attrs)
     }
 
-    private static func mentionFont(from baseFont: UIFont, theme: EditorMentionTheme?) -> UIFont? {
+    private static func mentionFont(from baseFont: UIFont, theme: EditorMentionNodeTheme?)
+        -> UIFont?
+    {
         guard let fontWeight = theme?.fontWeight else { return nil }
         return EditorTextStyle(fontWeight: fontWeight).resolvedFont(fallback: baseFont)
     }
@@ -1024,6 +1028,7 @@ final class RenderBridge {
             mutableAttrs[RenderBridgeAttributes.listMarkerContext] = markerContext
             mutableAttrs[RenderBridgeAttributes.listMarkerColor] = theme?.list?.markerColor
             mutableAttrs[RenderBridgeAttributes.listMarkerScale] = theme?.list?.markerScale
+            mutableAttrs[RenderBridgeAttributes.listMarkerGap] = theme?.list?.markerGap
             mutableAttrs[RenderBridgeAttributes.listMarkerBaseFont] = paragraphBaseFont
             mutableAttrs[RenderBridgeAttributes.listMarkerWidth] = listMarkerWidth(
                 for: currentBlock,

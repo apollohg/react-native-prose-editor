@@ -1,8 +1,7 @@
 import XCTest
 import UIKit
 
-/// Production v2 adapter tests (Task 16 cutover: formerly the Task 15
-/// staging-variant suite, now running in the default configuration).
+/// Production v2 adapter tests.
 ///
 /// The production v2-only bindings and XCFramework are linked, so the real
 /// v2 engine backs every assertion. The adapter under test
@@ -621,6 +620,39 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertNotNil(adapter.adoptExternalRender(withPatch))
     }
 
+    /// Rust emits `attrs` on every void/opaque element, so an inserted mention
+    /// must survive external-render validation on its way back to the view.
+    func testAtomicRenderValidationAcceptsAnInsertedMentionCarryingNodeAttrs() {
+        let adapter = makeAdapter()
+        _ = adapter.setContentHtml("<p>base</p>")
+        let raw = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value!
+        let withMention = mutatedObjectJSON(raw) { object in
+            object["renderBlocks"] = [[
+                ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+                [
+                    "type": "opaqueInlineAtom",
+                    "nodeType": "mention",
+                    "label": "@Alice Chen",
+                    "docPos": 1,
+                    "attrs": [
+                        "id": "user-alice",
+                        "label": "Alice Chen",
+                        "mentionSuggestionChar": "@",
+                        "type": "user",
+                    ],
+                    "mentionTheme": ["node": ["textColor": "#336EC1"]],
+                ],
+                ["type": "blockEnd"],
+            ]]
+        }
+
+        XCTAssertNotNil(adapter.adoptExternalRender(withMention))
+    }
+
     func testMalformedAtomicRenderNestedVariantsLeaveEveryCacheUnchanged() {
         let adapter = makeAdapter()
         let spy = ErrorSpy()
@@ -722,7 +754,7 @@ final class EditorV2AdapterTests: XCTestCase {
                     "nodeType": "mention",
                     "label": "Ada",
                     "docPos": 0,
-                    "mentionTheme": ["borderWidth": true],
+                    "mentionTheme": ["node": ["borderWidth": true]],
                 ]]
             }),
             ("opaque block extra field", {
@@ -731,7 +763,16 @@ final class EditorV2AdapterTests: XCTestCase {
                     "nodeType": "unknown",
                     "label": "Unknown",
                     "docPos": 0,
-                    "attrs": [:],
+                    "legacy": true,
+                ]]
+            }),
+            ("opaque inline array attrs", {
+                $0["renderBlocks"] = [[
+                    "type": "opaqueInlineAtom",
+                    "nodeType": "mention",
+                    "label": "Ada",
+                    "docPos": 0,
+                    "attrs": [],
                 ]]
             }),
             ("render patch invalid nested element", { object in

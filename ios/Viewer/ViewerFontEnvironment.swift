@@ -19,7 +19,7 @@ public final class ViewerFontEnvironment: NSObject {
     private var missingWarningGenerationOrder: [String] = []
     private let missingWarningGenerationLimit = 128
     private var lastContentSizeCategory: UIContentSizeCategory?
-    private var scaleByRevision: [UInt64: CGFloat] = [0: ViewerFontEnvironment.scale(for: UIApplication.shared.preferredContentSizeCategory)]
+    private var scaleByRevision: [UInt64: CGFloat] = [0: 1]
     private(set) var revision: UInt64 = 0
     var onInvalidated: ((UInt64) -> Void)?
 
@@ -49,6 +49,15 @@ public final class ViewerFontEnvironment: NSObject {
     deinit { tokens.forEach(notificationCenter.removeObserver) }
 
     static let registeredFontsDidChangeNotification = Notification.Name(kCTFontManagerRegisteredFontsChangedNotification as String)
+
+    @objc(refreshContentSizeCategory)
+    public func refreshContentSizeCategory() {
+        guard Thread.isMainThread else { return }
+        invalidateContentSizeCategory(UIApplication.shared.preferredContentSizeCategory)
+    }
+
+    @objc(currentFontScale)
+    public func currentFontScale() -> CGFloat { currentScale() }
 
     public func invalidateRegisteredFonts() { invalidate(scale: currentScale()) }
 
@@ -233,6 +242,7 @@ public final class ViewerFontEnvironment: NSObject {
     }
 
     private func invalidateContentSizeCategory(_ category: UIContentSizeCategory?) {
+        guard Thread.isMainThread else { return }
         let resolvedCategory = category ?? UIApplication.shared.preferredContentSizeCategory
         lock.lock()
         let isDuplicate = lastContentSizeCategory == resolvedCategory

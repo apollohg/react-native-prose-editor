@@ -223,9 +223,10 @@ final class MentionSuggestionChipButton: UIButton {
     func apply(theme: EditorMentionTheme?, toolbarAppearance: EditorToolbarAppearance = .custom) {
         self.theme = theme
         self.toolbarAppearance = toolbarAppearance
-        layer.cornerRadius = theme?.borderRadius ?? 12
-        layer.borderColor = (theme?.borderColor ?? UIColor.clear).cgColor
-        layer.borderWidth = theme?.borderWidth ?? 0
+        let option = theme?.suggestions?.option
+        layer.cornerRadius = option?.borderRadius ?? 12
+        layer.borderColor = (option?.borderColor ?? UIColor.clear).cgColor
+        layer.borderWidth = option?.borderWidth ?? 0
         subtitleLabelView.isHidden = suggestion.subtitle == nil
         updateAppearance(highlighted: isHighlighted)
     }
@@ -296,13 +297,14 @@ final class MentionSuggestionChipButton: UIButton {
             configuration.contentInsets = .zero
             self.configuration = configuration
         }
+        let option = theme?.suggestions?.option
         backgroundColor = highlighted
-            ? (theme?.optionHighlightedBackgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12))
-            : (theme?.backgroundColor ?? UIColor.secondarySystemBackground)
+            ? (option?.highlightedBackgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12))
+            : (option?.backgroundColor ?? UIColor.secondarySystemBackground)
         titleLabelView.textColor = highlighted
-            ? (theme?.optionHighlightedTextColor ?? theme?.optionTextColor ?? .label)
-            : (theme?.optionTextColor ?? theme?.textColor ?? .label)
-        subtitleLabelView.textColor = theme?.optionSecondaryTextColor ?? .secondaryLabel
+            ? (option?.highlightedTextColor ?? option?.textColor ?? .label)
+            : (option?.textColor ?? .label)
+        subtitleLabelView.textColor = option?.secondaryTextColor ?? .secondaryLabel
     }
 
     func contentViewsAllowTouchPassthroughForTesting() -> Bool {

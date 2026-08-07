@@ -172,6 +172,51 @@ final class PreparedProseRenderingTests: XCTestCase {
         }
     }
 
+    func testScaledListMarkersStayCenteredWithoutChangingItemSpacing() throws {
+        let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}"#)
+        try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in
+            let regular = try prepare(document, themeJSON: #"{"list":{"markerScale":1,"itemSpacing":7}}"#)
+            let scaled = try prepare(document, themeJSON: #"{"list":{"markerScale":3,"itemSpacing":7}}"#)
+
+            for layout in [regular, scaled] {
+                let itemBlocks = layout.blocks.filter { $0.fragments.contains { $0.kind == .marker } }
+                XCTAssertEqual(itemBlocks.count, 2)
+                for block in itemBlocks {
+                    let marker = try XCTUnwrap(block.fragments.first { $0.kind == .marker })
+                    let firstLine = try XCTUnwrap(block.fragments.first { $0.kind == .text })
+                    XCTAssertEqual(marker.bounds.midY, firstLine.bounds.midY, accuracy: 0.001)
+                    let markerLine = try XCTUnwrap(marker.line)
+                    let imageBounds = CTLineGetImageBounds(markerLine, nil)
+                    XCTAssertEqual(marker.origin.y - imageBounds.midY, firstLine.bounds.midY, accuracy: 0.001)
+                }
+            }
+
+            let regularLines = regular.blocks.compactMap { $0.fragments.first { $0.kind == .text } }
+            let scaledLines = scaled.blocks.compactMap { $0.fragments.first { $0.kind == .text } }
+            XCTAssertEqual(regularLines.count, 2)
+            XCTAssertEqual(scaledLines.count, 2)
+            XCTAssertEqual(
+                scaledLines[1].bounds.minY - scaledLines[0].bounds.maxY,
+                regularLines[1].bounds.minY - regularLines[0].bounds.maxY,
+                accuracy: 0.001
+            )
+        }
+    }
+
+    func testListMarkerScaleDoesNotResizeOrderedNumbers() throws {
+        let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}"#)
+        try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in
+            let regular = try prepare(document, themeJSON: #"{"list":{"markerScale":1}}"#)
+            let scaled = try prepare(document, themeJSON: #"{"list":{"markerScale":3}}"#)
+            let regularMarker = try XCTUnwrap(regular.blocks.flatMap(\.fragments).first { $0.kind == .marker })
+            let scaledMarker = try XCTUnwrap(scaled.blocks.flatMap(\.fragments).first { $0.kind == .marker })
+            let regularRun = try XCTUnwrap(coreTextRuns(try XCTUnwrap(regularMarker.line)).first)
+            let scaledRun = try XCTUnwrap(coreTextRuns(try XCTUnwrap(scaledMarker.line)).first)
+
+            XCTAssertEqual(CTFontGetSize(font(scaledRun)), CTFontGetSize(font(regularRun)), accuracy: 0.001)
+        }
+    }
+
     func testCompilerBackedMentionMergesLocalPaintIntoImmutableAtomFragment() throws {
         let fixture = Fixture.structuralFixtures[2]
         try withCompiledDocument(source: fixture.source, configJSON: fixture.configJSON) { document in
@@ -360,7 +405,7 @@ private struct Fixture {
     let expectedKinds: Set<PreparedProseFragmentKind>
     let assertDocument: (ViewerDocument) -> Bool
 
-    static let themeJSON = ##"{"mentions":{"textColor":"#102030","backgroundColor":"#DDEEFF","borderColor":"#445566","borderWidth":2,"borderRadius":7},"links":{"color":"#007AFF"}}"##
+    static let themeJSON = ##"{"mentions":{"node":{"textColor":"#102030","backgroundColor":"#DDEEFF","borderColor":"#445566","borderWidth":2,"borderRadius":7}},"links":{"color":"#007AFF"}}"##
     static let localConfig = #"{"initialization":{"type":"localEmpty"}}"#
     static let customConfig = #"{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"opaqueBlock","content":"","group":"block","role":"block","isVoid":true,"allowUndeclaredAttrs":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"#
 
@@ -387,7 +432,7 @@ private struct Fixture {
         ),
         Fixture(
             name: "custom atoms and snake rule",
-            source: .json(##"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"##),
+            source: .json(##"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"node":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"##),
             configJSON: customConfig,
             expectedKinds: [.atom, .rule],
             assertDocument: { document in

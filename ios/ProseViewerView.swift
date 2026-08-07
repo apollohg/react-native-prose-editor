@@ -70,6 +70,7 @@ public final class ProseViewerView: UIView {
     required init?(coder: NSCoder) { fatalError("ProseViewerView does not support NSCoder") }
 
     private func setup() {
+        fontEnvironment.refreshContentSizeCategory()
         drawingView.backgroundColor = .clear
         drawingView.isOpaque = false
         drawingView.linkInteractionsEnabled = linkTapsEnabled

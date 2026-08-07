@@ -738,18 +738,12 @@ private final class ImageResizeOverlayView: UIView {
 
 // MARK: - EditorTextView
 
-/// Dedicated `UITextViewDelegate` for `EditorTextView`.
+/// Dedicated `UITextViewDelegate`, because the editor must not be its own.
 ///
-/// The editor must not be its own `UITextViewDelegate`. Delegate-proxy
-/// keyboard integrations (e.g. react-native-keyboard-controller's
-/// `KCTextInputCompositeDelegate`) wrap the current delegate and forward
-/// every selector they do not implement to the wrapped delegate via
-/// `forwardingTarget(for:)`. UIKit relays the private
-/// `keyboardInputChangedSelection:` from the text view to its delegate, so a
-/// text view that is its own delegate bounces that selector text view ->
-/// proxy -> text view until the stack overflows (APOLLO-REACT-56). A plain
-/// NSObject delegate does not respond to UITextView's private selectors,
-/// which keeps proxies from forwarding them back.
+/// Proxy keyboard integrations forward unimplemented selectors via
+/// `forwardingTarget(for:)`, so UIKit's private `keyboardInputChangedSelection:`
+/// bounces view -> proxy -> view until the stack overflows (APOLLO-REACT-56).
+/// A plain NSObject does not respond to those private selectors.
 final class EditorTextViewInternalDelegate: NSObject, UITextViewDelegate {
     private weak var editor: EditorTextView?
 
@@ -781,32 +775,17 @@ final class EditorTextViewInternalDelegate: NSObject, UITextViewDelegate {
     }
 }
 
-/// UITextView subclass that intercepts all text input and routes it through
-/// the Rust editor-core engine via UniFFI bindings.
+/// UITextView that intercepts input and routes it through editor-core.
 ///
-/// Instead of letting UITextView's internal text storage handle insertions
-/// and deletions, this class captures the user's intent (typing, deleting,
-/// pasting, autocorrect) and sends it to the Rust editor. The Rust editor
-/// returns render elements, which are converted to NSAttributedString via
-/// RenderBridge and applied back to the text view.
+/// The text view is a rendering surface, not a text engine: intent (typing,
+/// deleting, pasting, autocorrect) goes to Rust, which returns render elements
+/// that RenderBridge converts back to NSAttributedString.
 ///
-/// This is the "input interception" pattern: the UITextView is effectively
-/// a rendering surface, not a text editing engine.
+/// IME: UITextView owns marked text during composition so the user sees it;
+/// `unmarkText` commits through Rust at the Rust-authorized range.
 ///
-/// ## Composition (IME) Handling
-///
-/// For CJK input methods, `setMarkedText` / `unmarkText` are used. During
-/// composition (marked text), we let UITextView handle it normally so the
-/// user sees their composing text. When composition finalizes (`unmarkText`),
-/// we commit the final text through Rust at the original Rust-authorized
-/// replacement range.
-///
-/// ## Thread Safety
-///
-/// All UITextView methods are called on the main thread. The UniFFI calls
-/// (`editor_insert_text`, `editor_delete_range`, etc.) are synchronous and
-/// fast enough for main-thread use. If profiling shows otherwise, we can
-/// dispatch to a serial queue and batch updates.
+/// Every UITextView method runs on the main thread, and the UniFFI calls are
+/// synchronous.
 final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)!
 
@@ -1577,14 +1556,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     /// Whether the document holds nothing the user authored.
     ///
-    /// The core answers this and the answer arrives on every editor update, so
-    /// it is used verbatim. Deriving it here cannot work: an empty list item
-    /// contributes no characters, so any scan of the text storage reports it as
-    /// empty and leaves the placeholder sitting on top of a visible bullet.
-    ///
-    /// The character scan below is only the fallback for renders that arrive
-    /// without an editor update — the read-only viewer, which has no
-    /// placeholder of its own to get wrong.
+    /// Taken verbatim from the core. Deriving it cannot work: an empty list
+    /// item contributes no characters, so scanning the storage reports empty
+    /// and leaves the placeholder over a visible bullet. The scan below is
+    /// only the fallback for renders with no editor update (the viewer).
     private func isRenderedContentEmpty() -> Bool {
         if let coreReportedDocumentIsEmpty {
             return coreReportedDocumentIsEmpty
@@ -2131,18 +2106,18 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
 
+        if text == "\n" {
+            guard commitActiveMarkedTextBeforeReturn() else { return }
+            performInterceptedInput {
+                handleReturnKey()
+            }
+            return
+        }
+
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
             let replacementRange = trackedMarkedTextReplacementRange()
             finishTransientMarkedTextMutation()
             _ = commitMarkedText(text, replacementRange: replacementRange)
-            return
-        }
-
-        // Handle Enter/Return as a block split operation.
-        if text == "\n" {
-            performInterceptedInput {
-                handleReturnKey()
-            }
             return
         }
 
@@ -2683,6 +2658,43 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             applyUpdateJSON(adoptedUpdateJSON)
         }
         return adoptedUpdateJSON
+    }
+
+    private func commitActiveMarkedTextBeforeReturn() -> Bool {
+        guard markedTextReplacementScalarRange != nil || markedTextRange != nil else {
+            return true
+        }
+
+        if markedTextReplacementScalarRange != nil || markedTextReplacementUtf16Range != nil {
+            let composedText = currentMarkedTextForCommit()
+            let replacementRange = trackedMarkedTextReplacementRange()
+            finishTransientMarkedTextMutation()
+
+            guard shouldCommitMarkedText(composedText, replacementRange: replacementRange) else {
+                restoreAuthorizedTextAfterCancelledCompositionIfNeeded()
+                return true
+            }
+            return commitMarkedText(composedText ?? "", replacementRange: replacementRange) != nil
+        }
+
+        let mutation = nativeTextMutationFromAuthorizedDiff(currentText: textStorage.string)
+        finishTransientMarkedTextMutation()
+        guard let mutation else {
+            restoreAuthorizedTextAfterCancelledCompositionIfNeeded()
+            return true
+        }
+
+        switch commitNativeTextMutationIfPossible(
+            mutation,
+            allowAfterBlur: false,
+            allowWhileIntercepting: true
+        ) {
+        case .committed:
+            return true
+        case .deferred, .rejected:
+            restoreAuthorizedTextAfterCancelledCompositionIfNeeded()
+            return false
+        }
     }
 
     private func shouldCommitMarkedText(
@@ -4252,21 +4264,15 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         {
             return logicalSelectionScalarRange
         }
-        // The caret in a lone empty block is parked ahead of the block
-        // placeholder so UIKit offers autocapitalization
-        // (`autocapitalizationFriendlyEmptyBlockPosition`). That nudge makes
-        // the UIKit caret disagree with the engine's scalar by exactly the
-        // placeholder, which the comparison above cannot tell apart from the
-        // user having moved the caret. Matching the UIKit range the nudge
-        // produced keeps the engine's position authoritative; anything else
-        // still falls through as genuinely stale.
+        // A lone empty block parks the caret ahead of the placeholder so UIKit
+        // offers autocapitalization, which makes the UIKit caret disagree with
+        // the engine scalar by exactly the placeholder. Matching the range that
+        // nudge produced keeps the engine authoritative.
         //
-        // This is confined to that block. A matching UTF-16 range is NOT
-        // evidence that a cached scalar is still current: wrapping a line in
-        // a list shifts every scalar in it by the list and listItem openings
-        // while leaving every UTF-16 offset untouched, so a stale pre-wrap
-        // caret would match here and be handed back — placing the next typed
-        // character inside the word instead of after it.
+        // Confined to that block: a matching UTF-16 range is not evidence a
+        // scalar is current. Wrapping a line in a list shifts every scalar
+        // while leaving UTF-16 offsets untouched, so a stale pre-wrap caret
+        // would match here and place the next character inside the word.
         if let logicalSelectionScalarRange,
            let logicalSelectionUtf16Range,
            logicalSelectionUtf16Range == selectedRange,
@@ -5903,7 +5909,6 @@ extension EditorTextView: NSTextStorageDelegate {
         let authorizedPreview = preview(lastAuthorizedText)
         let storagePreview = preview(currentText)
 
-        // --- Divergence detected ---
         reconciliationCount += 1
 
         Self.reconciliationLog.warning(
@@ -6349,6 +6354,14 @@ final class RichTextEditorView: UIView {
         if measuredHeight > 0 {
             cachedAutoGrowMeasuredHeight = measuredHeight
         }
+        return measuredHeight
+    }
+
+    func remeasureAutoGrowHeight() -> CGFloat {
+        guard heightBehavior == .autoGrow else { return 0 }
+        cachedAutoGrowMeasuredHeight = 0
+        let measuredHeight = measuredEditorHeight()
+        invalidateIntrinsicContentSize()
         return measuredHeight
     }
 

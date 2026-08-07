@@ -15,10 +15,38 @@ final class RichTextEditorViewTests: XCTestCase {
             )
         )
         let update = parseJSONObject(updateJSON)
+        let emittedUpdateJSON = try XCTUnwrap(event["updateJson"] as? String)
+        let emittedUpdate = parseJSONObject(emittedUpdateJSON)
 
         XCTAssertEqual(event["editorId"] as? String, String(editorId))
         XCTAssertEqual(event["documentRevision"] as? String, update["documentVersion"] as? String)
-        XCTAssertEqual(event["updateJson"] as? String, updateJSON)
+        XCTAssertEqual(emittedUpdate["documentVersion"] as? String, update["documentVersion"] as? String)
+    }
+
+    func testNativeCommitEventPayloadPublishesTheCompleteAtomicSnapshot() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>a</p>")
+        let viewUpdateJSON = EditorV2Shadow.insertTextScalar(id: editorId, scalarPos: 1, text: "b")
+        let viewUpdate = parseJSONObject(viewUpdateJSON)
+        XCTAssertNil(viewUpdate["scalarLength"])
+
+        let event = try XCTUnwrap(
+            NativeEditorExpoView.nativeCommitEventPayload(
+                originatingEditorId: String(editorId),
+                updateJSON: viewUpdateJSON
+            )
+        )
+        let emittedUpdateJSON = try XCTUnwrap(event["updateJson"] as? String)
+        let emittedUpdate = parseJSONObject(emittedUpdateJSON)
+
+        XCTAssertNotNil(emittedUpdate["scalarLength"])
+        XCTAssertNotNil(emittedUpdate["selection"])
+        XCTAssertEqual(
+            emittedUpdate["documentVersion"] as? String,
+            event["documentRevision"] as? String
+        )
     }
 
     func testEditorScopedNonCommitEventPayloadCapturesOnlyCanonicalOriginatingEditorIds() throws {
@@ -1177,8 +1205,12 @@ final class RichTextEditorViewTests: XCTestCase {
         let baseHeight = toolbar.intrinsicContentSize.height
 
         toolbar.apply(mentionTheme: EditorMentionTheme(dictionary: [
-            "backgroundColor": "#d7e4ff",
-            "optionTextColor": "#1a2c48",
+            "suggestions": [
+                "option": [
+                    "backgroundColor": "#d7e4ff",
+                    "textColor": "#1a2c48",
+                ],
+            ],
         ]))
 
         let didChange = toolbar.setMentionSuggestions([
@@ -5250,6 +5282,43 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
     }
 
+    func testReturnDuringMarkedCorrectionCommitsCorrectionThenSplitsListItem() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
+        textView.bindEditor(
+            id: editorId,
+            initialHTML: "<ul><li><p>wrd</p></li><li><p>Next</p></li></ul>"
+        )
+        setSelection(in: textView, utf16Range: NSRange(location: 0, length: 3))
+
+        textView.setMarkedText("word", selectedRange: NSRange(location: 4, length: 0))
+        textView.insertText("\n")
+
+        XCTAssertEqual(textView.textStorage.string, "word\n\u{200B}\nNext")
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: editorId),
+            "<ul><li><p>word</p></li><li><p></p></li><li><p>Next</p></li></ul>"
+        )
+
+        textView.insertText("x")
+
+        XCTAssertEqual(textView.textStorage.string, "word\nx\nNext")
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: editorId),
+            "<ul><li><p>word</p></li><li><p>x</p></li><li><p>Next</p></li></ul>"
+        )
+
+        textView.deleteBackward()
+
+        XCTAssertEqual(textView.textStorage.string, "word\n\u{200B}\nNext")
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: editorId),
+            "<ul><li><p>word</p></li><li><p></p></li><li><p>Next</p></li></ul>"
+        )
+    }
+
     func testUpdatedMarkedTextStillUsesOriginalAuthorizedOffset() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
@@ -5341,6 +5410,37 @@ final class RichTextEditorViewTests: XCTestCase {
 
         XCTAssertEqual(intrinsic.width, UIView.noIntrinsicMetric, accuracy: 0.1)
         XCTAssertGreaterThan(intrinsic.height, 0)
+    }
+
+    func testNativeEditorRemeasuresAfterSwitchingFromFixedToAutoGrow() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        view.setEditorId(editorId)
+        view.richTextView.setContent(html: (1 ... 12).map { "<p>Line \($0)</p>" }.joined())
+        view.setHeightBehavior("fixed")
+        view.layoutIfNeeded()
+
+        let expectedHeight = ceil(
+            view.richTextView.textView.sizeThatFits(
+                CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)
+            ).height
+        )
+        XCTAssertGreaterThan(expectedHeight, view.bounds.height)
+
+        view.setHeightBehavior("autoGrow")
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertEqual(view.intrinsicContentSize.height, expectedHeight, accuracy: 1.0)
     }
 
     func testApplyThemeRerendersExistingContentWhenTextIsUnchanged() {

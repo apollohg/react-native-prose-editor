@@ -510,9 +510,6 @@ final class PreparedProseRevisionTests: XCTestCase {
         let sibling = FabricSurfaceToken(surfaceId: 711, componentTag: 10)
         _ = FabricAttachmentSidecars.begin(surface, semanticIdentity: "semantic-a")
         _ = FabricAttachmentSidecars.begin(sibling, semanticIdentity: "semantic-b")
-        // updateState releases the old layout generation before Yoga measures
-        // the replacement; terminal cleanup must use this persisted token even
-        // if the UIView's current tag now names the sibling component.
         registry.releaseFabricGeneration(.init(surface: surface, generationIdentity: "replacement-layout"))
         XCTAssertNotNil(FabricAttachmentSidecars.state(for: surface))
 
@@ -551,6 +548,41 @@ final class PreparedProseRevisionTests: XCTestCase {
         let base = PreparedProseTheme.resolve(themeJSON: nil, fontScale: 1)
         let scaled = PreparedProseTheme.resolve(themeJSON: nil, fontScale: 1.4)
         XCTAssertGreaterThan(scaled.paragraph.font.pointSize, base.paragraph.font.pointSize)
+    }
+
+    func testFabricInitialFontSnapshotUsesPublishedScaleBeforeFirstNativeRevision() {
+        let document = ViewerDocument(
+            semanticKey: String(repeating: "a", count: 64),
+            paragraphs: [ViewerParagraph(text: "The initial Fabric font snapshot must alter geometry.")],
+            isEmpty: false,
+            retainedBytes: 128
+        )
+        let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+
+        func measure(nativeFontScale: CGFloat, leaseHandle: UInt64) -> CGSize {
+            let generation = registry.fabricGenerationIdentity(
+                sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil, imagePolicyJSON: nil,
+                imagesEnabled: true, collapsesWhenEmpty: true,
+                attachmentRevision: 0, nativeFontRevision: 0, nativeFontScale: nativeFontScale,
+                fontEnvironmentRevision: 0
+            )
+            registry.registerFabricLease(surfaceId: 41, componentTag: 7, leaseHandle: leaseHandle)
+            registry.activateFabricGeneration(
+                surfaceId: 41, componentTag: 7, generationIdentity: generation, leaseHandle: leaseHandle
+            )
+            return registry.measure(
+                surfaceId: 41, componentTag: 7, leaseHandle: leaseHandle,
+                sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil, imagePolicyJSON: nil,
+                imagesEnabled: true, collapsesWhenEmpty: true,
+                attachmentRevision: 0, nativeFontRevision: 0, nativeFontScale: nativeFontScale,
+                fontEnvironmentRevision: 0, widthPoints: 120, scale: 2
+            )
+        }
+
+        let base = measure(nativeFontScale: 1, leaseHandle: 1)
+        let scaled = measure(nativeFontScale: 1.6, leaseHandle: 2)
+
+        XCTAssertGreaterThan(scaled.height, base.height)
     }
 
     func testFabricNativeRevisionUsesPublishedScaleForReplacementGeometry() {

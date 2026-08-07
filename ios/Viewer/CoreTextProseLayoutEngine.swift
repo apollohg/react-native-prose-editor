@@ -94,6 +94,8 @@ struct PreparedProseTheme {
     let listItemSpacing: CGFloat
     let listMarkerColor: UIColor
     let listMarkerScale: CGFloat
+    let listMarkerGap: CGFloat
+    static let defaultListMarkerGap: CGFloat = 6
     let quoteIndent: CGFloat
     let quoteBorderColor: UIColor
     let quoteBorderWidth: CGFloat
@@ -182,6 +184,7 @@ struct PreparedProseTheme {
             listItemSpacing: theme.list?.itemSpacing ?? 4,
             listMarkerColor: theme.list?.markerColor ?? text.color,
             listMarkerScale: theme.list?.markerScale ?? 1,
+            listMarkerGap: theme.list?.markerGap ?? PreparedProseTheme.defaultListMarkerGap,
             quoteIndent: theme.blockquote?.indent ?? 16,
             quoteBorderColor: theme.blockquote?.borderColor ?? UIColor.systemGray3,
             quoteBorderWidth: theme.blockquote?.borderWidth ?? 3,
@@ -317,7 +320,7 @@ final class CoreTextProseLayoutEngine {
             cursorY = prepared.nextY
             retainedBytes += prepared.retainedBytes
         }
-        cursorY += theme.contentInsets.bottom
+        cursorY = blocks.reduce(cursorY) { max($0, $1.bounds.maxY) } + theme.contentInsets.bottom
         let pixelHeight = ceil(cursorY * displayScale)
         interactions.sort { lhs, rhs in
             let left = lhs.rects.first ?? .zero
@@ -371,7 +374,7 @@ final class CoreTextProseLayoutEngine {
         // which keeps paragraph/code/atom descendants aligned.
         let listBaseIndent = block.listContext == nil ? 0 : max(0, theme.listIndent * theme.listBaseIndentMultiplier)
         let nestedListIndent = block.listContext == nil ? 0 : max(0, theme.listIndent * CGFloat(listDepth))
-        let markerGutter = measuredListMarker.map { max(6, $0.width + 6) } ?? 0
+        let markerGutter = measuredListMarker.map { max(theme.listMarkerGap, $0.width + theme.listMarkerGap) } ?? 0
         let listInset = listBaseIndent + nestedListIndent + markerGutter
         let quoteInset = block.inBlockquote ? theme.quoteBorderWidth + theme.quoteMarkerGap + theme.quoteIndent : 0
         let codeInset = block.nodeType == "codeBlock" ? theme.codePaddingHorizontal : 0
@@ -392,10 +395,9 @@ final class CoreTextProseLayoutEngine {
             return (prepared, [], attachment, bounds.maxY + itemSpacing, prepared.estimatedRetainedBytes + 192)
         }
         if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
-            let markerTopInset = marker?.ascent ?? 0
             let ruleX = contentX + listInset + quoteInset
             let ruleWidth = max(1, contentWidth - listInset - quoteInset)
-            let y = cursorY + theme.ruleMargin + markerTopInset
+            let y = cursorY + theme.ruleMargin
             let rule = CGRect(x: ruleX, y: y, width: ruleWidth, height: theme.ruleThickness)
             var fragments: [PreparedProseFragment] = [.init(kind: .rule, bounds: rule, color: theme.ruleColor.cgColor, strokeWidth: theme.ruleThickness)]
             let totalEnd = y + theme.ruleThickness + theme.ruleMargin
@@ -403,9 +405,12 @@ final class CoreTextProseLayoutEngine {
                 fragments.append(.init(kind: .border, bounds: CGRect(x: contentX, y: cursorY, width: theme.quoteBorderWidth, height: totalEnd - cursorY), color: theme.quoteBorderColor.cgColor, strokeWidth: theme.quoteBorderWidth))
             }
             if let marker {
-                let markerX = textX - markerGutter + (markerGutter - marker.width)
-                let markerBounds = CGRect(x: markerX, y: y - marker.ascent, width: marker.width, height: marker.ascent + marker.descent)
-                fragments.append(.init(kind: .marker, line: marker.line, origin: CGPoint(x: markerX, y: y), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
+                let markerX = textX - markerGutter
+                let markerHeight = marker.ascent + marker.descent
+                let markerTop = cursorY + (totalEnd - cursorY - markerHeight) / 2
+                let markerBaseline = markerTop + marker.ascent
+                let markerBounds = CGRect(x: markerX, y: markerTop, width: marker.width, height: markerHeight)
+                fragments.append(.init(kind: .marker, line: marker.line, origin: CGPoint(x: markerX, y: markerBaseline), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
             }
             let seedBounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: totalEnd - cursorY)
             let bounds = fragments.reduce(seedBounds) { $0.union($1.bounds) }
@@ -416,7 +421,7 @@ final class CoreTextProseLayoutEngine {
             return (
                 prepared,
                 [], nil,
-                max(totalEnd, bounds.maxY) + itemSpacing,
+                totalEnd + itemSpacing,
                 prepared.estimatedRetainedBytes
             )
         }
@@ -427,10 +432,13 @@ final class CoreTextProseLayoutEngine {
         var location = 0
         var fragments: [PreparedProseFragment] = []
         var interactionRects: [[CGRect]] = Array(repeating: [], count: attributed.semanticRanges.count)
-        let markerTopInset = marker.map { max(0, $0.ascent - paint.font.ascender) } ?? 0
-        var textTop = cursorY + (block.nodeType == "codeBlock" ? theme.codePaddingVertical : 0) + markerTopInset
-        let textStart = textTop
-        var firstLineBaseline: CGFloat?
+        let codeTopInset = block.nodeType == "codeBlock" ? theme.codePaddingVertical : 0
+        let firstLineHeight = max(paint.font.lineHeight, paint.lineHeight ?? 0)
+        let markerTopProtection = marker.map {
+            max(0, ($0.ascent + $0.descent - firstLineHeight) / 2 - codeTopInset)
+        } ?? 0
+        var textTop = cursorY + codeTopInset + (cursorY == theme.contentInsets.top ? markerTopProtection : 0)
+        var firstLineBounds: CGRect?
         while location < attributed.string.length {
             let suggested = CTTypesetterSuggestLineBreak(typesetter, location, availableWidth)
             let count = max(1, suggested)
@@ -486,7 +494,7 @@ final class CoreTextProseLayoutEngine {
                     priorDirection = piece.rightToLeft
                 }
             }
-            if firstLineBaseline == nil { firstLineBaseline = baseline }
+            if firstLineBounds == nil { firstLineBounds = lineBounds }
             for atom in attributed.atoms where NSIntersectionRange(atom.range, lineRange).length > 0 {
                 let offset = CGFloat(CTLineGetOffsetForStringIndex(line, atom.range.location, nil))
                 let atomBounds = CGRect(
@@ -516,8 +524,9 @@ final class CoreTextProseLayoutEngine {
         if fragments.isEmpty {
             let fallbackHeight = paint.lineHeight ?? paint.font.lineHeight
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: "\u{200B}", attributes: baseAttributes(paint)))
-            fragments.append(.init(kind: .text, line: line, origin: CGPoint(x: textX, y: textTop + paint.font.ascender), bounds: CGRect(x: textX, y: textTop, width: 0, height: fallbackHeight)))
-            firstLineBaseline = textTop + paint.font.ascender
+            let lineBounds = CGRect(x: textX, y: textTop, width: 0, height: fallbackHeight)
+            fragments.append(.init(kind: .text, line: line, origin: CGPoint(x: textX, y: textTop + paint.font.ascender), bounds: lineBounds))
+            firstLineBounds = lineBounds
             textTop += fallbackHeight
         }
         let textEnd = textTop
@@ -530,15 +539,18 @@ final class CoreTextProseLayoutEngine {
             let border = CGRect(x: contentX, y: cursorY, width: theme.quoteBorderWidth, height: max(0, totalEnd - cursorY))
             fragments.append(.init(kind: .border, bounds: border, color: theme.quoteBorderColor.cgColor, strokeWidth: theme.quoteBorderWidth))
         }
-        if let marker, let baseline = firstLineBaseline {
-            let markerX = textX - markerGutter + (markerGutter - marker.width)
+        if let marker, let firstLineBounds {
+            let markerX = textX - markerGutter
+            let markerHeight = marker.ascent + marker.descent
+            let markerTop = firstLineBounds.midY - markerHeight / 2
+            let markerBaseline = markerTop + marker.ascent
             let markerBounds = CGRect(
                 x: markerX,
-                y: baseline - marker.ascent,
+                y: markerTop,
                 width: marker.width,
-                height: marker.ascent + marker.descent
+                height: markerHeight
             )
-            fragments.append(.init(kind: .marker, line: marker.line, origin: CGPoint(x: markerX, y: baseline), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
+            fragments.append(.init(kind: .marker, line: marker.line, origin: CGPoint(x: markerX, y: markerBaseline), bounds: markerBounds, color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
         }
         let seedBounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: max(0, totalEnd - cursorY))
         let bounds = fragments.reduce(seedBounds) { $0.union($1.bounds) }
@@ -555,7 +567,7 @@ final class CoreTextProseLayoutEngine {
         return (
             prepared,
             interactions, nil,
-            max(totalEnd, bounds.maxY) + itemSpacing,
+            totalEnd + itemSpacing,
             256 + attributed.retainedBytes + prepared.estimatedRetainedBytes
         )
     }
@@ -786,7 +798,9 @@ final class CoreTextProseLayoutEngine {
         paint: PreparedTextPaint,
         theme: PreparedProseTheme
     ) -> PreparedListMarker {
-        let scale = max(0.01, theme.listMarkerScale)
+        let scale = !context.ordered && context.kind != "task"
+            ? max(0.01, theme.listMarkerScale)
+            : 1
         let font = paint.font.withSize(max(1, paint.font.pointSize * scale))
         let label: String
         if context.kind == "task" {
@@ -813,7 +827,10 @@ final class CoreTextProseLayoutEngine {
         var descent: CGFloat = 0
         var leading: CGFloat = 0
         let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
-        return PreparedListMarker(line: line, label: label, width: max(1, width), ascent: ascent, descent: descent, checked: context.checked)
+        let imageBounds = CTLineGetImageBounds(line, nil)
+        let visualAscent = imageBounds.isNull || imageBounds.isEmpty ? ascent : imageBounds.maxY
+        let visualDescent = imageBounds.isNull || imageBounds.isEmpty ? descent : -imageBounds.minY
+        return PreparedListMarker(line: line, label: label, width: max(1, width), ascent: visualAscent, descent: visualDescent, checked: context.checked)
     }
 
     private func atomAppearance(
@@ -826,7 +843,7 @@ final class CoreTextProseLayoutEngine {
         if nodeType == "mention" {
             let values = jsonDictionary(attrsJSON)
             let localMention = (values["mentionTheme"] as? [String: Any]).map(EditorMentionTheme.init(dictionary:))
-            let mention = theme.mention?.merged(with: localMention) ?? localMention
+            let mention = (theme.mention?.merged(with: localMention) ?? localMention)?.node
             var attributes = baseAttributes(paint)
             if let weight = mention?.fontWeight {
                 let font = ViewerFontEnvironment.shared.resolveFont(

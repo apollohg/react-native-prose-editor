@@ -204,7 +204,7 @@ final class PreparedProseBlock {
         160 + fragments.reduce(0) { $0 + $1.estimatedRetainedBytes }
     }
 
-    /// Compatibility initializer retained for Task 3 test seams.
+    /// Compatibility initializer retained for test seams.
     convenience init(line: CTLine, origin: CGPoint, range _: NSRange, bounds: CGRect) {
         self.init(fragments: [.init(kind: .text, line: line, origin: origin, bounds: bounds)], bounds: bounds)
     }

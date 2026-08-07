@@ -5,7 +5,6 @@
 #else
 #error "ReactNativeProseEditor Swift compatibility header is unavailable; verify the pod module name and consumer codegen"
 #endif
-#import <React/RCTComponent.h>
 #import <React/RCTConversions.h>
 
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerComponentDescriptor.h>
@@ -130,13 +129,14 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   return RoundedWidthPixels(contentFrame.size.width, layoutMetrics.pointScaleFactor).has_value();
 }
 
-std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
-  for (UIView *candidate = view; candidate != nil; candidate = candidate.superview) {
-    if (RCTIsReactRootView(@(candidate.tag))) {
-      return static_cast<int64_t>(candidate.tag);
-    }
-  }
-  return std::nullopt;
+int64_t SurfaceIdFromState(
+    const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
+  return state ? static_cast<int64_t>(state->getData().surfaceId) : 0;
+}
+
+int64_t ComponentTagFromState(
+    const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
+  return state ? static_cast<int64_t>(state->getData().componentTag) : 0;
 }
 
 } // namespace
@@ -162,6 +162,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   id _imageResourceObserver;
   id _fontEnvironmentObserver;
   uint64_t _lastFontEnvironmentRevision;
+  CGFloat _fontEnvironmentScale;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -194,6 +195,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                   [weakSelf handleImageResourceFailure:note];
                 }];
     PREPViewerFontEnvironment *fontEnvironment = [PREPViewerFontEnvironment sharedEnvironment];
+    [fontEnvironment refreshContentSizeCategory];
+    _fontEnvironmentScale = [fontEnvironment currentFontScale];
     _fontEnvironmentObserver = [[NSNotificationCenter defaultCenter]
         addObserverForName:PREPViewerFontEnvironment.didInvalidateNotification
                     object:fontEnvironment
@@ -279,6 +282,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     [self beginNewGenerationTerminatingCurrentLease:leaseChanged];
   }
   _viewerState = nextState;
+  if (NativeFontScale(_viewerState) != _fontEnvironmentScale) {
+    [self invalidateNativeFontEnvironmentWithScale:_fontEnvironmentScale];
+  }
   [self beginSemanticImageGenerationIfPossible];
   if (_hasReceivedUsableLayoutMetrics) {
     [self installMeasuredArtifactIfAttached];
@@ -311,11 +317,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     [_drawingView cancelConfiguredImages];
     return;
   }
-  // Fabric can provide props, state, and layout metrics before the view is
-  // attached to its React root. The update callbacks intentionally defer in
-  // that state; attachment is the first point where the surface token is
-  // resolvable. The shared seam is idempotent, so this cannot duplicate an
-  // installation or error event after a normal layout-driven mount.
+  // Fabric can provide props, state, and metrics before native attachment.
   [self installMeasuredArtifactIfAttached];
   [_drawingView updateConfiguredImagesForVisibleWindow];
 }
@@ -442,11 +444,11 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   const auto contentFrame = _layoutMetrics.getContentFrame();
   const CGFloat width = contentFrame.size.width;
   const CGFloat scale = _layoutMetrics.pointScaleFactor;
-  const auto surfaceId = SurfaceIdForComponentView(self);
-  if (!surfaceId) {
+  const auto surfaceId = SurfaceIdFromState(_viewerState);
+  const auto componentTag = ComponentTagFromState(_viewerState);
+  if (surfaceId <= 0 || componentTag <= 0) {
     return;
   }
-  const auto componentTag = static_cast<int64_t>(self.tag);
   const auto leaseHandle = LeaseHandle(_viewerState);
   // State is the Fabric handoff. Until the shadow node has committed its
   // opaque handle this view has no authority to acquire or release anything.
@@ -483,11 +485,11 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // delayed G1 Yoga callbacks are rejected, while an already-running G2
   // measurement remains permitted to publish its exact handoff.
   [[PREPPreparedProseLayoutRegistry sharedRegistry]
-      activateFabricGenerationSurfaceId:*surfaceId
+      activateFabricGenerationSurfaceId:surfaceId
                             componentTag:componentTag
                       generationIdentity:generation
                           leaseHandle:leaseHandle];
-  if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
+  if (_hasOwnedSurface && _ownedSurfaceId == surfaceId &&
       _ownedComponentTag == componentTag &&
       [_ownedGeneration isEqualToString:generation] &&
       _ownedLeaseHandle == leaseHandle &&
@@ -495,7 +497,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     return;
   }
   if (_hasOwnedSurface &&
-      (_ownedSurfaceId != *surfaceId || _ownedComponentTag != componentTag ||
+      (_ownedSurfaceId != surfaceId || _ownedComponentTag != componentTag ||
        _ownedLeaseHandle != leaseHandle)) {
     // A reused view may have a different root/token before the previous
     // lifecycle callback finishes. Release only the persisted owner, never
@@ -503,7 +505,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     [self releaseFabricOwnershipTerminatingLease:NO];
   }
   const BOOL preservesMountedArtifactForReplacement =
-            _hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
+            _hasOwnedSurface && _ownedSurfaceId == surfaceId &&
       _ownedComponentTag == componentTag &&
       _ownedLeaseHandle == leaseHandle &&
       _installedMeasurementIdentity != nil;
@@ -521,7 +523,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // Establish ownership before acquisition. A mount miss otherwise leaves a
   // measurement-pinned compiler result or failure alive with no installed
   // component to release it.
-  _ownedSurfaceId = *surfaceId;
+  _ownedSurfaceId = surfaceId;
   _ownedComponentTag = componentTag;
   _ownedLeaseHandle = leaseHandle;
   _hasOwnedSurface = YES;
@@ -622,7 +624,10 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   if (!revision || revision.unsignedLongLongValue <= _lastFontEnvironmentRevision) return;
   _lastFontEnvironmentRevision = revision.unsignedLongLongValue;
   NSNumber *scale = note.userInfo[@"scale"];
-  [self invalidateNativeFontEnvironmentWithScale:scale.doubleValue];
+  _fontEnvironmentScale = std::isfinite(scale.doubleValue) && scale.doubleValue > 0
+      ? scale.doubleValue
+      : 1;
+  [self invalidateNativeFontEnvironmentWithScale:_fontEnvironmentScale];
 }
 
 - (void)handleImageResourceFailure:(NSNotification *)note

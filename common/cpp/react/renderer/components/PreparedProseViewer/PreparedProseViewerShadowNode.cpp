@@ -70,10 +70,12 @@ ShadowNodeTraits PreparedProseViewerShadowNode::BaseTraits() {
 PreparedProseViewerShadowNode::ConcreteStateData
 PreparedProseViewerShadowNode::initialStateData(
     const Props::Shared& /*props*/,
-    const ShadowNodeFamily::Shared& /*family*/,
+    const ShadowNodeFamily::Shared& family,
     const ComponentDescriptor& /*componentDescriptor*/) {
   PreparedProseViewerState state;
   state.leaseHandle = NextFabricLeaseHandle();
+  state.surfaceId = family->getSurfaceId();
+  state.componentTag = family->getTag();
   state.leaseLifecycle = std::make_shared<PreparedProseViewerLeaseLifecycle>();
   return state;
 }

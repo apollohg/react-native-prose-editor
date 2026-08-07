@@ -521,6 +521,62 @@ final class PreparedProseLayoutTests: XCTestCase {
         )
     }
 
+    func testFabricMountAcceptsAOnePixelGridRoundingDifference() {
+        let registry = makeRegistry { document, key, width, scale in
+            try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let drawingView = PreparedProseDrawingView(frame: .zero)
+
+        let measured = registry.measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2,
+            fabricSurface: surface
+        )
+
+        XCTAssertTrue(
+            install(request, in: drawingView, surface: surface, registry: registry, width: 160.5)
+        )
+        XCTAssertTrue(drawingView.layout === measured)
+    }
+
+    func testFabricMountRejectsAWidthBeyondThePixelGridRoundingSlack() {
+        let registry = makeRegistry { document, key, width, scale in
+            try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+
+        _ = registry.measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2,
+            fabricSurface: surface
+        )
+
+        XCTAssertFalse(
+            install(
+                request,
+                in: PreparedProseDrawingView(frame: .zero),
+                surface: surface,
+                registry: registry,
+                width: 161
+            )
+        )
+    }
+
     func testIdenticalFabricGenerationsKeepSeparateSurfaceLeases() {
         let registry = makeRegistry { document, key, width, scale in
             try CoreTextProseLayoutEngine().prepare(

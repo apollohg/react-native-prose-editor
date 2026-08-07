@@ -2532,6 +2532,16 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         setNeedsLayout()
         if nextBehavior == .autoGrow {
             emitContentHeightIfNeeded(force: true)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.heightBehavior == .autoGrow else { return }
+                self.setNeedsLayout()
+                self.layoutIfNeeded()
+                let measuredHeight = self.richTextView.remeasureAutoGrowHeight()
+                guard measuredHeight > 0 else { return }
+                self.cachedAutoGrowContentHeight = measuredHeight
+                self.invalidateIntrinsicContentSize()
+                self.emitContentHeightIfNeeded(force: true, measuredHeight: measuredHeight)
+            }
         }
     }
 
@@ -3051,17 +3061,21 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     ) -> [String: Any]? {
         guard let editorId = v2CanonicalUInt64String(originatingEditorId),
               editorId != "0",
+              let nativeEditorId = UInt64(editorId),
               let data = updateJSON.data(using: .utf8),
               let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rawRevision = update["documentVersion"] as? String,
-              let documentRevision = v2CanonicalUInt64String(rawRevision)
+              let documentRevision = v2CanonicalUInt64String(rawRevision),
+              let revision = UInt64(documentRevision),
+              let atomicUpdateJSON = EditorV2Registry.adapter(forLegacyId: nativeEditorId)?
+                .atomicRenderJSON(matchingDocumentRevision: revision)
         else {
             return nil
         }
         return [
             "editorId": editorId,
             "documentRevision": documentRevision,
-            "updateJson": updateJSON,
+            "updateJson": atomicUpdateJSON,
         ]
     }
 

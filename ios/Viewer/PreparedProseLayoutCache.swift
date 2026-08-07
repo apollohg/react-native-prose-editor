@@ -4,6 +4,8 @@ import Foundation
 /// its immutable artifact with the LRU; lifecycle release owns a live
 /// handoff's retirement so its eventual mount cannot fall back to a cache.
 final class PreparedProseLayoutCache {
+    static let pixelGridRoundingSlackPixels = 1
+
     private final class Preparation {
         var result: Result<PreparedProseLayout, Error>?
     }
@@ -189,9 +191,17 @@ final class PreparedProseLayoutCache {
             return layout
         }
         let owner = FabricLeaseOwner(surface: surface, leaseHandle: leaseHandle)
-        guard let leaseKey = pendingLeaseKeysByOwner[owner]?.first,
-              mountKey(for: leaseKey.layout) == requestedMountKey,
-              let layout = pendingLeases[leaseKey]
+        guard let leaseKey = (pendingLeaseKeysByOwner[owner] ?? [])
+            .filter({
+                $0.layout.generationIdentity == requestedMountKey.generationIdentity
+                    && $0.layout.displayScaleBits == requestedMountKey.displayScaleBits
+                    && abs($0.layout.widthPixels - widthPixels) <= Self.pixelGridRoundingSlackPixels
+            })
+            .min(by: {
+                (abs($0.layout.widthPixels - widthPixels), $0.layout.widthPixels)
+                    < (abs($1.layout.widthPixels - widthPixels), $1.layout.widthPixels)
+            }),
+            let layout = pendingLeases[leaseKey]
         else { return nil }
 
         // A Fabric mount can only consume the Yoga handoff once. Do not fall

@@ -66,6 +66,7 @@ struct EditorListTheme {
     var itemSpacing: CGFloat?
     var markerColor: UIColor?
     var markerScale: CGFloat?
+    var markerGap: CGFloat?
 
     init(dictionary: [String: Any]) {
         indent = EditorTheme.cgFloat(dictionary["indent"])
@@ -73,6 +74,7 @@ struct EditorListTheme {
         itemSpacing = EditorTheme.cgFloat(dictionary["itemSpacing"])
         markerColor = EditorTheme.color(from: dictionary["markerColor"])
         markerScale = EditorTheme.cgFloat(dictionary["markerScale"])
+        markerGap = EditorTheme.cgFloat(dictionary["markerGap"])
     }
 }
 
@@ -153,24 +155,15 @@ struct EditorLinkTheme {
     }
 }
 
-struct EditorMentionTheme {
+struct EditorMentionNodeTheme {
     var textColor: UIColor?
     var backgroundColor: UIColor?
     var borderColor: UIColor?
     var borderWidth: CGFloat?
     var borderRadius: CGFloat?
     var fontWeight: String?
-    var popoverBackgroundColor: UIColor?
-    var popoverBorderColor: UIColor?
-    var popoverBorderWidth: CGFloat?
-    var popoverBorderRadius: CGFloat?
-    var popoverShadowColor: UIColor?
-    var optionTextColor: UIColor?
-    var optionSecondaryTextColor: UIColor?
-    var optionHighlightedBackgroundColor: UIColor?
-    var optionHighlightedTextColor: UIColor?
 
-    func merged(with override: EditorMentionTheme?) -> EditorMentionTheme {
+    func merged(with override: EditorMentionNodeTheme?) -> EditorMentionNodeTheme {
         guard let override else { return self }
         var merged = self
         merged.textColor = override.textColor ?? merged.textColor
@@ -179,19 +172,6 @@ struct EditorMentionTheme {
         merged.borderWidth = override.borderWidth ?? merged.borderWidth
         merged.borderRadius = override.borderRadius ?? merged.borderRadius
         merged.fontWeight = override.fontWeight ?? merged.fontWeight
-        merged.popoverBackgroundColor =
-            override.popoverBackgroundColor ?? merged.popoverBackgroundColor
-        merged.popoverBorderColor = override.popoverBorderColor ?? merged.popoverBorderColor
-        merged.popoverBorderWidth = override.popoverBorderWidth ?? merged.popoverBorderWidth
-        merged.popoverBorderRadius = override.popoverBorderRadius ?? merged.popoverBorderRadius
-        merged.popoverShadowColor = override.popoverShadowColor ?? merged.popoverShadowColor
-        merged.optionTextColor = override.optionTextColor ?? merged.optionTextColor
-        merged.optionSecondaryTextColor =
-            override.optionSecondaryTextColor ?? merged.optionSecondaryTextColor
-        merged.optionHighlightedBackgroundColor =
-            override.optionHighlightedBackgroundColor ?? merged.optionHighlightedBackgroundColor
-        merged.optionHighlightedTextColor =
-            override.optionHighlightedTextColor ?? merged.optionHighlightedTextColor
         return merged
     }
 
@@ -202,15 +182,101 @@ struct EditorMentionTheme {
         borderWidth = EditorTheme.cgFloat(dictionary["borderWidth"])
         borderRadius = EditorTheme.cgFloat(dictionary["borderRadius"])
         fontWeight = dictionary["fontWeight"] as? String
-        popoverBackgroundColor = EditorTheme.color(from: dictionary["popoverBackgroundColor"])
-        popoverBorderColor = EditorTheme.color(from: dictionary["popoverBorderColor"])
-        popoverBorderWidth = EditorTheme.cgFloat(dictionary["popoverBorderWidth"])
-        popoverBorderRadius = EditorTheme.cgFloat(dictionary["popoverBorderRadius"])
-        popoverShadowColor = EditorTheme.color(from: dictionary["popoverShadowColor"])
-        optionTextColor = EditorTheme.color(from: dictionary["optionTextColor"])
-        optionSecondaryTextColor = EditorTheme.color(from: dictionary["optionSecondaryTextColor"])
-        optionHighlightedBackgroundColor = EditorTheme.color(from: dictionary["optionHighlightedBackgroundColor"])
-        optionHighlightedTextColor = EditorTheme.color(from: dictionary["optionHighlightedTextColor"])
+    }
+}
+
+struct EditorMentionSuggestionOptionTheme {
+    var textColor: UIColor?
+    var secondaryTextColor: UIColor?
+    var backgroundColor: UIColor?
+    var borderColor: UIColor?
+    var borderWidth: CGFloat?
+    var borderRadius: CGFloat?
+    var fontWeight: String?
+    var highlightedBackgroundColor: UIColor?
+    var highlightedTextColor: UIColor?
+
+    func merged(with override: EditorMentionSuggestionOptionTheme?)
+        -> EditorMentionSuggestionOptionTheme
+    {
+        guard let override else { return self }
+        var merged = self
+        merged.textColor = override.textColor ?? merged.textColor
+        merged.secondaryTextColor = override.secondaryTextColor ?? merged.secondaryTextColor
+        merged.backgroundColor = override.backgroundColor ?? merged.backgroundColor
+        merged.borderColor = override.borderColor ?? merged.borderColor
+        merged.borderWidth = override.borderWidth ?? merged.borderWidth
+        merged.borderRadius = override.borderRadius ?? merged.borderRadius
+        merged.fontWeight = override.fontWeight ?? merged.fontWeight
+        merged.highlightedBackgroundColor =
+            override.highlightedBackgroundColor ?? merged.highlightedBackgroundColor
+        merged.highlightedTextColor = override.highlightedTextColor ?? merged.highlightedTextColor
+        return merged
+    }
+
+    init(dictionary: [String: Any]) {
+        textColor = EditorTheme.color(from: dictionary["textColor"])
+        secondaryTextColor = EditorTheme.color(from: dictionary["secondaryTextColor"])
+        backgroundColor = EditorTheme.color(from: dictionary["backgroundColor"])
+        borderColor = EditorTheme.color(from: dictionary["borderColor"])
+        borderWidth = EditorTheme.cgFloat(dictionary["borderWidth"])
+        borderRadius = EditorTheme.cgFloat(dictionary["borderRadius"])
+        fontWeight = dictionary["fontWeight"] as? String
+        highlightedBackgroundColor = EditorTheme.color(from: dictionary["highlightedBackgroundColor"])
+        highlightedTextColor = EditorTheme.color(from: dictionary["highlightedTextColor"])
+    }
+}
+
+struct EditorMentionSuggestionsTheme {
+    var backgroundColor: UIColor?
+    var borderColor: UIColor?
+    var borderWidth: CGFloat?
+    var borderRadius: CGFloat?
+    var shadowColor: UIColor?
+    var option: EditorMentionSuggestionOptionTheme?
+
+    func merged(with override: EditorMentionSuggestionsTheme?) -> EditorMentionSuggestionsTheme {
+        guard let override else { return self }
+        var merged = self
+        merged.backgroundColor = override.backgroundColor ?? merged.backgroundColor
+        merged.borderColor = override.borderColor ?? merged.borderColor
+        merged.borderWidth = override.borderWidth ?? merged.borderWidth
+        merged.borderRadius = override.borderRadius ?? merged.borderRadius
+        merged.shadowColor = override.shadowColor ?? merged.shadowColor
+        merged.option = merged.option?.merged(with: override.option) ?? override.option
+        return merged
+    }
+
+    init(dictionary: [String: Any]) {
+        backgroundColor = EditorTheme.color(from: dictionary["backgroundColor"])
+        borderColor = EditorTheme.color(from: dictionary["borderColor"])
+        borderWidth = EditorTheme.cgFloat(dictionary["borderWidth"])
+        borderRadius = EditorTheme.cgFloat(dictionary["borderRadius"])
+        shadowColor = EditorTheme.color(from: dictionary["shadowColor"])
+        option = (dictionary["option"] as? [String: Any]).map(
+            EditorMentionSuggestionOptionTheme.init(dictionary:)
+        )
+    }
+}
+
+struct EditorMentionTheme {
+    var node: EditorMentionNodeTheme?
+    var suggestions: EditorMentionSuggestionsTheme?
+
+    func merged(with override: EditorMentionTheme?) -> EditorMentionTheme {
+        guard let override else { return self }
+        var merged = self
+        merged.node = merged.node?.merged(with: override.node) ?? override.node
+        merged.suggestions =
+            merged.suggestions?.merged(with: override.suggestions) ?? override.suggestions
+        return merged
+    }
+
+    init(dictionary: [String: Any]) {
+        node = (dictionary["node"] as? [String: Any]).map(EditorMentionNodeTheme.init(dictionary:))
+        suggestions = (dictionary["suggestions"] as? [String: Any]).map(
+            EditorMentionSuggestionsTheme.init(dictionary:)
+        )
     }
 }
 

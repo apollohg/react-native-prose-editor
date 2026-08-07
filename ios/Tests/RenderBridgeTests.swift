@@ -2707,9 +2707,11 @@ final class RenderBridgeTests: XCTestCase {
         """
         let theme = EditorTheme(dictionary: [
             "mentions": [
-                "textColor": "#112233",
-                "backgroundColor": "#ddeeff",
-                "fontWeight": "bold",
+                "node": [
+                    "textColor": "#112233",
+                    "backgroundColor": "#ddeeff",
+                    "fontWeight": "bold",
+                ],
             ],
         ])
         let result = RenderBridge.renderElements(
@@ -2766,16 +2768,18 @@ final class RenderBridgeTests: XCTestCase {
                 "nodeType": "mention",
                 "label": "@Alice",
                 "docPos": 1,
-                "mentionTheme": {"textColor": "#445566"}
+                "mentionTheme": {"node": {"textColor": "#445566"}}
             },
             {"type": "blockEnd"}
         ]
         """
         let theme = EditorTheme(dictionary: [
             "mentions": [
-                "textColor": "#112233",
-                "backgroundColor": "#ddeeff",
-                "fontWeight": "bold",
+                "node": [
+                    "textColor": "#112233",
+                    "backgroundColor": "#ddeeff",
+                    "fontWeight": "bold",
+                ],
             ],
         ])
         let result = RenderBridge.renderElements(
