@@ -2367,6 +2367,25 @@ class NativeEditorExpoView(
         emitContentHeightIfNeeded(force = false)
     }
 
+    /**
+     * Auto-grow measures content-sized because RN's exact specs can be stale,
+     * zero, or oversized. The frame it actually assigns is only trustworthy
+     * here, so a taller one is filled now — otherwise the extra space a
+     * minimum height creates belongs to no view and cannot take a tap.
+     */
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (heightBehavior != EditorHeightBehavior.AUTO_GROW) return
+        val available = (bottom - top) - paddingTop - paddingBottom
+        if (available <= richTextView.height) return
+        richTextView.layout(
+            richTextView.left,
+            paddingTop,
+            richTextView.right,
+            paddingTop + available,
+        )
+    }
+
     private fun emitContentHeightIfNeeded(force: Boolean) {
         if (heightBehavior != EditorHeightBehavior.AUTO_GROW) return
         val editText = richTextView.editorEditText

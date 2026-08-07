@@ -72,7 +72,9 @@ class RichTextEditorView @JvmOverloads constructor(
         editorEditText = EditorEditText(context)
         editorScrollView = EditorScrollView(context).apply {
             clipToPadding = false
-            isFillViewport = false
+            // Short content must still fill the viewport, or taps below the
+            // last line land on the scroll container and never focus.
+            isFillViewport = true
         }
         editorViewport = FrameLayout(context)
         remoteSelectionOverlayView = RemoteSelectionOverlayView(context)
@@ -308,6 +310,24 @@ class RichTextEditorView @JvmOverloads constructor(
             else -> desiredHeight
         }
         setMeasuredDimension(measuredWidth, measuredHeight)
+    }
+
+    /** Fills a host-imposed floor so its extra space stays tappable. */
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (heightBehavior != EditorHeightBehavior.AUTO_GROW) return
+        val available = (bottom - top) - paddingTop - paddingBottom
+        if (available <= editorViewport.height) return
+        editorViewport.measure(
+            MeasureSpec.makeMeasureSpec(editorViewport.width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(available, MeasureSpec.EXACTLY),
+        )
+        editorViewport.layout(
+            editorViewport.left,
+            paddingTop,
+            editorViewport.right,
+            paddingTop + available,
+        )
     }
 
     private fun updateScrollContainerAppearance() {

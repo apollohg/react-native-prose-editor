@@ -3652,4 +3652,108 @@ class NativeEditorExpoViewTest {
         ) as AppContext
         return TestExpoContext(reactContext, appContext)
     }
+
+    @Test
+    fun `auto grow honours a host minimum height so the whole box is tappable`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        view.onContentHeightChangeForTesting = { }
+        view.setHeightBehavior("autoGrow")
+        editText.applyUpdateJSON(renderUpdateJson("One line"), notifyListener = false)
+
+        val widthSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            360,
+            android.view.View.MeasureSpec.EXACTLY
+        )
+        val minHeightSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            AUTO_GROW_MIN_HEIGHT_PX,
+            android.view.View.MeasureSpec.EXACTLY
+        )
+        view.measure(widthSpec, minHeightSpec)
+        view.layout(0, 0, 360, AUTO_GROW_MIN_HEIGHT_PX)
+
+        // Auto-grow still measures content-sized on purpose; it is the frame
+        // RN assigns that must be covered.
+        assertTrue(view.measuredHeight < AUTO_GROW_MIN_HEIGHT_PX)
+        assertEquals(
+            "a tap anywhere in the minimum-height box must reach the field",
+            AUTO_GROW_MIN_HEIGHT_PX,
+            editText.height
+        )
+    }
+
+    @Test
+    fun `auto grow reports content height unchanged by a host minimum height`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        val events = mutableListOf<Map<String, Any>>()
+        view.onContentHeightChangeForTesting = { events.add(it) }
+        view.setHeightBehavior("autoGrow")
+        editText.applyUpdateJSON(renderUpdateJson("One line"), notifyListener = false)
+
+        val widthSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            360,
+            android.view.View.MeasureSpec.EXACTLY
+        )
+        val wrapSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            0,
+            android.view.View.MeasureSpec.UNSPECIFIED
+        )
+        view.measure(widthSpec, wrapSpec)
+        view.layout(0, 0, 360, view.measuredHeight)
+        val naturalHeight = events.last()["contentHeight"] as Int
+        assertTrue(naturalHeight < AUTO_GROW_MIN_HEIGHT_PX)
+
+        events.clear()
+        val minHeightSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            AUTO_GROW_MIN_HEIGHT_PX,
+            android.view.View.MeasureSpec.EXACTLY
+        )
+        view.measure(widthSpec, minHeightSpec)
+        view.layout(0, 0, 360, AUTO_GROW_MIN_HEIGHT_PX)
+
+        // Re-emitting the floor as content height would pin the editor open
+        // and it could never shrink back when the text is deleted.
+        events.forEach { event ->
+            assertEquals(
+                "the host floor must not be reported as content height",
+                naturalHeight,
+                event["contentHeight"]
+            )
+        }
+    }
+
+    @Test
+    fun `auto grow still grows past a host minimum height`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        view.onContentHeightChangeForTesting = { }
+        view.setHeightBehavior("autoGrow")
+        editText.applyUpdateJSON(
+            renderUpdateJson((1..60).joinToString("\n") { "line $it" }),
+            notifyListener = false
+        )
+
+        val widthSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            360,
+            android.view.View.MeasureSpec.EXACTLY
+        )
+        val wrapSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            0,
+            android.view.View.MeasureSpec.UNSPECIFIED
+        )
+        view.measure(widthSpec, wrapSpec)
+
+        assertTrue(
+            "tall content must still drive the measured height (was ${view.measuredHeight})",
+            view.measuredHeight > AUTO_GROW_MIN_HEIGHT_PX
+        )
+    }
+
+    private companion object {
+        const val AUTO_GROW_MIN_HEIGHT_PX = 900
+    }
 }

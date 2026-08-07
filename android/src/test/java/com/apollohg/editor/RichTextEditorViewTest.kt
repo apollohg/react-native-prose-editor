@@ -1763,4 +1763,52 @@ class RichTextEditorViewTest {
             trailingBlankLines <= 1
         )
     }
+
+    @Test
+    fun `short content in a tall box keeps the whole viewport tappable`() {
+        val richTextEditorView = RichTextEditorView(RuntimeEnvironment.getApplication())
+        richTextEditorView.editorEditText.setText("One line")
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val tallSpec = View.MeasureSpec.makeMeasureSpec(MIN_HEIGHT_PX, View.MeasureSpec.EXACTLY)
+        richTextEditorView.measure(widthSpec, tallSpec)
+        richTextEditorView.layout(0, 0, 600, MIN_HEIGHT_PX)
+
+        val editText = richTextEditorView.editorEditText
+        val scrollView = richTextEditorView.editorScrollView
+        val usableHeight = scrollView.height - scrollView.paddingTop - scrollView.paddingBottom
+        assertTrue(
+            "the scroll viewport must be taller than one line for this fixture " +
+                "(viewport=$usableHeight, field=${editText.height})",
+            usableHeight > editText.lineHeight * 2,
+        )
+        assertEquals(
+            "a tap below the last line must land on the field, not the scroll container",
+            usableHeight,
+            editText.height,
+        )
+    }
+
+    @Test
+    fun `content taller than the box still scrolls`() {
+        val richTextEditorView = RichTextEditorView(RuntimeEnvironment.getApplication())
+        richTextEditorView.editorEditText.setText((1..80).joinToString("\n") { "line $it" })
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val tallSpec = View.MeasureSpec.makeMeasureSpec(MIN_HEIGHT_PX, View.MeasureSpec.EXACTLY)
+        richTextEditorView.measure(widthSpec, tallSpec)
+        richTextEditorView.layout(0, 0, 600, MIN_HEIGHT_PX)
+
+        val editText = richTextEditorView.editorEditText
+        val scrollView = richTextEditorView.editorScrollView
+        assertTrue(
+            "long content must not be clamped to the viewport " +
+                "(viewport=${scrollView.height}, field=${editText.height})",
+            editText.height > scrollView.height,
+        )
+    }
+
+    private companion object {
+        const val MIN_HEIGHT_PX = 900
+    }
 }
