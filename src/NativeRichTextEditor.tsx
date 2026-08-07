@@ -24,11 +24,13 @@ import {
     normalizeNativeEditorV2DecimalId,
     normalizeNativeEditorV2RenderUpdateValue,
     requireNativeEditorV2U32,
+    validEditorMentionTheme,
     type ActiveState,
     type DocumentJSON,
     type HistoryState,
     type NativeEditorDocumentHandle,
     type NativeEditorV2AtomicRenderSnapshot,
+    type NativeEditorV2PositionAffinity,
     type ReadonlyActiveState,
     type Selection,
 } from './NativeEditorBridge';
@@ -40,6 +42,7 @@ import {
     EditorToolbar,
     EditorToolbarFrameOwnerProvider,
     setActiveEditorToolbarFrameOwnerForEditor,
+    setEditorToolbarMentionState,
     useEditorToolbarFrames,
     type EditorToolbarCommand,
     type EditorToolbarFrame,
@@ -49,12 +52,21 @@ import {
     type EditorToolbarItem,
     type EditorToolbarListType,
 } from './EditorToolbar';
-import { serializeEditorTheme, type EditorTheme } from './EditorTheme';
+import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
 import {
     serializeEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
-import { serializeEditorAddons, type EditorAddons } from './addons';
+import {
+    buildMentionFragmentJson,
+    normalizeEditorAddons,
+    serializeEditorAddons,
+    type EditorAddonEvent,
+    type EditorAddons,
+    type MentionQueryChangeEvent,
+    type MentionSelectionAttrsEvent,
+    type MentionSuggestion,
+} from './addons';
 import {
     buildImageFragmentJson,
     IMAGE_NODE_NAME,
@@ -158,6 +170,23 @@ const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
 const IMAGE_TOOLBAR_ACTION_KEY = '__native-editor-image__';
 let nextNativeEditorToolbarFrameOwnerId = 1;
 
+function mergeMentionSuggestionTheme(
+    baseTheme: EditorMentionTheme | undefined,
+    resolvedTheme: EditorMentionTheme | undefined
+): EditorMentionTheme | undefined {
+    if (baseTheme == null) return resolvedTheme;
+    if (resolvedTheme == null) return baseTheme;
+
+    return {
+        node: { ...baseTheme.node, ...resolvedTheme.node },
+        suggestions: {
+            ...baseTheme.suggestions,
+            ...resolvedTheme.suggestions,
+            option: { ...baseTheme.suggestions?.option, ...resolvedTheme.suggestions?.option },
+        },
+    };
+}
+
 function allocateToolbarFrameOwnerId(): number {
     const ownerId = nextNativeEditorToolbarFrameOwnerId;
     nextNativeEditorToolbarFrameOwnerId += 1;
@@ -224,6 +253,10 @@ function parseActiveStateFromUpdate(value: unknown): ActiveState | null {
 
 function isRevisionMismatchError(error: unknown): boolean {
     return error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH';
+}
+
+function isPositionInvalidError(error: unknown): boolean {
+    return error instanceof NativeEditorV2OperationError && error.code === 'POSITION_INVALID';
 }
 
 interface NativeCommitPayload {
@@ -440,10 +473,24 @@ function useSerializedValue<T>(
     return serialized;
 }
 
+/**
+ * How the editor handles content taller than its frame: `'fixed'` scrolls
+ * internally, `'autoGrow'` grows the view to fit.
+ */
 export type NativeRichTextEditorHeightBehavior = 'fixed' | 'autoGrow';
+/**
+ * Where the toolbar lives: `'keyboard'` attaches the native toolbar to the
+ * keyboard, `'inline'` renders the JavaScript `EditorToolbar` below the editor.
+ */
 export type NativeRichTextEditorToolbarPlacement = 'keyboard' | 'inline';
+/**
+ * What an external `valueJSON` change does to undo history: `'replace'`
+ * records one undoable step, `'reset'` clears history entirely.
+ */
 export type NativeRichTextEditorValueJSONUpdateMode = 'replace' | 'reset';
+/** Native keyboard auto-capitalization behavior. */
 export type NativeRichTextEditorAutoCapitalize = 'none' | 'sentences' | 'words' | 'characters';
+/** Native keyboard layout. Values not supported by a platform fall back to its default. */
 export type NativeRichTextEditorKeyboardType =
     | 'default'
     | 'email-address'
@@ -460,13 +507,25 @@ export type NativeRichTextEditorKeyboardType =
     | 'visible-password'
     | 'ascii-capable-number-pad';
 
+/**
+ * One remote collaborator's caret or selection, drawn as a native overlay.
+ * `useYjsCollaboration` builds these from awareness and passes them through
+ * `editorBindings`.
+ */
 export interface RemoteSelectionDecoration {
+    /** Peer identity. Also the overlay's React-style key. */
     clientId: string;
+    /** Fixed end of the remote selection, in engine doc positions. */
     anchor: number;
+    /** Moving end. Equals `anchor` for a collapsed remote caret. */
     head: number;
+    /** Caret and label color, as a color string. */
     color: string;
+    /** Name shown on the caret label. */
     name?: string;
     avatarUrl?: string;
+    /** Whether that peer's editor holds focus. The caret bar is drawn only when
+     *  true; the highlighted range is drawn either way. Absent counts as false. */
     isFocused?: boolean;
 }
 
@@ -635,6 +694,8 @@ export interface NativeRichTextEditorRef {
     getContent(): string;
     /** Get the current content as ProseMirror JSON. */
     getContentJson(): DocumentJSON;
+    /** Ask the Rust editor core whether the current document is empty. */
+    getIsEmpty(): boolean;
     /** Get the plain text content (no markup). */
     getTextContent(): string;
     /** Get the current caret rectangle in editor-local layout coordinates. */
@@ -775,7 +836,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [nativeErrorBinding]
         );
 
-        // ── Prop refs ───────────────────────────────────────────────
         const onSelectionChangeRef = useRef(onSelectionChange);
         onSelectionChangeRef.current = onSelectionChange;
         const onActiveStateChangeRef = useRef(onActiveStateChange);
@@ -792,7 +852,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         onRequestImageRef.current = onRequestImage;
         const onLocalCommitRef = useRef(onLocalCommit);
         onLocalCommitRef.current = onLocalCommit;
-        // ── Engine-observed interactive state ───────────────────────
+        const addonsRef = useRef(addons);
+        addonsRef.current = addons;
         const [activeState, setActiveState] = useState<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
         const [pushedUpdate, setPushedUpdate] = useState<{
             json: string;
@@ -801,6 +862,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         } | null>(null);
         const [autoGrowHeight, setAutoGrowHeight] = useState<number | null>(null);
         const [isFocused, setIsFocused] = useState(false);
+        const [mentionQuery, setMentionQuery] = useState<MentionQueryChangeEvent | null>(null);
         const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
         const activeStateKeyRef = useRef<string | null>(null);
         const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
@@ -856,6 +918,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             latestRevisionRef.current = document.documentRevision;
         }
 
+        useEffect(() => {
+            if (heightBehavior !== 'autoGrow') {
+                setAutoGrowHeight(null);
+            }
+        }, [heightBehavior]);
+
         // A changed handle initially shares the previous hook render. Do not
         // trust that render's revision: establish the new mutation base only by
         // reading the currently bound handle after the rebind commits.
@@ -870,6 +938,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         useEffect(
             () => () => {
                 setActiveEditorToolbarFrameOwnerForEditor(toolbarFrameOwnerId, false);
+                setEditorToolbarMentionState(toolbarFrameOwnerId, null);
             },
             [editorId, toolbarFrameOwnerId]
         );
@@ -933,15 +1002,16 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [applyTypedUpdateState]
         );
 
-        // ── View update pushes (JS-driven engine changes only) ──────
-
         const pushEngineUpdateToView = useCallback(() => {
             if (documentHandle.isDestroyed) return;
             const sourceEditorId = documentHandle.editorId;
             const sourceBindingGeneration = pushedUpdateBindingGenerationRef.current;
-            const isCurrentSource = () =>
-                sourceEditorId === currentPushedUpdateEditorIdRef.current &&
-                sourceBindingGeneration === pushedUpdateBindingGenerationRef.current;
+            const isCurrentSource = () => {
+                const current =
+                    sourceEditorId === currentPushedUpdateEditorIdRef.current &&
+                    sourceBindingGeneration === pushedUpdateBindingGenerationRef.current;
+                return current;
+            };
             const allocation = allocateEditorUpdateRevision(pushRevisionRef.current);
             if ('error' in allocation) {
                 bridge._emitAutonomousError(allocation.error);
@@ -954,7 +1024,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             if (!isCurrentSource()) return;
             const updateJson = JSON.stringify(snapshot);
             if (!isCurrentSource()) return;
-            if (!applyTypedUpdateState(snapshot, isCurrentSource)) return;
+            if (!applyTypedUpdateState(snapshot, isCurrentSource)) {
+                return;
+            }
             if (!isCurrentSource()) return;
             lastPushedEngineRevisionRef.current = snapshot.documentVersion;
             if (!isCurrentSource()) return;
@@ -971,7 +1043,10 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         // Drop it when this component rebinds, so no old session state reaches
         // the next native view binding.
         useEffect(() => {
-            setPushedUpdate((current) => (current?.editorId === editorId ? current : null));
+            setPushedUpdate((current) => {
+                if (current == null || current.editorId === editorId) return current;
+                return null;
+            });
         }, [editorId]);
 
         // After a JS-driven engine change (controlled apply, remote commit,
@@ -983,7 +1058,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             // The document hook refreshes its state after the rebind commit. Its
             // first render can therefore still contain A's revision; do not let
             // that stale snapshot establish B's initial-observation state.
-            if (didRebindRevisionScope) return;
+            if (didRebindRevisionScope) {
+                return;
+            }
             if (!document.isReady || document.documentRevision == null) return;
             const revision = document.documentRevision;
             if (!didObserveInitialRevisionRef.current) {
@@ -991,7 +1068,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 lastPushedEngineRevisionRef.current = revision;
                 return;
             }
-            if (revision === lastPushedEngineRevisionRef.current) return;
+            if (revision === lastPushedEngineRevisionRef.current) {
+                return;
+            }
             if (revision === lastNativeDrivenRevisionRef.current) {
                 lastPushedEngineRevisionRef.current = revision;
                 return;
@@ -1008,7 +1087,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             pushEngineUpdateToView,
         ]);
 
-        // ── Engine mutation path (ref commands + toolbar requests) ──
         const afterLocalEngineMutation = useCallback(() => {
             onLocalCommitRef.current?.();
             document.refresh();
@@ -1144,7 +1222,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [applyEngineCommand]
         );
 
-        // ── Link / image request flows ──────────────────────────────
         const openLinkRequest = useCallback(() => {
             const linkAttrs = activeStateRef.current.markAttrs?.link;
             onRequestLinkRef.current?.({
@@ -1163,7 +1240,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             });
         }, [commandInsertImage]);
 
-        // ── Ref surface ─────────────────────────────────────────────
         const nativeViewRef = useRef<NativeEditorViewHandle | null>(null);
         useImperativeHandle(
             ref,
@@ -1192,6 +1268,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 clearContent: document.clearContent,
                 getContent: document.getContent,
                 getContentJson: document.getContentJson,
+                getIsEmpty: document.getIsEmpty,
                 getTextContent: document.getTextContent,
                 async getCaretRect(): Promise<NativeRichTextEditorCaretRect | null> {
                     const nativeView = nativeViewRef.current;
@@ -1222,7 +1299,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             ]
         );
 
-        // ── Native event handlers ───────────────────────────────────
         const isForThisEditor = useCallback(
             (payload: { editorId: string }) => payload.editorId === editorId,
             [editorId]
@@ -1372,17 +1448,370 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             ]
         );
 
+        const resolveMentionSelectionAttrs = useCallback(
+            (selectionEvent: MentionSelectionAttrsEvent): Record<string, unknown> => {
+                let resolvedAttrs: Record<string, unknown> | null | undefined;
+                try {
+                    resolvedAttrs =
+                        addonsRef.current?.mentions?.resolveSelectionAttrs?.(selectionEvent);
+                } catch (error) {
+                    if (__DEV__) {
+                        console.error(
+                            'NativeRichTextEditor: mentions.resolveSelectionAttrs threw',
+                            error
+                        );
+                    }
+                }
+                return isRecord(resolvedAttrs)
+                    ? { ...selectionEvent.attrs, ...resolvedAttrs }
+                    : selectionEvent.attrs;
+            },
+            []
+        );
+
+        const resolveMentionTheme = useCallback(
+            (selectionEvent: MentionSelectionAttrsEvent): EditorMentionTheme | undefined => {
+                let resolvedTheme: unknown;
+                try {
+                    resolvedTheme = addonsRef.current?.mentions?.resolveTheme?.(selectionEvent);
+                } catch (error) {
+                    if (__DEV__) {
+                        console.error('NativeRichTextEditor: mentions.resolveTheme threw', error);
+                    }
+                }
+                if (resolvedTheme === undefined || resolvedTheme === null) return undefined;
+                // A rejected theme is dropped rather than written into the
+                // document: every later renderUpdate revalidates it, so one bad
+                // value would make the content permanently unrenderable.
+                if (!validEditorMentionTheme(resolvedTheme)) {
+                    if (__DEV__) {
+                        console.error(
+                            'NativeRichTextEditor: mentions.resolveTheme did not return an EditorMentionTheme; ignoring it',
+                            resolvedTheme
+                        );
+                    }
+                    return undefined;
+                }
+                return resolvedTheme;
+            },
+            []
+        );
+
+        const resolveMentionInsertionAttrs = useCallback(
+            (selectionEvent: MentionSelectionAttrsEvent): Record<string, unknown> => {
+                const attrs = resolveMentionSelectionAttrs(selectionEvent);
+                const resolvedTheme = resolveMentionTheme({ ...selectionEvent, attrs });
+                return resolvedTheme != null ? { ...attrs, mentionTheme: resolvedTheme } : attrs;
+            },
+            [resolveMentionSelectionAttrs, resolveMentionTheme]
+        );
+
+        const insertMentionSuggestion = useCallback(
+            (request: {
+                trigger: string;
+                suggestion: MentionSuggestion;
+                attrs: Record<string, unknown>;
+                range: { anchor: number; head: number };
+                documentVersion?: string;
+            }) => {
+                const mentions = addonsRef.current?.mentions;
+                if (!mentions || !editableRef.current) return;
+
+                const snapshot = bridge.renderUpdate({
+                    anchor: request.range.anchor,
+                    head: request.range.head,
+                });
+                if (
+                    snapshot.selection.type !== 'text' ||
+                    (request.documentVersion != null &&
+                        request.documentVersion !== snapshot.documentVersion)
+                ) {
+                    return;
+                }
+                const markAttrs = Object.fromEntries(
+                    Object.entries(snapshot.activeState.markAttrs).map(([mark, attrs]) => [
+                        mark,
+                        { ...attrs },
+                    ])
+                );
+                const callbackEvent: MentionSelectionAttrsEvent = {
+                    trigger: request.trigger,
+                    suggestion: request.suggestion,
+                    attrs: request.attrs,
+                    markAttrs,
+                    range: request.range,
+                    documentVersion: snapshot.documentVersion,
+                };
+                const attrs = resolveMentionInsertionAttrs(callbackEvent);
+                // Selection envelopes address scalars, not document positions.
+                const anchorScalar = snapshot.selection.anchorScalar;
+                const headScalar = snapshot.selection.headScalar;
+                if (
+                    documentHandle.isDestroyed ||
+                    currentPushedUpdateEditorIdRef.current !== documentHandle.editorId ||
+                    anchorScalar == null ||
+                    headScalar == null
+                ) {
+                    return;
+                }
+
+                // Affinity policy mirrors the native adapters and the engine's
+                // own cursor resolution: a collapsed caret prefers After with a
+                // deterministic Before fallback at text-boundary positions; a
+                // range uses Before. The fallback changes only the stickiness
+                // of the SAME position — it is not a guessed-position retry.
+                const collapsed = anchorScalar === headScalar;
+                const syncSelection = (affinity: NativeEditorV2PositionAffinity) =>
+                    bridge.setSelection({
+                        baseDocumentRevision: snapshot.documentVersion,
+                        selection: {
+                            type: 'text',
+                            anchor: { offset: anchorScalar, kind: 'scalar', affinity },
+                            head: { offset: headScalar, kind: 'scalar', affinity },
+                        },
+                    });
+
+                try {
+                    try {
+                        syncSelection(collapsed ? 'after' : 'before');
+                    } catch (error) {
+                        if (!collapsed || !isPositionInvalidError(error)) throw error;
+                        syncSelection('before');
+                    }
+                    const outcome = bridge.applyCommand({
+                        baseDocumentRevision: snapshot.documentVersion,
+                        command: {
+                            type: 'insertContentJson',
+                            json: buildMentionFragmentJson(attrs, documentDescriptor, {
+                                trailingSpace: true,
+                            }),
+                        },
+                    });
+                    if (outcome.type !== 'transaction' || !outcome.changed) return;
+                    latestRevisionRef.current = outcome.documentRevision;
+                } catch (error) {
+                    if (isRevisionMismatchError(error)) {
+                        document.refresh();
+                        return;
+                    }
+                    throw error;
+                }
+
+                afterLocalEngineMutation();
+                mentions.onSelect?.({
+                    trigger: request.trigger,
+                    suggestion: request.suggestion,
+                    attrs,
+                    documentVersion: snapshot.documentVersion,
+                });
+            },
+            [
+                afterLocalEngineMutation,
+                bridge,
+                document,
+                documentDescriptor,
+                documentHandle,
+                resolveMentionInsertionAttrs,
+            ]
+        );
+
         const handleAddonEvent = useCallback(
             (event: NativeSyntheticEvent<NativeAddonEvent>) => {
                 if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
-                // Addon (mention) queries are served natively in v2; there is no
-                // JS suggestion feed on the document-handle surface.
+                let parsed: EditorAddonEvent;
+                try {
+                    const value = JSON.parse(event.nativeEvent.eventJson) as unknown;
+                    if (!isRecord(value) || typeof value.type !== 'string') return;
+                    parsed = value as unknown as EditorAddonEvent;
+                } catch {
+                    return;
+                }
+
+                const mentions = addonsRef.current?.mentions;
+                if (!mentions) return;
+                const documentVersion =
+                    typeof parsed.documentVersion === 'string' ? parsed.documentVersion : undefined;
+
+                if (parsed.type === 'mentionsQueryChange') {
+                    if (
+                        typeof parsed.query !== 'string' ||
+                        typeof parsed.trigger !== 'string' ||
+                        typeof parsed.isActive !== 'boolean' ||
+                        !isRecord(parsed.range) ||
+                        typeof parsed.range.anchor !== 'number' ||
+                        typeof parsed.range.head !== 'number'
+                    ) {
+                        return;
+                    }
+                    const queryEvent: MentionQueryChangeEvent = {
+                        query: parsed.query,
+                        trigger: parsed.trigger,
+                        range: parsed.range,
+                        isActive: parsed.isActive,
+                        ...(documentVersion ? { documentVersion } : {}),
+                    };
+                    mentions.onQueryChange?.(queryEvent);
+                    setMentionQuery(parsed.isActive ? queryEvent : null);
+                    return;
+                }
+
+                if (parsed.type === 'mentionsSelect') {
+                    if (
+                        typeof parsed.trigger !== 'string' ||
+                        typeof parsed.suggestionKey !== 'string' ||
+                        !isRecord(parsed.attrs)
+                    ) {
+                        return;
+                    }
+                    const suggestion = mentions.suggestions?.find(
+                        (candidate) => candidate.key === parsed.suggestionKey
+                    );
+                    if (!suggestion) return;
+                    mentions.onSelect?.({
+                        trigger: parsed.trigger,
+                        suggestion,
+                        attrs: parsed.attrs,
+                        ...(documentVersion ? { documentVersion } : {}),
+                    });
+                    return;
+                }
+
+                if (
+                    parsed.type !== 'mentionsSelectRequest' ||
+                    typeof parsed.trigger !== 'string' ||
+                    typeof parsed.suggestionKey !== 'string' ||
+                    !isRecord(parsed.attrs) ||
+                    !isRecord(parsed.range) ||
+                    !Number.isInteger(parsed.range.anchor) ||
+                    !Number.isInteger(parsed.range.head) ||
+                    parsed.range.anchor < 0 ||
+                    parsed.range.head < 0 ||
+                    parsed.range.anchor > 0xffff_ffff ||
+                    parsed.range.head > 0xffff_ffff
+                ) {
+                    return;
+                }
+                const suggestion = mentions.suggestions?.find(
+                    (candidate) => candidate.key === parsed.suggestionKey
+                );
+                if (!suggestion) return;
+
+                insertMentionSuggestion({
+                    trigger: parsed.trigger,
+                    suggestion,
+                    attrs: parsed.attrs,
+                    range: parsed.range,
+                    documentVersion,
+                });
             },
-            [documentHandle, isForThisEditor]
+            [documentHandle, insertMentionSuggestion, isForThisEditor]
         );
 
-        // ── Serialized view props ───────────────────────────────────
-        const themeJson = useSerializedValue(theme, serializeEditorTheme);
+        const handleMentionSuggestionPress = useCallback(
+            (suggestion: MentionSuggestion) => {
+                if (mentionQuery == null) return;
+                const normalized = normalizeEditorAddons(
+                    addonsRef.current
+                )?.mentions?.suggestions.find((candidate) => candidate.key === suggestion.key);
+                if (normalized == null) return;
+
+                setMentionQuery(null);
+                insertMentionSuggestion({
+                    trigger: mentionQuery.trigger,
+                    suggestion,
+                    attrs: normalized.attrs,
+                    range: mentionQuery.range,
+                    documentVersion: mentionQuery.documentVersion,
+                });
+            },
+            [insertMentionSuggestion, mentionQuery]
+        );
+
+        const mentionSuggestions = addons?.mentions?.suggestions;
+        const mentionSuggestionTheme = addons?.mentions?.theme;
+        const shouldPublishMentionSuggestions =
+            editable && isFocused && mentionQuery != null && (mentionSuggestions?.length ?? 0) > 0;
+
+        const mentionSuggestionThemes = useMemo(() => {
+            if (
+                mentionQuery == null ||
+                mentionSuggestions == null ||
+                typeof addons?.mentions?.resolveTheme !== 'function'
+            ) {
+                return undefined;
+            }
+
+            const normalized = normalizeEditorAddons(addons)?.mentions?.suggestions;
+            if (normalized == null) return undefined;
+
+            const themes: Record<string, EditorMentionTheme> = {};
+            for (const suggestion of mentionSuggestions) {
+                const normalizedSuggestion = normalized.find(
+                    (candidate) => candidate.key === suggestion.key
+                );
+                if (normalizedSuggestion == null) continue;
+
+                const selectionEvent: MentionSelectionAttrsEvent = {
+                    trigger: mentionQuery.trigger,
+                    suggestion,
+                    attrs: normalizedSuggestion.attrs,
+                    markAttrs: activeStateRef.current.markAttrs,
+                    range: mentionQuery.range,
+                    ...(mentionQuery.documentVersion
+                        ? { documentVersion: mentionQuery.documentVersion }
+                        : {}),
+                };
+                const attrs = resolveMentionSelectionAttrs(selectionEvent);
+                const merged = mergeMentionSuggestionTheme(
+                    mentionSuggestionTheme,
+                    resolveMentionTheme({ ...selectionEvent, attrs })
+                );
+                if (merged != null) {
+                    themes[suggestion.key] = merged;
+                }
+            }
+
+            return Object.keys(themes).length > 0 ? themes : undefined;
+        }, [
+            addons,
+            mentionQuery,
+            mentionSuggestionTheme,
+            mentionSuggestions,
+            resolveMentionSelectionAttrs,
+            resolveMentionTheme,
+        ]);
+
+        useEffect(() => {
+            if (
+                !shouldPublishMentionSuggestions ||
+                mentionQuery == null ||
+                mentionSuggestions == null
+            ) {
+                setEditorToolbarMentionState(toolbarFrameOwnerId, null);
+                return;
+            }
+
+            setEditorToolbarMentionState(toolbarFrameOwnerId, {
+                trigger: mentionQuery.trigger,
+                suggestions: mentionSuggestions,
+                theme: mentionSuggestionTheme,
+                suggestionThemes: mentionSuggestionThemes,
+                onSelectSuggestion: handleMentionSuggestionPress,
+            });
+        }, [
+            handleMentionSuggestionPress,
+            mentionQuery,
+            mentionSuggestionTheme,
+            mentionSuggestionThemes,
+            mentionSuggestions,
+            shouldPublishMentionSuggestions,
+            toolbarFrameOwnerId,
+        ]);
+
+        const themeJson = useMemo(
+            () => serializeEditorTheme(theme, mentionSuggestionTheme),
+            [mentionSuggestionTheme, theme]
+        );
         const addonsJson = useSerializedValue(addons, (value) => serializeEditorAddons(value));
         const imageLoadingPolicyJson = useSerializedValue(imageLoadingPolicy, (value) =>
             serializeEditorImageLoadingPolicy(value)

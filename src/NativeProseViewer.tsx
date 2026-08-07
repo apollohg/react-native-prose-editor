@@ -31,60 +31,101 @@ interface NativeProseViewerMentionPressNativeEvent {
     attrsJson: string;
 }
 
+/** A parse, layout, or rendering failure reported by the native viewer. */
 export interface NativeProseViewerErrorEvent {
+    /** Native subsystem that raised the failure, e.g. `'viewer'`. */
     domain: string;
+    /** Stable failure code, e.g. `'INVALID_MENTION_ATTRIBUTES'`. */
     code: string;
     message: string;
+    /** Whether the viewer gave up on this content, as opposed to skipping one element. */
     fatal: boolean;
 }
 
+/** A tap on a mention node. Requires `addons.mentions.onPress`. */
 export interface NativeProseViewerMentionPressEvent {
+    /** Engine document position of the pressed mention node. */
     docPos: number;
+    /** Rendered mention label. */
     label: string;
+    /** The mention node's attributes, as stored in the document. */
     attrs: Record<string, unknown>;
 }
 
+/** A tap on link-marked text. Requires `enableLinkTaps` and `onPressLink`. */
 export interface NativeProseViewerLinkPressEvent {
+    /** The link mark's `href` attribute. */
     href: string;
+    /** The text the link mark covers. */
     text: string;
 }
 
+/** Mention rendering and press handling for the viewer. */
 export interface NativeProseViewerMentionsConfig {
+    /** The trigger character this content was authored with. Recorded in the
+     *  viewer configuration; what gets drawn comes from `prefix`. */
     trigger?: string;
+    /** Prepended to a mention's label when the label does not already start
+     *  with it. Unset renders the stored label unchanged. */
     prefix?: string;
+    /** Mention styling. See {@link EditorMentionTheme}. */
     theme?: EditorMentionTheme;
+    /** Called when a mention is pressed. Mentions are inert until this is set. */
     onPress?: (event: NativeProseViewerMentionPressEvent) => void;
 }
 
+/** Optional viewer features, mirroring the editor's `EditorAddons`. */
 export interface NativeProseViewerAddons {
     mentions?: NativeProseViewerMentionsConfig;
 }
 
+/** Props shared by both content forms of {@link NativeProseViewerProps}. */
 export interface NativeProseViewerBaseProps extends ViewProps {
+    /** Schema the content is parsed against. Defaults to {@link tiptapSchema}; the mention node is always added. */
     schema?: SchemaDefinition;
+    /** Native content theme. See {@link EditorTheme}. */
     theme?: EditorTheme;
+    /** Whether `data:` image sources are admitted. Defaults to false. */
     allowBase64Images?: boolean;
+    /** Bounds image fetching and decoding. See {@link EditorImageLoadingPolicy}. */
     imageLoadingPolicy?: EditorImageLoadingPolicy;
+    /** Bounds the content the viewer will parse. See {@link EditorResourceLimits}. */
     resourceLimits?: EditorResourceLimits;
+    /** Whether content with no text measures to zero height. Defaults to true. */
     collapseTrailingEmptyParagraphs?: boolean;
+    /** Whether link-marked text is tappable. Defaults to true. */
     enableLinkTaps?: boolean;
+    /** Whether image nodes are fetched and drawn. Defaults to true. */
     renderImages?: boolean;
+    /**
+     * Bump this to discard the prepared layout after the app's font
+     * environment changes (a newly registered font, a font-scale change).
+     * Defaults to 0.
+     */
     fontEnvironmentRevision?: number;
     addons?: NativeProseViewerAddons;
+    /** Called when link-marked text is tapped. */
     onPressLink?: (event: NativeProseViewerLinkPressEvent) => void;
+    /** Called when the viewer cannot parse, lay out, or render the content. */
     onError?: (error: NativeProseViewerErrorEvent) => void;
 }
 
 interface NativeProseViewerJsonProps extends NativeProseViewerBaseProps {
+    /** ProseMirror JSON document, or a JSON string holding one. */
     contentJSON: DocumentJSON | string;
     contentHTML?: never;
 }
 
 interface NativeProseViewerHtmlProps extends NativeProseViewerBaseProps {
+    /** HTML document. Sanitize untrusted HTML before passing it here. */
     contentHTML: string;
     contentJSON?: never;
 }
 
+/**
+ * Props for {@link NativeProseViewer}. Supply exactly one content source:
+ * `contentJSON` or `contentHTML`.
+ */
 export type NativeProseViewerProps = NativeProseViewerJsonProps | NativeProseViewerHtmlProps;
 
 const serializedJsonCache = new WeakMap<object, string>();
@@ -122,6 +163,23 @@ function resolveViewerConfiguration(
     };
 }
 
+/**
+ * Read-only renderer for HTML or ProseMirror JSON. It prepares a native
+ * layout and measures to that layout's exact size, so the host must give it a
+ * finite width; no editor session is created and no document handle is
+ * needed.
+ *
+ * Requires the New Architecture.
+ *
+ * @example
+ * ```tsx
+ * <NativeProseViewer
+ *     contentHTML='<p>Read-only content</p>'
+ *     theme={{ text: { fontSize: 16 } }}
+ *     onPressLink={({ href }) => openLink(href)}
+ * />
+ * ```
+ */
 export function NativeProseViewer(props: NativeProseViewerProps) {
     const {
         contentJSON,
@@ -158,12 +216,7 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
         [allowBase64Images, mentions, resolvedResourceLimits, schema]
     );
     const themeJson = useMemo(
-        () =>
-            serializeEditorTheme(
-                mentions?.theme
-                    ? { ...theme, mentions: { ...theme?.mentions, ...mentions.theme } }
-                    : theme
-            ),
+        () => serializeEditorTheme(theme, mentions?.theme),
         [mentions?.theme, theme]
     );
     const imagePolicyJson = useMemo(

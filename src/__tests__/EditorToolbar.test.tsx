@@ -1,5 +1,3 @@
-// ─── EditorToolbar Tests ───────────────────────────────────────
-// Tests for the formatting toolbar component.
 //
 // Tests cover:
 // - Renders all 12 buttons (B, I, U, S, bullet list, ordered list, indent, outdent, line break, HR, undo, redo)
@@ -7,7 +5,6 @@
 // - Disabled state for undo/redo (canUndo: false -> undo button disabled)
 // - Button presses fire correct callbacks
 // - Uses Record<string, boolean> for ActiveState (not string[])
-// ────────────────────────────────────────────────────────────────
 
 import React from 'react';
 import { Keyboard, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -23,7 +20,6 @@ import {
 } from '../EditorToolbar';
 import type { ActiveState, HistoryState } from '../NativeEditorBridge';
 
-// ─── Helpers ────────────────────────────────────────────────────
 
 const EMPTY_ACTIVE_STATE: ActiveState = {
     marks: {},
@@ -105,7 +101,6 @@ function ToolbarFrameProbe({ ownerId }: { ownerId: number }) {
     return <Text testID='toolbar-frame-probe'>{JSON.stringify(frames)}</Text>;
 }
 
-// ─── Tests ──────────────────────────────────────────────────────
 
 describe('EditorToolbar', () => {
     afterEach(() => {
@@ -114,7 +109,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-    // ── Rendering ───────────────────────────────────────────────
 
     describe('rendering', () => {
         it('renders all 13 buttons including blockquote and list depth controls', () => {
@@ -491,7 +485,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-    // ── Theme Sizing (native formula) ───────────────────────────
     // Sizing contract shared with iOS (resolvedToolbarHeight/resolvedButtonSize)
     // and Android (resolvedToolbarHeightDp/resolvedButtonSizeDp): an explicit
     // theme height is honored as-is; buttons are
@@ -524,7 +517,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-    // ── Active State (Record<string, boolean>) ─────────────────
 
     describe('active state visual feedback', () => {
         it('bold button gets selected state when bold mark is active', () => {
@@ -679,12 +671,10 @@ describe('EditorToolbar', () => {
             expect(getByLabelText('Italic').props.accessibilityState).toEqual(
                 expect.objectContaining({ selected: true })
             );
-            // Underline should not be selected
             expect(getByLabelText('Underline').props.accessibilityState.selected).toBeFalsy();
         });
     });
 
-    // ── Disabled State ─────────────────────────────────────────
 
     describe('disabled state for undo/redo', () => {
         it('undo button is disabled when canUndo is false', () => {
@@ -805,7 +795,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-    // ── Button Presses ─────────────────────────────────────────
 
     describe('button press callbacks', () => {
         it('bold button fires onToggleBold', () => {
@@ -1069,7 +1058,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-    // ── Schema-Aware Disabled State ─────────────────────────────
 
     describe('schema-aware disabled state', () => {
         it('mark buttons are disabled when not in allowedMarks', () => {
@@ -1248,7 +1236,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-    // ── Focus Preservation ─────────────────────────────────────
 
     describe('focus preservation', () => {
         it('publishes menu actions as a second owner-scoped native hit-test frame', () => {

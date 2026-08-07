@@ -1,13 +1,6 @@
-// ─── FFI v2 production bindings contract ───────────────────────
-// The checked-in UniFFI bindings are the production ABI. Its single
-// source of truth is scripts/package-abi-manifest.json — the same file
-// the release gate enforces — so this suite reads the expected export
-// set from there instead of restating it. Legacy symbols (the deleted
-// legacy editor/collaboration runtime) must appear nowhere.
-// These tests only assert the content of the checked-in artifacts — they
-// never rebuild the Rust library (rust/generate-bindings.sh regenerates
-// and verifies these files). An optional `nm` check against an already
-// built dylib runs only when FFI_V2_BINDINGS_CHECK_DYLIB=1 is set.
+// scripts/package-abi-manifest.json is the single source of truth for the
+// expected export set, and the release gate enforces the same file. These
+// assert the checked-in artifacts only; they never rebuild the Rust library.
 
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
@@ -19,6 +12,9 @@ const ABI_MANIFEST_PATH = path.join(REPO_ROOT, 'scripts', 'package-abi-manifest.
 interface PackageAbiManifest {
     version: { name: string; checksum: number };
     functions: { name: string; checksum: number }[];
+    // The prepared-prose viewer ABI is a separate manifest section, but its
+    // functions are exported from the same library and must be allowed here.
+    viewer: { functions: { name: string; checksum: number }[] };
 }
 
 const ABI_MANIFEST = JSON.parse(
@@ -26,7 +22,8 @@ const ABI_MANIFEST = JSON.parse(
 ) as PackageAbiManifest;
 
 const V2_EXPORTS = ABI_MANIFEST.functions.map((entry) => entry.name);
-const ALL_EXPORTS = [...V2_EXPORTS, ABI_MANIFEST.version.name];
+const VIEWER_EXPORTS = ABI_MANIFEST.viewer.functions.map((entry) => entry.name);
+const ALL_EXPORTS = [...V2_EXPORTS, ...VIEWER_EXPORTS, ABI_MANIFEST.version.name];
 const ALLOWED_FN_SYMBOLS = new Set(ALL_EXPORTS);
 
 const SWIFT_HEADERS = [

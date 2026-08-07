@@ -1,5 +1,10 @@
 import { requireNativeModule } from 'expo-modules-core';
-import type { EditorMentionTheme } from './EditorTheme';
+import type {
+    EditorMentionNodeTheme,
+    EditorMentionSuggestionOptionTheme,
+    EditorMentionSuggestionsTheme,
+    EditorMentionTheme,
+} from './EditorTheme';
 import {
     HARD_EDITOR_RESOURCE_LIMITS,
     validateEditorCreateLimits,
@@ -23,17 +28,29 @@ import {
 } from './NativeEditorBoundaryError';
 import { normalizeNativeEditorV2U64 } from './NativeEditorV2Decimal';
 
-// ─── Shared types ───────────────────────────────────────────────
 // Neutral document/render state types shared by the v2 document
 // handle, the React components, and the schema/addon helpers.
 
+/**
+ * A selection in engine document positions.
+ *
+ * `anchor`/`head` are set for a `'text'` selection, `pos` for a `'node'` one,
+ * and neither for `'all'`. The `*Scalar` variants carry the same points
+ * measured in Unicode scalars instead of document positions.
+ */
 export interface Selection {
     type: 'text' | 'node' | 'all';
+    /** Fixed end of a text selection. */
     anchor?: number;
+    /** Moving end of a text selection. Equals `anchor` for a collapsed caret. */
     head?: number;
+    /** Position of the selected node, for a `'node'` selection. */
     pos?: number;
+    /** `anchor` in Unicode scalars. */
     anchorScalar?: number;
+    /** `head` in Unicode scalars. */
     headScalar?: number;
+    /** `pos` in Unicode scalars. */
     posScalar?: number;
 }
 
@@ -76,24 +93,34 @@ export interface NativeEditorLocalAwarenessIntent {
     selection?: NativeEditorLocalAwarenessSelection | null;
 }
 
+/** Where a list item sits in its list, supplied with every rendered list block. */
 export interface ListContext {
+    /** Whether the enclosing list is numbered. */
     ordered: boolean;
+    /** Zero-based position of this item among its siblings. */
     index: number;
+    /** Number of sibling items in the enclosing list. */
     total: number;
+    /** The list's `start` attribute — the number the first item takes. */
     start: number;
     isFirst: boolean;
     isLast: boolean;
+    /** List variant, e.g. `'task'` for a checklist. */
     kind?: string | null;
+    /** Checked state, for a task list item. */
     checked?: boolean | null;
 }
 
+/** A mark carrying attributes, e.g. a link with its `href`. */
 export interface RenderMarkWithAttrs {
     type: string;
     [key: string]: unknown;
 }
 
+/** A mark on a rendered text run: its name alone, or its name plus attributes. */
 export type RenderMark = string | RenderMarkWithAttrs;
 
+/** One piece of the flattened render stream the engine produces for a document. */
 export interface RenderElement {
     type:
         | 'textRun'
@@ -114,31 +141,45 @@ export interface RenderElement {
     listContext?: ListContext;
 }
 
+/**
+ * A splice against the previously rendered block list: replace `deleteCount`
+ * blocks at `startIndex` with `renderBlocks`. Lets a view redraw only the
+ * blocks that changed.
+ */
 export interface RenderBlocksPatch {
     startIndex: number;
     deleteCount: number;
     renderBlocks: RenderElement[][];
 }
 
+/** What the current selection can do — the state a toolbar renders from. */
 export interface ActiveState {
+    /** Marks active at the selection, keyed by mark name. */
     marks: Record<string, boolean>;
+    /** Attributes of each active mark, e.g. `{ link: { href } }`. */
     markAttrs: Record<string, Record<string, unknown>>;
+    /** Node types enclosing the selection, keyed by node name. */
     nodes: Record<string, boolean>;
+    /** Whether each command would apply at the selection, keyed by command name. */
     commands: Record<string, boolean>;
+    /** Mark names the schema permits at the selection. */
     allowedMarks: string[];
+    /** Node names that can be inserted at the selection. */
     insertableNodes: string[];
 }
 
+/** Undo and redo availability. */
 export interface HistoryState {
     canUndo: boolean;
     canRedo: boolean;
 }
 
-type DeepReadonly<T> = T extends ReadonlyArray<infer Item>
-    ? ReadonlyArray<DeepReadonly<Item>>
-    : T extends object
-      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
-      : T;
+type DeepReadonly<T> =
+    T extends ReadonlyArray<infer Item>
+        ? ReadonlyArray<DeepReadonly<Item>>
+        : T extends object
+          ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+          : T;
 
 /** A recursively immutable active-state view supplied by atomic render snapshots. */
 export type ReadonlyActiveState = DeepReadonly<ActiveState>;
@@ -160,28 +201,43 @@ interface NativeEditorV2AtomicRenderSnapshotShape {
 export type NativeEditorV2AtomicRenderSnapshot =
     DeepReadonly<NativeEditorV2AtomicRenderSnapshotShape>;
 
+/** One coherent view of the document after a change: what to draw, plus selection and state. */
 export interface EditorUpdate {
+    /** The whole document as a flat render stream. */
     renderElements: RenderElement[];
+    /** The same content grouped into blocks. */
     renderBlocks?: RenderElement[][];
+    /** Blocks that changed since the previous update, when the engine could compute a splice. */
     renderPatch?: RenderBlocksPatch;
     selection: Selection;
     activeState: ActiveState;
     historyState: HistoryState;
+    /** Decimal-string engine document revision this update describes. */
     documentVersion?: string;
 }
 
+/** The document in both serialized forms, read in one pass. */
 export interface ContentSnapshot {
     html: string;
     json: DocumentJSON;
 }
 
+/**
+ * A ProseMirror-style JSON document or fragment. Deliberately open: the shape
+ * is whatever the active {@link SchemaDefinition} admits, so nodes carry
+ * `type`, optional `attrs`, `content`, `marks`, and `text`.
+ */
 export interface DocumentJSON {
     [key: string]: unknown;
 }
 
+/** A participant in a collaboration room. */
 export interface CollaborationPeer {
+    /** Yjs client identity, as a decimal string. */
     clientId: string;
+    /** Whether this record describes this device. */
     isLocal: boolean;
+    /** The peer's published awareness state. */
     state: Record<string, unknown> | null;
 }
 
@@ -211,15 +267,11 @@ export function _resetNativeModuleCache(): void {
     _nativeModule = null;
 }
 
-// ─── FFI v2 surface ─────────────────────────────────────────────
-// Production v2 document handle and typed result normalization.
-// This is the only construction path: the native module exposes the
-// editor_v2_* UniFFI ABI, and everything below consumes the frozen v2
-// result records ({ value, error } with exactly one side set),
-// normalizes them at the JavaScript boundary (decimal-string
-// revisions/identifiers, direct binary values, unsafe-integer rejection), and
-// raises typed imperative errors per domain with a distinct non-retryable
-// class for ENGINE_INVARIANT_FAILED and lifecycle-destroyed states.
+// The only construction path. Consumes the frozen v2 result records
+// ({ value, error }, exactly one side set), normalizes them at the JS boundary
+// (decimal-string u64s, direct binaries, unsafe-integer rejection), and raises
+// typed per-domain errors with a non-retryable class for
+// ENGINE_INVARIANT_FAILED and destroyed lifecycles.
 
 const ERR_V2_NATIVE_RESPONSE = 'NativeEditorBridge: invalid v2 result record from native module';
 const ERR_V2_DESTROYED = 'NativeEditorBridge: v2 editor handle has been destroyed';
@@ -263,7 +315,11 @@ export interface NativeEditorV2Module {
     ): unknown;
     editorV2CollaborationSetAwareness(editorId: string, awarenessJson: string): unknown;
     editorV2SnapshotExport(editorId: string): unknown;
-    editorV2SnapshotRestore(editorId: string, metadataJson: string, encodedState: Uint8Array): unknown;
+    editorV2SnapshotRestore(
+        editorId: string,
+        metadataJson: string,
+        encodedState: Uint8Array
+    ): unknown;
     addListener(
         eventName: 'onCollaborationTransportEvent',
         listener: (event: unknown) => void
@@ -283,8 +339,6 @@ function invokeNativeEditorV2<K extends keyof NativeEditorV2Module>(
     }
     return (method as (...fnArgs: unknown[]) => unknown).apply(nativeModule, args);
 }
-
-// ─── Result record normalization ────────────────────────────────
 
 /** The discriminated envelope every v2 result record normalizes into. */
 export type NativeEditorV2Result<T> =
@@ -359,7 +413,11 @@ function normalizeRevisionField(record: Record<string, unknown>, field: string):
 }
 
 function nativeEditorV2U32(value: unknown): number | null {
-    return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0 && value <= 0xffff_ffff
+    return typeof value === 'number' &&
+        Number.isFinite(value) &&
+        Number.isInteger(value) &&
+        value >= 0 &&
+        value <= 0xffff_ffff
         ? value
         : null;
 }
@@ -377,9 +435,12 @@ function optionalBoolean(value: unknown): boolean | null {
     return typeof value === 'boolean' ? value : null;
 }
 
-// ─── Typed value shapes ─────────────────────────────────────────
-
 const V2_DOCUMENT_STATES = ['LocalReady', 'AwaitRemote', 'RoomReady'] as const;
+/**
+ * Readiness of the engine document. `AwaitRemote` is a room document still
+ * waiting for the server's copy: content getters return empty values and the
+ * view renders nothing until it promotes to `RoomReady`.
+ */
 export type NativeEditorV2DocumentState = (typeof V2_DOCUMENT_STATES)[number];
 
 const V2_TRANSPORT_STATES = [
@@ -392,9 +453,11 @@ const V2_TRANSPORT_STATES = [
     'Destroying',
     'Destroyed',
 ] as const;
+/** Raw transport lifecycle. `YjsTransportStatus` is the friendlier projection of it. */
 export type NativeEditorV2TransportState = (typeof V2_TRANSPORT_STATES)[number];
 
 const V2_RENDER_STATES = ['Loading', 'Ready'] as const;
+/** Whether the engine has a render snapshot to draw. */
 export type NativeEditorV2RenderState = (typeof V2_RENDER_STATES)[number];
 
 function whitelisted<T extends string>(value: unknown, allowed: readonly T[]): T | null {
@@ -403,17 +466,22 @@ function whitelisted<T extends string>(value: unknown, allowed: readonly T[]): T
         : null;
 }
 
+/** The engine's own account of a session: readiness, revisions, and history. */
 export interface NativeEditorV2EditorState {
     documentState: NativeEditorV2DocumentState;
     transportState: NativeEditorV2TransportState;
     renderState: NativeEditorV2RenderState;
+    /** Decimal-string revision advancing on every document change. */
     documentRevision: string;
+    /** Decimal-string revision advancing on every state change, document or not. */
     stateRevision: string;
     canUndo: boolean;
     canRedo: boolean;
 }
 
-export function normalizeNativeEditorV2StateValue(value: unknown): NativeEditorV2EditorState | null {
+export function normalizeNativeEditorV2StateValue(
+    value: unknown
+): NativeEditorV2EditorState | null {
     const parsed = typeof value === 'string' ? parseNativeEditorV2JsonValue(value) : value;
     if (!isPlainRecord(parsed)) return null;
     const documentState = whitelisted(parsed.documentState, V2_DOCUMENT_STATES);
@@ -503,7 +571,9 @@ export interface NativeEditorV2CommitInfo {
     documentRevision: string;
 }
 
-export function normalizeNativeEditorV2CommitValue(value: unknown): NativeEditorV2CommitInfo | null {
+export function normalizeNativeEditorV2CommitValue(
+    value: unknown
+): NativeEditorV2CommitInfo | null {
     const parsed = parseNativeEditorV2JsonValue(value);
     if (!isPlainRecord(parsed)) return null;
     const changed = optionalBoolean(parsed.changed);
@@ -549,7 +619,9 @@ function hasOnlyOwnKeys(record: Record<string, unknown>, allowed: readonly strin
 }
 
 function booleanRecord(value: unknown): value is Record<string, boolean> {
-    return isPlainRecord(value) && Object.values(value).every((entry) => typeof entry === 'boolean');
+    return (
+        isPlainRecord(value) && Object.values(value).every((entry) => typeof entry === 'boolean')
+    );
 }
 
 function stringArray(value: unknown): value is string[] {
@@ -573,71 +645,121 @@ function validRenderMark(value: unknown): value is RenderMark {
     );
 }
 
-const EDITOR_MENTION_THEME_STRING_FIELDS = [
+const MENTION_NODE_STRING_FIELDS = [
     'textColor',
     'backgroundColor',
     'borderColor',
-    'popoverBackgroundColor',
-    'popoverBorderColor',
-    'popoverShadowColor',
-    'optionTextColor',
-    'optionSecondaryTextColor',
-    'optionHighlightedBackgroundColor',
-    'optionHighlightedTextColor',
-] as const satisfies readonly (keyof EditorMentionTheme)[];
+] as const satisfies readonly (keyof EditorMentionNodeTheme)[];
 
-const EDITOR_MENTION_THEME_NUMBER_FIELDS = [
+const MENTION_NODE_NUMBER_FIELDS = [
     'borderWidth',
     'borderRadius',
-    'popoverBorderWidth',
-    'popoverBorderRadius',
-] as const satisfies readonly (keyof EditorMentionTheme)[];
+] as const satisfies readonly (keyof EditorMentionNodeTheme)[];
+
+const MENTION_OPTION_STRING_FIELDS = [
+    'textColor',
+    'secondaryTextColor',
+    'backgroundColor',
+    'borderColor',
+    'highlightedBackgroundColor',
+    'highlightedTextColor',
+] as const satisfies readonly (keyof EditorMentionSuggestionOptionTheme)[];
+
+const MENTION_OPTION_NUMBER_FIELDS = [
+    'borderWidth',
+    'borderRadius',
+] as const satisfies readonly (keyof EditorMentionSuggestionOptionTheme)[];
+
+const MENTION_SUGGESTIONS_STRING_FIELDS = [
+    'backgroundColor',
+    'borderColor',
+    'shadowColor',
+] as const satisfies readonly (keyof EditorMentionSuggestionsTheme)[];
+
+const MENTION_SUGGESTIONS_NUMBER_FIELDS = [
+    'borderWidth',
+    'borderRadius',
+] as const satisfies readonly (keyof EditorMentionSuggestionsTheme)[];
 
 const EDITOR_MENTION_THEME_FONT_WEIGHTS: ReadonlySet<
-    NonNullable<EditorMentionTheme['fontWeight']>
-> = new Set([
-    'normal',
-    'bold',
-    '100',
-    '200',
-    '300',
-    '400',
-    '500',
-    '600',
-    '700',
-    '800',
-    '900',
-]);
+    NonNullable<EditorMentionNodeTheme['fontWeight']>
+> = new Set(['normal', 'bold', '100', '200', '300', '400', '500', '600', '700', '800', '900']);
 
 const EDITOR_MENTION_THEME_FIELDS = [
-    ...EDITOR_MENTION_THEME_STRING_FIELDS,
-    ...EDITOR_MENTION_THEME_NUMBER_FIELDS,
-    'fontWeight',
+    'node',
+    'suggestions',
 ] as const satisfies readonly (keyof EditorMentionTheme)[];
 
-function validEditorMentionTheme(value: unknown): value is EditorMentionTheme {
-    if (!isPlainRecord(value) || !hasOnlyOwnKeys(value, EDITOR_MENTION_THEME_FIELDS)) {
-        return false;
-    }
-    if (
-        !EDITOR_MENTION_THEME_STRING_FIELDS.every(
+function validMentionFontWeight(value: unknown): boolean {
+    return (
+        value === undefined ||
+        (typeof value === 'string' &&
+            EDITOR_MENTION_THEME_FONT_WEIGHTS.has(
+                value as NonNullable<EditorMentionNodeTheme['fontWeight']>
+            ))
+    );
+}
+
+function validMentionThemeSection(
+    value: unknown,
+    stringFields: readonly string[],
+    numberFields: readonly string[],
+    extraFields: readonly string[]
+): value is Record<string, unknown> {
+    if (!isPlainRecord(value)) return false;
+    if (!hasOnlyOwnKeys(value, [...stringFields, ...numberFields, ...extraFields])) return false;
+    return (
+        stringFields.every(
             (field) => value[field] === undefined || typeof value[field] === 'string'
-        ) ||
-        !EDITOR_MENTION_THEME_NUMBER_FIELDS.every(
+        ) &&
+        numberFields.every(
             (field) =>
                 value[field] === undefined ||
                 (typeof value[field] === 'number' && Number.isFinite(value[field]))
         )
+    );
+}
+
+export function validEditorMentionTheme(value: unknown): value is EditorMentionTheme {
+    if (!isPlainRecord(value) || !hasOnlyOwnKeys(value, EDITOR_MENTION_THEME_FIELDS)) {
+        return false;
+    }
+
+    const { node, suggestions } = value;
+    if (node !== undefined) {
+        if (
+            !validMentionThemeSection(
+                node,
+                MENTION_NODE_STRING_FIELDS,
+                MENTION_NODE_NUMBER_FIELDS,
+                ['fontWeight']
+            ) ||
+            !validMentionFontWeight(node.fontWeight)
+        ) {
+            return false;
+        }
+    }
+    if (suggestions === undefined) return true;
+    if (
+        !validMentionThemeSection(
+            suggestions,
+            MENTION_SUGGESTIONS_STRING_FIELDS,
+            MENTION_SUGGESTIONS_NUMBER_FIELDS,
+            ['option']
+        )
     ) {
         return false;
     }
-    const fontWeight = value.fontWeight;
+
+    const option = suggestions.option;
+    if (option === undefined) return true;
     return (
-        fontWeight === undefined ||
-        (typeof fontWeight === 'string' &&
-            EDITOR_MENTION_THEME_FONT_WEIGHTS.has(
-                fontWeight as NonNullable<EditorMentionTheme['fontWeight']>
-            ))
+        validMentionThemeSection(
+            option,
+            MENTION_OPTION_STRING_FIELDS,
+            MENTION_OPTION_NUMBER_FIELDS,
+            ['fontWeight']
+        ) && validMentionFontWeight(option.fontWeight)
     );
 }
 
@@ -701,19 +823,22 @@ function validRenderElement(value: unknown): value is RenderElement {
                     'nodeType',
                     'label',
                     'docPos',
+                    'attrs',
                     'mentionTheme',
                 ]) &&
                 typeof value.nodeType === 'string' &&
                 typeof value.label === 'string' &&
                 nativeEditorV2U32(value.docPos) != null &&
+                (value.attrs === undefined || isPlainRecord(value.attrs)) &&
                 (value.mentionTheme === undefined || validEditorMentionTheme(value.mentionTheme))
             );
         case 'opaqueBlockAtom':
             return (
-                hasExactOwnKeys(value, ['type', 'nodeType', 'label', 'docPos']) &&
+                hasOnlyOwnKeys(value, ['type', 'nodeType', 'label', 'docPos', 'attrs']) &&
                 typeof value.nodeType === 'string' &&
                 typeof value.label === 'string' &&
-                nativeEditorV2U32(value.docPos) != null
+                nativeEditorV2U32(value.docPos) != null &&
+                (value.attrs === undefined || isPlainRecord(value.attrs))
             );
     }
     return false;
@@ -730,7 +855,10 @@ function normalizeRenderBlocks(value: unknown): RenderElement[][] | null {
 
 function normalizeRenderPatch(value: unknown): RenderBlocksPatch | null | undefined {
     if (value === null) return null;
-    if (!isPlainRecord(value) || !hasExactOwnKeys(value, ['startIndex', 'deleteCount', 'renderBlocks'])) {
+    if (
+        !isPlainRecord(value) ||
+        !hasExactOwnKeys(value, ['startIndex', 'deleteCount', 'renderBlocks'])
+    ) {
         return undefined;
     }
     const renderBlocks = normalizeRenderBlocks(value.renderBlocks);
@@ -751,7 +879,8 @@ function normalizeRenderSelection(value: unknown): Selection | null {
         const head = nativeEditorV2U32(value.head);
         const anchorScalar = nativeEditorV2U32(value.anchorScalar);
         const headScalar = nativeEditorV2U32(value.headScalar);
-        if (anchor == null || head == null || anchorScalar == null || headScalar == null) return null;
+        if (anchor == null || head == null || anchorScalar == null || headScalar == null)
+            return null;
         return { type: 'text', anchor, head, anchorScalar, headScalar };
     }
     if (value.type === 'node') {
@@ -898,28 +1027,48 @@ export function normalizeNativeEditorV2CreateValue(value: unknown): { editorId: 
     return editorId == null ? null : { editorId };
 }
 
+/** One peer's awareness record, as Rust currently holds it. */
 export interface NativeEditorV2PeerInfo {
+    /** Yjs client identity, as a decimal string. */
     clientId: string;
+    /** Awareness clock, advancing with each of this peer's updates. */
     clock: number;
+    /** Whether this record describes this device. */
     isLocal: boolean;
+    /** The peer's published application state, e.g. `{ user, focused }`. */
     state: Record<string, unknown> | null;
+    /** The peer's caret in engine document positions, or null when it published none. */
     cursor: { anchor: number; head: number } | null;
 }
 
+/** One WebSocket frame exchanged during the protocol adapter's prelude. */
 export type NativeCollaborationProtocolFrame =
     | { type: 'text'; data: string }
     | { type: 'binary'; data: Uint8Array };
 
+/**
+ * What the transport does next after an adapter callback:
+ *
+ * - `continue` — stay in the prelude and await the next frame.
+ * - `ready` — the prelude succeeded; release Yjs traffic.
+ * - `reject` — abandon this attempt.
+ */
 export type NativeCollaborationProtocolAdapterAction = 'continue' | 'ready' | 'reject';
 
+/** An adapter callback's decision, plus any frames to send before it takes effect. */
 export interface NativeCollaborationProtocolAdapterResult {
     action: NativeCollaborationProtocolAdapterAction;
+    /** Frames sent on the socket before the action applies. */
     frames?: readonly NativeCollaborationProtocolFrame[];
 }
 
+/** Identifies the connection attempt an adapter callback is running for. */
 export interface NativeCollaborationProtocolAdapterContext {
+    /** Identity of this physical connection attempt. */
     attemptId: string;
+    /** Transport generation, as a decimal string. Advances on each reconfiguration. */
     generation: string;
+    /** Subprotocol the server selected, if any. */
     negotiatedProtocol: string | null;
 }
 
@@ -937,38 +1086,48 @@ export interface NativeCollaborationProtocolAdapter {
     timeoutMillis?: number;
     /** Close codes that park the Rust transport instead of entering automatic retry. */
     terminalCloseCodes?: readonly number[];
+    /** Runs once when the socket opens — send credentials here. */
     onOpen(
         context: NativeCollaborationProtocolAdapterContext
-    ):
-        | NativeCollaborationProtocolAdapterResult
-        | Promise<NativeCollaborationProtocolAdapterResult>;
+    ): NativeCollaborationProtocolAdapterResult | Promise<NativeCollaborationProtocolAdapterResult>;
+    /** Runs for each frame received before the prelude returns `ready`. */
     onMessage(
         context: NativeCollaborationProtocolAdapterContext,
         frame: NativeCollaborationProtocolFrame
-    ):
-        | NativeCollaborationProtocolAdapterResult
-        | Promise<NativeCollaborationProtocolAdapterResult>;
+    ): NativeCollaborationProtocolAdapterResult | Promise<NativeCollaborationProtocolAdapterResult>;
 }
 
+/** Where the native transport connects, and whether it should. */
 export interface NativeCollaborationTransportConfig {
+    /** WebSocket endpoint, `ws:` or `wss:`. Treat it as sensitive — it may carry credentials. */
     url: string;
+    /** Whether to open the connection now. False configures the endpoint without connecting. */
     connect: boolean;
     /** Optional RN-owned prelude that gates the native Yjs transport. */
     protocolAdapter?: NativeCollaborationProtocolAdapter;
 }
 
+/** Why the transport woke and what it did — diagnostic only; no contract depends on these. */
 export interface NativeCollaborationTransportDiagnostics {
+    /** What woke the transport, e.g. a received message or an elapsed timer. */
     wakeReason: string;
     transportState: NativeEditorV2TransportState;
+    /** Decimal-string deadline for the next scheduled wake, if one is pending. */
     nextDeadlineMillis: string | null;
+    /** Whether this wake applied a remote commit. */
     remoteCommitApplied: boolean;
+    /** Whether the peer list changed. */
     peersChanged: boolean;
+    /** Whether the local awareness entry was republished. */
     renewedLocal: boolean;
+    /** Peers dropped for having gone stale. */
     expiredPeerCount: number;
 }
 
+/** The transport advanced: new engine state, peers, and diagnostics. */
 export interface NativeCollaborationTransportStateEvent {
     editorId: string;
+    /** Monotonic decimal-string sequence across all events for this handle. */
     eventSequence: string;
     generation: string | null;
     kind: 'state';
@@ -977,6 +1136,7 @@ export interface NativeCollaborationTransportStateEvent {
     diagnostics: NativeCollaborationTransportDiagnostics;
 }
 
+/** The transport failed. Retryable failures are followed by further state events. */
 export interface NativeCollaborationTransportErrorEvent {
     editorId: string;
     eventSequence: string;
@@ -985,18 +1145,24 @@ export interface NativeCollaborationTransportErrorEvent {
     error: NativeEditorV2ErrorBase;
 }
 
+/** Native is asking the configured protocol adapter to handle a prelude step. */
 export interface NativeCollaborationProtocolAdapterEvent {
     editorId: string;
     eventSequence: string;
     generation: string;
     kind: 'protocolAdapter';
+    /** Identity of the physical connection attempt. */
     attemptId: string;
+    /** Identity of this callback invocation; the reply must quote it. */
     eventId: string;
     negotiatedProtocol: string | null;
+    /** Which adapter callback this event corresponds to. */
     phase: 'open' | 'message';
+    /** The received frame, present when `phase` is `'message'`. */
     frame?: NativeCollaborationProtocolFrame;
 }
 
+/** Any event emitted to a `NativeEditorDocumentHandle` transport listener. */
 export type NativeCollaborationTransportEvent =
     | NativeCollaborationTransportStateEvent
     | NativeCollaborationTransportErrorEvent
@@ -1033,9 +1199,7 @@ function collaborationProtocolAdapterDescriptor(
         typeof value.onOpen !== 'function' ||
         typeof value.onMessage !== 'function'
     ) {
-        throw invalidV2RequestError(
-            'NativeEditorBridge: invalid collaboration protocol adapter'
-        );
+        throw invalidV2RequestError('NativeEditorBridge: invalid collaboration protocol adapter');
     }
     const protocols = value.protocols.map((protocol) => {
         if (
@@ -1058,11 +1222,9 @@ function collaborationProtocolAdapterDescriptor(
     const timeoutMillis = value.timeoutMillis;
     if (
         timeoutMillis !== undefined &&
-        (
-            !Number.isSafeInteger(timeoutMillis) ||
+        (!Number.isSafeInteger(timeoutMillis) ||
             timeoutMillis < 1 ||
-            timeoutMillis > MAX_COLLABORATION_ADAPTER_TIMEOUT_MILLIS
-        )
+            timeoutMillis > MAX_COLLABORATION_ADAPTER_TIMEOUT_MILLIS)
     ) {
         throw invalidV2RequestError(
             'NativeEditorBridge: invalid collaboration protocol adapter timeout'
@@ -1071,12 +1233,10 @@ function collaborationProtocolAdapterDescriptor(
     const rawTerminalCloseCodes = value.terminalCloseCodes;
     if (
         rawTerminalCloseCodes !== undefined &&
-        (
-            !Array.isArray(rawTerminalCloseCodes) ||
+        (!Array.isArray(rawTerminalCloseCodes) ||
             rawTerminalCloseCodes.some(
                 (code) => !Number.isSafeInteger(code) || code < 1_000 || code > 4_999
-            )
-        )
+            ))
     ) {
         throw invalidV2RequestError(
             'NativeEditorBridge: invalid collaboration terminal close code'
@@ -1118,8 +1278,8 @@ function collaborationTransportWireConfig(
         ...(config.protocolAdapter === undefined
             ? {}
             : {
-                protocolAdapter: collaborationProtocolAdapterDescriptor(config.protocolAdapter),
-            }),
+                  protocolAdapter: collaborationProtocolAdapterDescriptor(config.protocolAdapter),
+              }),
     };
 }
 
@@ -1229,8 +1389,7 @@ function decodeNativeCollaborationProtocolBytes(value: string): Uint8Array | nul
     const firstPadding = value.indexOf('=');
     if (firstPadding >= 0 && firstPadding < value.length - 2) return null;
     const outputLength =
-        (value.length / 4) * 3 -
-        (value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0);
+        (value.length / 4) * 3 - (value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0);
     const bytes = new Uint8Array(outputLength);
     let outputIndex = 0;
     for (let index = 0; index < value.length; index += 4) {
@@ -1298,8 +1457,7 @@ export function normalizeNativeCollaborationTransportEvent(
             value.attemptId.length === 0 ||
             eventId == null ||
             eventId === '0' ||
-            (value.negotiatedProtocol !== null &&
-                typeof value.negotiatedProtocol !== 'string') ||
+            (value.negotiatedProtocol !== null && typeof value.negotiatedProtocol !== 'string') ||
             (value.phase !== 'open' && value.phase !== 'message')
         ) {
             return null;
@@ -1368,7 +1526,21 @@ export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV
     return peers;
 }
 
-// ─── Imperative throws ──────────────────────────────────────────
+const REJECTED_V2_RECORD_PREVIEW_CHARS = 4_000;
+
+/** Dev-only preview of a rejected boundary record, bounded so a large document never floods the log. */
+function describeRejectedV2Record(raw: unknown): string {
+    let serialized: string;
+    try {
+        serialized = JSON.stringify(raw);
+    } catch {
+        return `<unserializable ${typeof raw}>`;
+    }
+    if (serialized === undefined) return `<${typeof raw}>`;
+    return serialized.length > REJECTED_V2_RECORD_PREVIEW_CHARS
+        ? `${serialized.slice(0, REJECTED_V2_RECORD_PREVIEW_CHARS)}… (${serialized.length} chars)`
+        : serialized;
+}
 
 function invalidV2ResultError(): NativeEditorV2NonRetryableError {
     return new NativeEditorV2NonRetryableError({
@@ -1573,7 +1745,17 @@ export function unwrapNativeEditorV2Result<T>(
     normalizeValue: (value: unknown) => T | null
 ): T {
     const result = normalizeNativeEditorV2Result(raw, normalizeValue);
-    if (result == null) throw invalidV2ResultError();
+    if (result == null) {
+        // The thrown error cannot carry the payload, so name the rejected
+        // record here — otherwise the failure is unattributable in the app.
+        if (__DEV__) {
+            console.error(
+                'NativeEditorBridge: native module returned a record this boundary rejected',
+                describeRejectedV2Record(raw)
+            );
+        }
+        throw invalidV2ResultError();
+    }
     if (!result.ok) throw nativeEditorV2ErrorToException(result.error);
     return result.value;
 }
@@ -1594,44 +1776,76 @@ function requireV2Bytes(value: unknown, field: string): Uint8Array {
     return normalized;
 }
 
-// ─── Document handle ────────────────────────────────────────────
-
 export type NativeEditorV2HistoryMode = 'undoableBoundary' | 'resetAndClear';
 
+/**
+ * Provenance of an exported room snapshot. A snapshot only restores into a
+ * handle whose document, lineage, fragment, and schema match.
+ */
 export interface NativeEditorV2SnapshotMetadata {
+    /** Snapshot format version, so older exports can be recognized. */
     formatVersion: number;
     documentId: string;
     lineageId: string;
     fragmentName: string;
+    /** Digest of the schema the snapshot was taken under. */
     schemaFingerprint: string;
 }
 
+/** An exported room document: its provenance plus the encoded Yjs state. */
 export interface NativeEditorV2RoomSnapshot {
     metadata: NativeEditorV2SnapshotMetadata;
+    /** Encoded Yjs state. Bounded by `EditorResourceLimits.maxEncodedStateBytes`. */
     encodedState: Uint8Array;
 }
 
+/**
+ * How a document handle's content starts out. Fixed at creation — there is no
+ * prop equivalent.
+ *
+ * - `localEmpty` — the schema's empty document.
+ * - `localJson` / `localHtml` — seeded from the given content.
+ * - `room` — a collaborative document. It renders nothing until the server's
+ *   document arrives, unless a `snapshot` seeds it offline.
+ */
 export type NativeEditorV2Initialization =
     | { type: 'localEmpty' }
     | { type: 'localJson'; json: DocumentJSON }
     | { type: 'localHtml'; html: string }
     | {
           type: 'room';
+          /** Room identity. Must match the collaboration controller's `documentId`. */
           documentId: string;
+          /** Application-owned lineage tag, e.g. `` `my-app|${documentId}` ``. A
+           *  snapshot only restores into a handle declaring the same lineage. */
           lineageId: string;
+          /** Previously exported state, for offline restore. */
           snapshot?: NativeEditorV2RoomSnapshot;
       };
 
+/**
+ * Everything fixed for the lifetime of a document handle. Initialization,
+ * schema, editing policy, and limits all live here rather than on the view,
+ * so an editor and its collaboration controller cannot disagree about them.
+ */
 export interface NativeEditorV2CreateConfig {
     initialization: NativeEditorV2Initialization;
+    /** Node and mark types this document admits. Defaults to `tiptapSchema`. */
     schema?: SchemaDefinition;
+    /** Yjs fragment the document lives in. Defaults to `'prosemirror'`. */
     fragmentName?: string;
+    /** Engine-enforced editing policy. `NativeRichTextEditor.editable` is a separate, per-view interaction gate. */
     policy?: {
+        /** Maximum document text length in Unicode scalars. A change that would exceed it is rejected. */
         maxLength?: number;
+        /** Whether the engine refuses every mutation, raising `MUTATION_REJECTED`. */
         readOnly?: boolean;
+        /** Regular expression applied per character to typed input; characters that do not match are dropped. */
         inputFilter?: string;
+        /** Whether `data:` image sources are admitted. Defaults to false. */
         allowBase64Images?: boolean;
     };
+    /** Resource bounds. See {@link EditorResourceLimits}. */
     limits?: {
         resource?: EditorResourceLimits;
         editing?: EditorEditingLimits;
@@ -1656,9 +1870,32 @@ export interface NativeEditorV2LocalApiRequest {
     history: NativeEditorV2HistoryMode;
 }
 
+export type NativeEditorV2OffsetKind = 'scalar' | 'utf16';
+
+export type NativeEditorV2PositionAffinity = 'before' | 'after';
+
+/**
+ * Mirrors the Rust `PositionEnvelope`. `offset` is measured in the currency
+ * named by `kind` — scalar offsets are Unicode scalars, not document positions.
+ */
+export interface NativeEditorV2PositionEnvelope {
+    offset: number;
+    kind: NativeEditorV2OffsetKind;
+    affinity?: NativeEditorV2PositionAffinity;
+}
+
+export type NativeEditorV2SelectionEnvelope =
+    | {
+          type: 'text';
+          anchor: NativeEditorV2PositionEnvelope;
+          head: NativeEditorV2PositionEnvelope;
+      }
+    | { type: 'node'; at: NativeEditorV2PositionEnvelope }
+    | { type: 'all' };
+
 export interface NativeEditorV2SelectionRequest {
     baseDocumentRevision: string;
-    selection: Record<string, unknown>;
+    selection: NativeEditorV2SelectionEnvelope;
 }
 
 export interface NativeEditorV2ReplaceDocumentRequest {
@@ -1727,8 +1964,7 @@ const V2_CREATE_JSON_MAX_BYTES = HARD_EDITOR_RESOURCE_LIMITS.maxInputBytes;
 const V2_CREATE_JSON_MAX_DEPTH = HARD_EDITOR_RESOURCE_LIMITS.maxDocumentDepth * 2 + 16;
 const V2_CREATE_JSON_MAX_WORK = HARD_EDITOR_RESOURCE_LIMITS.maxInputBytes;
 const V2_CREATE_ENVELOPE_MAX_BYTES = 64 * 1024;
-const V2_CREATE_WIRE_MAX_BYTES =
-    V2_CREATE_JSON_MAX_BYTES * 7 + V2_CREATE_ENVELOPE_MAX_BYTES + 2;
+const V2_CREATE_WIRE_MAX_BYTES = V2_CREATE_JSON_MAX_BYTES * 7 + V2_CREATE_ENVELOPE_MAX_BYTES + 2;
 const V2_CREATE_ENVELOPE_JSON_MAX_DEPTH = V2_CREATE_JSON_MAX_DEPTH + 8;
 const V2_CREATE_JSON_OUTPUT_CHUNK_SIZE = 64 * 1024;
 const V2_CREATE_STRING_CHAR_CODE_AT = String.prototype.charCodeAt;
@@ -2262,11 +2498,7 @@ function appendV2JsonString(
         }
         if (escape === undefined) continue;
         if (segmentStart < index) {
-            writer.append(
-                V2_CREATE_STRING_SLICE.call(value, segmentStart, index),
-                state,
-                label
-            );
+            writer.append(V2_CREATE_STRING_SLICE.call(value, segmentStart, index), state, label);
         }
         writer.append(escape, state, label);
         segmentStart = index + 1;
@@ -2592,7 +2824,9 @@ function cloneAndFreezeDescriptorValue<T>(value: T): T {
         const current = pending.pop();
         if (current === undefined) break;
         const keys = Array.isArray(current.source)
-            ? Array.from({ length: (current.source as unknown[]).length }, (_, index) => String(index))
+            ? Array.from({ length: (current.source as unknown[]).length }, (_, index) =>
+                  String(index)
+              )
             : Object.keys(current.source);
         for (const key of keys) {
             const child = current.source[key];
@@ -2781,13 +3015,13 @@ export class NativeEditorV2Bridge {
         const candidate = isPlainRecord(raw) && 'error' in raw ? raw : { error: raw };
         const normalized = normalizeNativeEditorV2Error(candidate);
         const exception =
-            normalized == null ? invalidV2ResultError() : nativeEditorV2ErrorToException(normalized);
+            normalized == null
+                ? invalidV2ResultError()
+                : nativeEditorV2ErrorToException(normalized);
         for (const listener of this._errorListeners) {
             listener(exception);
         }
     }
-
-    // ── State getters ───────────────────────────────────────────
 
     getState(): NativeEditorV2EditorState {
         return this.callV2(
@@ -2823,9 +3057,10 @@ export class NativeEditorV2Bridge {
      * selection is the engine-authoritative selection; a mirror resolves only
      * this snapshot's selection into document and scalar positions.
      */
-    renderUpdate(
-        mirrorScalarSelection?: { anchor: number; head: number }
-    ): NativeEditorV2AtomicRenderSnapshot {
+    renderUpdate(mirrorScalarSelection?: {
+        anchor: number;
+        head: number;
+    }): NativeEditorV2AtomicRenderSnapshot {
         this.assertAlive();
         const mirrorAnchor = mirrorScalarSelection?.anchor ?? null;
         const mirrorHead = mirrorScalarSelection?.head ?? null;
@@ -2847,8 +3082,6 @@ export class NativeEditorV2Bridge {
             normalizeNativeEditorV2RenderUpdateValue
         );
     }
-
-    // ── Mutation entries ────────────────────────────────────────
 
     replaceDocument(request: NativeEditorV2ReplaceDocumentRequest): NativeEditorV2CommitInfo {
         this.assertAlive();
@@ -2930,8 +3163,6 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    // ── Snapshots ───────────────────────────────────────────────
-
     snapshotExport(): NativeEditorV2SnapshotExport {
         return this.callV2(
             () => invokeNativeEditorV2('editorV2SnapshotExport', this._editorId),
@@ -2956,8 +3187,6 @@ export class NativeEditorV2Bridge {
             normalizeNativeEditorV2CommitValue
         );
     }
-
-    // ── Collaboration runtime ───────────────────────────────────
 
     configureCollaborationTransport(config: NativeCollaborationTransportConfig | null): void {
         this.assertAlive();
@@ -3001,10 +3230,7 @@ export class NativeEditorV2Bridge {
     private handleCollaborationProtocolAdapterEvent(rawEvent: unknown): void {
         if (this._destroyed || this._collaborationProtocolAdapter === null) return;
         const event = normalizeNativeCollaborationTransportEvent(rawEvent);
-        if (
-            event?.editorId !== this._editorId ||
-            event.kind !== 'protocolAdapter'
-        ) {
+        if (event?.editorId !== this._editorId || event.kind !== 'protocolAdapter') {
             return;
         }
         const adapter = this._collaborationProtocolAdapter;
@@ -3046,7 +3272,9 @@ export class NativeEditorV2Bridge {
     setLocalAwareness(intent: NativeEditorLocalAwarenessIntent | null): void {
         this.assertAlive();
         const awarenessJson =
-            intent === null ? 'null' : serializeLocalAwarenessIntent(validateLocalAwarenessIntent(intent));
+            intent === null
+                ? 'null'
+                : serializeLocalAwarenessIntent(validateLocalAwarenessIntent(intent));
         this.callV2(
             () =>
                 invokeNativeEditorV2(
@@ -3081,21 +3309,31 @@ const NATIVE_EDITOR_DOCUMENT_HANDLE_BRAND: unique symbol = Symbol(
 );
 const NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN = Object.freeze({});
 const AUTHENTIC_NATIVE_EDITOR_DOCUMENT_HANDLES = new WeakSet<object>();
-const NATIVE_EDITOR_DOCUMENT_HANDLE_DESCRIPTORS = new WeakMap<
-    object,
-    ResolvedDocumentSchema
->();
+const NATIVE_EDITOR_DOCUMENT_HANDLE_DESCRIPTORS = new WeakMap<object, ResolvedDocumentSchema>();
 
-/** The nominal public type returned only by createNativeEditorDocumentHandle. */
+/**
+ * One native document session, shared by everything that touches the
+ * document: the editor view, the headless `useNativeEditorDocument` binding,
+ * and the collaboration controller. Obtain one from
+ * {@link createNativeEditorDocumentHandle} — it cannot be constructed
+ * directly — and `destroy()` it when its owner unmounts.
+ */
 export interface NativeEditorDocumentHandle {
     readonly [NATIVE_EDITOR_DOCUMENT_HANDLE_BRAND]: true;
+    /** Decimal-string session id, shared with the native view. */
     readonly editorId: string;
+    /** Typed imperative access to the engine. The React APIs use this for you. */
     readonly bridge: NativeEditorV2Bridge;
     readonly isDestroyed: boolean;
+    /** Release the native session. Every later call fails as non-retryable. */
     destroy(): void;
+    /** Observe engine failures raised outside a caller's own call. Returns an unsubscribe function. */
     addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void;
+    /** Point the native transport at a server, or pass null to detach. */
     configureCollaborationTransport(config: NativeCollaborationTransportConfig | null): void;
+    /** Publish local presence, or pass null to withdraw it. */
     setLocalAwareness(intent: NativeEditorLocalAwarenessIntent | null): void;
+    /** Observe transport state, errors, and protocol-adapter requests. Returns an unsubscribe function. */
     addCollaborationTransportListener(
         listener: (event: NativeCollaborationTransportEvent) => void
     ): () => void;
@@ -3175,6 +3413,25 @@ export function _assertNativeEditorDocumentHandle(
     }
 }
 
+/**
+ * Create the native document session every other API binds to. Create it once
+ * per document — `useMemo`, not on each render — and destroy it when its
+ * owner unmounts.
+ *
+ * @throws NativeEditorV2ErrorBase when the config is rejected: a malformed
+ * schema, an out-of-range limit, or content the engine cannot parse.
+ *
+ * @example
+ * ```ts
+ * const documentHandle = useMemo(
+ *     () => createNativeEditorDocumentHandle({
+ *         initialization: { type: 'localHtml', html: '<p>Hello world</p>' },
+ *     }),
+ *     []
+ * );
+ * useEffect(() => () => documentHandle.destroy(), [documentHandle]);
+ * ```
+ */
 export function createNativeEditorDocumentHandle(
     config: NativeEditorV2CreateConfig
 ): NativeEditorDocumentHandle {

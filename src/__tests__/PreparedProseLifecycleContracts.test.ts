@@ -138,7 +138,11 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(androidUpdate.indexOf('state.mutation()')).toBeLessThan(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)'));
         expect(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)')).toBeLessThan(androidUpdate.indexOf('reconcile(view, state)'));
         expect(androidMeasure).toContain('val leaseHandle = FabricLeaseHandleBridge.currentHandle()');
-        expect(androidMeasure).toContain('if (surface != null && leaseHandle <= 0L) return YogaMeasureOutput.make(0f, 0f)');
+        const androidDeclinesWithoutLease = androidMeasure.slice(
+            androidMeasure.indexOf('if (surface != null && leaseHandle <= 0L) {'),
+            androidMeasure.indexOf('val request = requestFrom(props, state, leaseHandle)'),
+        );
+        expect(androidDeclinesWithoutLease).toContain('return YogaMeasureOutput.make(0f, 0f)');
         expect(androidMeasure).toContain('val request = requestFrom(props, state, leaseHandle)');
         expect(androidMeasure.indexOf('val request = requestFrom(props, state, leaseHandle)')).toBeLessThan(
             androidMeasure.indexOf('PreparedProseLayoutRegistry.shared.measure(')
@@ -173,6 +177,8 @@ describe('prepared prose native lifecycle contracts', () => {
 
     it('preserves iOS Fabric ownership across detach and terminates the recorded lease on recycle or dealloc', () => {
         const ios = readSource('ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm');
+        const state = readSource('common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h');
+        const shadow = readSource('common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.cpp');
         const detach = methodBody(ios, '- (void)didMoveToSuperview');
         const recycle = methodBody(ios, '- (void)prepareForRecycle');
         const dealloc = methodBody(ios, '- (void)dealloc');
@@ -191,7 +197,14 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(releaseOwnership).toContain('componentTag:_ownedComponentTag');
         expect(releaseOwnership).toContain('leaseHandle:leaseHandle');
         expect(releaseOwnership).not.toContain('self.tag');
-        expect(install).toContain('const auto componentTag = static_cast<int64_t>(self.tag);');
+        expect(state).toContain('SurfaceId surfaceId{0};');
+        expect(state).toContain('Tag componentTag{0};');
+        expect(shadow).toContain('state.surfaceId = family->getSurfaceId();');
+        expect(shadow).toContain('state.componentTag = family->getTag();');
+        expect(install).toContain('const auto surfaceId = SurfaceIdFromState(_viewerState);');
+        expect(install).toContain('const auto componentTag = ComponentTagFromState(_viewerState);');
+        expect(ios).not.toContain('SurfaceIdForComponentView');
+        expect(install).not.toContain('self.tag');
     });
 
     it('keeps every very-long literal independently complete and preserves the exact traversal contract', () => {
@@ -399,13 +412,13 @@ describe('prepared prose native lifecycle contracts', () => {
             preparedScheme.indexOf('</LaunchAction>') + '</LaunchAction>'.length
         );
 
-        expect(packageJson.scripts['ios:test:perf:device']).toBe(
+        expect(packageJson.scripts['test:ios:device:performance']).toBe(
             'NATIVE_EDITOR_IOS_TEST_SCHEME=NativeEditorPreparedProsePerformance bash ./scripts/run-ios-on-device.sh -only-testing:NativeEditorTests/NativePerformanceTests/testPerformance_preparedProseCorpusGates_iPhone13'
         );
-        expect(packageJson.scripts['ios:test:perf']).toBe(
+        expect(packageJson.scripts['test:ios:performance']).toBe(
             'bash ./scripts/run-ios-tests.sh -only-testing:NativeEditorTests/NativePerformanceTests'
         );
-        expect(packageJson.scripts['ios:test']).toBe('bash ./scripts/run-ios-tests.sh');
+        expect(packageJson.scripts['test:ios']).toBe('bash ./scripts/run-ios-tests.sh');
         expect(runner).toContain('scheme="${NATIVE_EDITOR_IOS_TEST_SCHEME:-NativeEditorTests}"');
         expect(runner).toContain('-scheme "$scheme"');
         expect(ordinaryScheme).not.toContain('PREPARED_PROSE_DEVICE_BENCHMARK');
@@ -542,7 +555,10 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(androidDevice).toContain('PreparedProseBenchmarkConfiguration.load(testContext)');
         expect(androidDevice).not.toContain('ApplicationProvider.getApplicationContext');
 
-        expect(example).toContain("import { requireNativeModule } from 'expo-modules-core';");
+        // `expo-modules-core` is nested under `expo/node_modules` in the example
+        // install, so a bare specifier does not resolve there. `expo` re-exports
+        // `requireNativeModule`; the contract is that it is not RN NativeModules.
+        expect(example).toContain("import { requireNativeModule } from 'expo';");
         expect(example).toContain("requireNativeModule<PreparedProseBenchmarkBridge>('NativeEditor')");
         expect(example).not.toContain('NativeModules');
         expect(example).not.toContain('preparedProseBenchmarkBridge?.');

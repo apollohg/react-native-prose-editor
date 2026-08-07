@@ -1,13 +1,5 @@
-// ─── NativeEditorBridge v2 Tests ───────────────────────────────
-// Unit tests for the production v2 surface: the frozen exactly-one result
-// envelope, decimal-string revisions/identifiers, direct binary values,
-// typed per-domain imperative throws, the distinct non-retryable class,
-// the document handle lifecycle (including destroy races), and autonomous
-// error events. The native module is mocked; the mock returns raw
-// UniFFI-record-shaped results exactly as the native adapters emit
-// them ({ value, error } records; direct Uint8Array binaries).
-
-// ─── Mock Data ──────────────────────────────────────────────────
+// The mock returns raw UniFFI-record-shaped results exactly as the native
+// adapters emit them: { value, error } records, direct Uint8Array binaries.
 
 const MOCK_DOCUMENT_JSON = JSON.stringify({
     type: 'doc',
@@ -93,8 +85,6 @@ function okRecord(value: unknown): Record<string, unknown> {
 function errRecord(error: unknown): Record<string, unknown> {
     return { value: null, error };
 }
-
-// ─── Mock Native Module ─────────────────────────────────────────
 
 let mockEditorIdCounter = 0;
 
@@ -224,8 +214,6 @@ jest.mock('expo-modules-core', () => ({
     requireNativeModule: () => mockNativeModule,
 }));
 
-// ─── Imports ────────────────────────────────────────────────────
-
 import {
     createNativeEditorLocalAwarenessSelection,
     createNativeEditorDocumentHandle,
@@ -238,6 +226,7 @@ import {
     normalizeNativeEditorV2Unit,
     requireNativeEditorV2U32,
     unwrapNativeEditorV2Result,
+    validEditorMentionTheme,
     _resetNativeModuleCache,
 } from '../NativeEditorBridge';
 import * as NativeEditorBridgeExports from '../NativeEditorBridge';
@@ -257,8 +246,6 @@ import {
 import { HARD_EDITOR_RESOURCE_LIMITS } from '../ResourceLimits';
 import { join } from 'path';
 import ts from 'typescript';
-
-// ─── Helpers ────────────────────────────────────────────────────
 
 function createHandle(): NativeEditorDocumentHandle {
     return createNativeEditorDocumentHandle({
@@ -361,8 +348,6 @@ function flushMicrotasks(): Promise<void> {
     });
 }
 
-// ─── Tests ──────────────────────────────────────────────────────
-
 describe('NativeEditorBridge v2', () => {
     beforeEach(() => {
         _resetNativeModuleCache();
@@ -409,7 +394,9 @@ describe('NativeEditorBridge v2', () => {
 
         it('rejects a record carrying neither value nor error', () => {
             expect(normalizeNativeEditorV2Result({}, identity)).toBeNull();
-            expect(normalizeNativeEditorV2Result({ value: null, error: null }, identity)).toBeNull();
+            expect(
+                normalizeNativeEditorV2Result({ value: null, error: null }, identity)
+            ).toBeNull();
         });
 
         it('rejects non-object records', () => {
@@ -482,7 +469,10 @@ describe('NativeEditorBridge v2', () => {
 
         it('rejects an unknown domain', () => {
             expect(
-                normalizeNativeEditorV2Result(errRecord(mockV2Error({ domain: 'quantum' })), identity)
+                normalizeNativeEditorV2Result(
+                    errRecord(mockV2Error({ domain: 'quantum' })),
+                    identity
+                )
             ).toBeNull();
         });
 
@@ -494,22 +484,22 @@ describe('NativeEditorBridge v2', () => {
                 )
             ).not.toBeNull();
             expect(
-                normalizeNativeEditorV2Result(errRecord({ domain: 'operation', message: 'm' }), identity)
-            ).toBeNull();
-            expect(
-                normalizeNativeEditorV2Result(errRecord({ domain: 'operation', code: 'X' }), identity)
-            ).toBeNull();
-            expect(
                 normalizeNativeEditorV2Result(
-                    errRecord(mockV2Error({ code: 42 })),
+                    errRecord({ domain: 'operation', message: 'm' }),
                     identity
                 )
             ).toBeNull();
             expect(
                 normalizeNativeEditorV2Result(
-                    errRecord(mockV2Error({ message: null })),
+                    errRecord({ domain: 'operation', code: 'X' }),
                     identity
                 )
+            ).toBeNull();
+            expect(
+                normalizeNativeEditorV2Result(errRecord(mockV2Error({ code: 42 })), identity)
+            ).toBeNull();
+            expect(
+                normalizeNativeEditorV2Result(errRecord(mockV2Error({ message: null })), identity)
             ).toBeNull();
         });
 
@@ -546,13 +536,17 @@ describe('NativeEditorBridge v2', () => {
         it.each(['0', '7', '1024', HUGE_U64_DECIMAL])(
             'accepts canonical decimal string %s for u64 error fields',
             (fieldValue) => {
-            const result = normalizeNativeEditorV2Result(
-                errRecord(
-                    mockV2Error({ operationIndex: fieldValue, limit: fieldValue, actual: fieldValue })
-                ),
-                identity
-            );
-            expect(result).not.toBeNull();
+                const result = normalizeNativeEditorV2Result(
+                    errRecord(
+                        mockV2Error({
+                            operationIndex: fieldValue,
+                            limit: fieldValue,
+                            actual: fieldValue,
+                        })
+                    ),
+                    identity
+                );
+                expect(result).not.toBeNull();
             }
         );
 
@@ -767,19 +761,12 @@ describe('NativeEditorBridge v2', () => {
             }
         );
 
-        it.each([
-            '',
-            '01',
-            '-1',
-            '1.0',
-            '+1',
-            ' 1',
-            '1 ',
-            '1e3',
-            '1E3',
-        ])('rejects every non-canonical decimal string %p', (value) => {
-            expect(normalizeNativeEditorV2DecimalId(value)).toBeNull();
-        });
+        it.each(['', '01', '-1', '1.0', '+1', ' 1', '1 ', '1e3', '1E3'])(
+            'rejects every non-canonical decimal string %p',
+            (value) => {
+                expect(normalizeNativeEditorV2DecimalId(value)).toBeNull();
+            }
+        );
 
         it.each([Number.MAX_SAFE_INTEGER + 1, -1, 1.5, NaN, Infinity])(
             'rejects unsafe or non-integer number %p',
@@ -810,7 +797,10 @@ describe('NativeEditorBridge v2', () => {
             mockNativeModule.editorV2GetState.mockReturnValueOnce(
                 okRecord(JSON.stringify({ ...MOCK_V2_STATE, documentRevision: 4 }))
             );
-            expectNonRetryable(catchThrown(() => handle.bridge.getState()), 'FFI_RESULT_INVALID');
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.getState()),
+                'FFI_RESULT_INVALID'
+            );
         });
 
         it.each([
@@ -840,7 +830,10 @@ describe('NativeEditorBridge v2', () => {
                     })
                 )
             );
-            expectNonRetryable(catchThrown(() => handle.bridge.getState()), 'FFI_RESULT_INVALID');
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.getState()),
+                'FFI_RESULT_INVALID'
+            );
         });
 
         it('rejects a leading-zero revision string in a state result', () => {
@@ -848,7 +841,10 @@ describe('NativeEditorBridge v2', () => {
             mockNativeModule.editorV2GetState.mockReturnValueOnce(
                 okRecord(JSON.stringify({ ...MOCK_V2_STATE, documentRevision: '04' }))
             );
-            expectNonRetryable(catchThrown(() => handle.bridge.getState()), 'FFI_RESULT_INVALID');
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.getState()),
+                'FFI_RESULT_INVALID'
+            );
         });
 
         it('normalizes transaction outcome revisions to decimal strings', () => {
@@ -936,10 +932,7 @@ describe('NativeEditorBridge v2', () => {
             expect(handle.bridge.renderUpdate()).toEqual(expected);
         });
 
-        const missingStateRevision = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<
-            string,
-            unknown
-        >;
+        const missingStateRevision = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
         delete missingStateRevision.stateRevision;
         const missingSelection = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
         delete missingSelection.selection;
@@ -979,7 +972,9 @@ describe('NativeEditorBridge v2', () => {
                 'unexpected nested render element field',
                 {
                     ...MOCK_ATOMIC_RENDER_SNAPSHOT,
-                    renderBlocks: [[{ type: 'blockStart', nodeType: 'paragraph', depth: 0, extra: true }]],
+                    renderBlocks: [
+                        [{ type: 'blockStart', nodeType: 'paragraph', depth: 0, extra: true }],
+                    ],
                 },
             ],
             [
@@ -987,7 +982,13 @@ describe('NativeEditorBridge v2', () => {
                 {
                     ...MOCK_ATOMIC_RENDER_SNAPSHOT,
                     renderBlocks: [
-                        [{ type: 'textRun', text: 'text', marks: [{ href: 'https://example.test' }] }],
+                        [
+                            {
+                                type: 'textRun',
+                                text: 'text',
+                                marks: [{ href: 'https://example.test' }],
+                            },
+                        ],
                     ],
                 },
             ],
@@ -1077,7 +1078,7 @@ describe('NativeEditorBridge v2', () => {
                                 nodeType: 'mention',
                                 label: 'Alice',
                                 docPos: 1,
-                                mentionTheme: { popoverBorderRadius: null },
+                                mentionTheme: { suggestions: { borderRadius: null } },
                             },
                         ],
                     ],
@@ -1089,7 +1090,78 @@ describe('NativeEditorBridge v2', () => {
             mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(
                 okRecord(JSON.stringify(malformed))
             );
-            expectNonRetryable(catchThrown(() => handle.bridge.renderUpdate()), 'FFI_RESULT_INVALID');
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.renderUpdate()),
+                'FFI_RESULT_INVALID'
+            );
+        });
+
+        it('accepts an inserted mention atom carrying its node attrs', () => {
+            const handle = createHandle();
+            // Rust emits `attrs` on every void/opaque element, so a document
+            // holding a mention must normalize rather than poison every read.
+            mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(
+                okRecord(
+                    JSON.stringify({
+                        ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                        renderBlocks: [
+                            [
+                                { depth: 0, nodeType: 'paragraph', type: 'blockStart' },
+                                {
+                                    type: 'opaqueInlineAtom',
+                                    nodeType: 'mention',
+                                    label: '@Alice Chen',
+                                    docPos: 1,
+                                    attrs: {
+                                        id: 'user-alice',
+                                        label: 'Alice Chen',
+                                        mentionSuggestionChar: '@',
+                                        type: 'user',
+                                        mentionTheme: {
+                                            node: { textColor: '#336EC1' },
+                                            suggestions: { option: { textColor: '#336EC1' } },
+                                        },
+                                    },
+                                    mentionTheme: {
+                                        node: { textColor: '#336EC1' },
+                                        suggestions: { option: { textColor: '#336EC1' } },
+                                    },
+                                },
+                                { type: 'blockEnd' },
+                            ],
+                        ],
+                    })
+                )
+            );
+
+            const update = handle.bridge.renderUpdate();
+            expect(update.renderBlocks?.[0]?.[1]).toEqual(
+                expect.objectContaining({ type: 'opaqueInlineAtom', nodeType: 'mention' })
+            );
+        });
+
+        it('accepts an opaque block atom carrying its node attrs', () => {
+            const handle = createHandle();
+            mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(
+                okRecord(
+                    JSON.stringify({
+                        ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                        renderBlocks: [
+                            [
+                                {
+                                    type: 'opaqueBlockAtom',
+                                    nodeType: 'customBlock',
+                                    label: 'custom',
+                                    docPos: 1,
+                                    attrs: { id: 'block-1' },
+                                },
+                            ],
+                        ],
+                    })
+                )
+            );
+
+            expect(() => handle.bridge.renderUpdate()).not.toThrow();
         });
 
         it('rejects a non-finite nested render mark attribute', () => {
@@ -1108,7 +1180,10 @@ describe('NativeEditorBridge v2', () => {
             const handle = createHandle();
             mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(okRecord(malformed));
 
-            expectNonRetryable(catchThrown(() => handle.bridge.renderUpdate()), 'FFI_RESULT_INVALID');
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.renderUpdate()),
+                'FFI_RESULT_INVALID'
+            );
         });
 
         it('type-checks atomic snapshots as deeply readonly without freezing EditorUpdate', () => {
@@ -1928,7 +2003,10 @@ describe('NativeEditorBridge v2', () => {
             mockNativeModule.editorV2Create.mockReturnValueOnce(
                 okRecord(JSON.stringify({ editorId: '01' }))
             );
-            expectNonRetryable(catchThrown(() => createHandle()), 'FFI_RESULT_INVALID');
+            expectNonRetryable(
+                catchThrown(() => createHandle()),
+                'FFI_RESULT_INVALID'
+            );
         });
 
         it('destroys exactly once and keeps repeated destroy safe', () => {
@@ -2002,7 +2080,10 @@ describe('NativeEditorBridge v2', () => {
                     message: 'editor session is not registered',
                 })
             );
-            expectNonRetryable(catchThrown(() => handle.bridge.getState()), 'ENGINE_DESTROYED');
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.getState()),
+                'ENGINE_DESTROYED'
+            );
         });
 
         it('classifies a result racing a re-entrant destroy as non-retryable', () => {
@@ -2011,7 +2092,10 @@ describe('NativeEditorBridge v2', () => {
                 handle.destroy();
                 return okRecord(JSON.stringify(MOCK_V2_STATE));
             });
-            expectNonRetryable(catchThrown(() => handle.bridge.getState()), 'ENGINE_DESTROYED');
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.getState()),
+                'ENGINE_DESTROYED'
+            );
         });
     });
 
@@ -2121,9 +2205,16 @@ describe('NativeEditorBridge v2', () => {
     describe('mutation outcomes', () => {
         it('normalizes the notApplicable outcome', () => {
             const handle = createHandle();
-            expect(handle.bridge.setSelection({ baseDocumentRevision: '4', selection: {} })).toEqual(
-                { type: 'notApplicable' }
-            );
+            expect(
+                handle.bridge.setSelection({
+                    baseDocumentRevision: '4',
+                    selection: {
+                        type: 'text',
+                        anchor: { offset: 0, kind: 'scalar' },
+                        head: { offset: 0, kind: 'scalar' },
+                    },
+                })
+            ).toEqual({ type: 'notApplicable' });
         });
 
         it('normalizes the replacement outcome', () => {
@@ -2277,7 +2368,13 @@ describe('NativeEditorBridge v2', () => {
         });
 
         it('rejects invalid u32 factory coordinates before an intent can reach native code', () => {
-            const invalidCoordinates = [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 0x1_0000_0000];
+            const invalidCoordinates = [
+                -1,
+                1.5,
+                Number.NaN,
+                Number.POSITIVE_INFINITY,
+                0x1_0000_0000,
+            ];
 
             for (const coordinate of invalidCoordinates) {
                 expect(() => createNativeEditorLocalAwarenessSelection(coordinate, 1)).toThrow(
@@ -2307,9 +2404,7 @@ describe('NativeEditorBridge v2', () => {
                 )
             ).toThrow('invalid local awareness intent');
             expect(() =>
-                handle.bridge.setLocalAwareness(
-                    cursorIntent as NativeEditorLocalAwarenessIntent
-                )
+                handle.bridge.setLocalAwareness(cursorIntent as NativeEditorLocalAwarenessIntent)
             ).toThrow('reserved cursor key');
             expect(cursorIntent).toEqual({
                 state: {
@@ -2419,14 +2514,18 @@ describe('NativeEditorBridge v2', () => {
             await flushMicrotasks();
 
             expect(onOpen).toHaveBeenCalledTimes(2);
-            expect(mockNativeModule.editorV2CollaborationResolveProtocolAdapter).toHaveBeenNthCalledWith(
+            expect(
+                mockNativeModule.editorV2CollaborationResolveProtocolAdapter
+            ).toHaveBeenNthCalledWith(
                 1,
                 handle.editorId,
                 'attempt-1',
                 '1',
                 '{"action":"continue","frames":[{"type":"text","data":"init:first"}]}'
             );
-            expect(mockNativeModule.editorV2CollaborationResolveProtocolAdapter).toHaveBeenNthCalledWith(
+            expect(
+                mockNativeModule.editorV2CollaborationResolveProtocolAdapter
+            ).toHaveBeenNthCalledWith(
                 2,
                 handle.editorId,
                 'attempt-2',
@@ -2473,7 +2572,9 @@ describe('NativeEditorBridge v2', () => {
                 }),
                 { type: 'binary', data: new Uint8Array([1, 2, 3]) }
             );
-            expect(mockNativeModule.editorV2CollaborationResolveProtocolAdapter).toHaveBeenCalledWith(
+            expect(
+                mockNativeModule.editorV2CollaborationResolveProtocolAdapter
+            ).toHaveBeenCalledWith(
                 handle.editorId,
                 'attempt-1',
                 '2',
@@ -2559,6 +2660,45 @@ describe('NativeEditorBridge v2', () => {
             expect(normalizeNativeEditorV2Unit('true')).toBeNull();
             expect(normalizeNativeEditorV2Unit(1)).toBeNull();
             expect(normalizeNativeEditorV2Unit(null)).toBeNull();
+        });
+    });
+    describe('mention theme validation (render read path)', () => {
+        it('accepts a surface-grouped theme with both node and option styling', () => {
+            expect(
+                validEditorMentionTheme({
+                    node: { textColor: '#0A84FF' },
+                    suggestions: { option: { textColor: '#0A84FF' } },
+                })
+            ).toBe(true);
+        });
+
+        it('accepts a base theme carrying box styling on the option', () => {
+            expect(
+                validEditorMentionTheme({
+                    node: { fontWeight: '600' },
+                    suggestions: {
+                        option: {
+                            backgroundColor: '#FFFFFF',
+                            borderRadius: 9999,
+                            fontWeight: '600',
+                        },
+                    },
+                })
+            ).toBe(true);
+        });
+
+        it('rejects a numeric fontWeight', () => {
+            expect(validEditorMentionTheme({ node: { fontWeight: 600 } })).toBe(false);
+        });
+
+        it('rejects a non-numeric borderRadius', () => {
+            expect(
+                validEditorMentionTheme({ suggestions: { option: { borderRadius: '50%' } } })
+            ).toBe(false);
+        });
+
+        it('rejects the pre-1.0 flat shape', () => {
+            expect(validEditorMentionTheme({ textColor: '#CC0000' })).toBe(false);
         });
     });
 });

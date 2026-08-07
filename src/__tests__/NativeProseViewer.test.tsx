@@ -49,7 +49,6 @@ describe('NativeProseViewer', () => {
             'cancelActiveTraversal',
             'handleViewableItemsChanged',
             'handleScroll',
-            'handleBack',
             'onScroll={handleScroll}',
             'onViewableItemsChanged={handleViewableItemsChanged}',
             'onMomentumScrollBegin={handleMomentumScrollBegin}',
@@ -63,7 +62,10 @@ describe('NativeProseViewer', () => {
         expect(benchmark).toContain('command.momentumBegan ||');
         expect(benchmark).not.toContain('startOffsetY');
         expect(benchmark).not.toContain('command.dispatchOffsetY =');
-        expect(benchmark).toContain('keyExtractor={(item) => item.id}');
+        // Memoized, not inline: this screen's whole contract is keeping React
+        // reconciliation cost out of the window it measures.
+        expect(benchmark).toContain('const keyExtractor = useCallback((item: CorpusEntry) => item.id, []);');
+        expect(benchmark).toContain('keyExtractor={keyExtractor}');
         expect(benchmark).toContain('renderImages={imagesEnabled}');
         for (const bridgeMethod of [
             'preparedProseBenchmarkBegin',

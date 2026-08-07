@@ -1,4 +1,3 @@
-// ─── YjsCollaboration controller tests ──────────────────────────
 // The collaboration data plane lives natively: Swift and Kotlin own the
 // socket, and Rust owns lifecycle state, generations, y-sync framing, the
 // outbox, awareness clocks, peer expiry, retry eligibility, and close
@@ -60,7 +59,6 @@ import {
 } from '../NativeEditorBridge';
 import * as PublicApi from '../index';
 
-// ─── Fixtures ───────────────────────────────────────────────────
 
 const TRANSPORT_URL = 'wss://example.test/collaboration';
 const SERVER_DOC = fakeDocForText('server');
@@ -90,7 +88,6 @@ function localAwarenessIntent(
     return { state, focused };
 }
 
-// ─── Setup helpers ──────────────────────────────────────────────
 
 let runtime: FakeNativeEditorV2Runtime;
 
@@ -188,7 +185,6 @@ function awarenessPayload(callIndex = -1): unknown {
     return JSON.parse(call[1] as string);
 }
 
-// ─── Test setup ─────────────────────────────────────────────────
 
 describe('YjsCollaboration (native-transport controller)', () => {
     beforeEach(() => {
@@ -202,7 +198,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         }
     });
 
-    // ── Handle binding ──────────────────────────────────────────
 
     it('rejects recovered constructors and structural handle forgeries while accepting real handles', () => {
         const handle = createRoomHandle({ withSnapshot: true });
@@ -234,7 +229,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         controller.destroy();
     });
 
-    // ── Transport intent ────────────────────────────────────────
 
     it('declares transport intent on the handle and never opens a socket itself', () => {
         const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
@@ -317,7 +311,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(mockNativeModule.addListener.mock.results[0].value.remove).toBeDefined();
     });
 
-    // ── Native transport events ─────────────────────────────────
 
     it('renders the Rust-reported transport state through every phase', () => {
         const setup = setupController();
@@ -457,7 +450,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(latestStatus(setup)).toBe('connecting');
     });
 
-    // ── Peers and remote selections ─────────────────────────────
 
     it('reports peers from the native projection and derives remote selections', () => {
         const handle = createRoomHandle({ withSnapshot: true });
@@ -526,7 +518,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(setup.controller.peers[0].clientId).toBe('42');
     });
 
-    // ── Local awareness ─────────────────────────────────────────
 
     it('publishes the local awareness intent through Rust with no TypeScript clock bookkeeping', () => {
         const setup = setupController({
@@ -734,7 +725,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         });
     });
 
-    // ── Destroy ─────────────────────────────────────────────────
 
     it('destroy detaches the transport but never destroys the shared document handle', () => {
         const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
@@ -778,7 +768,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(setup.states).toHaveLength(statesAfterDestroy);
     });
 
-    // ── Hook ────────────────────────────────────────────────────
 
     it('useYjsCollaboration renders returned Rust state and binds the shared handle', () => {
         const handle = createRoomHandle();
@@ -876,7 +865,6 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(runtime.session(handle.editorId).desiredAwareness).toEqual(localAwarenessIntent());
     });
 
-    // ── Removal proofs ──────────────────────────────────────────
 
     it('proves the removed collaboration surface no longer exists in source or exports', () => {
         const collaborationSource = readFileSync(

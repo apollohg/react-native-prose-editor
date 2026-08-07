@@ -1,5 +1,6 @@
 import { normalizeNativeEditorV2U64 } from './NativeEditorV2Decimal';
 
+/** The boundary failure codes this package knows about at build time. */
 export const NATIVE_EDITOR_BOUNDARY_ERROR_CODES = [
     'INVALID_RESOURCE_LIMIT',
     'CONFIG_INVALID',
@@ -27,6 +28,7 @@ export type KnownNativeEditorBoundaryErrorCode =
 /** Known codes remain suggested while future native codes can cross the boundary losslessly. */
 export type NativeEditorBoundaryErrorCode = KnownNativeEditorBoundaryErrorCode | (string & {});
 
+/** The subsystems a typed error can come from. Each maps to its own error class. */
 export const NATIVE_EDITOR_ERROR_DOMAINS = [
     'boundary',
     'document',
@@ -36,8 +38,19 @@ export const NATIVE_EDITOR_ERROR_DOMAINS = [
     'transport',
 ] as const;
 
+/**
+ * Which subsystem raised a failure:
+ *
+ * - `boundary` — the value never reached the engine (bad config, oversized input).
+ * - `document` — the document or schema was rejected.
+ * - `operation` — a mutation could not be applied (stale revision, invalid position).
+ * - `lifecycle` — the session was destroyed or is being destroyed.
+ * - `snapshot` — a room snapshot could not be exported or restored.
+ * - `transport` — collaboration transport failure.
+ */
 export type NativeEditorErrorDomain = (typeof NATIVE_EDITOR_ERROR_DOMAINS)[number];
 
+/** Codes carried by `operation`-domain failures. */
 export const NATIVE_EDITOR_OPERATION_ERROR_CODES = [
     'ENGINE_NOT_READY',
     'REVISION_MISMATCH',
@@ -51,17 +64,32 @@ export const NATIVE_EDITOR_OPERATION_ERROR_CODES = [
     'ENGINE_INVARIANT_FAILED',
 ] as const;
 
+/**
+ * A failure record from the native boundary, normalized for JavaScript. It is
+ * carried on every {@link NativeEditorV2ErrorBase}; the numeric fields stay
+ * decimal strings because they span the full Rust `u64` range.
+ */
 export interface NativeEditorV2Error {
     domain: NativeEditorErrorDomain;
     code: NativeEditorBoundaryErrorCode;
     message: string;
+    /** Identity of the request that failed. */
     requestId: string | null;
+    /** Index of the failing operation within a multi-operation transaction. */
     operationIndex: string | null;
+    /** The bound that was exceeded, for limit failures. */
     limit: string | null;
+    /** The value that exceeded it. */
     actual: string | null;
+    /** Code-specific context, e.g. `expectedRevision`/`actualRevision` for `REVISION_MISMATCH`. */
     details: Record<string, unknown> | null;
 }
 
+/**
+ * A value rejected before it reached the engine — an out-of-range resource
+ * limit, an invalid image policy, an oversized input. Thrown synchronously by
+ * the validating helpers in this package.
+ */
 export class NativeEditorBoundaryError extends Error {
     constructor(
         readonly code: NativeEditorBoundaryErrorCode,
@@ -75,6 +103,10 @@ export class NativeEditorBoundaryError extends Error {
     }
 }
 
+/**
+ * Turn a raw native error envelope into a {@link NativeEditorBoundaryError},
+ * or null when the value is not one.
+ */
 export function parseNativeBoundaryError(value: unknown): NativeEditorBoundaryError | null {
     const envelope = value as { error?: Record<string, unknown> };
     const nativeError = envelope?.error;
@@ -191,12 +223,10 @@ export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Erro
     };
 }
 
-// ---------------------------------------------------------------------------
 // FFI v2 typed imperative error classes (additive; the legacy parsing path
 // above is unchanged). Recoverable engine errors throw the structured
 // per-domain class; ENGINE_INVARIANT_FAILED and lifecycle-destroyed states
 // throw the distinct non-retryable class.
-// ---------------------------------------------------------------------------
 
 /** Codes that mark a failure as permanently non-retryable for this handle. */
 export const NATIVE_EDITOR_V2_NON_RETRYABLE_CODES = [
@@ -235,36 +265,45 @@ export class NativeEditorV2ErrorBase extends Error {
     }
 }
 
+/** A value the engine refused to admit. */
 export class NativeEditorV2BoundaryError extends NativeEditorV2ErrorBase {
     constructor(error: NativeEditorV2Error) {
         super(error, 'NativeEditorV2BoundaryError');
     }
 }
 
+/** The document or schema was rejected. */
 export class NativeEditorV2DocumentError extends NativeEditorV2ErrorBase {
     constructor(error: NativeEditorV2Error) {
         super(error, 'NativeEditorV2DocumentError');
     }
 }
 
+/**
+ * A mutation could not be applied. `REVISION_MISMATCH` is the routine one:
+ * the document moved on, so re-read it and retry against the fresh revision.
+ */
 export class NativeEditorV2OperationError extends NativeEditorV2ErrorBase {
     constructor(error: NativeEditorV2Error) {
         super(error, 'NativeEditorV2OperationError');
     }
 }
 
+/** The session is not in a state that permits this call. */
 export class NativeEditorV2LifecycleError extends NativeEditorV2ErrorBase {
     constructor(error: NativeEditorV2Error) {
         super(error, 'NativeEditorV2LifecycleError');
     }
 }
 
+/** A room snapshot could not be exported or restored. */
 export class NativeEditorV2SnapshotError extends NativeEditorV2ErrorBase {
     constructor(error: NativeEditorV2Error) {
         super(error, 'NativeEditorV2SnapshotError');
     }
 }
 
+/** The collaboration transport failed. */
 export class NativeEditorV2TransportError extends NativeEditorV2ErrorBase {
     constructor(error: NativeEditorV2Error) {
         super(error, 'NativeEditorV2TransportError');

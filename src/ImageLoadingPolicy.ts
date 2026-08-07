@@ -1,15 +1,34 @@
 import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
 
+/**
+ * Bounds on the native image pipeline that fetches and decodes remote and
+ * data-URL images. Set it on `NativeRichTextEditor.imageLoadingPolicy` or
+ * `NativeProseViewer.imageLoadingPolicy`.
+ *
+ * Every field is optional; an omitted one uses
+ * {@link DEFAULT_EDITOR_IMAGE_LOADING_POLICY}. Each value must be a positive
+ * integer no greater than the matching
+ * {@link HARD_EDITOR_IMAGE_LOADING_POLICY} ceiling — anything else throws
+ * `NativeEditorBoundaryError` (`IMAGE_POLICY_INVALID`).
+ */
 export interface EditorImageLoadingPolicy {
+    /** Byte ceiling for one image source, applied to remote responses and decoded data-URL payloads alike. */
     maxSourceBytes?: number;
+    /** Socket connect timeout for a remote image request, in milliseconds. */
     connectTimeoutMs?: number;
+    /** Socket read timeout for a remote image request, in milliseconds. */
     readTimeoutMs?: number;
+    /** Overall deadline for one image request, in milliseconds. */
     requestTimeoutMs?: number;
+    /** Image requests allowed in flight at once. Further requests queue. */
     maxConcurrentRequests?: number;
+    /** Queued requests allowed while the in-flight slots are full. Requests beyond this are dropped. */
     maxPendingRequests?: number;
+    /** Ceiling on decoded image width and height, in pixels. Larger images are downsampled. */
     maxDecodeDimensionPx?: number;
 }
 
+/** {@link EditorImageLoadingPolicy} with every default filled in. */
 export interface ResolvedEditorImageLoadingPolicy {
     maxSourceBytes: number;
     connectTimeoutMs: number;
@@ -20,6 +39,7 @@ export interface ResolvedEditorImageLoadingPolicy {
     maxDecodeDimensionPx: number;
 }
 
+/** The value used for each {@link EditorImageLoadingPolicy} field left unset. */
 export const DEFAULT_EDITOR_IMAGE_LOADING_POLICY: Readonly<ResolvedEditorImageLoadingPolicy> = {
     maxSourceBytes: 10 * 1024 * 1024,
     connectTimeoutMs: 10_000,
@@ -30,6 +50,7 @@ export const DEFAULT_EDITOR_IMAGE_LOADING_POLICY: Readonly<ResolvedEditorImageLo
     maxDecodeDimensionPx: 2_048,
 };
 
+/** The ceiling each {@link EditorImageLoadingPolicy} field may not exceed. */
 export const HARD_EDITOR_IMAGE_LOADING_POLICY: Readonly<ResolvedEditorImageLoadingPolicy> = {
     maxSourceBytes: 64 * 1024 * 1024,
     connectTimeoutMs: 600_000,
@@ -60,6 +81,14 @@ function resolveImagePolicyValue(
     return resolved;
 }
 
+/**
+ * Fill in every unset {@link EditorImageLoadingPolicy} field from
+ * {@link DEFAULT_EDITOR_IMAGE_LOADING_POLICY}, validating each value against
+ * {@link HARD_EDITOR_IMAGE_LOADING_POLICY}.
+ *
+ * @throws NativeEditorBoundaryError `IMAGE_POLICY_INVALID` when a value is
+ * not a positive integer within its ceiling.
+ */
 export function resolveEditorImageLoadingPolicy(
     policy?: EditorImageLoadingPolicy
 ): ResolvedEditorImageLoadingPolicy {

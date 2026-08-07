@@ -1,32 +1,17 @@
-// ─── Fake native v2 runtime ──────────────────────────────────
-// A faithful, stateful fake of the 22 `editorV2*` production entries. It
-// reproduces the Rust-side semantics the TypeScript controller and the v2
-// document bindings rely on:
-// - room sessions auto-attach the collaboration runtime; local sessions
-//   refuse `beginConnect` with transport/TRANSPORT_NOT_ROOM_BOUND;
-// - authoritative transport lifecycle: begin_connect only from Disconnected,
-//   open -> Handshaking, accepted Step 2 -> Synchronized, close code 1008 ->
-//   Incompatible (anything else retryable), stale generations rejected with
-//   TRANSPORT_STALE_GENERATION;
-// - document readiness: room without snapshot starts AwaitRemote/Loading and
-//   rejects local edits with ENGINE_NOT_READY until an accepted Step 2;
-// - whole-document replacement is rejected while Connecting/Handshaking/
-//   Synchronized (WHOLE_DOCUMENT_REPLACEMENT_CONNECTED);
-// - offline local edits queue document frames; take_outbound drains protocol
-//   replies before document frames, one frame per call, empty queue -> empty
-//   bytes;
-// - explicit detach/reattach is the path out of Incompatible;
-// - a real undo stack so replace/reset history policy is verifiable through
-//   engine undo state instead of document content.
+// Stateful fake of the 22 `editorV2*` entries, reproducing the Rust semantics
+// the TypeScript side relies on:
+// - local sessions refuse `beginConnect` (TRANSPORT_NOT_ROOM_BOUND);
+// - begin_connect only from Disconnected; close 1008 -> Incompatible, else
+//   retryable; stale generations -> TRANSPORT_STALE_GENERATION;
+// - a room without a snapshot rejects edits with ENGINE_NOT_READY until an
+//   accepted Step 2; whole-document replacement is rejected while connected;
+// - take_outbound drains protocol replies before document frames, one per call;
+// - detach/reattach is the only path out of Incompatible;
+// - a real undo stack, so history policy is verifiable through engine state.
 //
-// The fake owns awareness clocks (the TypeScript side must never see a clock
-// field): publishing desired awareness while a generation is live enqueues an
-// awareness frame carrying a Rust-side monotonically increasing clock.
+// The fake owns awareness clocks; TypeScript must never see a clock field.
 
-import type {
-    DocumentJSON,
-    NativeEditorV2PeerInfo,
-} from '../NativeEditorBridge';
+import type { DocumentJSON, NativeEditorV2PeerInfo } from '../NativeEditorBridge';
 import { normalizeNativeEditorV2U64 } from '../../NativeEditorV2Decimal';
 
 export const V2_FAKE_STEP1_FRAME = new Uint8Array([0, 0, 1]);
@@ -197,7 +182,9 @@ function parseV2RequestEnvelope(
     try {
         request = JSON.parse(requestJson);
     } catch {
-        return { __v2RequestError: boundaryError('CONFIG_INVALID', 'malformed v2 request envelope') };
+        return {
+            __v2RequestError: boundaryError('CONFIG_INVALID', 'malformed v2 request envelope'),
+        };
     }
     if (
         request == null ||
@@ -213,11 +200,27 @@ function parseV2RequestEnvelope(
     return request as Record<string, unknown>;
 }
 
-function requestEnvelopeError(
-    parsed: Record<string, unknown>
-): Record<string, unknown> | null {
+function requestEnvelopeError(parsed: Record<string, unknown>): Record<string, unknown> | null {
     const error = parsed.__v2RequestError;
     return error != null && typeof error === 'object' ? (error as Record<string, unknown>) : null;
+}
+
+/**
+ * Mirrors the Rust `PositionEnvelope`: `{ offset, kind, affinity? }` in scalar
+ * currency. Bare integers are rejected exactly as serde rejects them.
+ */
+function fakePositionEnvelopeScalar(value: unknown): number | null {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+    const envelope = value as Record<string, unknown>;
+    if (envelope.kind !== 'scalar') return null;
+    if (
+        envelope.affinity !== undefined &&
+        envelope.affinity !== 'before' &&
+        envelope.affinity !== 'after'
+    ) {
+        return null;
+    }
+    return exactV2U32(envelope.offset);
 }
 
 /** Deterministic single-paragraph HTML used by the fake for html round-trips. */
@@ -355,7 +358,8 @@ function fakeAtomLabel(node: FakeDocumentNode): string {
             ? (node.attrs as Record<string, unknown>)
             : {};
     let label = typeof attrs.label === 'string' && attrs.label.length > 0 ? attrs.label : type;
-    const trigger = typeof attrs.mentionSuggestionChar === 'string' ? attrs.mentionSuggestionChar : '';
+    const trigger =
+        typeof attrs.mentionSuggestionChar === 'string' ? attrs.mentionSuggestionChar : '';
     if (type === 'mention' && trigger.length > 0 && !label.startsWith(trigger)) {
         label = `${trigger}${label}`;
     }
@@ -427,11 +431,7 @@ function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
         let inlineScalarOffset = 0;
         const inlineSpans: FakeInlineSpan[] = [];
         for (const rawInline of inline) {
-            if (
-                rawInline == null ||
-                typeof rawInline !== 'object' ||
-                Array.isArray(rawInline)
-            ) {
+            if (rawInline == null || typeof rawInline !== 'object' || Array.isArray(rawInline)) {
                 continue;
             }
             const inlineNode = rawInline as FakeDocumentNode;
@@ -489,8 +489,7 @@ function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
     }
 
     const clampScalar = (offset: number) => Math.min(Math.max(offset, 0), scalarLength);
-    const clampDocumentOffset = (offset: number) =>
-        Math.min(Math.max(offset, 0), documentLength);
+    const clampDocumentOffset = (offset: number) => Math.min(Math.max(offset, 0), documentLength);
     const blockForDocumentOffset = (offset: number): FakePositionBlock | undefined => {
         let previous: FakePositionBlock | undefined;
         for (const block of blocks) {
@@ -518,9 +517,7 @@ function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
     };
     const scalarToDocument = (offset: number) => {
         const scalar = clampScalar(offset);
-        const block = [...blocks]
-            .reverse()
-            .find((candidate) => candidate.scalarStart <= scalar);
+        const block = [...blocks].reverse().find((candidate) => candidate.scalarStart <= scalar);
         if (!block) return 0;
         const intraScalar = scalar - block.scalarStart;
         if (block.isVoid) {
@@ -530,8 +527,7 @@ function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
         }
         if (block.isPlaceholder) return block.documentStart;
         const span = block.inlineSpans.find(
-            (candidate) =>
-                intraScalar >= candidate.scalarStart && intraScalar < candidate.scalarEnd
+            (candidate) => intraScalar >= candidate.scalarStart && intraScalar < candidate.scalarEnd
         );
         if (!span) return block.documentEnd;
         return span.kind === 'text'
@@ -543,21 +539,21 @@ function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
         const block = blockForDocumentOffset(position);
         if (!block) return scalarLength;
         if (block.isVoid) {
-            return block.scalarStart +
-                (position <= block.documentStart ? 0 : block.scalarLength);
+            return block.scalarStart + (position <= block.documentStart ? 0 : block.scalarLength);
         }
         if (block.isPlaceholder) {
-            return block.scalarStart +
-                (position < block.documentStart ? 0 : block.scalarLength);
+            return block.scalarStart + (position < block.documentStart ? 0 : block.scalarLength);
         }
         if (position < block.documentStart) return block.scalarStart;
         if (position > block.documentEnd) return block.scalarStart + block.scalarLength;
         for (const span of block.inlineSpans) {
             if (position < span.documentStart) return block.scalarStart + span.scalarStart;
             if (position < span.documentEnd) {
-                return block.scalarStart +
+                return (
+                    block.scalarStart +
                     span.scalarStart +
-                    (span.kind === 'text' ? position - span.documentStart : 0);
+                    (span.kind === 'text' ? position - span.documentStart : 0)
+                );
             }
         }
         return block.scalarStart + block.scalarLength;
@@ -580,7 +576,11 @@ function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
             const type = typeof mark.type === 'string' ? mark.type : '';
             if (!type) continue;
             marks[type] = true;
-            if (mark.attrs != null && typeof mark.attrs === 'object' && !Array.isArray(mark.attrs)) {
+            if (
+                mark.attrs != null &&
+                typeof mark.attrs === 'object' &&
+                !Array.isArray(mark.attrs)
+            ) {
                 markAttrs[type] = { ...(mark.attrs as Record<string, unknown>) };
             }
         }
@@ -727,7 +727,11 @@ function parseFakeAwarenessIntent(
         parsed = JSON.parse(awarenessJson);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return errorRecord('boundary', 'AWARENESS_STATE_INVALID', `desired awareness state is not valid JSON: ${message}`);
+        return errorRecord(
+            'boundary',
+            'AWARENESS_STATE_INVALID',
+            `desired awareness state is not valid JSON: ${message}`
+        );
     }
     if (!isFakeRecord(parsed)) {
         return errorRecord('boundary', 'AWARENESS_STATE_INVALID', 'invalid local awareness intent');
@@ -751,7 +755,11 @@ function parseFakeAwarenessIntent(
         );
     }
     if (selection === undefined) return { state, focused };
-    return { state, focused, selection: selection as FakeNativeEditorLocalAwarenessWireSelection | null };
+    return {
+        state,
+        focused,
+        selection: selection as FakeNativeEditorLocalAwarenessWireSelection | null,
+    };
 }
 
 /**
@@ -883,11 +891,7 @@ function fakeScalarText(doc: DocumentJSON): string[] {
     );
 }
 
-function moveFakeStickyPoint(
-    position: number,
-    before: DocumentJSON,
-    after: DocumentJSON
-): number {
+function moveFakeStickyPoint(position: number, before: DocumentJSON, after: DocumentJSON): number {
     const beforeMap = fakeScalarDocumentMap(before);
     const afterMap = fakeScalarDocumentMap(after);
     const beforeText = fakeScalarText(before);
@@ -1261,9 +1265,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         return null;
     }
 
-    function enqueuePendingLocalAwarenessTombstone(
-        session: FakeSession
-    ): FakeErrorRecord | null {
+    function enqueuePendingLocalAwarenessTombstone(session: FakeSession): FakeErrorRecord | null {
         const tombstone = session.pendingLocalAwarenessTombstone;
         if (tombstone == null) return null;
         const injected = pendingFor(session.editorId).awarenessBroadcastErrors.shift();
@@ -1305,8 +1307,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             (deadline): deadline is bigint => deadline != null
         );
         return deadlines.reduce<bigint | null>(
-            (earliest, deadline) =>
-                earliest == null || deadline < earliest ? deadline : earliest,
+            (earliest, deadline) => (earliest == null || deadline < earliest ? deadline : earliest),
             null
         );
     }
@@ -1325,11 +1326,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             const isTombstone = peer.state == null;
             const removesEqualClockLivePeer =
                 isTombstone && currentPeerIndex >= 0 && currentClock === peer.clock;
-            if (
-                currentClock != null &&
-                peer.clock <= currentClock &&
-                !removesEqualClockLivePeer
-            ) {
+            if (currentClock != null && peer.clock <= currentClock && !removesEqualClockLivePeer) {
                 continue;
             }
             if (currentClock == null && isTombstone) continue;
@@ -1427,11 +1424,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
     }
 
     function awarenessReceiveError(cause: FakeErrorRecord): FakeErrorRecord {
-        const error = errorRecord(
-            'transport',
-            cause.code,
-            'awareness frame handling failed'
-        );
+        const error = errorRecord('transport', cause.code, 'awareness frame handling failed');
         error.details = {
             action: 'receiveMessage',
             cause: {
@@ -1490,11 +1483,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         session.documentQueue.push(documentFrame(session.documentRevision));
     }
 
-    function applyReplacement(
-        session: FakeSession,
-        nextDoc: DocumentJSON,
-        history: string
-    ): void {
+    function applyReplacement(session: FakeSession, nextDoc: DocumentJSON, history: string): void {
         if (history === 'undoableBoundary') {
             session.undoStack.push(cloneDoc(session.doc));
             session.redoStack = [];
@@ -1638,9 +1627,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         // Remote awareness state.
         if (tag === 0x02) {
             const remote = pendingFor(session.editorId);
-            const entries = validateAndSortAwarenessDelta(
-                remote.awarenessDeltas.shift() ?? []
-            );
+            const entries = validateAndSortAwarenessDelta(remote.awarenessDeltas.shift() ?? []);
             if (entries == null) {
                 const error = malformedAwarenessReceiveError();
                 retireGeneration(session, 'Disconnected');
@@ -1757,9 +1744,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 base.transportState = 'Disconnected';
                 if (initialization.snapshot != null && snapshotState != null) {
                     try {
-                        const parsed = JSON.parse(
-                            new TextDecoder().decode(snapshotState)
-                        ) as { doc: DocumentJSON; revision?: number };
+                        const parsed = JSON.parse(new TextDecoder().decode(snapshotState)) as {
+                            doc: DocumentJSON;
+                            revision?: number;
+                        };
                         base.doc = cloneDoc(parsed.doc);
                         base.documentRevision =
                             typeof parsed.revision === 'number' ? parsed.revision : 1;
@@ -1807,9 +1795,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         ),
         editorV2GetContentSnapshot: jest.fn((editorId: string) =>
             withSession(editorId, (session) =>
-                okRecord(
-                    JSON.stringify({ html: fakeHtmlForDoc(session.doc), json: session.doc })
-                )
+                okRecord(JSON.stringify({ html: fakeHtmlForDoc(session.doc), json: session.doc }))
             )
         ),
         editorV2ReplaceDocument: jest.fn((editorId: string, requestJson: string) =>
@@ -1848,10 +1834,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 }
                 session.undoStack.push(cloneDoc(session.doc));
                 session.redoStack = [];
-                installFakeDocument(
-                    session,
-                    appendText(session.doc, String(request.text ?? ''))
-                );
+                installFakeDocument(session, appendText(session.doc, String(request.text ?? '')));
                 session.documentRevision += 1;
                 session.stateRevision += 1;
                 queueDocumentUpdate(session);
@@ -1941,9 +1924,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     };
                 };
                 const storedNodes = () => ({
-                    ...(session.hasStoredNodes
-                        ? session.activeNodes
-                        : documentActiveState().nodes),
+                    ...(session.hasStoredNodes ? session.activeNodes : documentActiveState().nodes),
                 });
                 switch (type) {
                     case 'toggleMark': {
@@ -1966,8 +1947,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         const markType = String(command.markType ?? '');
                         const next = storedMarks();
                         next.marks[markType] = true;
-                        next.markAttrs[markType] =
-                            (command.attrs as Record<string, unknown>) ?? {};
+                        next.markAttrs[markType] = (command.attrs as Record<string, unknown>) ?? {};
                         session.activeMarks = next.marks;
                         session.activeMarkAttrs = next.markAttrs;
                         session.hasStoredMarks = true;
@@ -2022,7 +2002,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                                 {
                                     type: 'paragraph',
                                     content: [
-                                        { type: 'text', text: `[${String(command.nodeType ?? '')}]` },
+                                        {
+                                            type: 'text',
+                                            text: `[${String(command.nodeType ?? '')}]`,
+                                        },
                                     ],
                                 },
                             ])
@@ -2030,9 +2013,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     case 'insertContentHtml':
                         return docChangeOutcome(() => {
                             const fragment = fakeDocForHtml(String(command.html ?? ''));
-                            appendBlocks(
-                                Array.isArray(fragment.content) ? fragment.content : []
-                            );
+                            appendBlocks(Array.isArray(fragment.content) ? fragment.content : []);
                         });
                     case 'insertContentJson': {
                         const fragment = (command.json ?? {}) as DocumentJSON;
@@ -2057,7 +2038,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         (mirrorAnchor != null && exactV2U32(mirrorAnchor) == null) ||
                         (mirrorHead != null && exactV2U32(mirrorHead) == null)
                     ) {
-                        return boundaryError('CONFIG_INVALID', 'invalid render mirror scalar offsets');
+                        return boundaryError(
+                            'CONFIG_INVALID',
+                            'invalid render mirror scalar offsets'
+                        );
                     }
                     if (session.documentState === 'AwaitRemote') {
                         return operationError(
@@ -2065,22 +2049,22 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                             'room document is awaiting the remote initial state'
                         );
                     }
-                    const blocks = (Array.isArray(session.doc.content) ? session.doc.content : []).map(
-                        (block) => {
-                            const inline = Array.isArray(block?.content) ? block.content : [];
-                            const text = inline
-                                .map((node) => (typeof node?.text === 'string' ? node.text : ''))
-                                .join('');
-                            const nodeType = String(block?.type ?? 'paragraph');
-                            return [
-                                { type: 'blockStart', nodeType, depth: 0 },
-                                ...(text.length > 0
-                                    ? [{ type: 'textRun', text, marks: [] as string[] }]
-                                    : []),
-                                { type: 'blockEnd' },
-                            ];
-                        }
-                    );
+                    const blocks = (
+                        Array.isArray(session.doc.content) ? session.doc.content : []
+                    ).map((block) => {
+                        const inline = Array.isArray(block?.content) ? block.content : [];
+                        const text = inline
+                            .map((node) => (typeof node?.text === 'string' ? node.text : ''))
+                            .join('');
+                        const nodeType = String(block?.type ?? 'paragraph');
+                        return [
+                            { type: 'blockStart', nodeType, depth: 0 },
+                            ...(text.length > 0
+                                ? [{ type: 'textRun', text, marks: [] as string[] }]
+                                : []),
+                            { type: 'blockEnd' },
+                        ];
+                    });
                     const scalarMap = fakeScalarDocumentMap(session.doc);
                     const selection =
                         mirrorAnchor != null && mirrorHead != null
@@ -2186,16 +2170,23 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     return revisionMismatchError(session, request.baseDocumentRevision);
                 }
                 const selection = request.selection as Record<string, unknown> | undefined;
-                const anchor = exactV2U32(selection?.anchor);
-                const head = exactV2U32(selection?.head);
-                if (anchor != null && head != null) {
-                    const scalarMap = fakeScalarDocumentMap(session.doc);
-                    session.selection = {
-                        anchor: scalarMap.clampDocumentOffset(anchor),
-                        head: scalarMap.clampDocumentOffset(head),
-                    };
-                    session.stateRevision += 1;
+                if (selection?.type !== 'text') {
+                    return boundaryError('CONFIG_INVALID', 'unsupported v2 selection envelope');
                 }
+                const anchor = fakePositionEnvelopeScalar(selection.anchor);
+                const head = fakePositionEnvelopeScalar(selection.head);
+                if (anchor == null || head == null) {
+                    return boundaryError(
+                        'CONFIG_INVALID',
+                        'selection anchor/head must be scalar position envelopes'
+                    );
+                }
+                const scalarMap = fakeScalarDocumentMap(session.doc);
+                session.selection = {
+                    anchor: scalarMap.clampDocumentOffset(scalarMap.scalarToDocument(anchor)),
+                    head: scalarMap.clampDocumentOffset(scalarMap.scalarToDocument(head)),
+                };
+                session.stateRevision += 1;
                 return okRecord(JSON.stringify({ type: 'notApplicable' }));
             })
         ),
@@ -2473,8 +2464,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             const session = requireSession(editorId);
             emitTransportEvent({
                 editorId: session.editorId,
-                generation:
-                    session.liveGeneration === null ? null : String(session.liveGeneration),
+                generation: session.liveGeneration === null ? null : String(session.liveGeneration),
                 kind: 'error',
                 error,
             });

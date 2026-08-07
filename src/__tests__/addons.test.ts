@@ -71,7 +71,10 @@ describe('mentions addon helpers', () => {
         const serialized = serializeEditorAddons({
             mentions: {
                 trigger: '@',
-                theme: { textColor: '#112233', popoverBackgroundColor: '#ffffff' },
+                theme: {
+                    node: { textColor: '#112233' },
+                    suggestions: { backgroundColor: '#ffffff' },
+                },
                 suggestions: [
                     {
                         key: 'u1',
@@ -87,7 +90,10 @@ describe('mentions addon helpers', () => {
             JSON.stringify({
                 mentions: {
                     trigger: '@',
-                    theme: { textColor: '#112233', popoverBackgroundColor: '#ffffff' },
+                    theme: {
+                        node: { textColor: '#112233' },
+                        suggestions: { backgroundColor: '#ffffff' },
+                    },
                     suggestions: [
                         {
                             key: 'u1',
@@ -181,6 +187,40 @@ describe('mentions addon helpers', () => {
                         label: '@Alice',
                     },
                 },
+            ],
+        });
+    });
+
+    it('appends an unmarked trailing space only when asked', () => {
+        const attrs = { id: 'u1', label: '@Alice' };
+
+        expect(buildMentionFragmentJson(attrs, undefined, { trailingSpace: true })).toEqual({
+            type: 'doc',
+            content: [
+                { type: 'mention', attrs },
+                { type: 'text', text: ' ' },
+            ],
+        });
+        expect(buildMentionFragmentJson(attrs, undefined, { trailingSpace: false })).toEqual({
+            type: 'doc',
+            content: [{ type: 'mention', attrs }],
+        });
+    });
+
+    it('honors a custom document node name alongside the trailing space', () => {
+        expect(
+            buildMentionFragmentJson(
+                { id: 'u1' },
+                { documentNodeName: 'article' },
+                {
+                    trailingSpace: true,
+                }
+            )
+        ).toEqual({
+            type: 'article',
+            content: [
+                { type: 'mention', attrs: { id: 'u1' } },
+                { type: 'text', text: ' ' },
             ],
         });
     });

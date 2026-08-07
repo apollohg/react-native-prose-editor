@@ -25,12 +25,25 @@ import type { HistoryState, ReadonlyActiveState } from './NativeEditorBridge';
 import type { EditorMentionTheme, EditorToolbarTheme } from './EditorTheme';
 import type { MentionSuggestion } from './addons';
 
+/** List kinds a first-class `list` toolbar item can toggle. */
 export type EditorToolbarListType = 'bulletList' | 'orderedList';
+/** Heading levels the toolbar and `toggleHeading` accept. */
 export type EditorToolbarHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
+/** Commands a `command` toolbar item can run. */
 export type EditorToolbarCommand = 'indentList' | 'outdentList' | 'undo' | 'redo';
+/**
+ * How a group's children are shown: `'expand'` reveals them inline in the
+ * toolbar row, `'menu'` opens them in a popover.
+ */
 export type EditorToolbarGroupPresentation = 'expand' | 'menu';
+/**
+ * Which region of the toolbar an item sits in. `'start'` and `'end'` pin the
+ * item to that edge; `'scroll'` (the default) puts it in the scrolling middle
+ * row.
+ */
 export type EditorToolbarItemPlacement = 'start' | 'scroll' | 'end';
 
+/** Icons the package draws itself, on both platforms. */
 export type EditorToolbarDefaultIconId =
     | 'bold'
     | 'italic'
@@ -54,16 +67,28 @@ export type EditorToolbarDefaultIconId =
     | 'undo'
     | 'redo';
 
+/** An SF Symbol, used for the iOS half of a `platform` icon. */
 export interface EditorToolbarSFSymbolIcon {
     type: 'sfSymbol';
+    /** SF Symbol name, e.g. `'bold'`. */
     name: string;
 }
 
+/** A Material icon, used for the Android half of a `platform` icon. */
 export interface EditorToolbarMaterialIcon {
     type: 'material';
+    /** Material icon name, e.g. `'format_bold'`. */
     name: string;
 }
 
+/**
+ * A toolbar button's icon:
+ *
+ * - `default` — one of the package's built-in icons.
+ * - `glyph` — arbitrary text or an emoji, drawn as-is.
+ * - `platform` — per-platform native icons, with `fallbackText` when the
+ *   platform cannot resolve the named icon.
+ */
 export type EditorToolbarIcon =
     | {
           type: 'default';
@@ -80,6 +105,21 @@ export type EditorToolbarIcon =
           fallbackText?: string;
       };
 
+/**
+ * A single toolbar button. Every variant takes a `label` (its accessible
+ * name), an `icon`, an optional `key` (defaults to something derived from the
+ * variant), and an optional `placement`.
+ *
+ * - `mark` — toggles the named mark; active and enabled state come from the engine.
+ * - `link` / `image` — calls the editor's `onRequestLink` / `onRequestImage`.
+ * - `heading` — toggles the given heading level.
+ * - `blockquote` — toggles blockquote wrapping.
+ * - `list` — toggles the given list type.
+ * - `command` — runs an {@link EditorToolbarCommand}.
+ * - `node` — inserts the named node type, e.g. `'horizontalRule'`.
+ * - `action` — host-defined; calls `onToolbarAction` with its `key`, and the
+ *   host supplies `isActive`/`isDisabled` since the engine knows nothing about it.
+ */
 export type EditorToolbarLeafItem =
     | {
           type: 'mark';
@@ -152,18 +192,31 @@ export type EditorToolbarLeafItem =
           placement?: EditorToolbarItemPlacement;
       };
 
+/** What a group may contain. Groups do not nest. */
 export type EditorToolbarGroupChildItem = EditorToolbarLeafItem;
 
+/**
+ * Several buttons collapsed behind one — heading levels, say. The group
+ * reports active when any child is active, and disabled when every child is.
+ */
 export interface EditorToolbarGroupItem {
     type: 'group';
+    /** Identity of the group. Required, unlike a leaf item's key. */
     key: string;
+    /** Accessible name for the group button. */
     label: string;
     icon: EditorToolbarIcon;
+    /** How the children are revealed. Defaults to `'expand'`. */
     presentation?: EditorToolbarGroupPresentation;
     placement?: EditorToolbarItemPlacement;
     items: readonly EditorToolbarGroupChildItem[];
 }
 
+/**
+ * One entry in `toolbarItems`: a button, a group of buttons, or a separator.
+ * The same list drives the JavaScript `EditorToolbar` and the native keyboard
+ * toolbar.
+ */
 export type EditorToolbarItem =
     | EditorToolbarLeafItem
     | EditorToolbarGroupItem
@@ -457,6 +510,11 @@ function resolveToolbarItemPlacement(
     return placement ?? 'scroll';
 }
 
+/**
+ * The toolbar layout used when `toolbarItems` is not supplied. Spread it to
+ * extend the built-in set rather than restating it:
+ * `[...DEFAULT_EDITOR_TOOLBAR_ITEMS, myItem]`.
+ */
 export const DEFAULT_EDITOR_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
     { type: 'mark', mark: 'bold', label: 'Bold', icon: defaultIcon('bold') },
     { type: 'mark', mark: 'italic', label: 'Italic', icon: defaultIcon('italic') },
@@ -633,6 +691,17 @@ function resolveMentionSuggestionDisplayLabel(
     return trigger.length > 0 && !label.startsWith(trigger) ? `${trigger}${label}` : label;
 }
 
+/**
+ * A JavaScript formatting toolbar. `NativeRichTextEditor` renders one for you
+ * when `showToolbar` is set — reach for this component directly only to place
+ * the toolbar somewhere the editor cannot, in which case wire every handler
+ * to the editor's ref and feed it `activeState` and `historyState` from the
+ * editor's callbacks.
+ *
+ * The native keyboard-attached toolbar (`toolbarPlacement="keyboard"`) is a
+ * separate implementation that consumes the same {@link EditorToolbarItem}
+ * list.
+ */
 export function EditorToolbar({
     activeState,
     historyState,
@@ -707,7 +776,7 @@ export function EditorToolbar({
     const canIndentList = !!commands['indentList'];
     const canOutdentList = !!commands['outdentList'];
     const shouldRenderMentionSuggestions =
-        preserveEditorFocus && mentionState != null && mentionState.suggestions.length > 0;
+        publishesFocusFrames && mentionState != null && mentionState.suggestions.length > 0;
 
     const getActionForItem = useCallback(
         (item: EditorToolbarLeafItem): (() => void) | null => {
@@ -986,7 +1055,10 @@ export function EditorToolbar({
                 targetEntries.push({ type: 'group', group });
                 if (group.isExpanded) {
                     for (const child of children) {
-                        entriesForPlacement(child.placement).push({ type: 'button', button: child });
+                        entriesForPlacement(child.placement).push({
+                            type: 'button',
+                            button: child,
+                        });
                     }
                 }
                 continue;
@@ -1436,25 +1508,16 @@ export function EditorToolbar({
                             styles.mentionSuggestionsScroll,
                             {
                                 backgroundColor:
-                                    mentionState.theme?.popoverBackgroundColor ??
-                                    mentionState.theme?.backgroundColor ??
+                                    mentionState.theme?.suggestions?.backgroundColor ??
                                     'transparent',
                                 borderColor:
-                                    mentionState.theme?.popoverBorderColor ??
-                                    mentionState.theme?.borderColor ??
-                                    'transparent',
-                                borderWidth:
-                                    mentionState.theme?.popoverBorderWidth ??
-                                    mentionState.theme?.borderWidth ??
-                                    0,
-                                borderRadius:
-                                    mentionState.theme?.popoverBorderRadius ??
-                                    mentionState.theme?.borderRadius ??
-                                    0,
+                                    mentionState.theme?.suggestions?.borderColor ?? 'transparent',
+                                borderWidth: mentionState.theme?.suggestions?.borderWidth ?? 0,
+                                borderRadius: mentionState.theme?.suggestions?.borderRadius ?? 0,
                             },
-                            mentionState.theme?.popoverShadowColor != null
+                            mentionState.theme?.suggestions?.shadowColor != null
                                 ? {
-                                      shadowColor: mentionState.theme.popoverShadowColor,
+                                      shadowColor: mentionState.theme.suggestions.shadowColor,
                                       shadowOpacity: 0.14,
                                       shadowRadius: 12,
                                       shadowOffset: { width: 0, height: 4 },
@@ -1469,9 +1532,10 @@ export function EditorToolbar({
                                 suggestion,
                                 mentionState.trigger
                             );
-                            const suggestionTheme =
+                            const optionTheme = (
                                 mentionState.suggestionThemes?.[suggestion.key] ??
-                                mentionState.theme;
+                                mentionState.theme
+                            )?.suggestions?.option;
                             return (
                                 <Pressable
                                     key={suggestion.key}
@@ -1485,12 +1549,12 @@ export function EditorToolbar({
                                         styles.mentionSuggestion,
                                         {
                                             backgroundColor: pressed
-                                                ? (suggestionTheme?.optionHighlightedBackgroundColor ??
+                                                ? (optionTheme?.highlightedBackgroundColor ??
                                                   'rgba(0, 122, 255, 0.12)')
-                                                : (suggestionTheme?.backgroundColor ?? '#F2F2F7'),
-                                            borderColor: suggestionTheme?.borderColor ?? 'transparent',
-                                            borderWidth: suggestionTheme?.borderWidth ?? 0,
-                                            borderRadius: suggestionTheme?.borderRadius ?? 12,
+                                                : (optionTheme?.backgroundColor ?? '#F2F2F7'),
+                                            borderColor: optionTheme?.borderColor ?? 'transparent',
+                                            borderWidth: optionTheme?.borderWidth ?? 0,
+                                            borderRadius: optionTheme?.borderRadius ?? 12,
                                         },
                                     ]}>
                                     {({ pressed }) => (
@@ -1501,14 +1565,12 @@ export function EditorToolbar({
                                                     styles.mentionSuggestionTitle,
                                                     {
                                                         fontWeight:
-                                                            suggestionTheme?.fontWeight ?? '600',
+                                                            optionTheme?.fontWeight ?? '600',
                                                         color: pressed
-                                                            ? (suggestionTheme?.optionHighlightedTextColor ??
-                                                              suggestionTheme?.optionTextColor ??
+                                                            ? (optionTheme?.highlightedTextColor ??
+                                                              optionTheme?.textColor ??
                                                               '#000000')
-                                                            : (suggestionTheme?.optionTextColor ??
-                                                              suggestionTheme?.textColor ??
-                                                              '#000000'),
+                                                            : (optionTheme?.textColor ?? '#000000'),
                                                     },
                                                 ]}>
                                                 {label}
@@ -1520,7 +1582,7 @@ export function EditorToolbar({
                                                         styles.mentionSuggestionSubtitle,
                                                         {
                                                             color:
-                                                                suggestionTheme?.optionSecondaryTextColor ??
+                                                                optionTheme?.secondaryTextColor ??
                                                                 '#8E8E93',
                                                         },
                                                     ]}>

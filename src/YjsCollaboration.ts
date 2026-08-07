@@ -17,6 +17,17 @@ import {
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
 
+/**
+ * Transport lifecycle, projected from the Rust transport state.
+ *
+ * - `idle` — no transport configured; the handle is detached.
+ * - `disconnected` — configured but not currently connected.
+ * - `connecting` — opening the physical socket.
+ * - `handshaking` — socket open, Yjs sync in progress.
+ * - `synchronized` — sync complete; edits flow in both directions.
+ * - `incompatible` — the server's document cannot be reconciled with this one.
+ * - `destroyed` — the handle was destroyed.
+ */
 export type YjsTransportStatus =
     | 'idle'
     | 'disconnected'
@@ -26,49 +37,84 @@ export type YjsTransportStatus =
     | 'incompatible'
     | 'destroyed';
 
+/** Identity this client publishes to other peers through awareness. */
 export interface LocalAwarenessUser {
+    /** Application-level user identity. */
     userId: string;
+    /** Display name shown beside this user's remote caret. */
     name: string;
+    /** Caret and label color, as a color string. */
     color: string;
     avatarUrl?: string;
+    /** Extra application data carried alongside the user record. */
     extra?: Record<string, unknown>;
 }
 
+/** The full local awareness record: who this client is, and where its caret sits. */
 export interface LocalAwarenessState {
     user: LocalAwarenessUser;
+    /** Local caret. Only a text selection is published; anything else clears the cursor. */
     selection?: Selection;
+    /** Whether the editor currently holds focus. */
     focused?: boolean;
 }
 
+/** Observable state of a collaboration session. */
 export interface YjsCollaborationState {
     documentId: string;
     status: YjsTransportStatus;
+    /** True only while `status` is `'synchronized'`. */
     isConnected: boolean;
+    /** Latest engine document, or null while awaiting the server's document. */
     documentJson: DocumentJSON | null;
+    /** Decimal-string engine revision, or null while awaiting the server's document. */
     documentRevision: string | null;
+    /** The most recent transport or engine failure, if any. */
     lastError?: Error;
 }
 
+/**
+ * Configuration for {@link useYjsCollaboration} and
+ * {@link createYjsCollaborationController}.
+ */
 export interface YjsCollaborationOptions {
+    /** Room identity. Must match the `documentId` the handle was created with. */
     documentId: string;
+    /** The shared document session. Create it with `initialization.type === 'room'`. */
     handle: NativeEditorDocumentHandle;
+    /** Server endpoint and connect intent, or null to stay detached. */
     transport: NativeCollaborationTransportConfig | null;
+    /** Identity published to other peers. Omit to join without presence. */
     localAwareness?: LocalAwarenessUser;
+    /** Called whenever the peer list changes. */
     onPeersChange?: (peers: NativeEditorV2PeerInfo[]) => void;
+    /** Called on every state transition. */
     onStateChange?: (state: YjsCollaborationState) => void;
+    /** Called on transport and engine failures. */
     onError?: (error: Error) => void;
 }
 
+/**
+ * Imperative collaboration session, for hosts outside React. The React entry
+ * point is {@link useYjsCollaboration}.
+ */
 export interface YjsCollaborationController {
     readonly state: YjsCollaborationState;
     readonly peers: NativeEditorV2PeerInfo[];
     readonly documentHandle: NativeEditorDocumentHandle;
+    /** Open the transport. */
     connect(): void;
+    /** Close the transport, keeping the document handle alive. */
     disconnect(): void;
+    /** Close and reopen the transport. */
     reconnect(): void;
+    /** Tear down the controller. Does not destroy the document handle. */
     destroy(): void;
+    /** Publish a partial awareness update. Omitting `selection` keeps the published cursor. */
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void;
+    /** Publish a new local caret position. */
     handleSelectionChange(selection: Selection): void;
+    /** Publish a focus change. */
     handleFocusChange(focused: boolean): void;
 }
 
@@ -86,14 +132,18 @@ export interface YjsCollaborationEditorBindings {
     onBlur: () => void;
 }
 
+/** What {@link useYjsCollaboration} returns. */
 export interface UseYjsCollaborationResult {
     state: YjsCollaborationState;
+    /** Connected peers, including the local one. */
     peers: NativeEditorV2PeerInfo[];
+    /** True only while the transport is synchronized. */
     isConnected: boolean;
     connect(): void;
     disconnect(): void;
     reconnect(): void;
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void;
+    /** Spread onto `NativeRichTextEditor` to bind the editor to this session. */
     editorBindings: YjsCollaborationEditorBindings;
 }
 
@@ -440,6 +490,13 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     }
 }
 
+/**
+ * Create an imperative collaboration session over a room-backed document
+ * handle. The caller owns the lifecycle: call `destroy()` on the controller,
+ * then `destroy()` on the handle.
+ *
+ * React hosts should use {@link useYjsCollaboration} instead.
+ */
 export function createYjsCollaborationController(
     options: YjsCollaborationOptions
 ): YjsCollaborationController {
@@ -450,6 +507,26 @@ export function createYjsCollaborationController(
     });
 }
 
+/**
+ * Connect a room-backed document handle to a Yjs sync and awareness server.
+ * The editor and this hook must share the same handle; the hook never creates
+ * or destroys it.
+ *
+ * Native owns the socket and Rust owns sync, awareness, and retries, so there
+ * is no Yjs document in JavaScript to manage.
+ *
+ * @example
+ * ```tsx
+ * const collaboration = useYjsCollaboration({
+ *     documentId,
+ *     handle: documentHandle,
+ *     transport: { url: `wss://example.com/collab?documentId=${documentId}`, connect: true },
+ *     localAwareness: { userId: 'user-1', name: 'Ada', color: '#0A84FF' },
+ * });
+ *
+ * return <NativeRichTextEditor {...collaboration.editorBindings} />;
+ * ```
+ */
 export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCollaborationResult {
     _assertNativeEditorDocumentHandle(options.handle);
     const callbacksRef = useRef<MutableCallbacks>({});

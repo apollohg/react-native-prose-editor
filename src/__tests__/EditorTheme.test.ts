@@ -44,6 +44,41 @@ describe('EditorTheme', () => {
         });
     });
 
+    it('carries the addon mention theme into the native theme payload', () => {
+        const json = serializeEditorTheme(
+            { links: { color: '#445566' } },
+            { textColor: '#112233', backgroundColor: '#DDEEFF', borderRadius: undefined }
+        );
+
+        expect(json).toBeTruthy();
+        expect(JSON.parse(json!)).toEqual({
+            links: { color: '#445566' },
+            mentions: { textColor: '#112233', backgroundColor: '#DDEEFF' },
+        });
+    });
+
+    it('serializes the addon mention theme when no editor theme is supplied', () => {
+        const json = serializeEditorTheme(undefined, { textColor: '#112233' });
+
+        expect(json).toBeTruthy();
+        expect(JSON.parse(json!)).toEqual({ mentions: { textColor: '#112233' } });
+    });
+
+    it('omits mentions when the addon supplies no mention theme', () => {
+        const json = serializeEditorTheme({ links: { color: '#445566' } });
+
+        expect(JSON.parse(json!)).toEqual({ links: { color: '#445566' } });
+    });
+
+    it('serializes the list marker gap', () => {
+        const json = serializeEditorTheme({
+            list: { indent: 28, markerGap: 12, markerScale: undefined },
+        });
+
+        expect(json).toBeTruthy();
+        expect(JSON.parse(json!)).toEqual({ list: { indent: 28, markerGap: 12 } });
+    });
+
     it('serializes toolbar height overrides', () => {
         const json = serializeEditorTheme({
             toolbar: {

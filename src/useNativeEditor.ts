@@ -10,7 +10,6 @@ import {
 } from './NativeEditorBridge';
 import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
 
-// ─── v2 document binding ────────────────────────────────────────
 //
 // Headless document/control binding over a shared NativeEditorDocumentHandle
 // (one native session per handle; the collaboration controller attaches to
@@ -31,6 +30,7 @@ import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
 //   a REVISION_MISMATCH refreshes from the engine and the effect re-applies
 //   against the fresh revision — never against guessed positions.
 
+/** Configuration for {@link useNativeEditorDocument}. */
 export interface UseNativeEditorDocumentOptions {
     /** The shared document session. The binding never creates or destroys it. */
     handle: NativeEditorDocumentHandle;
@@ -49,12 +49,15 @@ export interface UseNativeEditorDocumentOptions {
     onLocalCommit?: () => void;
 }
 
+/** What {@link useNativeEditorDocument} returns. */
 export interface UseNativeEditorDocumentReturn {
     /** True once the engine document is ready (LocalReady/RoomReady). */
     isReady: boolean;
+    /** Raw engine readiness. Null before the first read. */
     documentState: NativeEditorV2DocumentState | null;
     /** Decimal-string engine document revision; null while awaiting the server document. */
     documentRevision: string | null;
+    /** Current undo/redo availability. */
     historyState: HistoryState;
     /**
      * Re-read the engine now, emitting content/history callbacks when the
@@ -62,11 +65,19 @@ export interface UseNativeEditorDocumentReturn {
      * view reports an adapter-driven commit (typing, toolbar commands).
      */
     refresh(): void;
+    /** Current document as HTML. Empty until the document is ready. */
     getContent(): string;
+    /** Current document as ProseMirror JSON. Empty until the document is ready. */
     getContentJson(): DocumentJSON;
+    /** The engine's own answer for whether the document holds no content. */
+    getIsEmpty(): boolean;
+    /** Current document as plain text, with markup stripped. */
     getTextContent(): string;
+    /** Replace the document with HTML, as one undoable step. */
     setContent(html: string): void;
+    /** Replace the document with JSON, as one undoable step. */
     setContentJson(doc: DocumentJSON): void;
+    /** Reset to the schema's empty document and clear undo history. */
     clearContent(): void;
     undo(): void;
     redo(): void;
@@ -91,6 +102,15 @@ interface V2EngineView {
     contentKey: string | null;
 }
 
+/**
+ * Headless binding to a document handle: the same controlled content,
+ * getters, and history the editor exposes, with no view attached. Use it to
+ * read or drive a document that is not currently mounted — a preview, a
+ * background save, a test.
+ *
+ * `NativeRichTextEditor` uses this internally, so mounting an editor on the
+ * same handle does not conflict with it.
+ */
 export function useNativeEditorDocument(
     options: UseNativeEditorDocumentOptions
 ): UseNativeEditorDocumentReturn {
@@ -290,7 +310,19 @@ export function useNativeEditorDocument(
 
     const mutate = useCallback(
         (operation: () => unknown) => {
-            if (handle.isDestroyed || currentEditorIdRef.current !== handle.editorId) return;
+            if (handle.isDestroyed || currentEditorIdRef.current !== handle.editorId) {
+                if (__DEV__) {
+                    console.error(
+                        'useNativeEditorDocument: dropped a mutation because the handle is not the current binding',
+                        {
+                            destroyed: handle.isDestroyed,
+                            boundEditorId: currentEditorIdRef.current,
+                            handleEditorId: handle.editorId,
+                        }
+                    );
+                }
+                return;
+            }
             operation();
             if (currentEditorIdRef.current !== handle.editorId) return;
             onLocalCommitRef.current?.();
@@ -318,12 +350,12 @@ export function useNativeEditorDocument(
     );
 
     const clearContent = useCallback(() => {
-        mutate(() =>
-            handle.bridge.replaceDocument({
+        mutate(() => {
+            return handle.bridge.replaceDocument({
                 setJson: _getNativeEditorDocumentHandleDescriptor(handle).emptyDocument,
                 history: 'resetAndClear',
-            })
-        );
+            });
+        });
     }, [handle, mutate]);
 
     const undo = useCallback(() => {
@@ -354,6 +386,17 @@ export function useNativeEditorDocument(
             return {};
         }
         return handle.bridge.getDocumentJson();
+    }, [handle]);
+
+    const getIsEmpty = useCallback((): boolean => {
+        if (
+            handle.isDestroyed ||
+            readyRef.current.editorId !== handle.editorId ||
+            !readyRef.current.ready
+        ) {
+            return true;
+        }
+        return handle.bridge.renderUpdate().documentIsEmpty;
     }, [handle]);
 
     const getTextContent = useCallback((): string => {
@@ -400,6 +443,7 @@ export function useNativeEditorDocument(
         refresh: refreshFromEngine,
         getContent,
         getContentJson,
+        getIsEmpty,
         getTextContent,
         setContent,
         setContentJson,

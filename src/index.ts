@@ -40,6 +40,7 @@ export {
     type EditorToolbarCommand,
     type EditorToolbarHeadingLevel,
     type EditorToolbarListType,
+    type EditorToolbarItemPlacement,
 } from './EditorToolbar';
 export type {
     EditorContentInsets,
@@ -49,7 +50,12 @@ export type {
     EditorHeadingTheme,
     EditorListTheme,
     EditorHorizontalRuleTheme,
+    EditorBlockquoteTheme,
+    EditorCodeBlockTheme,
     EditorMentionTheme,
+    EditorMentionNodeTheme,
+    EditorMentionSuggestionsTheme,
+    EditorMentionSuggestionOptionTheme,
     EditorToolbarTheme,
     EditorToolbarAppearance,
     EditorFontStyle,
@@ -65,6 +71,7 @@ export {
     type MentionsAddonConfig,
     type MentionSuggestion,
     type MentionQueryChangeEvent,
+    type MentionFragmentOptions,
     type MentionSelectionAttrsEvent,
     type MentionThemeResolveEvent,
     type MentionSelectEvent,
@@ -107,7 +114,6 @@ export {
     type UseNativeEditorDocumentReturn,
 } from './useNativeEditor';
 
-// Read-only types (no mutation methods)
 export type {
     Selection,
     ActiveState,

@@ -12,17 +12,34 @@ import {
     minimalContentMatch,
 } from './contentExpression';
 
+/** Declaration of one node or mark attribute. */
 export interface AttrSpec {
+    /** Value used when the attribute is absent. Omit to make the attribute required. */
     default?: unknown;
 }
 
+/** Declaration of one node type in a {@link SchemaDefinition}. */
 export interface NodeSpec {
+    /** Node type name, as it appears in document JSON. */
     name: string;
+    /** ProseMirror-style content expression, e.g. `'block+'`, `'inline*'`, or `''` for a leaf. */
     content: string;
+    /** Content group this node belongs to, e.g. `'block'` or `'inline'`. */
     group?: string;
+    /** Attributes this node declares. Undeclared attributes are filtered out on
+     *  ingestion unless `allowUndeclaredAttrs` is set. */
     attrs?: Record<string, AttrSpec>;
+    /**
+     * How the engine treats this node: `'doc'`, `'textBlock'`, `'list'`,
+     * `'listItem'`, `'text'`, `'hardBreak'`, `'inline'`, or `'block'`. Any
+     * unrecognized value is treated as `'block'`. Exactly one node must use
+     * `'doc'`. An ordered list is a `'list'` node whose name contains
+     * `ordered`.
+     */
     role: string;
+    /** Tag used when serializing this node to HTML. */
     htmlTag?: string;
+    /** Whether the node holds no content of its own (an image or rule, say). */
     isVoid?: boolean;
     /**
      * Opt-in escape hatch: when `true`, JSON ingestion (`set_json` /
@@ -34,9 +51,13 @@ export interface NodeSpec {
     allowUndeclaredAttrs?: boolean;
 }
 
+/** Declaration of one mark type in a {@link SchemaDefinition}. */
 export interface MarkSpec {
+    /** Mark type name, as it appears in document JSON. */
     name: string;
+    /** Attributes this mark declares. */
     attrs?: Record<string, AttrSpec>;
+    /** Mark names that cannot coexist with this one on the same text range. */
     excludes?: string;
     /**
      * Serializer tag for a custom mark. Native accepts only the inert allowlist:
@@ -53,22 +74,38 @@ export interface MarkSpec {
     allowUndeclaredAttrs?: boolean;
 }
 
+/**
+ * The node and mark types a document may contain. Fixed when the document
+ * handle is created (`NativeEditorV2CreateConfig.schema`), or per render for
+ * `NativeProseViewer`. Start from {@link tiptapSchema} or
+ * {@link prosemirrorSchema} rather than assembling one from scratch.
+ */
 export interface SchemaDefinition {
+    /** Node types. Exactly one must have `role: 'doc'`. */
     nodes: NodeSpec[];
+    /** Mark types. */
     marks: MarkSpec[];
 }
 
+/** Attributes of the built-in image node. */
 export interface ImageNodeAttributes {
+    /** Image source: an `https:` URL, or a `data:` URL when base64 images are allowed. */
     src: string;
     alt?: string | null;
     title?: string | null;
+    /** Intrinsic width in layout units. Null lets the renderer choose. */
     width?: number | null;
+    /** Intrinsic height in layout units. Null lets the renderer choose. */
     height?: number | null;
 }
 
+/** A schema together with the facts derived from it. See {@link resolveDocumentDescriptor}. */
 export interface ResolvedDocumentSchema {
+    /** The schema itself, defaulted to {@link tiptapSchema} when none was supplied. */
     schema: SchemaDefinition;
+    /** Name of the node with `role: 'doc'` — the `type` of a document's root. */
     documentNodeName: string;
+    /** The smallest document this schema admits. Used by `clearContent()`. */
     emptyDocument: DocumentJSON;
 }
 
@@ -77,6 +114,7 @@ type DocumentDescriptorLimits = Pick<
     'maxSchemaNodes' | 'maxSchemaExpressionBytes' | 'maxDocumentNodes' | 'maxDocumentDepth'
 >;
 
+/** Node name the built-in image node is stored under. */
 export const IMAGE_NODE_NAME = 'image';
 const HEADING_LEVELS = [1, 2, 3, 4, 5, 6] as const;
 const ALLOWED_MARK_HTML_TAGS = new Set([
@@ -92,6 +130,12 @@ const ALLOWED_MARK_HTML_TAGS = new Set([
     'mark',
 ]);
 
+/**
+ * The built-in image node spec: a void block node carrying
+ * {@link ImageNodeAttributes}. Add it through {@link withImagesSchema}.
+ *
+ * @param name Node name to declare it under. Defaults to {@link IMAGE_NODE_NAME}.
+ */
 export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
     return {
         name,
@@ -120,6 +164,10 @@ function headingNodeSpec(level: (typeof HEADING_LEVELS)[number]): NodeSpec {
     };
 }
 
+/**
+ * Return `schema` with the image node added, or `schema` unchanged when it
+ * already declares one. {@link tiptapSchema} already includes it.
+ */
 export function withImagesSchema(schema: SchemaDefinition): SchemaDefinition {
     const hasImageNode = schema.nodes.some((node) => node.name === IMAGE_NODE_NAME);
     if (hasImageNode) {
@@ -132,6 +180,13 @@ export function withImagesSchema(schema: SchemaDefinition): SchemaDefinition {
     };
 }
 
+/**
+ * Wrap inline or block nodes in a document root, producing a fragment ready
+ * for `insertContentJson`.
+ *
+ * @param descriptor Document node name to wrap in. Defaults to `doc`; pass a
+ * {@link ResolvedDocumentSchema} when the schema names its root differently.
+ */
 export function buildDocumentFragmentJson(
     content: DocumentJSON[],
     descriptor: Pick<ResolvedDocumentSchema, 'documentNodeName'> = {
@@ -141,6 +196,11 @@ export function buildDocumentFragmentJson(
     return { type: descriptor.documentNodeName, content };
 }
 
+/**
+ * Build a document fragment holding one image node, ready for
+ * `insertContentJson`. `NativeRichTextEditorRef.insertImage` does this for
+ * you; use this when assembling a larger insertion by hand.
+ */
 export function buildImageFragmentJson(
     attrs: ImageNodeAttributes,
     descriptor?: Pick<ResolvedDocumentSchema, 'documentNodeName'>
@@ -164,6 +224,11 @@ const MARKS: MarkSpec[] = [
     { name: 'link', attrs: { href: {} } },
 ];
 
+/**
+ * Default schema, using Tiptap's camelCase node names — `bulletList`,
+ * `orderedList`, `listItem`, `hardBreak`, `horizontalRule` — plus the image
+ * node. Applied when no schema is supplied.
+ */
 export const tiptapSchema: SchemaDefinition = {
     nodes: [
         {
@@ -804,6 +869,17 @@ export function defaultEmptyDocument(
     return constructDefaultEmptyDocument(schema, resolvedLimits, admittedCollections);
 }
 
+/**
+ * Validate a schema and derive its document node name and empty document,
+ * mirroring what the Rust core does when a handle is created. Use it to build
+ * fragments or empty documents for a custom schema.
+ *
+ * @param schema Defaults to {@link tiptapSchema}.
+ * @param limits Schema and document bounds. Defaults to
+ * {@link DEFAULT_EDITOR_RESOURCE_LIMITS}.
+ * @throws NativeEditorBoundaryError `SCHEMA_INVALID` when the schema is
+ * malformed, exceeds its limits, or declares no `role: 'doc'` node.
+ */
 export function resolveDocumentDescriptor(
     schema?: SchemaDefinition,
     limits?: DocumentDescriptorLimits
@@ -841,6 +917,12 @@ export function normalizeDocumentJson(
     return descriptor.emptyDocument;
 }
 
+/**
+ * The same document model as {@link tiptapSchema} under ProseMirror's
+ * snake_case node names — `bullet_list`, `ordered_list`, `list_item`,
+ * `hard_break`, `horizontal_rule`. Use it when the content is authored by a
+ * stock ProseMirror editor.
+ */
 export const prosemirrorSchema: SchemaDefinition = {
     nodes: [
         {
