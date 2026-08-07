@@ -1,5 +1,75 @@
 # Changelog
 
+## [1.0.0-alpha] - 2026-08-01
+
+This is a hard cutover to shared native document, collaboration, and viewer
+boundaries. Pre-1.0 compatibility adapters are not retained; see
+[`BREAKING_CHANGES.md`](./BREAKING_CHANGES.md) for upgrade guidance.
+
+### Added
+
+- Added `createNativeEditorDocumentHandle` as the document construction path,
+  plus `useNativeEditorDocument`, document-scoped snapshots, and typed
+  structured errors.
+- Added the exact-size, JSON/HTML `NativeProseViewer` Fabric surface and public
+  `ProseViewerView` facades for UIKit and Android Views.
+- Added bounded document, editing, collaboration, and image-loading policies,
+  with stricter custom-schema and content validation.
+- Added task-list editing, native code-block rendering and commands, and
+  start/scroll/end toolbar item placement.
+
+### Changed
+
+- **Breaking:** `NativeRichTextEditor` now binds to a required document handle.
+  One Yrs-backed session owns document state, local-only undo history, schema,
+  policy, and limits across editor and collaboration consumers.
+- **Breaking:** `useYjsCollaboration` now accepts the shared handle and
+  `transport: { url, connect } | null`. Native code owns WebSockets while Rust
+  owns y-sync, awareness, retries, peers, and outbound state; new rooms are
+  initialized by the server handshake.
+- Mounted editors now publish their live caret directly into Rust-owned sticky
+  awareness, removing stale JavaScript selection mirroring from focus and
+  state updates.
+- `NativeProseViewer` now consumes document JSON or HTML directly, requires the
+  React Native New Architecture, and measures from prepared native layout at
+  the host width. Disabled images are omitted from layout and loading.
+- Compiled Rust artifacts are no longer tracked in Git. Release validation
+  builds them from the shipped source with the pinned toolchain, while
+  published packages continue to include the required native binaries.
+
+### Fixed
+
+- Fixed collaboration document and cursor mapping around emoji and other
+  non-ASCII text by separating Yjs UTF-16 offsets from editor scalar positions.
+- Hardened native selection and awareness synchronization, bounded image
+  loading, task-marker and viewer tap handling, schema admission, and atomic
+  rejection of invalid or oversized content.
+
+### Removed / migration
+
+- Removed legacy component-owned initialization and engine configuration.
+  Move `initialContent`/`initialJSON`, schema, `maxLength`, and base64-image
+  admission to `createNativeEditorDocumentHandle()` and configure the new
+  engine policies and limits there.
+- Removed JavaScript WebSocket/retry plumbing, raw collaboration-state APIs,
+  and document/selection mirroring through `editorBindings`. Use native
+  transport configuration, document snapshots, and the handle-bound bindings.
+- Removed Paper/Expo viewer registration, render-ops inputs, viewer render and
+  height-measurement module functions, width/content height caches, and
+  JavaScript mention render resolvers. Pass JSON or HTML directly to the Fabric
+  viewer or native facade with serializable configuration.
+- Removed `EditorTheme.mentions`. The mentions addon owns its own styling:
+  set a base style with `addons.mentions.theme` and vary it per suggestion with
+  `addons.mentions.resolveTheme`.
+- **Breaking:** `EditorMentionTheme` is grouped by the surface each property
+  styles instead of one flat set of keys. Use `node` for the mention rendered in
+  the document, `suggestions` for the container behind the suggestion list, and
+  `suggestions.option` for an individual row. The node and a suggestion row are
+  now styled independently; previously `backgroundColor`, `border*`, and
+  `fontWeight` silently drove both. `node.borderColor`, `node.borderWidth`, and
+  `node.borderRadius` are drawn by `NativeProseViewer`; the editor renders the
+  node with text spans and ignores them.
+
 ## [0.5.25] - 2026-06-28
 
 ### Fixed
@@ -113,7 +183,7 @@
 
 ### Added
 
-- Added Android device IME regression coverage and an `android:test:ime:device` script for native keyboard suggestion and autocorrect flows.
+- Added Android device IME regression coverage and a `test:android:device:ime` script for native keyboard suggestion and autocorrect flows.
 
 ### Changed
 
@@ -389,6 +459,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.25...1.0.0
 [0.5.25]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.24...0.5.25
 [0.5.24]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.23...0.5.24
 [0.5.23]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.22...0.5.23
