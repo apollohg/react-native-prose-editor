@@ -334,6 +334,8 @@ final class EditorV2AdapterTests: XCTestCase {
             file: #filePath,
             line: #line
         )
+        _ = adapter.currentStateJSON()
+        calls.removeAll()
 
         let mapping = adapter.syncSelection(anchor: 1, head: 1)
 
@@ -543,7 +545,7 @@ final class EditorV2AdapterTests: XCTestCase {
 
     // MARK: - Stale revision recovery
 
-    func testRevisionMismatchRefreshesFromRustStateAndNeverRetries() {
+    func testRevisionMismatchRefusesSelectionRelativeInputWithoutReplay() {
         let adapter = makeAdapter()
         _ = adapter.setContentHtml("<p>base</p>")
 
@@ -556,49 +558,89 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertNil(external.error, "external mutation failed: \(String(describing: external.error))")
         XCTAssertEqual(documentText(adapter), "EXTbase")
 
-        let spy = ErrorSpy()
-        adapter.onAutonomousError = spy.record
-
-        // The adapter's next op is stale: it must refresh from Rust state and
-        // NEVER retry the op against guessed positions.
-        let update = adapter.insertText("NORETRY", atScalar: 0)
-        XCTAssertNotNil(update, "a stale op resolves into a refresh update, not a hard failure")
-        XCTAssertEqual(documentText(adapter), "EXTbase", "the stale op must not be retried")
+        let callsBefore = adapter.backendEnvelopeCallCountForTesting
+        let update = adapter.insertText("REBASED", atScalar: 0)
+        XCTAssertNotNil(update)
+        XCTAssertEqual(documentText(adapter), "EXTbase")
         XCTAssertEqual(renderedText(update), "EXTbase")
+        XCTAssertEqual(adapter.backendEnvelopeCallCountForTesting, callsBefore + 1)
 
-        // Recovered: the adapter tracks the fresh revision and can edit again.
         let recovered = adapter.insertText("ok", atScalar: 0)
         XCTAssertEqual(renderedText(recovered), "okEXTbase")
         XCTAssertEqual(documentText(adapter), "okEXTbase")
     }
 
-    func testForcedRevisionRaceRefreshesOnceWithoutRetryingTheMutation() {
+    func testPreSyncMismatchRefusesSelectionRelativeInputWithoutReplay() {
         let adapter = makeAdapter()
         _ = adapter.setContentHtml("<p>base</p>")
+        _ = adapter.syncSelection(anchor: 0, head: 0)
 
         let external = editorV2ApplyCommand(
             editorId: adapter.editorId,
             requestJson: #"{"version":1,"requestId":"990002","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"EXT"}}"#
         )
-        XCTAssertNil(external.error, "external mutation failed: \(String(describing: external.error))")
+        XCTAssertNil(external.error)
+        let callsBefore = adapter.backendEnvelopeCallCountForTesting
 
-        let backendCallsBefore = adapter.backendEnvelopeCallCountForTesting
-        let renderCallsBefore = adapter.renderUpdateCallCountForTesting
-        let update = adapter.insertText("NORETRY", atScalar: 0)
+        let update = adapter.insertText("X", atScalar: 2)
 
-        XCTAssertNotNil(update, "the race resolves into one authoritative refresh")
-        XCTAssertEqual(
-            adapter.backendEnvelopeCallCountForTesting,
-            backendCallsBefore + 1,
-            "the stale mutation must be attempted once and never retried"
-        )
-        XCTAssertEqual(
-            adapter.renderUpdateCallCountForTesting,
-            renderCallsBefore + 1,
-            "a genuine revision race must perform exactly one render refresh"
-        )
-        XCTAssertEqual(documentText(adapter), "EXTbase", "the failed mutation must not be replayed")
+        XCTAssertEqual(documentText(adapter), "EXTbase")
         XCTAssertEqual(renderedText(update), "EXTbase")
+        XCTAssertEqual(adapter.backendEnvelopeCallCountForTesting, callsBefore + 1)
+    }
+
+    func testPreSyncMismatchRefusesDeleteBackwardWithoutReplay() {
+        let adapter = makeAdapter()
+        _ = adapter.setContentHtml("<p>base</p>")
+        _ = adapter.syncSelection(anchor: 4, head: 4)
+        let external = editorV2ApplyCommand(
+            editorId: adapter.editorId,
+            requestJson: #"{"version":1,"requestId":"990003","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"R"}}"#
+        )
+        XCTAssertNil(external.error)
+
+        let update = adapter.deleteBackward(anchor: 2, head: 2)
+
+        XCTAssertNotNil(update)
+        XCTAssertEqual(documentText(adapter), "baseR")
+    }
+
+    func testMismatchRefreshDoesNotInvokeCompatibilityRecovery() {
+        let adapter = makeAdapter()
+        _ = adapter.setContentHtml("<p>base</p>")
+        _ = adapter.syncSelection(anchor: 0, head: 0)
+        let first = editorV2ApplyCommand(
+            editorId: adapter.editorId,
+            requestJson: #"{"version":1,"requestId":"990004","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"EXT"}}"#
+        )
+        XCTAssertNil(first.error)
+        var recovered = false
+        adapter.onRemoteRecoveryForTesting = { recovered = true }
+        let callsBefore = adapter.backendEnvelopeCallCountForTesting
+
+        let update = adapter.insertText("X", atScalar: 2)
+
+        XCTAssertNotNil(update)
+        XCTAssertEqual(documentText(adapter), "EXTbase")
+        XCTAssertEqual(adapter.backendEnvelopeCallCountForTesting, callsBefore + 1)
+        XCTAssertFalse(recovered)
+    }
+
+    func testRevisionMismatchNeverReplaysExplicitlyPositionedMutation() {
+        let adapter = makeAdapter()
+        _ = adapter.setContentHtml("<p>base</p>")
+        let external = editorV2ApplyCommand(
+            editorId: adapter.editorId,
+            requestJson: #"{"version":1,"requestId":"990006","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"EXT"}}"#
+        )
+        XCTAssertNil(external.error)
+        let callsBefore = adapter.backendEnvelopeCallCountForTesting
+
+        let update = adapter.deleteScalarRange(from: 0, to: 4)
+
+        XCTAssertNotNil(update)
+        XCTAssertEqual(documentText(adapter), "EXTbase")
+        XCTAssertEqual(adapter.backendEnvelopeCallCountForTesting, callsBefore + 1)
     }
 
     func testAtomicRenderValidationAcceptsAValidRenderPatch() {

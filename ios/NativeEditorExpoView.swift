@@ -1,4 +1,4 @@
-import ExpoModulesCore
+public import ExpoModulesCore
 import UIKit
 
 enum NativeEditorDestroyReservationResult: Equatable {
@@ -22,6 +22,18 @@ final class NativeEditorViewRegistry {
         _ = performOnMain {
             activeEditorIds.insert(editorId)
         }
+    }
+
+    func rebaseAfterRemoteCommit(editorId: UInt64) {
+        guard editorId != 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.applyRemoteCommitRefresh(editorId: editorId)
+        }
+    }
+
+    func applyRemoteCommitRefresh(editorId: UInt64) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        viewsByEditorId[editorId]?.allObjects.forEach { $0.applyRemoteCommitRefresh() }
     }
 
     func isDestroyed(editorId: UInt64) -> Bool {
@@ -1787,6 +1799,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var pendingEditorUpdateEditorId: String?
     private var pendingEditorUpdateRevision = 0
     private var appliedEditorUpdateRevision = 0
+    private var renderedDocumentRevision: UInt64?
     private var pendingEditorUpdateRetryScheduled = false
     private var pendingEditorUpdateRetryEditorId: UInt64?
     private var pendingEditorUpdateRetryGeneration: UInt64 = 0
@@ -2087,7 +2100,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         autonomousErrorBindingEditorId = canonicalEditorId
         autonomousErrorBindingToken = token
         adapter.bindAutonomousErrorOwner(token: token) { [weak self, weak adapter] error in
-            DispatchQueue.main.async {
+            let enqueue = {
                 guard let self, let adapter else { return }
                 self.enqueueAutonomousError(
                     error,
@@ -2096,6 +2109,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
                     token: token,
                     generation: generation
                 )
+            }
+            if Thread.isMainThread {
+                enqueue()
+            } else {
+                DispatchQueue.main.async(execute: enqueue)
             }
         }
     }
@@ -2226,6 +2244,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         pendingEditorUpdateEditorId = nil
         pendingEditorUpdateRevision = 0
         appliedEditorUpdateRevision = 0
+        renderedDocumentRevision = nil
         pendingEditorUpdateRetryScheduled = false
         pendingEditorUpdateRetryEditorId = nil
         pendingEditorUpdateRetryGeneration &+= 1
@@ -2706,6 +2725,27 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         }
     }
 
+    func applyRemoteCommitRefresh() {
+        // Preparing an external update commits a live composition. The commit
+        // re-bases the adapter itself, so leave the half-typed word alone.
+        guard !richTextView.textView.hasPendingCompositionForExternalRefresh else { return }
+        let boundEditorId = richTextView.editorId
+        guard boundEditorId != 0,
+              let adapter = EditorV2Registry.adapter(forLegacyId: boundEditorId),
+              !adapter.isDestroyed
+        else {
+            return
+        }
+        let preflight = richTextView.textView.prepareForExternalEditorUpdateResult()
+        guard preflight.ready else { return }
+        guard let update = preflight.adoptedUpdateJSON
+            ?? adapter.refreshFromRustState(mirrorSelection: nil)
+        else {
+            return
+        }
+        richTextView.textView.applyUpdateJSON(update)
+    }
+
     private func applyEditorUpdateOutcome(
         _ updateJson: String,
         sourceEditorId: String?
@@ -2748,6 +2788,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         // retryable. Classify it before entering composition preflight.
         guard adapter.validateExternalRender(updateJson) else {
             return .rejected
+        }
+        if isSupersededEditorUpdate(updateJson) {
+            return .applied
         }
         let preflight = richTextView.textView.prepareForExternalEditorUpdateResult()
         guard preflight.ready else {
@@ -3033,6 +3076,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
+        if let revision = documentVersion(fromUpdateJSON: updateJSON).flatMap(UInt64.init) {
+            renderedDocumentRevision = revision
+        }
         // Capture both fields from the same committed atomic update before
         // any view work can cause a rebind. The event must never relabel A's
         // update as B merely because the host changes editorId afterwards.
@@ -3270,6 +3316,15 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             originatingEditorId: originatingEditorId
         ) else { return }
         onAddonEvent(event)
+    }
+
+    private func isSupersededEditorUpdate(_ updateJSON: String) -> Bool {
+        guard let rendered = renderedDocumentRevision,
+              let incoming = documentVersion(fromUpdateJSON: updateJSON).flatMap(UInt64.init)
+        else {
+            return false
+        }
+        return incoming < rendered
     }
 
     private func documentVersion(fromUpdateJSON updateJSON: String?) -> String? {

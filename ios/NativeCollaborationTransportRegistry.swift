@@ -9,7 +9,13 @@ enum NativeCollaborationTransportRegistry {
     private static var transports: [UInt64: NativeCollaborationTransport] = [:]
     private static var transportTokens: [UInt64: UUID] = [:]
     private static var eventSequences: [UInt64: UInt64] = [:]
+    private static var remoteRebases: [UInt64: RemoteRebaseState] = [:]
     private static var eventEmitter: EventEmitter?
+
+    private struct RemoteRebaseState {
+        let token: UUID
+        var dirty: Bool
+    }
 
     static func setEventEmitter(_ emitter: EventEmitter?) {
         queue.sync {
@@ -37,6 +43,7 @@ enum NativeCollaborationTransportRegistry {
             if parsed == nil {
                 let existing = transports.removeValue(forKey: editorId)
                 transportTokens.removeValue(forKey: editorId)
+                remoteRebases.removeValue(forKey: editorId)
                 existing?.destroy()
                 return nil
             }
@@ -107,6 +114,7 @@ enum NativeCollaborationTransportRegistry {
             transports.removeValue(forKey: editorId)?.destroy()
             transportTokens.removeValue(forKey: editorId)
             eventSequences.removeValue(forKey: editorId)
+            remoteRebases.removeValue(forKey: editorId)
         }
     }
 
@@ -128,6 +136,7 @@ enum NativeCollaborationTransportRegistry {
             transports.removeAll()
             transportTokens.removeAll()
             eventSequences.removeAll()
+            remoteRebases.removeAll()
             owned.forEach { $0.destroy() }
             eventEmitter = nil
         }
@@ -193,7 +202,36 @@ enum NativeCollaborationTransportRegistry {
                     ]
                 }
             }
+            if case let .directive(directive, _, _) = event, directive.remoteCommitApplied {
+                scheduleRemoteRebase(editorId: editorId, token: token)
+            }
             eventEmitter?(payload)
+        }
+    }
+
+    private static func scheduleRemoteRebase(editorId: UInt64, token: UUID) {
+        if var pending = remoteRebases[editorId], pending.token == token {
+            pending.dirty = true
+            remoteRebases[editorId] = pending
+            return
+        }
+        remoteRebases[editorId] = RemoteRebaseState(token: token, dirty: false)
+        dispatchRemoteRebase(editorId: editorId, token: token)
+    }
+
+    private static func dispatchRemoteRebase(editorId: UInt64, token: UUID) {
+        DispatchQueue.main.async {
+            NativeEditorViewRegistry.shared.applyRemoteCommitRefresh(editorId: editorId)
+            queue.async {
+                guard var pending = remoteRebases[editorId], pending.token == token else { return }
+                if pending.dirty {
+                    pending.dirty = false
+                    remoteRebases[editorId] = pending
+                    dispatchRemoteRebase(editorId: editorId, token: token)
+                } else {
+                    remoteRebases.removeValue(forKey: editorId)
+                }
+            }
         }
     }
 

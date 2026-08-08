@@ -141,6 +141,50 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual((selection["head"] as? NSNumber)?.uint32Value, EditorV2Shadow.scalarToDoc(id: editorId, scalar: 1))
     }
 
+    func testSelectionMismatchPublishesAuthoritativeRefreshedMapping() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>base</p>")
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        let delegate = EditorTextViewDelegateSpy()
+        textView.editorDelegate = delegate
+        textView.bindEditor(id: editorId, initialHTML: "<p>base</p>")
+        setCollapsedSelection(in: textView, utf16Offset: 0)
+        textView.delegate?.textViewDidChangeSelection?(textView)
+        flushMainQueue()
+        delegate.selectionChanges.removeAll()
+
+        let external = editorV2ApplyCommand(
+            editorId: adapter.editorId,
+            requestJson: #"{"version":1,"requestId":"990014","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"EXT"}}"#
+        )
+        XCTAssertNil(external.error)
+        setCollapsedSelection(in: textView, utf16Offset: 2)
+        textView.delegate?.textViewDidChangeSelection?(textView)
+        flushMainQueue()
+
+        XCTAssertEqual(textView.textStorage.string, "EXTbase")
+        let authoritative = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value)
+        let state = parseJSONObject(authoritative)
+        let selection = try XCTUnwrap(state["selection"] as? [String: Any])
+        XCTAssertEqual(
+            delegate.selectionChanges.last?.anchor,
+            (selection["anchor"] as? NSNumber)?.uint32Value
+        )
+        XCTAssertEqual(
+            delegate.selectionChanges.last?.head,
+            (selection["head"] as? NSNumber)?.uint32Value
+        )
+    }
+
     func testImageAttachmentLoadNotificationOnlyInvalidatesOwningEditor() {
         let first = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         let second = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -593,7 +637,6 @@ final class RichTextEditorViewTests: XCTestCase {
             documentBefore.contains("bulletList"),
             "precondition: the document holds an empty bullet, got \(documentBefore)"
         )
-
         textView.deleteBackward()
 
         let documentAfter = editorV2GetDocumentJson(editorId: adapter.editorId).value ?? ""
@@ -637,6 +680,7 @@ final class RichTextEditorViewTests: XCTestCase {
         let splitOffset = UInt32(betaRange.location + betaRange.length)
         EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: splitOffset, scalarHead: splitOffset)
         textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        XCTAssertEqual(textView.currentLogicalScalarSelection()?.head, splitOffset)
 
         textView.insertText("\n")
 
@@ -3641,6 +3685,113 @@ final class RichTextEditorViewTests: XCTestCase {
             "binding must use one atomic render snapshot for both cache adoption and toolbar state"
         )
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Bound")
+    }
+
+    func testPendingEditorUpdateValidatesBeforeSupersession() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>a</p>")
+        let oldRender = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: String(editorId),
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value)
+        let errors = AutonomousErrorEventSink()
+        let view = NativeEditorExpoView()
+        view.onEditorErrorForTesting = errors.record
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+        let current = EditorV2Shadow.insertTextScalar(id: editorId, scalarPos: 1, text: "b")
+        view.richTextView.textView.applyUpdateJSON(current)
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "ab")
+
+        view.setPendingEditorUpdateJson(oldRender)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "ab")
+        XCTAssertTrue(errors.errors.isEmpty)
+
+        var malformed = parseJSONObject(oldRender)
+        malformed.removeValue(forKey: "historyState")
+        view.setPendingEditorUpdateJson(try encodedJSONObject(malformed))
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(2)
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "ab")
+        XCTAssertEqual(errors.errors.count, 1)
+        XCTAssertEqual(errors.errors.first?.code, "FFI_RESULT_INVALID")
+    }
+
+    func testPendingEditorUpdateAppliesEqualNewerAndReboundEditorSnapshots() throws {
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
+        defer {
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
+        }
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>first</p>")
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(firstEditorId)
+        let current = EditorV2Shadow.insertTextScalar(
+            id: firstEditorId,
+            scalarPos: 5,
+            text: "!"
+        )
+        view.richTextView.textView.applyUpdateJSON(current)
+
+        _ = EditorV2Shadow.setSelectionScalar(
+            id: firstEditorId,
+            scalarAnchor: 2,
+            scalarHead: 2
+        )
+        let equalRender = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: String(firstEditorId),
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value)
+        view.setPendingEditorUpdateJson(equalRender)
+        view.setPendingEditorUpdateEditorId(String(firstEditorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: view.richTextView.textView), 2)
+
+        _ = EditorV2Shadow.replaceHtml(id: firstEditorId, html: "<p>newer</p>")
+        let newer = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: String(firstEditorId),
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value)
+        view.setPendingEditorUpdateJson(newer)
+        view.setPendingEditorUpdateEditorId(String(firstEditorId))
+        view.setPendingEditorUpdateRevision(2)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "newer")
+
+        view.setEditorId(secondEditorId)
+        let rebound = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: String(secondEditorId),
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value)
+        view.setPendingEditorUpdateJson(rebound)
+        view.setPendingEditorUpdateEditorId(String(secondEditorId))
+        view.setPendingEditorUpdateRevision(3)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "\u{200B}")
     }
 
     func testPendingEditorUpdateRejectsStaleCrossEditorSourceWithoutRetrying() {
@@ -8700,6 +8851,11 @@ final class RichTextEditorViewTests: XCTestCase {
         let object = try? JSONSerialization.jsonObject(with: data ?? Data()) as? [String: Any]
         XCTAssertNotNil(object)
         return object ?? [:]
+    }
+
+    private func encodedJSONObject(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try XCTUnwrap(String(data: data, encoding: .utf8))
     }
 
     private func jsonInt(_ value: Any?) -> Int? {

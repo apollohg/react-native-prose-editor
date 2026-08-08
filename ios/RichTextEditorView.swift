@@ -952,6 +952,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// The Rust editor instance ID (from editor_create / editor_create_with_max_length).
     /// Set to 0 when no editor is bound.
     var editorId: UInt64 = 0
+    private let nativeBindingToken = UUID()
 
     /// Guard flag to prevent re-entrant input interception while we're
     /// applying state from Rust (calling replaceCharacters on the text storage).
@@ -1072,6 +1073,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     /// Tracks whether we're in a composition session (CJK / IME input).
     private var isComposing = false
+    var hasPendingCompositionForExternalRefresh: Bool { isComposing }
     private lazy var imageSelectionTapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleImageSelectionTap(_:)))
         recognizer.cancelsTouchesInView = true
@@ -2061,9 +2063,13 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             return
         }
         if editorId != id {
+            EditorV2Registry.adapter(forLegacyId: editorId)?
+                .releaseNativeBindingOwner(token: nativeBindingToken)
             discardTransientNativeInputForEditorRebind()
         }
         editorId = id
+        EditorV2Registry.adapter(forLegacyId: id)?
+            .claimNativeBindingIfUnowned(token: nativeBindingToken)
 
         if let initialUpdateJSON {
             applyUpdateJSON(initialUpdateJSON, notifyDelegate: false)
@@ -2082,6 +2088,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// Unbind from the current editor instance.
     func unbindEditor() {
         discardTransientNativeInputForEditorRebind()
+        EditorV2Registry.adapter(forLegacyId: editorId)?
+            .releaseNativeBindingOwner(token: nativeBindingToken)
         editorId = 0
     }
 
@@ -2223,7 +2231,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             // is the authority — in an empty block UIKit's own caret is parked
             // ahead of the block placeholder for autocapitalization and does
             // not address the same position.
-            let cursorPos = PositionBridge.cursorScalarOffset(in: self)
+            let cursorPos = currentLogicalScalarSelection()?.head
+                ?? PositionBridge.cursorScalarOffset(in: self)
             if cursorPos == 0 {
                 performInterceptedInput {
                     deleteBackwardAtSelectionScalarInRust(anchor: cursorPos, head: cursorPos)
@@ -2233,6 +2242,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
 
             let cursorUtf16Offset = offset(from: beginningOfDocument, to: selectedRange.start)
+            if cursorUtf16Offset <= 0 {
+                performInterceptedInput {
+                    deleteBackwardAtSelectionScalarInRust(anchor: cursorPos, head: cursorPos)
+                }
+                return
+            }
             if let marker = PositionBridge.virtualListMarker(
                 atUtf16Offset: cursorUtf16Offset,
                 in: self
@@ -2262,11 +2277,17 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 return
             }
 
+            if cursorUtf16Offset > 0,
+               (textStorage.string as NSString).character(at: cursorUtf16Offset - 1) == 0x200B
+            {
+                performInterceptedInput {
+                    deleteBackwardAtSelectionScalarInRust(anchor: cursorPos, head: cursorPos)
+                }
+                return
+            }
+
             // Find the start of the previous grapheme cluster.
             // We need to figure out how many scalars the previous grapheme occupies.
-            let utf16Offset = offset(from: beginningOfDocument, to: selectedRange.start)
-            if utf16Offset <= 0 { return }
-
             // Use UITextView's tokenizer to find the previous grapheme boundary.
             guard let prevPos = position(from: selectedRange.start, offset: -1) else { return }
             let prevScalar = PositionBridge.textViewToScalar(prevPos, in: self)
@@ -3018,16 +3039,26 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         let anchor = selection.anchor
         let head = selection.head
-        let docAnchor = EditorV2Shadow.scalarToDoc(id: editorId, scalar: anchor)
-        let docHead = EditorV2Shadow.scalarToDoc(id: editorId, scalar: head)
+        guard let sync = EditorV2Shadow.setSelectionScalar(
+            id: editorId,
+            scalarAnchor: anchor,
+            scalarHead: head
+        ) else {
+            return
+        }
         Self.selectionLog.debug(
-            "[textViewDidChangeSelection] scalar=\(anchor)-\(head) doc=\(docAnchor)-\(docHead) textState=\(self.textSnapshotSummary(), privacy: .public)"
+            "[textViewDidChangeSelection] scalar=\(anchor)-\(head) doc=\(sync.docAnchor)-\(sync.docHead) textState=\(self.textSnapshotSummary(), privacy: .public)"
         )
-
-        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
+        if let refreshed = sync.refreshedUpdateJSON {
+            applyUpdateJSON(refreshed, notifyDelegate: false)
+        }
         recordAuthorizedSelectionIfPossible()
         refreshTypingAttributesForSelection()
-        editorDelegate?.editorTextView(self, selectionDidChange: docAnchor, head: docHead)
+        editorDelegate?.editorTextView(
+            self,
+            selectionDidChange: sync.docAnchor,
+            head: sync.docHead
+        )
     }
 
     @discardableResult

@@ -5,10 +5,8 @@ import Foundation
 // `EditorV2Adapter` owns one v2 editor session (decimal-string handle) and
 // translates the existing native view operations into the typed v2
 // transactions/results (`editorV2*`). Every mutation is one typed
-// transaction against the tracked base document revision; a
-// `REVISION_MISMATCH` refreshes from Rust state and is NEVER retried against
-// guessed positions. Transient IME/composing state never reaches the
-// adapter — only final commits do.
+// transaction against the tracked base document revision. Transient
+// IME/composing state never reaches the adapter — only final commits do.
 //
 // Render derivation (Task 16B): the v2 render accessor
 // (`editorV2RenderUpdate` / `editorV2ResolveScalarSelection` /
@@ -29,6 +27,12 @@ enum EditorV2ValueResult {
 private enum EditorV2EnvelopeResult {
     case success(String)
     case failure(FfiError)
+}
+
+struct EditorV2SelectionSync {
+    let docAnchor: UInt32
+    let docHead: UInt32
+    let refreshedUpdateJSON: String?
 }
 
 /// The v2 session adapter backing one bound editor view. See the file
@@ -68,9 +72,13 @@ final class EditorV2Adapter {
     /// separate state read.
     private(set) var stateRevision: UInt64 = 0
     private var nextRequestId: UInt64 = 0
+    private var nativeOwnerId: UInt64?
+    private var nativeOwnerToken: UUID?
+    private var positionEpoch: UInt64?
     private(set) var lastRequestIdForTesting: UInt64?
     private(set) var backendEnvelopeCallCountForTesting = 0
     private(set) var renderUpdateCallCountForTesting = 0
+    var onRemoteRecoveryForTesting: (() -> Void)?
     private var lastSyncedScalarSelection: (anchor: UInt32, head: UInt32)?
     private var cachedAuthoritativeScalarSelection: (anchor: UInt32, head: UInt32)?
     private var cachedScalarLength: UInt32?
@@ -87,6 +95,9 @@ final class EditorV2Adapter {
     private let setAwarenessSelection: (String, String) -> FfiJsonResult
     private let collaborationWake: (UInt64, CollaborationWakeReason) -> Void
     private var destroyed = false
+
+    private static let nativeOwnerLock = NSLock()
+    private static var nextNativeOwnerId: UInt64 = 0
 
     var isDestroyed: Bool {
         destroyed
@@ -165,6 +176,7 @@ final class EditorV2Adapter {
     /// this adapter owns only its local lifecycle and autonomous-error owner.
     @discardableResult
     func destroyForModuleTransaction() -> FfiUnitResult {
+        releaseNativeOwner()
         let result = destroySession(editorId)
         switch (result.value, result.error) {
         case let (value?, nil) where value:
@@ -262,6 +274,7 @@ final class EditorV2Adapter {
     /// A later claim replaces the earlier owner. Clearing is conditional on
     /// the same token, so stale views cannot erase a newer binding.
     func bindAutonomousErrorOwner(token: UUID, _ callback: @escaping (FfiError) -> Void) {
+        claimNativeBinding(token: token, replaceExisting: true)
         autonomousErrorLock.lock()
         autonomousErrorOwnerToken = token
         autonomousErrorCallback = callback
@@ -274,6 +287,7 @@ final class EditorV2Adapter {
         guard autonomousErrorOwnerToken == token else { return }
         autonomousErrorOwnerToken = nil
         autonomousErrorCallback = nil
+        releaseNativeBindingOwner(token: token)
     }
 
     func clearAutonomousErrorOwner() {
@@ -283,6 +297,40 @@ final class EditorV2Adapter {
             autonomousErrorCallback = nil
         }
         autonomousErrorLock.unlock()
+        releaseNativeOwner()
+    }
+
+    func claimNativeBindingIfUnowned(token: UUID) {
+        claimNativeBinding(token: token, replaceExisting: false)
+    }
+
+    private func claimNativeBinding(token: UUID, replaceExisting: Bool) {
+        if !replaceExisting, nativeOwnerToken != nil { return }
+        if nativeOwnerToken == token { return }
+        releaseNativeOwner()
+        Self.nativeOwnerLock.lock()
+        guard Self.nextNativeOwnerId < UInt64.max else {
+            Self.nativeOwnerLock.unlock()
+            emit(Self.contractError("native owner id counter exhausted"))
+            return
+        }
+        Self.nextNativeOwnerId += 1
+        nativeOwnerId = Self.nextNativeOwnerId
+        nativeOwnerToken = token
+        Self.nativeOwnerLock.unlock()
+    }
+
+    func releaseNativeBindingOwner(token: UUID) {
+        guard nativeOwnerToken == token else { return }
+        releaseNativeOwner()
+    }
+
+    private func releaseNativeOwner() {
+        guard let ownerId = nativeOwnerId else { return }
+        nativeOwnerId = nil
+        nativeOwnerToken = nil
+        positionEpoch = nil
+        _ = editorV2ReleaseNativeBinding(editorId: editorId, ownerId: String(ownerId))
     }
 
     func isAutonomousErrorOwner(token: UUID) -> Bool {
@@ -398,6 +446,7 @@ final class EditorV2Adapter {
         let activeState: [String: Any]
         let historyState: (canUndo: Bool, canRedo: Bool)
         let documentIsEmpty: Bool
+        let positionEpoch: UInt64?
     }
 
     private static let atomicRenderSnapshotKeys: Set<String> = [
@@ -735,7 +784,8 @@ final class EditorV2Adapter {
     private static func parseAtomicRenderSnapshot(_ json: String) -> AtomicRenderSnapshot? {
         guard let data = json.data(using: .utf8),
               var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys) == atomicRenderSnapshotKeys,
+              Set(object.keys).isSubset(of: atomicRenderSnapshotKeys.union(["positionEpoch"])),
+              atomicRenderSnapshotKeys.isSubset(of: Set(object.keys)),
               let renderBlocks = object["renderBlocks"],
               isValidRenderBlocks(renderBlocks),
               let renderPatch = object["renderPatch"],
@@ -757,6 +807,23 @@ final class EditorV2Adapter {
         }
 
         let selection = scalarSelection(from: selectionValue)
+        let positionEpoch: UInt64?
+        if object.keys.contains("positionEpoch") {
+            guard let value = object["positionEpoch"] as? String,
+                  let parsed = UInt64(value), String(parsed) == value
+            else {
+                return nil
+            }
+            positionEpoch = parsed
+        } else {
+            positionEpoch = nil
+        }
+        object.removeValue(forKey: "positionEpoch")
+        guard let atomicData = try? JSONSerialization.data(withJSONObject: object),
+              let atomicRenderJSON = String(data: atomicData, encoding: .utf8)
+        else {
+            return nil
+        }
         object.removeValue(forKey: "scalarLength")
         // documentIsEmpty stays in the view payload: the text view needs the
         // core's answer to decide whether to show its placeholder.
@@ -766,7 +833,7 @@ final class EditorV2Adapter {
             return nil
         }
         return AtomicRenderSnapshot(
-            atomicRenderJSON: json,
+            atomicRenderJSON: atomicRenderJSON,
             viewUpdateJSON: viewUpdateJSON,
             documentRevision: documentRevision,
             stateRevision: stateRevision,
@@ -774,7 +841,8 @@ final class EditorV2Adapter {
             selection: selection,
             activeState: activeState,
             historyState: (canUndo, canRedo),
-            documentIsEmpty: documentIsEmpty
+            documentIsEmpty: documentIsEmpty,
+            positionEpoch: positionEpoch
         )
     }
 
@@ -800,11 +868,21 @@ final class EditorV2Adapter {
         mirrorScalarSelection: (anchor: UInt32, head: UInt32)?
     ) -> AtomicRenderSnapshot? {
         renderUpdateCallCountForTesting += 1
-        let result = editorV2RenderUpdate(
-            editorId: editorId,
-            mirrorScalarAnchor: mirrorScalarSelection?.anchor,
-            mirrorScalarHead: mirrorScalarSelection?.head
-        )
+        let result: FfiJsonResult
+        if let nativeOwnerId {
+            result = editorV2RenderNative(
+                editorId: editorId,
+                ownerId: String(nativeOwnerId),
+                mirrorScalarAnchor: mirrorScalarSelection?.anchor,
+                mirrorScalarHead: mirrorScalarSelection?.head
+            )
+        } else {
+            result = editorV2RenderUpdate(
+                editorId: editorId,
+                mirrorScalarAnchor: mirrorScalarSelection?.anchor,
+                mirrorScalarHead: mirrorScalarSelection?.head
+            )
+        }
         switch Self.normalizeJsonResult(result) {
         case .failure(let error):
             // A render update that fails or violates the frozen shape is a
@@ -839,6 +917,9 @@ final class EditorV2Adapter {
         cachedViewUpdateJSON = updateJSON
         cachedAtomicRenderJSON = snapshot.atomicRenderJSON
         cachedAtomicRenderDocumentRevision = snapshot.documentRevision
+        if let epoch = snapshot.positionEpoch {
+            positionEpoch = epoch
+        }
         // This is the engine's selection from the locked snapshot. Keep it
         // distinct from a caller-provided mirror: treating it as a mirror on
         // the next refresh would change the frozen no-mirror render shape.
@@ -865,6 +946,9 @@ final class EditorV2Adapter {
             rejectAtomicRenderSnapshot()
             return nil
         }
+        if snapshot.positionEpoch == nil, !pinCurrentPositionEpoch(snapshot.documentRevision) {
+            return nil
+        }
         return adopted.updateJSON
     }
 
@@ -882,6 +966,33 @@ final class EditorV2Adapter {
             return false
         }
         return true
+    }
+
+    private func pinCurrentPositionEpoch(_ documentRevision: UInt64) -> Bool {
+        guard let nativeOwnerId else { return true }
+        switch Self.normalizeJsonResult(
+            editorV2PinPositionEpoch(
+                editorId: editorId,
+                ownerId: String(nativeOwnerId),
+                documentRevision: String(documentRevision)
+            )
+        ) {
+        case .failure(let error):
+            emit(error)
+            return false
+        case .success(let json):
+            guard let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  Set(object.keys) == ["positionEpoch"],
+                  let value = object["positionEpoch"] as? String,
+                  let epoch = UInt64(value), String(epoch) == value
+            else {
+                emit(Self.contractError("v2 position epoch result violates the frozen shape"))
+                return false
+            }
+            positionEpoch = epoch
+            return true
+        }
     }
 
     var cacheStateForTesting: String {
@@ -915,10 +1026,7 @@ final class EditorV2Adapter {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    /// Re-read the authoritative v2 state and derive one synthesized update
-    /// JSON through the v2 render accessor. Updates revision tracking
-    /// and the scalar-extent cache. This is the REVISION_MISMATCH recovery
-    /// path: it never re-issues the failed operation.
+    /// Re-read the authoritative v2 state and update the render caches.
     @discardableResult
     private func refreshInternal(
         mirrorSelection: (anchor: UInt32, head: UInt32)?,
@@ -1077,9 +1185,10 @@ final class EditorV2Adapter {
             return .ok
         case .failure(let error):
             if error.code == "REVISION_MISMATCH" {
-                // Refresh from Rust state; never retry against guessed
-                // positions. The next genuine selection event re-syncs.
-                if let update = refreshInternal(mirrorSelection: (clampedAnchor, clampedHead))?.updateJSON {
+                if let update = refreshInternal(
+                    mirrorSelection: nil,
+                    strippingViewSelection: false
+                )?.updateJSON {
                     return .refreshed(update)
                 }
                 return .failed
@@ -1092,7 +1201,7 @@ final class EditorV2Adapter {
     /// Selection sync with the engine-authoritative doc-position mapping the
     /// delegate callback requires.
     @discardableResult
-    func syncSelection(anchor: UInt32, head: UInt32) -> (docAnchor: UInt32, docHead: UInt32)? {
+    func syncSelection(anchor: UInt32, head: UInt32) -> EditorV2SelectionSync? {
         guard !destroyed else {
             emit(
                 FfiError(
@@ -1108,11 +1217,29 @@ final class EditorV2Adapter {
             )
             return nil
         }
+        if nativeOwnerId != nil {
+            let previousDocumentRevision = baseDocumentRevision
+            guard let update = performNativeIntent(
+                nativeIntent("setSelection", anchor: anchor, head: head)
+            )?.updateJSON,
+                  let mapping = Self.textDocumentSelection(from: update)
+            else {
+                return nil
+            }
+            publishCollaborationSelection(docAnchor: mapping.docAnchor, docHead: mapping.docHead)
+            return EditorV2SelectionSync(
+                docAnchor: mapping.docAnchor,
+                docHead: mapping.docHead,
+                refreshedUpdateJSON: baseDocumentRevision == previousDocumentRevision ? nil : update
+            )
+        }
+        var refreshedUpdateJSON: String?
         let mapping: (docAnchor: UInt32, docHead: UInt32)?
         switch ensureSelection(anchor: anchor, head: head) {
         case .ok:
             mapping = resolveSelectionMapping(scalarAnchor: anchor, scalarHead: head)
         case .refreshed(let updateJSON):
+            refreshedUpdateJSON = updateJSON
             mapping = Self.textDocumentSelection(from: updateJSON)
         case .failed:
             return nil
@@ -1122,7 +1249,11 @@ final class EditorV2Adapter {
             docAnchor: mapping.docAnchor,
             docHead: mapping.docHead
         )
-        return mapping
+        return EditorV2SelectionSync(
+            docAnchor: mapping.docAnchor,
+            docHead: mapping.docHead,
+            refreshedUpdateJSON: refreshedUpdateJSON
+        )
     }
 
     private static func textDocumentSelection(
@@ -1169,28 +1300,42 @@ final class EditorV2Adapter {
         }
     }
 
-    /// Selection sync where no doc mapping is consumed (shadow call sites
-    /// that only need the engine to track the caret).
-    func syncSelectionQuiet(anchor: UInt32, head: UInt32) {
-        guard !destroyed else { return }
+    @discardableResult
+    func syncSelectionQuiet(anchor: UInt32, head: UInt32) -> String? {
+        guard !destroyed else { return nil }
+        if nativeOwnerId != nil {
+            let previousDocumentRevision = baseDocumentRevision
+            guard let update = performNativeIntent(
+                nativeIntent("setSelection", anchor: anchor, head: head)
+            )?.updateJSON else {
+                return nil
+            }
+            if let mapping = Self.textDocumentSelection(from: update) {
+                publishCollaborationSelection(docAnchor: mapping.docAnchor, docHead: mapping.docHead)
+            }
+            return baseDocumentRevision == previousDocumentRevision ? nil : update
+        }
+        var refreshedUpdateJSON: String?
         let mapping: (docAnchor: UInt32, docHead: UInt32)?
         switch ensureSelection(anchor: anchor, head: head) {
         case .ok:
-            guard let selection = lastSyncedScalarSelection else { return }
+            guard let selection = lastSyncedScalarSelection else { return nil }
             mapping = resolveSelectionMapping(
                 scalarAnchor: selection.anchor,
                 scalarHead: selection.head
             )
         case .refreshed(let updateJSON):
+            refreshedUpdateJSON = updateJSON
             mapping = Self.textDocumentSelection(from: updateJSON)
         case .failed:
-            return
+            return nil
         }
-        guard let mapping else { return }
+        guard let mapping else { return refreshedUpdateJSON }
         publishCollaborationSelection(
             docAnchor: mapping.docAnchor,
             docHead: mapping.docHead
         )
+        return refreshedUpdateJSON
     }
 
     private func publishCachedCollaborationSelection() {
@@ -1309,15 +1454,89 @@ final class EditorV2Adapter {
         }
     }
 
-    private func handleMutationError(_ error: FfiError, mirror: (UInt32, UInt32)?) -> String? {
+    private func handleMutationError(_ error: FfiError) -> String? {
         if error.code == "REVISION_MISMATCH" {
-            // Refresh from Rust state; NEVER retry against guessed positions.
-            let update = refreshInternal(mirrorSelection: mirror)?.updateJSON
+            let update = refreshInternal(
+                mirrorSelection: nil,
+                strippingViewSelection: false
+            )?.updateJSON
             debugNotes.append("mismatch-refresh \(update == nil ? "nil" : "ok")")
             return update
         }
         emit(error)
         return nil
+    }
+
+    private struct NativeMutationRender {
+        let updateJSON: String
+        let changed: Bool
+    }
+
+    private func nativeIntent(_ type: String, anchor: UInt32, head: UInt32) -> [String: Any] {
+        [
+            "type": type,
+            "anchor": Int(clampScalar(anchor)),
+            "head": Int(clampScalar(head)),
+        ]
+    }
+
+    private func performNativeIntent(_ intent: [String: Any]) -> NativeMutationRender? {
+        guard !destroyed else { return nil }
+        guard let nativeOwnerId else { return nil }
+        if positionEpoch == nil {
+            guard refreshInternal(mirrorSelection: nil, strippingViewSelection: false) != nil else {
+                return nil
+            }
+        }
+        guard let positionEpoch else { return nil }
+        let result = callWithEnvelope(
+            [
+                "ownerId": String(nativeOwnerId),
+                "positionEpoch": String(positionEpoch),
+                "intent": intent,
+            ],
+            includeBaseRevision: false
+        ) { requestJson in
+            editorV2ApplyNativeIntent(editorId: self.editorId, requestJson: requestJson)
+        }
+        switch Self.normalizeJsonResult(result) {
+        case .failure(let error):
+            if error.code == "POSITION_EPOCH_INVALID" {
+                debugNotes.append("position-epoch-refresh")
+                _ = refreshInternal(mirrorSelection: nil, strippingViewSelection: false)
+            } else {
+                emit(error)
+            }
+            return nil
+        case .success(let value):
+            guard let outcome = parseMutationOutcome(value) else {
+                emit(contractError("v2 native intent outcome violates the frozen shape"))
+                return nil
+            }
+            let changed: Bool
+            switch outcome.kind {
+            case .transaction(let didChange, let revision):
+                changed = didChange
+                baseDocumentRevision = revision
+            case .notApplicable:
+                changed = false
+            case .replacement(let didChange, let revision):
+                changed = didChange
+                baseDocumentRevision = revision
+            }
+            guard let update = refreshInternal(
+                mirrorSelection: nil,
+                strippingViewSelection: false
+            )?.updateJSON else {
+                return nil
+            }
+            lastSyncedScalarSelection = cachedAuthoritativeScalarSelection
+            if changed {
+                publishCachedCollaborationSelection()
+                notifyCollaborationMutation()
+            }
+            return NativeMutationRender(updateJSON: update, changed: changed)
+        }
     }
 
     /// One typed v2 mutation: optional selection pre-sync, one transaction,
@@ -1356,72 +1575,73 @@ final class EditorV2Adapter {
             )
             return nil
         }
-        if let preSelection {
-            switch ensureSelection(anchor: preSelection.0, head: preSelection.1) {
+        let mirror = postSelectionMirror
+        let pre = preSelection
+        if let pre {
+            switch ensureSelection(anchor: pre.0, head: pre.1) {
             case .ok:
                 break
             case .refreshed(let updateJSON):
-                // The pre-sync discovered staleness: the operation is NOT
-                // retried; the refresh update is the resolution.
                 return updateJSON
             case .failed:
                 return nil
             }
         }
-        let result = call()
-        switch Self.normalizeJsonResult(result) {
+        switch Self.normalizeJsonResult(call()) {
         case .failure(let error):
-            return handleMutationError(error, mirror: postSelectionMirror ?? preSelection)
+            return handleMutationError(error)
         case .success(let value):
-            guard let outcome = parseMutationOutcome(value) else {
-                emit(contractError("v2 mutation outcome violates the frozen shape"))
-                return nil
-            }
-            let changed: Bool
-            switch outcome.kind {
-            case .transaction(let didChange, let revision):
-                changed = didChange
-                baseDocumentRevision = revision
-                if let postSelectionMirror, !adoptEngineSelection {
-                    lastSyncedScalarSelection = postSelectionMirror
+                guard let outcome = parseMutationOutcome(value) else {
+                    emit(contractError("v2 mutation outcome violates the frozen shape"))
+                    return nil
                 }
-            case .notApplicable:
-                // Nothing applicable: no commit happened; surface the current
-                // state (legacy no-op command parity) and skip the drain.
-                return refreshInternal(mirrorSelection: postSelectionMirror ?? preSelection)?.updateJSON
-            case .replacement(let didChange, let revision):
-                changed = didChange
-                baseDocumentRevision = revision
-                // Whole-root replacement resets the engine-side selection;
-                // the cached sync point is no longer valid.
-                lastSyncedScalarSelection = nil
-            }
-            guard let update = refreshInternal(
-                mirrorSelection: adoptEngineSelection
-                    ? nil
-                    : postSelectionMirror ?? (includeSelectionInUpdate ? preSelection : nil),
-                // Paste and composition-preserving paths still derive active
-                // and history state from the authoritative post-operation
-                // selection. Only the view-facing selection is omitted so
-                // UIKit retains its IME-owned caret.
-                strippingViewSelection: !adoptEngineSelection
-                    && postSelectionMirror == nil
-                    && !includeSelectionInUpdate
-            )?.updateJSON else {
-                return nil
-            }
-            if adoptEngineSelection {
-                // The refresh adopted the engine's own post-command selection;
-                // that is now the view's caret, so it becomes the sync point.
-                // Leaving the pre-command offsets here would make the next
-                // ensureSelection push a stale caret back into the engine.
-                lastSyncedScalarSelection = cachedAuthoritativeScalarSelection
-            }
-            if changed {
-                publishCachedCollaborationSelection()
-                notifyCollaborationMutation()
-            }
-            return update
+                let postSelectionMirror = mirror
+                let preSelection = pre
+                let changed: Bool
+                switch outcome.kind {
+                case .transaction(let didChange, let revision):
+                    changed = didChange
+                    baseDocumentRevision = revision
+                    if let postSelectionMirror, !adoptEngineSelection {
+                        lastSyncedScalarSelection = postSelectionMirror
+                    }
+                case .notApplicable:
+                    // Nothing applicable: no commit happened; surface the current
+                    // state (legacy no-op command parity) and skip the drain.
+                    return refreshInternal(mirrorSelection: postSelectionMirror ?? preSelection)?.updateJSON
+                case .replacement(let didChange, let revision):
+                    changed = didChange
+                    baseDocumentRevision = revision
+                    // Whole-root replacement resets the engine-side selection;
+                    // the cached sync point is no longer valid.
+                    lastSyncedScalarSelection = nil
+                }
+                guard let update = refreshInternal(
+                    mirrorSelection: adoptEngineSelection
+                        ? nil
+                        : postSelectionMirror ?? (includeSelectionInUpdate ? preSelection : nil),
+                    // Paste and composition-preserving paths still derive active
+                    // and history state from the authoritative post-operation
+                    // selection. Only the view-facing selection is omitted so
+                    // UIKit retains its IME-owned caret.
+                    strippingViewSelection: !adoptEngineSelection
+                        && postSelectionMirror == nil
+                        && !includeSelectionInUpdate
+                )?.updateJSON else {
+                    return nil
+                }
+                if adoptEngineSelection {
+                    // The refresh adopted the engine's own post-command selection;
+                    // that is now the view's caret, so it becomes the sync point.
+                    // Leaving the pre-command offsets here would make the next
+                    // ensureSelection push a stale caret back into the engine.
+                    lastSyncedScalarSelection = cachedAuthoritativeScalarSelection
+                }
+                if changed {
+                    publishCachedCollaborationSelection()
+                    notifyCollaborationMutation()
+                }
+                return update
         }
     }
 
@@ -1510,10 +1730,15 @@ final class EditorV2Adapter {
 
     func insertText(_ text: String, atScalar scalarPos: UInt32) -> String? {
         guard !text.isEmpty else { return currentStateJSON() }
+        if nativeOwnerId != nil {
+            var intent = nativeIntent("insertText", anchor: scalarPos, head: scalarPos)
+            intent["text"] = text
+            return performNativeIntent(intent)?.updateJSON
+        }
         let postCaret = scalarPos &+ EditorV2PositionBridge.scalarLength(of: text)
         return performMutation(
             preSelection: (scalarPos, scalarPos),
-            postSelectionMirror: (postCaret, postCaret)
+            postSelectionMirror: (postCaret, postCaret),
         ) {
             self.callWithEnvelope(["text": text]) { requestJson in
                 editorV2ApplyInput(editorId: self.editorId, requestJson: requestJson)
@@ -1525,6 +1750,11 @@ final class EditorV2Adapter {
         if text.isEmpty {
             return deleteScalarRange(from: from, to: to)
         }
+        if nativeOwnerId != nil {
+            var intent = nativeIntent("replaceSelectionText", anchor: from, head: to)
+            intent["text"] = text
+            return performNativeIntent(intent)?.updateJSON
+        }
         let postCaret = from &+ EditorV2PositionBridge.scalarLength(of: text)
         // A range-replacing commit (autocorrect, paste-over-selection, IME
         // commit over a marked range) is ONE typed ReplaceSelectionText
@@ -1532,7 +1762,7 @@ final class EditorV2Adapter {
         // command form carries the range replacement atomically.
         return performMutation(
             preSelection: (from, to),
-            postSelectionMirror: (postCaret, postCaret)
+            postSelectionMirror: (postCaret, postCaret),
         ) {
             self.callWithEnvelope([
                 "command": ["type": "replaceSelectionText", "text": text]
@@ -1544,6 +1774,9 @@ final class EditorV2Adapter {
 
     func deleteScalarRange(from: UInt32, to: UInt32) -> String? {
         guard from < to else { return currentStateJSON() }
+        if nativeOwnerId != nil {
+            return performNativeIntent(nativeIntent("deleteRange", anchor: from, head: to))?.updateJSON
+        }
         return performMutation(postSelectionMirror: (from, from)) {
             self.callWithEnvelope([
                     "command": [
@@ -1567,10 +1800,15 @@ final class EditorV2Adapter {
     }
 
     func deleteBackward(anchor: UInt32, head: UInt32) -> String? {
+        if nativeOwnerId != nil {
+            return performNativeIntent(
+                nativeIntent("deleteBackward", anchor: anchor, head: head)
+            )?.updateJSON
+        }
         let postCaret = anchor == head ? (anchor > 0 ? anchor - 1 : 0) : min(anchor, head)
         return performMutation(
             preSelection: (anchor, head),
-            postSelectionMirror: (postCaret, postCaret)
+            postSelectionMirror: (postCaret, postCaret),
         ) {
             self.callWithEnvelope(["command": ["type": "deleteBackward"]]) { requestJson in
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
@@ -1579,11 +1817,16 @@ final class EditorV2Adapter {
     }
 
     func splitBlock(atScalar scalarPos: UInt32) -> String? {
+        if nativeOwnerId != nil {
+            return performNativeIntent(
+                nativeIntent("splitBlock", anchor: scalarPos, head: scalarPos)
+            )?.updateJSON
+        }
         // The caret lands at the start of the new block: one scalar past the
         // split point (the block separator counts as one scalar).
-        performMutation(
+        return performMutation(
             preSelection: (scalarPos, scalarPos),
-            postSelectionMirror: (scalarPos &+ 1, scalarPos &+ 1)
+            postSelectionMirror: (scalarPos &+ 1, scalarPos &+ 1),
         ) {
             self.callWithEnvelope(["command": ["type": "splitBlock"]]) { requestJson in
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
@@ -1592,9 +1835,14 @@ final class EditorV2Adapter {
     }
 
     func deleteAndSplit(from: UInt32, to: UInt32) -> String? {
-        performMutation(
+        if nativeOwnerId != nil {
+            return performNativeIntent(
+                nativeIntent("deleteAndSplit", anchor: from, head: to)
+            )?.updateJSON
+        }
+        return performMutation(
             preSelection: (from, to),
-            postSelectionMirror: (from, from)
+            postSelectionMirror: (from, from),
         ) {
             self.callWithEnvelope(["command": ["type": "deleteAndSplit"]]) { requestJson in
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
@@ -1603,6 +1851,13 @@ final class EditorV2Adapter {
     }
 
     func insertNode(_ nodeType: String, anchor: UInt32, head: UInt32) -> String? {
+        if nativeOwnerId != nil {
+            return commandAtSelection(
+                ["type": "insertNode", "nodeType": nodeType],
+                anchor: anchor,
+                head: head
+            )
+        }
         if nodeType == "hardBreak" {
             // Inline void: the caret lands immediately after the break.
             let caret = min(anchor, head) &+ 1
@@ -1629,17 +1884,24 @@ final class EditorV2Adapter {
     }
 
     func insertContentHtml(_ html: String, anchor: UInt32, head: UInt32) -> String? {
-        performMutation(preSelection: (anchor, head)) {
-            self.callWithEnvelope(["command": ["type": "insertContentHtml", "html": html]]) { requestJson in
-                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
-            }
-        }
+        commandAtSelection(
+            ["type": "insertContentHtml", "html": html],
+            anchor: anchor,
+            head: head
+        )
     }
 
     /// Paste-HTML path: the view pre-syncs the UIKit selection; the content
     /// insert applies at the engine selection.
     func insertContentHtmlAtEngineSelection(_ html: String) -> String? {
-        performMutation {
+        if nativeOwnerId != nil, let selection = cachedAuthoritativeScalarSelection {
+            return commandAtSelection(
+                ["type": "insertContentHtml", "html": html],
+                anchor: selection.anchor,
+                head: selection.head
+            )
+        }
+        return performMutation {
             self.callWithEnvelope(["command": ["type": "insertContentHtml", "html": html]]) { requestJson in
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
             }
@@ -1654,6 +1916,13 @@ final class EditorV2Adapter {
             emit(contractError("insertContentJson fragment is not valid JSON"))
             return nil
         }
+        if nativeOwnerId != nil, let selection = cachedAuthoritativeScalarSelection {
+            return commandAtSelection(
+                ["type": "insertContentJson", "json": fragment],
+                anchor: selection.anchor,
+                head: selection.head
+            )
+        }
         return performMutation {
             self.callWithEnvelope(["command": ["type": "insertContentJson", "json": fragment]]) { requestJson in
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
@@ -1667,6 +1936,13 @@ final class EditorV2Adapter {
         else {
             emit(contractError("insertContentJson fragment is not valid JSON"))
             return nil
+        }
+        if nativeOwnerId != nil {
+            return commandAtSelection(
+                ["type": "insertContentJson", "json": fragment],
+                anchor: anchor,
+                head: head
+            )
         }
         guard let update = performMutation(preSelection: (anchor, head), {
             self.callWithEnvelope(["command": ["type": "insertContentJson", "json": fragment]]) { requestJson in
@@ -1739,7 +2015,12 @@ final class EditorV2Adapter {
     }
 
     private func commandAtSelection(_ command: [String: Any], anchor: UInt32, head: UInt32) -> String? {
-        performMutation(preSelection: (anchor, head), adoptEngineSelection: true) {
+        if nativeOwnerId != nil {
+            var intent = nativeIntent("command", anchor: anchor, head: head)
+            intent["command"] = command
+            return performNativeIntent(intent)?.updateJSON
+        }
+        return performMutation(preSelection: (anchor, head), adoptEngineSelection: true) {
             self.callWithEnvelope(["command": command]) { requestJson in
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
             }
