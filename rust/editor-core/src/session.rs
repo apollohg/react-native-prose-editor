@@ -598,6 +598,7 @@ pub(crate) struct EditorSession {
     pub(crate) collaboration: CollaborationLifecycle,
     position_epochs: crate::position_epoch::PositionEpochStore,
     native_request_ledgers: std::collections::BTreeMap<u64, NativeRequestLedger>,
+    native_render_cursors: std::collections::BTreeMap<u64, NativeRenderCursor>,
 }
 
 const NATIVE_REQUEST_CACHE_LIMIT: usize = 256;
@@ -607,6 +608,12 @@ struct NativeRequestLedger {
     high_water: Option<u64>,
     recent: std::collections::BTreeMap<u64, String>,
     order: std::collections::VecDeque<u64>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NativeRenderCursor {
+    pub(crate) document_revision: u64,
+    pub(crate) render_blocks: std::sync::Arc<crate::render::incremental::CachedRenderBlocks>,
 }
 
 pub(crate) struct SessionPolicy {
@@ -693,12 +700,14 @@ impl EditorSession {
                 crate::position_epoch::PositionEpochLimits::default(),
             ),
             native_request_ledgers: std::collections::BTreeMap::new(),
+            native_render_cursors: std::collections::BTreeMap::new(),
         })
     }
 
     pub(crate) fn teardown(&mut self) {
         self.position_epochs.clear();
         self.native_request_ledgers.clear();
+        self.native_render_cursors.clear();
         self.native_bridge.teardown();
         self.collaboration.teardown();
     }
@@ -749,12 +758,18 @@ impl EditorSession {
                     "authoritative position epoch could not be built",
                 )
             })?;
-        self.position_epochs.install(
+        let epoch = self.position_epochs.install(
             owner_id,
             self.engine.client_id(),
             document_revision,
             boundaries,
-        )
+        )?;
+        let render_blocks = self
+            .engine
+            .cached_render_blocks()
+            .ok_or_else(engine_not_ready)?;
+        self.retain_native_render_cursor(owner_id, document_revision, render_blocks);
+        Ok(epoch)
     }
 
     pub(crate) fn resolve_epoch_range(
@@ -792,6 +807,26 @@ impl EditorSession {
 
     pub(crate) fn release_position_epoch_owner(&mut self, owner_id: u64) {
         self.position_epochs.release_owner(owner_id);
+        self.native_render_cursors.remove(&owner_id);
+    }
+
+    pub(crate) fn native_render_cursor(&self, owner_id: u64) -> Option<NativeRenderCursor> {
+        self.native_render_cursors.get(&owner_id).cloned()
+    }
+
+    pub(crate) fn retain_native_render_cursor(
+        &mut self,
+        owner_id: u64,
+        document_revision: u64,
+        render_blocks: std::sync::Arc<crate::render::incremental::CachedRenderBlocks>,
+    ) {
+        self.native_render_cursors.insert(
+            owner_id,
+            NativeRenderCursor {
+                document_revision,
+                render_blocks,
+            },
+        );
     }
 
     pub(crate) fn native_request_outcome(
@@ -844,6 +879,7 @@ impl EditorSession {
     pub(crate) fn release_native_binding(&mut self, owner_id: u64) {
         self.position_epochs.release_owner(owner_id);
         self.native_request_ledgers.remove(&owner_id);
+        self.native_render_cursors.remove(&owner_id);
     }
 
     pub(crate) fn get_json(&self) -> Result<serde_json::Value, SessionError> {
@@ -952,6 +988,7 @@ impl EditorSession {
             .map_err(|error| snapshot_session_error(error, request_id))?;
         self.position_epochs.clear();
         self.native_request_ledgers.clear();
+        self.native_render_cursors.clear();
         if self.document_state == DocumentState::AwaitRemote {
             self.document_state = DocumentState::RoomReady;
         }

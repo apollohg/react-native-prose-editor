@@ -621,6 +621,13 @@ interface FakeSession {
     transportState: FakeTransportState;
     renderState: 'Loading' | 'Ready';
     documentRevision: number;
+    documentOrigin:
+        | 'nativeView'
+        | 'jsApi'
+        | 'remoteCollaboration'
+        | 'history'
+        | 'restore'
+        | 'import';
     stateRevision: number;
     doc: DocumentJSON;
     undoStack: DocumentJSON[];
@@ -1493,6 +1500,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         }
         installFakeDocument(session, nextDoc);
         session.documentRevision += 1;
+        session.documentOrigin = 'import';
         queueDocumentUpdate(session);
     }
 
@@ -1523,6 +1531,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             transportState: session.transportState,
             renderState: session.renderState,
             documentRevision: String(session.documentRevision),
+            documentOrigin: session.documentOrigin,
             stateRevision: String(session.stateRevision),
             canUndo: session.undoStack.length > 0,
             canRedo: session.redoStack.length > 0,
@@ -1583,6 +1592,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 session.documentState = 'RoomReady';
                 session.renderState = 'Ready';
                 session.documentRevision += 1;
+                session.documentOrigin = 'remoteCollaboration';
                 documentPromoted = true;
             }
             session.transportState = 'Synchronized';
@@ -1622,6 +1632,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             }
             installFakeDocument(session, nextDoc);
             session.documentRevision += 1;
+            session.documentOrigin = 'remoteCollaboration';
             return outcome({ remoteCommitApplied: true });
         }
         // Remote awareness state.
@@ -1693,6 +1704,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 transportState: 'Detached',
                 renderState: 'Ready',
                 documentRevision: 1,
+                documentOrigin: 'import',
                 stateRevision: 1,
                 doc: cloneDoc(EMPTY_DOC),
                 undoStack: [],
@@ -1836,6 +1848,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 session.redoStack = [];
                 installFakeDocument(session, appendText(session.doc, String(request.text ?? '')));
                 session.documentRevision += 1;
+                session.documentOrigin = 'jsApi';
                 session.stateRevision += 1;
                 queueDocumentUpdate(session);
                 return okRecord(
@@ -1888,6 +1901,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     apply();
                     moveFakeCursorAcrossEdit(session, before, session.doc);
                     session.documentRevision += 1;
+                    session.documentOrigin = 'jsApi';
                     session.stateRevision += 1;
                     queueDocumentUpdate(session);
                     return okRecord(
@@ -2200,6 +2214,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 session.redoStack.push(cloneDoc(session.doc));
                 installFakeDocument(session, previous);
                 session.documentRevision += 1;
+                session.documentOrigin = 'history';
                 queueDocumentUpdate(session);
                 return okRecord(JSON.stringify({ changed: true }));
             })
@@ -2214,6 +2229,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 session.undoStack.push(cloneDoc(session.doc));
                 installFakeDocument(session, next);
                 session.documentRevision += 1;
+                session.documentOrigin = 'history';
                 queueDocumentUpdate(session);
                 return okRecord(JSON.stringify({ changed: true }));
             })
@@ -2395,6 +2411,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     installFakeDocument(session, parsed.doc);
                     session.documentRevision =
                         typeof parsed.revision === 'number' ? parsed.revision : 1;
+                    session.documentOrigin = 'restore';
                     session.documentState = 'RoomReady';
                     session.renderState = 'Ready';
                     session.transportState = 'Disconnected';

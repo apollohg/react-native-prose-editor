@@ -652,10 +652,12 @@ final class EditorV2AdapterTests: XCTestCase {
             mirrorScalarHead: nil
         ).value!
         let withPatch = mutatedObjectJSON(raw) { object in
+            let renderBlocks = object["renderBlocks"]!
+            object["renderBlocks"] = NSNull()
             object["renderPatch"] = [
                 "startIndex": 0,
                 "deleteCount": 0,
-                "renderBlocks": object["renderBlocks"]!,
+                "renderBlocks": renderBlocks,
             ]
         }
 

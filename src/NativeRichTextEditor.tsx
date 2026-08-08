@@ -879,7 +879,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const pushedUpdateBindingGenerationRef = useRef(0);
         const pushRevisionRef = useRef(0);
         const lastPushedEngineRevisionRef = useRef<string | null>(null);
-        const lastNativeDrivenRevisionRef = useRef<string | null>(null);
         const lastAcceptedNativeCommitRevisionRef = useRef<string | null>(null);
         const didObserveInitialRevisionRef = useRef(false);
         const toolbarItemsSerializationCacheRef = useRef<{
@@ -911,7 +910,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             setAutoGrowHeight(null);
             pushRevisionRef.current = 0;
             lastPushedEngineRevisionRef.current = null;
-            lastNativeDrivenRevisionRef.current = null;
             lastAcceptedNativeCommitRevisionRef.current = null;
             didObserveInitialRevisionRef.current = false;
         } else if (latestRevisionScopeEditorIdRef.current === editorId) {
@@ -1071,19 +1069,19 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             if (revision === lastPushedEngineRevisionRef.current) {
                 return;
             }
-            if (revision === lastNativeDrivenRevisionRef.current) {
+            if (
+                document.documentOrigin === 'nativeView' ||
+                document.documentOrigin === 'remoteCollaboration'
+            ) {
                 lastPushedEngineRevisionRef.current = revision;
                 return;
             }
-            // This is an external revision, not the one native just committed.
-            // Consume the one-shot token before pushing so native N can never
-            // suppress a later external N+1.
-            lastNativeDrivenRevisionRef.current = null;
             pushEngineUpdateToView();
         }, [
             didRebindRevisionScope,
             document.isReady,
             document.documentRevision,
+            document.documentOrigin,
             pushEngineUpdateToView,
         ]);
 
@@ -1317,7 +1315,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 // state/callback/refresh work. This makes duplicate delivery and
                 // the handle's same-revision signal deterministic.
                 lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
-                lastNativeDrivenRevisionRef.current = accepted.documentRevision;
                 applyTypedUpdateState(accepted.snapshot);
                 // The adapter already committed; re-read for content callbacks.
                 document.refresh();
@@ -1420,7 +1417,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     );
                     if (accepted == null) return;
                     lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
-                    lastNativeDrivenRevisionRef.current = accepted.documentRevision;
                     applyTypedUpdateState(accepted.snapshot);
                     document.refresh();
                     onLocalCommitRef.current?.();

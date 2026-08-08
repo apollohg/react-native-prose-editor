@@ -304,6 +304,10 @@ final class EditorV2Adapter {
         claimNativeBinding(token: token, replaceExisting: false)
     }
 
+    func isNativeBindingOwner(token: UUID) -> Bool {
+        nativeOwnerToken == token
+    }
+
     private func claimNativeBinding(token: UUID, replaceExisting: Bool) {
         if !replaceExisting, nativeOwnerToken != nil { return }
         if nativeOwnerToken == token { return }
@@ -787,9 +791,9 @@ final class EditorV2Adapter {
               Set(object.keys).isSubset(of: atomicRenderSnapshotKeys.union(["positionEpoch"])),
               atomicRenderSnapshotKeys.isSubset(of: Set(object.keys)),
               let renderBlocks = object["renderBlocks"],
-              isValidRenderBlocks(renderBlocks),
               let renderPatch = object["renderPatch"],
-              isValidRenderPatch(renderPatch),
+              (isValidRenderBlocks(renderBlocks) && renderPatch is NSNull)
+                || (renderBlocks is NSNull && !(renderPatch is NSNull) && isValidRenderPatch(renderPatch)),
               let selectionValue = object["selection"],
               isValidSelection(selectionValue),
               let activeState = object["activeState"] as? [String: Any],
@@ -1059,6 +1063,14 @@ final class EditorV2Adapter {
     /// Public recovery entry (stale-revision recovery, external refresh).
     func refreshFromRustState(mirrorSelection: (anchor: UInt32, head: UInt32)?) -> String? {
         refreshInternal(mirrorSelection: mirrorSelection)?.updateJSON
+    }
+
+    func recoverNativeRender() -> String? {
+        if let ownerId = nativeOwnerId {
+            positionEpoch = nil
+            _ = editorV2ReleaseNativeBinding(editorId: editorId, ownerId: String(ownerId))
+        }
+        return refreshFromRustState(mirrorSelection: nil)
     }
 
     /// Synthesized current-state update (selection/activeState included,

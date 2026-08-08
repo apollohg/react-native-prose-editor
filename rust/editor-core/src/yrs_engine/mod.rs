@@ -60,7 +60,7 @@ pub use operation::{
     TypedTransactionResult,
 };
 pub use operation::{ReplacementHistory, RootReplacementError};
-pub use origin::TransactionOrigin;
+pub use origin::{DocumentOrigin, TransactionOrigin};
 pub(crate) use position::editor_offset_to_doc_pos;
 // Not reachable from production call paths after the legacy runtime removal;
 // exercised by crate tests.

@@ -6,6 +6,7 @@ import {
     type DocumentJSON,
     type HistoryState,
     type NativeEditorDocumentHandle,
+    type NativeEditorV2DocumentOrigin,
     type NativeEditorV2DocumentState,
 } from './NativeEditorBridge';
 import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
@@ -57,6 +58,8 @@ export interface UseNativeEditorDocumentReturn {
     documentState: NativeEditorV2DocumentState | null;
     /** Decimal-string engine document revision; null while awaiting the server document. */
     documentRevision: string | null;
+    /** Trusted origin paired with documentRevision. */
+    documentOrigin: NativeEditorV2DocumentOrigin | null;
     /** Current undo/redo availability. */
     historyState: HistoryState;
     /**
@@ -88,9 +91,7 @@ export interface UseNativeEditorDocumentReturn {
 const DEFAULT_V2_HISTORY_STATE: HistoryState = { canUndo: false, canRedo: false };
 
 function isRevisionMismatchError(error: unknown): boolean {
-    return (
-        error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH'
-    );
+    return error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH';
 }
 
 interface V2EngineView {
@@ -98,6 +99,7 @@ interface V2EngineView {
     ready: boolean;
     documentState: NativeEditorV2DocumentState | null;
     documentRevision: string | null;
+    documentOrigin: NativeEditorV2DocumentOrigin | null;
     historyState: HistoryState;
     contentKey: string | null;
 }
@@ -140,6 +142,7 @@ export function useNativeEditorDocument(
         ready: false,
         documentState: null,
         documentRevision: null,
+        documentOrigin: null,
         historyState: DEFAULT_V2_HISTORY_STATE,
         contentKey: null,
     });
@@ -167,10 +170,7 @@ export function useNativeEditorDocument(
     const refresh = useCallback(
         (emitContentCallbacks: boolean) => {
             const refreshedEditorId = handle.editorId;
-            if (
-                handle.isDestroyed ||
-                currentEditorIdRef.current !== refreshedEditorId
-            ) {
+            if (handle.isDestroyed || currentEditorIdRef.current !== refreshedEditorId) {
                 return;
             }
             const state = handle.bridge.getState();
@@ -195,6 +195,7 @@ export function useNativeEditorDocument(
                 ready,
                 documentState: state.documentState,
                 documentRevision: state.documentRevision,
+                documentOrigin: state.documentOrigin,
                 historyState,
                 contentKey,
             });
@@ -258,10 +259,7 @@ export function useNativeEditorDocument(
         if (!wantsHtml && !wantsJson) return;
 
         const snapshot = handle.bridge.getContentSnapshot();
-        if (
-            currentEditorIdRef.current !== editorId ||
-            emittedRef.current.editorId !== editorId
-        ) {
+        if (currentEditorIdRef.current !== editorId || emittedRef.current.editorId !== editorId) {
             return;
         }
         const currentJsonKey = JSON.stringify(snapshot.json);
@@ -436,10 +434,9 @@ export function useNativeEditorDocument(
         isReady: engineView.editorId === editorId && engineView.ready,
         documentState: engineView.editorId === editorId ? engineView.documentState : null,
         documentRevision: engineView.editorId === editorId ? engineView.documentRevision : null,
+        documentOrigin: engineView.editorId === editorId ? engineView.documentOrigin : null,
         historyState:
-            engineView.editorId === editorId
-                ? engineView.historyState
-                : DEFAULT_V2_HISTORY_STATE,
+            engineView.editorId === editorId ? engineView.historyState : DEFAULT_V2_HISTORY_STATE,
         refresh: refreshFromEngine,
         getContent,
         getContentJson,

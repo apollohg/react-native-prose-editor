@@ -16,6 +16,7 @@ const MOCK_V2_STATE = {
     transportState: 'Detached',
     renderState: 'Ready',
     documentRevision: '4',
+    documentOrigin: 'jsApi',
     stateRevision: '2',
     canUndo: true,
     canRedo: false,

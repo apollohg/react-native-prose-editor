@@ -375,6 +375,9 @@ class EditorEditText @JvmOverloads constructor(
         }
     private val nativeBindingToken = nextNativeBindingToken.incrementAndGet()
 
+    internal fun ownsNativeBinding(adapter: EditorV2Adapter): Boolean =
+        adapter.isNativeBindingOwner(nativeBindingToken)
+
     fun lastRenderAppliedPatch(): Boolean = lastRenderAppliedPatchForTesting
     fun lastApplyUpdateTrace(): ApplyUpdateTrace? = lastApplyUpdateTraceForTesting
     internal fun hasDeferredRustUpdateApplicationForTesting(): Boolean = deferredRustUpdateJSON != null
@@ -3907,10 +3910,14 @@ class EditorEditText @JvmOverloads constructor(
         )
     }
 
-    private fun buildPatchedSpannable(patch: ParsedRenderPatch): android.text.SpannableStringBuilder =
+    private fun buildPatchedSpannable(
+        patch: ParsedRenderPatch,
+        includeTrailingInterBlockSeparator: Boolean
+    ): android.text.SpannableStringBuilder =
         RenderBridge.buildSpannableFromBlocks(
             patch.renderBlocks,
             startIndex = patch.startIndex,
+            includeTrailingInterBlockSeparator = includeTrailingInterBlockSeparator,
             baseFontSize = baseFontSize,
             textColor = baseTextColor,
             theme = theme,
@@ -4003,8 +4010,27 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    private fun applyRenderPatchIfPossible(patch: ParsedRenderPatch): PatchApplyTrace {
+    private fun applyRenderPatchIfPossible(
+        patch: ParsedRenderPatch,
+        preserveInputConnectionForExternalUpdate: Boolean
+    ): PatchApplyTrace {
         val eligibilityStartedAt = System.nanoTime()
+        if (patch.deleteCount == 0 && patch.renderBlocks.length() == 0) {
+            return PatchApplyTrace(
+                applied = true,
+                eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
+                buildRenderNanos = 0L,
+                applyRenderNanos = 0L
+            )
+        }
+        if (patch.deleteCount != patch.renderBlocks.length()) {
+            return PatchApplyTrace(
+                applied = false,
+                eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
+                buildRenderNanos = 0L,
+                applyRenderNanos = 0L
+            )
+        }
         val content = text as? Spanned ?: return PatchApplyTrace(
             applied = false,
             eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
@@ -4038,7 +4064,10 @@ class EditorEditText @JvmOverloads constructor(
         val eligibilityNanos = System.nanoTime() - eligibilityStartedAt
 
         val buildStartedAt = System.nanoTime()
-        val patchedSpannable = buildPatchedSpannable(patch)
+        val patchedSpannable = buildPatchedSpannable(
+            patch,
+            includeTrailingInterBlockSeparator = replaceRange.endExclusive < content.length
+        )
         val buildRenderNanos = System.nanoTime() - buildStartedAt
         if (spannedContainsImageSpan(patchedSpannable)) {
             return PatchApplyTrace(
@@ -4053,7 +4082,8 @@ class EditorEditText @JvmOverloads constructor(
         applyRenderedSpannable(
             spannable = patchedSpannable,
             replaceRange = replaceRange,
-            usedPatch = true
+            usedPatch = true,
+            preserveInputConnectionForExternalUpdate = preserveInputConnectionForExternalUpdate
         )
         return PatchApplyTrace(
             applied = true,
@@ -4123,6 +4153,12 @@ class EditorEditText @JvmOverloads constructor(
         explicitSelectedImageRange = null
         val buildRenderNanos: Long
         val applyRenderNanos: Long
+        val patchTrace = if (!shouldSkipRender && renderPatch != null) {
+            applyRenderPatchIfPossible(renderPatch, refreshInputConnectionForExternalUpdate)
+        } else {
+            null
+        }
+        val appliedPatch = patchTrace?.applied == true
         if (shouldSkipRender) {
             pendingOptimisticRenderText = null
             lastRenderAppliedPatchForTesting = false
@@ -4131,12 +4167,14 @@ class EditorEditText @JvmOverloads constructor(
             clearNativeTextMutationAfterBlurWindow()
             buildRenderNanos = 0L
             applyRenderNanos = 0L
+        } else if (appliedPatch) {
+            pendingOptimisticRenderText = null
+            currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
+            lastAppliedRenderAppearanceRevision = renderAppearanceRevision
+            buildRenderNanos = patchTrace?.buildRenderNanos ?: 0L
+            applyRenderNanos = patchTrace?.applyRenderNanos ?: 0L
         } else {
             cancelPendingImageLoads()
-            // Android's Editable.replace(...) path benchmarks substantially slower than
-            // rebuilding from merged render blocks, so patch payloads are treated as a
-            // transport optimization only. We still resolve the merged block state above,
-            // then apply it through the faster full-text path here.
             val buildStartedAt = System.nanoTime()
             val fullSpannable = if (resolvedRenderBlocks != null) {
                 RenderBridge.buildSpannableFromBlocks(
@@ -4219,11 +4257,11 @@ class EditorEditText @JvmOverloads constructor(
         if (captureApplyUpdateTraceForTesting) {
             lastApplyUpdateTraceForTesting = ApplyUpdateTrace(
                 attemptedPatch = renderPatch != null,
-                usedPatch = false,
+                usedPatch = appliedPatch,
                 skippedRender = shouldSkipRender,
                 parseNanos = parseNanos,
                 resolveRenderBlocksNanos = resolveRenderBlocksNanos,
-                patchEligibilityNanos = 0L,
+                patchEligibilityNanos = patchTrace?.eligibilityNanos ?: 0L,
                 buildRenderNanos = buildRenderNanos,
                 applyRenderNanos = applyRenderNanos,
                 selectionNanos = selectionNanos,

@@ -2602,13 +2602,26 @@ class NativeEditorExpoView(
         // re-bases the adapter itself, so leave the half-typed word alone.
         if (richTextView.editorEditText.hasPendingCompositionForExternalRefresh()) return
         val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId) ?: return
+        val errorBindingOwnsAdapter = editorErrorBinding?.let { binding ->
+            binding.adapter === adapter &&
+                binding.viewToken == expectedEditorId &&
+                adapter.isNativeBindingOwner(binding.callbackToken)
+        } == true
+        if (!errorBindingOwnsAdapter && !richTextView.editorEditText.ownsNativeBinding(adapter)) return
         val preflight = richTextView.editorEditText.prepareForExternalEditorUpdateWithResult()
         if (!preflight.ready) return
         val update = preflight.adoptedUpdateJSON ?: adapter.refreshFromRustState(null) ?: return
-        richTextView.editorEditText.applyUpdateJSON(
+        val applied = richTextView.editorEditText.applyUpdateJSON(
             update,
             refreshInputConnectionForExternalUpdate = true
         )
+        if (!applied) {
+            val recovery = adapter.recoverNativeRender() ?: return
+            richTextView.editorEditText.applyUpdateJSON(
+                recovery,
+                refreshInputConnectionForExternalUpdate = true
+            )
+        }
     }
 
     private fun applyEditorUpdateOutcome(

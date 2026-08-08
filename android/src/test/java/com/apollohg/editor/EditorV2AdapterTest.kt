@@ -159,6 +159,23 @@ class EditorV2AdapterTest {
     private fun adoptExternalRender(adapter: EditorV2Adapter, snapshot: String): String? =
         adapter.adoptExternalRender(snapshot)
 
+    @Test
+    fun `atomic render validation accepts an exclusive render patch`() {
+        val adapter = makeAdapter()
+        val snapshot = JSONObject(atomicRenderSnapshot("base", "1"))
+        val blocks = snapshot.getJSONArray("renderBlocks")
+        snapshot.put("renderBlocks", JSONObject.NULL)
+        snapshot.put(
+            "renderPatch",
+            JSONObject()
+                .put("startIndex", 0)
+                .put("deleteCount", 0)
+                .put("renderBlocks", blocks),
+        )
+
+        assertNotNull(adoptExternalRender(adapter, snapshot.toString()))
+    }
+
     // MARK: construction
 
     @Test

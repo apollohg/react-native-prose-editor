@@ -934,6 +934,16 @@ impl CachedRenderBlocks {
         )
     }
 
+    pub(crate) fn classify_cached_transition_to(
+        &self,
+        new_cache: &Self,
+    ) -> CachedRenderTransitionUpdate {
+        if self.schema_fingerprint != new_cache.schema_fingerprint {
+            return CachedRenderTransitionUpdate::Full(new_cache.materialize());
+        }
+        classify_cached_transition(self, new_cache, &[], true)
+    }
+
     pub(crate) fn matches_identity(&self, document: &Document, schema_fingerprint: &str) -> bool {
         self.schema_fingerprint.as_ref() == schema_fingerprint && self.matches_document(document)
     }

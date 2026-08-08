@@ -10,6 +10,43 @@ pub enum TransactionOrigin {
     DocumentImport,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentOrigin {
+    NativeView,
+    JsApi,
+    RemoteCollaboration,
+    History,
+    Restore,
+    Import,
+}
+
+impl DocumentOrigin {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NativeView => "nativeView",
+            Self::JsApi => "jsApi",
+            Self::RemoteCollaboration => "remoteCollaboration",
+            Self::History => "history",
+            Self::Restore => "restore",
+            Self::Import => "import",
+        }
+    }
+}
+
+impl From<TransactionOrigin> for DocumentOrigin {
+    fn from(origin: TransactionOrigin) -> Self {
+        match origin {
+            TransactionOrigin::LocalInput
+            | TransactionOrigin::LocalCommand
+            | TransactionOrigin::LocalApi => Self::JsApi,
+            TransactionOrigin::UndoRedo => Self::History,
+            TransactionOrigin::RemoteSync => Self::RemoteCollaboration,
+            TransactionOrigin::SnapshotRestore => Self::Restore,
+            TransactionOrigin::DocumentImport => Self::Import,
+        }
+    }
+}
+
 impl TransactionOrigin {
     pub const fn as_tag(self) -> &'static str {
         match self {

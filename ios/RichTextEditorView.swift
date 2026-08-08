@@ -954,6 +954,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     var editorId: UInt64 = 0
     private let nativeBindingToken = UUID()
 
+    func ownsNativeBinding(_ adapter: EditorV2Adapter) -> Bool {
+        adapter.isNativeBindingOwner(token: nativeBindingToken)
+    }
+
     /// Guard flag to prevent re-entrant input interception while we're
     /// applying state from Rust (calling replaceCharacters on the text storage).
     var isApplyingRustState = false
@@ -5466,13 +5470,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// via RenderBridge, and replaces the text view's content.
     ///
     /// - Parameter updateJSON: The JSON string from editor_insert_text, etc.
-    func applyUpdateJSON(_ updateJSON: String, notifyDelegate: Bool = true) {
+    @discardableResult
+    func applyUpdateJSON(_ updateJSON: String, notifyDelegate: Bool = true) -> Bool {
         ensureInternalTextViewDelegate()
         let totalStartedAt = DispatchTime.now().uptimeNanoseconds
         let parseStartedAt = totalStartedAt
         guard let data = updateJSON.data(using: .utf8),
               let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
+        else { return false }
         let parseNanos = DispatchTime.now().uptimeNanoseconds - parseStartedAt
         resetPendingNativeTextMutationState()
 
@@ -5559,7 +5564,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 }
                 currentRenderBlocks = nil
             } else {
-                return
+                return false
             }
             buildRenderNanos = DispatchTime.now().uptimeNanoseconds - buildStartedAt
             let applyTrace = applyAttributedRender(
@@ -5672,6 +5677,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         if notifyDelegate {
             editorDelegate?.editorTextView(self, didReceiveUpdate: updateJSON)
         }
+        return true
     }
 
     /// Apply a render JSON string (just render elements, no update wrapper).

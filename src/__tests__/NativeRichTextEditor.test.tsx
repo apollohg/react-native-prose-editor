@@ -817,6 +817,27 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         }
     );
 
+    it('suppresses a native-origin revision even when collaboration reports it before the native event', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const { getByTestId, rerender } = render(<NativeRichTextEditor documentHandle={handle} />);
+        v2Runtime.module.editorV2ApplyInput(
+            handle.editorId,
+            JSON.stringify({
+                version: 1,
+                requestId: '1',
+                baseDocumentRevision: handle.bridge.getState().documentRevision,
+                text: '!',
+            })
+        );
+        v2Runtime.session(handle.editorId).documentOrigin = 'nativeView';
+        const revision = handle.bridge.getState().documentRevision;
+
+        rerender(<NativeRichTextEditor documentHandle={handle} documentRevision={revision} />);
+
+        expect(getByTestId('native-editor-view').props.editorUpdateJson).toBeUndefined();
+        handle.destroy();
+    });
+
     it('rejects invalid error identities and turns one malformed current error into FFI_RESULT_INVALID', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();

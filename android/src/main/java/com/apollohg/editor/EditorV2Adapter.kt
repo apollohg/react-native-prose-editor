@@ -200,6 +200,10 @@ internal class EditorV2Adapter private constructor(
         claimNativeBinding(token, replaceExisting = false)
     }
 
+    internal fun isNativeBindingOwner(token: Long): Boolean = synchronized(this) {
+        nativeOwnerToken == token
+    }
+
     private fun claimNativeBinding(token: Long, replaceExisting: Boolean) {
         val releasedOwner = synchronized(this) {
             if (!replaceExisting && nativeOwnerToken != null) return
@@ -452,8 +456,13 @@ internal class EditorV2Adapter private constructor(
         return try {
             val object_ = JSONObject(json)
             val requiredKeys = setOf("renderBlocks", "renderPatch", "selection", "activeState", "historyState", "documentVersion", "stateRevision", "scalarLength", "documentIsEmpty")
+            val renderBlocks = object_.opt("renderBlocks")
+            val renderPatch = object_.opt("renderPatch")
+            val validRenderPayload =
+                (validRenderBlocks(renderBlocks) && renderPatch === JSONObject.NULL) ||
+                    (renderBlocks === JSONObject.NULL && renderPatch is JSONObject && validRenderPatch(renderPatch))
             if (!onlyKeys(object_, requiredKeys + "positionEpoch") || requiredKeys.any { !object_.has(it) } ||
-                !validRenderBlocks(object_.opt("renderBlocks")) || !validRenderPatch(object_.opt("renderPatch")) ||
+                !validRenderPayload ||
                 !validSelection(object_.opt("selection")) || !validActiveState(object_.opt("activeState")) ||
                 exactBool(object_.opt("documentIsEmpty")) == null
             ) return null
@@ -627,6 +636,15 @@ internal class EditorV2Adapter private constructor(
             stripViewSelection = false,
             controlledPropSnapshot = true
         )
+
+    internal fun recoverNativeRender(): String? {
+        val ownerId = synchronized(this) {
+            positionEpoch = null
+            nativeOwnerId
+        }
+        ownerId?.let { backend.releaseNativeBinding(editorId, it) }
+        return refreshInternal(null)
+    }
 
     override fun currentStateJson(): String? =
         refreshInternal(cachedAuthoritativeScalarSelection?.copyOf())

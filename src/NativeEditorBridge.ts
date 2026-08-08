@@ -460,6 +460,16 @@ const V2_RENDER_STATES = ['Loading', 'Ready'] as const;
 /** Whether the engine has a render snapshot to draw. */
 export type NativeEditorV2RenderState = (typeof V2_RENDER_STATES)[number];
 
+const V2_DOCUMENT_ORIGINS = [
+    'nativeView',
+    'jsApi',
+    'remoteCollaboration',
+    'history',
+    'restore',
+    'import',
+] as const;
+export type NativeEditorV2DocumentOrigin = (typeof V2_DOCUMENT_ORIGINS)[number];
+
 function whitelisted<T extends string>(value: unknown, allowed: readonly T[]): T | null {
     return typeof value === 'string' && (allowed as readonly string[]).includes(value)
         ? (value as T)
@@ -473,6 +483,8 @@ export interface NativeEditorV2EditorState {
     renderState: NativeEditorV2RenderState;
     /** Decimal-string revision advancing on every document change. */
     documentRevision: string;
+    /** Trusted origin of the transaction that produced documentRevision. */
+    documentOrigin: NativeEditorV2DocumentOrigin;
     /** Decimal-string revision advancing on every state change, document or not. */
     stateRevision: string;
     canUndo: boolean;
@@ -488,6 +500,7 @@ export function normalizeNativeEditorV2StateValue(
     const transportState = whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
     const renderState = whitelisted(parsed.renderState, V2_RENDER_STATES);
     const documentRevision = normalizeRevisionField(parsed, 'documentRevision');
+    const documentOrigin = whitelisted(parsed.documentOrigin, V2_DOCUMENT_ORIGINS);
     const stateRevision = normalizeRevisionField(parsed, 'stateRevision');
     const canUndo = optionalBoolean(parsed.canUndo);
     const canRedo = optionalBoolean(parsed.canRedo);
@@ -496,6 +509,7 @@ export function normalizeNativeEditorV2StateValue(
         transportState == null ||
         renderState == null ||
         documentRevision == null ||
+        documentOrigin == null ||
         stateRevision == null ||
         canUndo == null ||
         canRedo == null
@@ -507,6 +521,7 @@ export function normalizeNativeEditorV2StateValue(
         transportState,
         renderState,
         documentRevision,
+        documentOrigin,
         stateRevision,
         canUndo,
         canRedo,

@@ -663,6 +663,7 @@ pub struct YrsDocumentEngine {
     state_revision: u64,
     yrs_state_epoch: u64,
     last_committed_origin: Option<TransactionOrigin>,
+    document_origin: super::DocumentOrigin,
     durable_client_ids: HashSet<u64>,
     /// Dependency-pending standard updates are quarantined outside the live
     /// authoritative Doc until their complete merged state can be validated.
@@ -1177,6 +1178,7 @@ impl YrsDocumentEngine {
             state_revision: 0,
             yrs_state_epoch: 0,
             last_committed_origin: None,
+            document_origin: super::DocumentOrigin::Import,
             durable_client_ids: candidate.durable_client_ids,
             quarantined_remote_update: None,
             remote_seal_generation: 0,
@@ -2438,6 +2440,7 @@ impl YrsDocumentEngine {
                 self.state_revision = next_state_revision;
                 self.yrs_state_epoch = next_epoch;
                 self.last_committed_origin = Some(TransactionOrigin::RemoteSync);
+                self.document_origin = super::DocumentOrigin::RemoteCollaboration;
                 self.prepared_candidate_cache = None;
                 Ok(EngineCommit {
                     changed: true,
@@ -2822,6 +2825,7 @@ impl YrsDocumentEngine {
         self.state_revision = prepared.next_state_revision;
         self.yrs_state_epoch = prepared.next_yrs_state_epoch;
         self.last_committed_origin = Some(TransactionOrigin::UndoRedo);
+        self.document_origin = super::DocumentOrigin::History;
         self.prepared_candidate_cache = None;
         (
             super::TransactionCommit {
@@ -3129,6 +3133,15 @@ impl YrsDocumentEngine {
         Some(&state.document)
     }
 
+    pub(crate) fn cached_render_blocks(
+        &self,
+    ) -> Option<Arc<crate::render::incremental::CachedRenderBlocks>> {
+        self.debug_assert_derived_revision_keys();
+        self.derived_state
+            .as_ref()
+            .map(|state| Arc::clone(&state.render_blocks))
+    }
+
     pub fn document_json(&self) -> Option<serde_json::Value> {
         self.debug_assert_derived_revision_keys();
         self.derived_state.as_ref().map(|state| {
@@ -3315,6 +3328,14 @@ impl YrsDocumentEngine {
     #[allow(dead_code)]
     pub fn last_committed_origin(&self) -> Option<TransactionOrigin> {
         self.last_committed_origin
+    }
+
+    pub fn document_origin(&self) -> super::DocumentOrigin {
+        self.document_origin
+    }
+
+    pub(crate) fn mark_document_origin_native_view(&mut self) {
+        self.document_origin = super::DocumentOrigin::NativeView;
     }
 
     pub fn resource_limits(&self) -> &ResourceLimits {
@@ -5918,6 +5939,7 @@ impl YrsDocumentEngine {
         self.state_revision = prepared.next_state_revision;
         self.yrs_state_epoch = prepared.next_yrs_state_epoch;
         self.last_committed_origin = Some(prepared.origin);
+        self.document_origin = prepared.origin.into();
         self.prepared_candidate_cache = prepared.next_candidate_cache.take();
         let commit = super::TransactionCommit {
             request_id: prepared.request_id,
@@ -6060,6 +6082,7 @@ impl YrsDocumentEngine {
         self.state_revision = next_state_revision;
         self.yrs_state_epoch = next_yrs_state_epoch;
         self.last_committed_origin = Some(TransactionOrigin::SnapshotRestore);
+        self.document_origin = super::DocumentOrigin::Restore;
         self.prepared_candidate_cache = None;
         Ok(EngineCommit {
             changed: true,
@@ -6838,6 +6861,7 @@ impl YrsDocumentEngine {
         self.state_revision = next_state_revision;
         self.yrs_state_epoch = next_yrs_state_epoch;
         self.last_committed_origin = Some(origin);
+        self.document_origin = origin.into();
         self.prepared_candidate_cache = prepared_candidate_cache;
         Ok(EngineCommit {
             changed: true,

@@ -3792,6 +3792,42 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
+    fun `only the current native owner consumes a remote commit refresh`() {
+        val firstExpoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val secondExpoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val firstView = NativeEditorExpoView(firstExpoContext.context, firstExpoContext.appContext)
+        val secondView = NativeEditorExpoView(secondExpoContext.context, secondExpoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        try {
+            listOf(firstView, secondView).forEach { view ->
+                view.onEditorUpdateForTesting = {}
+                view.onAddonEventForTesting = {}
+                view.onEditorReadyForTesting = {}
+                view.onSelectionChangeForTesting = {}
+                view.setAttachedToNativeWindowForTesting(true)
+                view.setEditorId(viewToken)
+            }
+            val session = backend.sessions.getValue(adapter.editorId)
+            session.text.append("Remote")
+            session.revision += 1uL
+            backend.calls.clear()
+
+            NativeEditorViewRegistry.rebaseAfterRemoteCommit(adapter.editorId)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+
+            assertEquals("", firstView.richTextView.editorEditText.text.toString())
+            assertEquals("Remote", secondView.richTextView.editorEditText.text.toString())
+            assertEquals(1, backend.calls.count { it == "renderNative" })
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, firstView)
+            NativeEditorViewRegistry.unregister(viewToken, secondView)
+        }
+    }
+
+    @Test
     fun `controlled push at an already rendered revision keeps newer typed text`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val expoContext = testExpoContext(activity, activity)

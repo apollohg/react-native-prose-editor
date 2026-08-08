@@ -162,6 +162,7 @@ fn native_intent_ffi_is_strict_owner_scoped_and_idempotent() {
             "json": serde_json::from_str::<Value>(JSON_SEED).unwrap(),
         },
     }));
+    assert_eq!(state_of(&id)["documentOrigin"], "import");
     let render = ok_json(&v2_render::editor_v2_render_native(
         id.clone(),
         "4".into(),
@@ -190,6 +191,15 @@ fn native_intent_ffi_is_strict_owner_scoped_and_idempotent() {
         document_json_of(&id)["content"][0]["content"][0]["text"],
         "ffXi seed"
     );
+    assert_eq!(state_of(&id)["documentOrigin"], "nativeView");
+    let incremental_render = ok_json(&v2_render::editor_v2_render_native(
+        id.clone(),
+        "4".into(),
+        None,
+        None,
+    ));
+    assert_eq!(incremental_render["renderBlocks"], Value::Null);
+    assert!(incremental_render["renderPatch"].is_object());
 
     let mut unknown = request.clone();
     unknown["requestId"] = json!("2");
@@ -220,6 +230,14 @@ fn native_intent_ffi_is_strict_owner_scoped_and_idempotent() {
         id.clone(),
         "4".into(),
     ));
+    let recovered_render = ok_json(&v2_render::editor_v2_render_native(
+        id.clone(),
+        "4".into(),
+        None,
+        None,
+    ));
+    assert!(recovered_render["renderBlocks"].is_array());
+    assert_eq!(recovered_render["renderPatch"], Value::Null);
     assert_eq!(
         err_json(&v2::editor_v2_apply_native_intent(
             id.clone(),
@@ -227,6 +245,76 @@ fn native_intent_ffi_is_strict_owner_scoped_and_idempotent() {
         ))
         .code,
         "POSITION_EPOCH_INVALID",
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn external_full_render_pin_advances_the_native_patch_base() {
+    let document = |first: &str, third: &str| {
+        json!({
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": first}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "two"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": third}]},
+            ],
+        })
+    };
+    let id = create_handle(json!({
+        "initialization": {"type": "localJson", "json": document("one", "three")},
+    }));
+    let initial = ok_json(&v2_render::editor_v2_render_native(
+        id.clone(),
+        "41".into(),
+        None,
+        None,
+    ));
+    assert_eq!(initial["renderBlocks"].as_array().unwrap().len(), 3);
+
+    ok_json(&v2::editor_v2_replace_document(
+        id.clone(),
+        json!({
+            "version": 1,
+            "requestId": "1",
+            "setJson": document("ONE", "three"),
+            "history": "resetAndClear",
+        })
+        .to_string(),
+    ));
+    let external = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
+    let external_revision = external["documentVersion"].as_str().unwrap();
+    ok_json(&v2::editor_v2_pin_position_epoch(
+        id.clone(),
+        "41".into(),
+        external_revision.into(),
+    ));
+
+    ok_json(&v2::editor_v2_replace_document(
+        id.clone(),
+        json!({
+            "version": 1,
+            "requestId": "2",
+            "setJson": document("ONE", "THREE"),
+            "history": "resetAndClear",
+        })
+        .to_string(),
+    ));
+    let incremental = ok_json(&v2_render::editor_v2_render_native(
+        id.clone(),
+        "41".into(),
+        None,
+        None,
+    ));
+    assert_eq!(incremental["renderBlocks"], Value::Null);
+    assert_eq!(incremental["renderPatch"]["startIndex"], 2);
+    assert_eq!(incremental["renderPatch"]["deleteCount"], 1);
+    assert_eq!(
+        incremental["renderPatch"]["renderBlocks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
     destroy_handle(&id);
 }
@@ -695,6 +783,7 @@ fn create_local_editor_exposes_full_state_surface_and_destroy_lifecycle() {
             "transportState": "Detached",
             "renderState": "Ready",
             "documentRevision": "0",
+            "documentOrigin": "import",
             "stateRevision": "0",
             "canUndo": false,
             "canRedo": false,

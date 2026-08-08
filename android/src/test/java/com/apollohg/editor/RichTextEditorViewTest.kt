@@ -234,6 +234,49 @@ class RichTextEditorViewTest {
         )
 
         assertEquals("Alpha\nBeta\n\u200B\nGamma", editText.text?.toString())
+        assertFalse(editText.lastRenderAppliedPatch())
+    }
+
+    @Test
+    fun `count changing patch falls back before later indexed patch`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val initialBlocks = JSONArray().apply {
+            put(paragraphRenderBlock("Alpha"))
+            put(paragraphRenderBlock("Beta"))
+        }
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+
+        val insertPatch = JSONObject()
+            .put("startIndex", 0)
+            .put("deleteCount", 0)
+            .put("renderBlocks", JSONArray().put(paragraphRenderBlock("Extra")))
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                JSONArray(),
+                includeFullRenderBlocks = false,
+                renderPatch = insertPatch
+            ),
+            notifyListener = false
+        )
+
+        assertEquals("Extra\nAlpha\nBeta", editText.text?.toString())
+        assertFalse(editText.lastRenderAppliedPatch())
+
+        val replacePatch = JSONObject()
+            .put("startIndex", 1)
+            .put("deleteCount", 1)
+            .put("renderBlocks", JSONArray().put(paragraphRenderBlock("Updated")))
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                JSONArray(),
+                includeFullRenderBlocks = false,
+                renderPatch = replacePatch
+            ),
+            notifyListener = false
+        )
+
+        assertEquals("Extra\nUpdated\nBeta", editText.text?.toString())
+        assertTrue(editText.lastRenderAppliedPatch())
     }
 
     @Test

@@ -4413,6 +4413,22 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(secondEvents.count, 1)
     }
 
+    func testOnlyCurrentNativeOwnerConsumesRemoteCommitRefresh() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let firstView = NativeEditorExpoView()
+        let secondView = NativeEditorExpoView()
+        firstView.setEditorId(editorId)
+        secondView.setEditorId(editorId)
+        let firstInitialText = firstView.richTextView.textView.textStorage.string
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
+        NativeEditorViewRegistry.shared.applyRemoteCommitRefresh(editorId: editorId)
+
+        XCTAssertEqual(firstView.richTextView.textView.textStorage.string, firstInitialText)
+        XCTAssertEqual(secondView.richTextView.textView.textStorage.string, "Remote")
+    }
+
     func testRebindClearsPendingEditorUpdateSourceAndPayload() {
         let firstEditorId = makeV2Editor()
         let secondEditorId = makeV2Editor()

@@ -1255,6 +1255,7 @@ pub fn editor_v2_get_state(editor_id: String) -> FfiJsonResult {
             "transportState": session.transport_state().as_str(),
             "renderState": render_state,
             "documentRevision": decimal_u64(session.engine.revision()),
+            "documentOrigin": session.engine.document_origin().as_str(),
             "stateRevision": decimal_u64(session.engine.state_revision()),
             "canUndo": session.engine.can_undo(),
             "canRedo": session.engine.can_redo(),

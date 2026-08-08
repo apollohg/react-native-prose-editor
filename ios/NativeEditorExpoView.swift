@@ -2736,6 +2736,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         else {
             return
         }
+        let autonomousOwner = autonomousErrorBindingAdapter === adapter
+            && autonomousErrorBindingToken.map { adapter.isNativeBindingOwner(token: $0) } == true
+        guard autonomousOwner || richTextView.textView.ownsNativeBinding(adapter) else { return }
         let preflight = richTextView.textView.prepareForExternalEditorUpdateResult()
         guard preflight.ready else { return }
         guard let update = preflight.adoptedUpdateJSON
@@ -2743,7 +2746,10 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         else {
             return
         }
-        richTextView.textView.applyUpdateJSON(update)
+        if !richTextView.textView.applyUpdateJSON(update),
+           let recovery = adapter.recoverNativeRender() {
+            richTextView.textView.applyUpdateJSON(recovery)
+        }
     }
 
     private func applyEditorUpdateOutcome(

@@ -787,6 +787,7 @@ object RenderBridge {
     fun buildSpannableFromBlocks(
         blocks: JSONArray,
         startIndex: Int = 0,
+        includeTrailingInterBlockSeparator: Boolean = false,
         baseFontSize: Float,
         textColor: Int,
         theme: EditorTheme? = null,
@@ -805,6 +806,16 @@ object RenderBridge {
                 density = density,
                 hostView = hostView,
                 topLevelChildIndex = startIndex + blockOffset
+            )
+        }
+        if (includeTrailingInterBlockSeparator && !state.isFirstBlock) {
+            val spacingPx = ((state.nextBlockSpacingBefore ?: 0f) * density).toInt()
+            appendInterBlockNewline(
+                state.result,
+                baseFontSize,
+                textColor,
+                spacingPx,
+                topLevelChildIndex = startIndex + blocks.length()
             )
         }
         applyPendingLeadingMargins(state.result, state.pendingLeadingMargins)

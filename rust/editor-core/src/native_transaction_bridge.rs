@@ -418,6 +418,7 @@ impl<'session> NativeTransactionBridge<'session> {
             .total_scalars();
         let selection = scalar_selection(resolved.anchor, resolved.head, scalar_limit);
         let request_id = envelope.request_id;
+        let document_revision_before = self.session.engine.revision();
         let outcome = match envelope.intent {
             NativeIntentEnvelope::SetSelection { .. } => {
                 let (engine, outbox) = self.session.engine_and_outbox();
@@ -497,6 +498,9 @@ impl<'session> NativeTransactionBridge<'session> {
                 }
             }
         };
+        if self.session.engine.revision() != document_revision_before {
+            self.session.engine.mark_document_origin_native_view();
+        }
         let serialized = serialize_native_outcome(outcome, resolved.fallback);
         self.session.retain_native_request_outcome(
             envelope.owner_id,

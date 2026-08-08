@@ -9,8 +9,9 @@
 //! the live v2 session, reusing the exact legacy derivation and serialization
 //! code paths so the wire output is probe-identical:
 //!
-//! - `editor_v2_render_update` — one atomic current-state snapshot containing
-//!   `renderBlocks` (full blocks; `renderPatch` is null), authoritative or
+//! - `editor_v2_render_update` / `editor_v2_render_native` — one atomic
+//!   current-state snapshot containing authoritative render blocks or, for a
+//!   retained native owner, an owner-relative block patch,
 //!   explicitly mirrored `selection`, toolbar `activeState`, history,
 //!   document/state revisions, and the checked scalar extent.
 //! - `editor_v2_resolve_scalar_selection` — the engine-authoritative
@@ -198,23 +199,6 @@ fn config_invalid(message: impl Into<String>) -> SessionError {
     SessionError::from(BoundaryError::new("CONFIG_INVALID", message))
 }
 
-fn render_preparation_error(error: crate::render::incremental::CachedRenderError) -> SessionError {
-    let error = match error {
-        crate::render::incremental::CachedRenderError::ResourceLimitExceeded => {
-            YrsEngineError::new("DOCUMENT_LIMIT_EXCEEDED", "render exceeds resource limits")
-        }
-        crate::render::incremental::CachedRenderError::AllocationFailed
-        | crate::render::incremental::CachedRenderError::PositionOverflow
-        | crate::render::incremental::CachedRenderError::CacheInvariantViolation => {
-            YrsEngineError::new(
-                "ENGINE_INVARIANT_FAILED",
-                format!("render preparation failed: {error:?}"),
-            )
-        }
-    };
-    SessionError::from(error)
-}
-
 /// The probe's selection mapping: lenient scalar->doc, collapsed selections
 /// become cursors, then cursor normalization (legacy `setSelectionScalar`).
 fn map_scalar_selection(
@@ -336,6 +320,8 @@ fn render_snapshot_json(
     mirror_scalar_head: Option<u32>,
     owner_id: Option<u64>,
 ) -> Result<String, SessionError> {
+    let previous_native_render =
+        owner_id.and_then(|owner_id| session.native_render_cursor(owner_id));
     let mirror = match (mirror_scalar_anchor, mirror_scalar_head) {
         (None, None) => None,
         (Some(anchor), Some(head)) => Some((anchor, head)),
@@ -349,9 +335,7 @@ fn render_snapshot_json(
     let document = engine.document().ok_or_else(engine_not_ready)?;
     let position_map = engine.position_map().ok_or_else(engine_not_ready)?;
     let schema = registered_schema(&editor_id)?;
-
-    let render_blocks = crate::render::incremental::try_render_blocks(document, &schema)
-        .map_err(render_preparation_error)?;
+    let current_render_blocks = engine.cached_render_blocks().ok_or_else(engine_not_ready)?;
     pause_render_snapshot_for_test(&editor_id);
 
     let (selection, selection_value, stored_marks) = match mirror {
@@ -387,10 +371,44 @@ fn render_snapshot_json(
     let document_is_empty = crate::editor_state::document_is_empty(document, &schema);
 
     let document_version = engine.revision();
+    let (render_blocks, render_patch) = match previous_native_render {
+        Some(previous) if previous.document_revision == document_version => (
+            Value::Null,
+            serialize_render_patch(&crate::render::incremental::RenderBlocksPatch {
+                start_index: 0,
+                delete_count: 0,
+                blocks: Vec::new(),
+            }),
+        ),
+        Some(previous) if previous.document_revision < document_version => {
+            match previous
+                .render_blocks
+                .classify_cached_transition_to(&current_render_blocks)
+            {
+                crate::render::incremental::CachedRenderTransitionUpdate::Patch(patch) => {
+                    (Value::Null, serialize_render_patch(&patch))
+                }
+                crate::render::incremental::CachedRenderTransitionUpdate::None => (
+                    Value::Null,
+                    serialize_render_patch(&crate::render::incremental::RenderBlocksPatch {
+                        start_index: 0,
+                        delete_count: 0,
+                        blocks: Vec::new(),
+                    }),
+                ),
+                crate::render::incremental::CachedRenderTransitionUpdate::Full(blocks) => {
+                    (serialize_render_blocks(&blocks), Value::Null)
+                }
+            }
+        }
+        _ => (
+            serialize_render_blocks(&current_render_blocks.materialize()),
+            Value::Null,
+        ),
+    };
     let mut snapshot = AtomicRenderSnapshot {
-        render_blocks: serialize_render_blocks(&render_blocks),
-        // Full blocks every time; native consumers may derive a patch.
-        render_patch: Value::Null,
+        render_blocks,
+        render_patch,
         selection: selection_value,
         active_state: serialize_active_state(&active_state),
         history_state: serde_json::json!({
@@ -648,6 +666,14 @@ fn serialize_render_blocks(blocks: &[Vec<crate::render::RenderElement>]) -> serd
             .map(|block| serialize_render_elements(block))
             .collect(),
     )
+}
+
+fn serialize_render_patch(patch: &crate::render::incremental::RenderBlocksPatch) -> Value {
+    serde_json::json!({
+        "startIndex": patch.start_index,
+        "deleteCount": patch.delete_count,
+        "renderBlocks": serialize_render_blocks(&patch.blocks),
+    })
 }
 
 fn selection_to_json(
