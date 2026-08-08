@@ -12,7 +12,8 @@ use crate::schema::Schema;
 use crate::selection::Selection;
 
 use super::{
-    OperationResult, ResolvedSelection, RevisionedPosition, RevisionedRange, TypedTransaction,
+    OperationResult, ResolvedSelection, RevisionedPosition, RevisionedRange, SelectionInput,
+    TransactionOrigin, TypedTransaction,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +107,8 @@ pub(crate) struct PlanningContext<'a> {
     pub position_map: &'a PositionMap,
     pub rendered_text: &'a str,
     pub selection: &'a ResolvedSelection,
+    pub initial_selection: Option<&'a SelectionInput>,
+    pub origin: TransactionOrigin,
     pub stored_marks: Option<&'a [Mark]>,
     pub schema: &'a Schema,
     pub resource_limits: &'a crate::boundary::ResourceLimits,

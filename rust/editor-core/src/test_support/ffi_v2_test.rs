@@ -17,6 +17,7 @@
 use crate::boundary::ResourceLimits;
 use crate::ffi_v2::collaboration as v2_collab;
 use crate::ffi_v2::editor as v2;
+use crate::ffi_v2::render as v2_render;
 use crate::ffi_v2::snapshot as v2_snapshot;
 use crate::ffi_v2::types::{FfiError, FfiJsonResult, FfiOutboundLeaseResult};
 use crate::tiptap_schema;
@@ -36,7 +37,6 @@ const LINEAGE_ID: &str = "ffi-v2-lineage";
 const FRAGMENT_NAME: &str = "prosemirror";
 const JSON_SEED: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"ffi seed"}]}]}"#;
 const SEED_HTML: &str = "<p>html seed</p>";
-
 
 fn ok_json(result: &FfiJsonResult) -> Value {
     assert!(
@@ -122,7 +122,6 @@ fn ok_unit(result: &crate::ffi_v2::types::FfiUnitResult) {
     assert_eq!(result.value, Some(true));
 }
 
-
 fn create_handle(config: Value) -> String {
     create_handle_with_state(config, None)
 }
@@ -153,6 +152,126 @@ fn revision_of(id: &str) -> u64 {
 
 fn document_json_of(id: &str) -> Value {
     ok_json(&v2::editor_v2_get_document_json(id.to_string()))
+}
+
+#[test]
+fn native_intent_ffi_is_strict_owner_scoped_and_idempotent() {
+    let id = create_handle(json!({
+        "initialization": {
+            "type": "localJson",
+            "json": serde_json::from_str::<Value>(JSON_SEED).unwrap(),
+        },
+    }));
+    let render = ok_json(&v2_render::editor_v2_render_native(
+        id.clone(),
+        "4".into(),
+        None,
+        None,
+    ));
+    let epoch = render["positionEpoch"].as_str().unwrap().to_owned();
+    let request = json!({
+        "version": 1,
+        "requestId": "1",
+        "ownerId": "4",
+        "positionEpoch": epoch,
+        "intent": {
+            "type": "insertText",
+            "anchor": 2,
+            "head": 2,
+            "text": "X",
+        },
+    });
+
+    let first = v2::editor_v2_apply_native_intent(id.clone(), request.to_string());
+    let first_value = first.value.clone().expect("first intent succeeds");
+    let duplicate = v2::editor_v2_apply_native_intent(id.clone(), request.to_string());
+    assert_eq!(duplicate.value.as_deref(), Some(first_value.as_str()));
+    assert_eq!(
+        document_json_of(&id)["content"][0]["content"][0]["text"],
+        "ffXi seed"
+    );
+
+    let mut unknown = request.clone();
+    unknown["requestId"] = json!("2");
+    unknown["intent"]["unexpected"] = json!(true);
+    assert_error(
+        &err_json(&v2::editor_v2_apply_native_intent(
+            id.clone(),
+            unknown.to_string(),
+        )),
+        "boundary",
+        "CONFIG_INVALID",
+        Some("2"),
+    );
+
+    let mut foreign = request.clone();
+    foreign["requestId"] = json!("2");
+    foreign["ownerId"] = json!("5");
+    assert_eq!(
+        err_json(&v2::editor_v2_apply_native_intent(
+            id.clone(),
+            foreign.to_string(),
+        ))
+        .code,
+        "POSITION_EPOCH_INVALID",
+    );
+
+    ok_unit(&v2::editor_v2_release_native_binding(
+        id.clone(),
+        "4".into(),
+    ));
+    assert_eq!(
+        err_json(&v2::editor_v2_apply_native_intent(
+            id.clone(),
+            request.to_string()
+        ))
+        .code,
+        "POSITION_EPOCH_INVALID",
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn native_intent_ffi_expires_results_outside_the_replay_window() {
+    let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+    let render = ok_json(&v2_render::editor_v2_render_native(
+        id.clone(),
+        "7".into(),
+        None,
+        None,
+    ));
+    let epoch = render["positionEpoch"].as_str().unwrap();
+    for request_id in 1..=257_u64 {
+        let result = v2::editor_v2_apply_native_intent(
+            id.clone(),
+            json!({
+                "version": 1,
+                "requestId": request_id.to_string(),
+                "ownerId": "7",
+                "positionEpoch": epoch,
+                "intent": { "type": "setSelection", "anchor": 0, "head": 0 },
+            })
+            .to_string(),
+        );
+        assert!(
+            result.error.is_none(),
+            "request {request_id}: {:?}",
+            result.error
+        );
+    }
+    let expired = err_json(&v2::editor_v2_apply_native_intent(
+        id.clone(),
+        json!({
+            "version": 1,
+            "requestId": "1",
+            "ownerId": "7",
+            "positionEpoch": epoch,
+            "intent": { "type": "setSelection", "anchor": 0, "head": 0 },
+        })
+        .to_string(),
+    ));
+    assert_error(&expired, "boundary", "EXPIRED_NATIVE_REQUEST", Some("1"));
+    destroy_handle(&id);
 }
 
 #[test]
@@ -262,7 +381,6 @@ fn ffi_lease_ids_and_deadlines_are_canonical_decimal_strings() {
     assert_eq!(closed["nextDeadlineMillis"], "500", "{closed:?}");
     destroy_handle(&id);
 }
-
 
 fn input_envelope(request_id: u64, base_revision: u64, text: &str) -> String {
     json!({
@@ -560,7 +678,6 @@ fn synchronize_v2(id: &str, server: &RawPeer) -> String {
     generation.to_string()
 }
 
-
 #[test]
 fn create_local_editor_exposes_full_state_surface_and_destroy_lifecycle() {
     let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
@@ -697,7 +814,6 @@ fn create_room_with_snapshot_bytes_and_pairing_rules() {
     assert_error(&error, "boundary", "CONFIG_INVALID", None);
 }
 
-
 #[test]
 fn malformed_handles_fail_with_structured_boundary_errors() {
     for handle in ["not-a-handle", "", "-1", "18446744073709551616"] {
@@ -809,7 +925,6 @@ fn unknown_editor_id_fails_every_entry_with_a_lifecycle_error() {
     )));
 }
 
-
 #[test]
 fn destroy_during_in_flight_calls_refuses_without_partial_work() {
     let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
@@ -898,7 +1013,6 @@ fn destroy_during_in_flight_calls_refuses_without_partial_work() {
     assert!(ok_json(&v2::editor_v2_get_state(fresh.clone())).is_object());
     destroy_handle(&fresh);
 }
-
 
 #[test]
 fn apply_input_command_selection_and_local_api_outcome_matrix() {
@@ -1216,7 +1330,6 @@ fn input_filter_preserves_exact_semantics_and_replays_compile_errors() {
     }
     destroy_handle(&id);
 }
-
 
 #[test]
 fn create_room_attaches_the_collaboration_runtime() {
@@ -1874,7 +1987,6 @@ fn leased_outbound_drains_protocol_replies_before_document_updates() {
     destroy_handle(&id);
 }
 
-
 #[test]
 fn snapshot_export_restore_round_trip_and_policy_errors() {
     let snapshot = snapshot_source();
@@ -1987,7 +2099,6 @@ fn snapshot_export_restore_round_trip_and_policy_errors() {
     destroy_handle(&target);
     destroy_handle(&id);
 }
-
 
 #[test]
 fn full_drive_local_editing_to_synchronized_room() {
@@ -2154,8 +2265,6 @@ fn error_envelopes_pin_nullability_and_decimal_request_ids() {
 // extent. deleted the legacy runtime, so the probe-parity fixture matrix went
 // with it; these tests pin the accessor's own wire shape, its v2-native
 // history/revision facts, and its structured errors.
-
-use crate::ffi_v2::render as v2_render;
 
 fn local_json_config(document: &str) -> Value {
     json!({
@@ -2741,11 +2850,7 @@ fn the_render_update_distinguishes_an_empty_document_from_an_empty_list_item() {
 fn a_blank_line_added_with_return_stops_the_document_being_empty() {
     let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
 
-    let before = ok_json(&v2_render::editor_v2_render_update(
-        id.clone(),
-        None,
-        None,
-    ));
+    let before = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
     assert_eq!(
         before["documentIsEmpty"],
         json!(true),
@@ -2757,11 +2862,7 @@ fn a_blank_line_added_with_return_stops_the_document_being_empty() {
         command_envelope(1, 0, json!({ "type": "splitBlock" })),
     ));
 
-    let after = ok_json(&v2_render::editor_v2_render_update(
-        id.clone(),
-        None,
-        None,
-    ));
+    let after = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
     assert_eq!(
         after["documentIsEmpty"],
         json!(false),
@@ -2779,7 +2880,6 @@ fn a_blank_line_added_with_return_stops_the_document_being_empty() {
 
     destroy_handle(&id);
 }
-
 
 fn marked_text_document(marks: Value) -> Value {
     json!({
@@ -2909,11 +3009,7 @@ fn imported_marks_still_refuse_what_canonicalization_cannot_repair() {
             json!([{ "type": "bold" }, { "type": "bold" }]),
             "duplicate same-type marks",
         ),
-        (
-            806,
-            json!([{ "type": "notAMark" }]),
-            "unknown mark",
-        ),
+        (806, json!([{ "type": "notAMark" }]), "unknown mark"),
     ] {
         let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
 

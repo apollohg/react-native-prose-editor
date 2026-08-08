@@ -13,7 +13,7 @@
 #   - The crate must be built for the host target first (cargo build --release)
 #
 # Since the Task 16C production cutover, the v2 ABI is the ONLY surface: the
-# generated bindings and the dylib are verified to expose all 31 editor_v2_*
+# generated bindings and the dylib are verified to expose all 35 editor_v2_*
 # symbols plus editor_core_version and zero legacy editor_*/collaboration_*
 # symbols before the script succeeds.
 
@@ -38,6 +38,9 @@ V2_SYMBOLS=(
     editor_v2_apply_command
     editor_v2_apply_local_api
     editor_v2_set_selection
+    editor_v2_pin_position_epoch
+    editor_v2_apply_native_intent
+    editor_v2_release_native_binding
     editor_v2_undo
     editor_v2_redo
     editor_v2_collaboration_drive
@@ -55,6 +58,7 @@ V2_SYMBOLS=(
     editor_v2_snapshot_export
     editor_v2_snapshot_restore
     editor_v2_render_update
+    editor_v2_render_native
     editor_v2_resolve_scalar_selection
     editor_v2_doc_to_scalar
     editor_v2_scalar_to_doc

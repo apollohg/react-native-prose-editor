@@ -36,8 +36,8 @@ fn raw_storage_work_limit(limits: &crate::boundary::ResourceLimits) -> usize {
 #[allow(unused_imports)]
 pub use awareness::{AwarenessApplied, AwarenessCodec, AwarenessLimits, AwarenessPeer};
 pub(crate) use codec::YrsDocumentCodec;
-pub(crate) use engine::admit_local_import_document;
 pub use commands::{CommandPlan, TypedCommand};
+pub(crate) use engine::admit_local_import_document;
 // Not reachable from production call paths after the legacy runtime removal;
 // exercised by crate tests.
 #[allow(unused_imports)]

@@ -41,7 +41,6 @@ use super::steps::{
 };
 use super::{Step, TransformError};
 
-
 /// Apply a single step to a document, producing a new document and step map.
 ///
 /// This does NOT validate the resulting document against the schema — that is
@@ -212,7 +211,6 @@ pub(crate) fn canonicalize_yrs_document_with_evidence(
     }
 }
 
-
 fn apply_insert_text(
     doc: &Document,
     pos: u32,
@@ -341,7 +339,6 @@ fn insert_text_in_children(
     merge_adjacent_text_nodes(new_children)
 }
 
-
 fn apply_delete_range(
     doc: &Document,
     from: u32,
@@ -447,7 +444,6 @@ fn delete_in_children(parent: &Node, from_offset: u32, to_offset: u32) -> Vec<No
 
     merge_adjacent_text_nodes(new_children)
 }
-
 
 fn apply_add_mark(
     doc: &Document,
@@ -556,7 +552,6 @@ fn add_mark_in_children(
     merge_adjacent_text_nodes(new_children)
 }
 
-
 fn apply_remove_mark(
     doc: &Document,
     from: u32,
@@ -647,7 +642,6 @@ fn remove_mark_in_children(
 
     merge_adjacent_text_nodes(new_children)
 }
-
 
 fn apply_split_block(
     doc: &Document,
@@ -833,7 +827,6 @@ fn split_children_at(parent: &Node, offset: u32) -> (Vec<Node>, Vec<Node>) {
     )
 }
 
-
 fn apply_join_blocks(doc: &Document, pos: u32) -> Result<(Document, StepMap), TransformError> {
     let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
 
@@ -928,7 +921,6 @@ fn apply_join_blocks(doc: &Document, pos: u32) -> Result<(Document, StepMap), Tr
 
     Ok((new_doc, map))
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn apply_wrap_in_list(
@@ -1063,7 +1055,6 @@ fn apply_wrap_in_list(
 
     Ok((new_doc, map))
 }
-
 
 fn apply_unwrap_from_list(
     doc: &Document,
@@ -1323,7 +1314,6 @@ fn apply_unwrap_from_list(
         Ok((new_doc, StepMap::empty()))
     }
 }
-
 
 fn apply_insert_node(
     doc: &Document,
@@ -1785,7 +1775,6 @@ fn insert_node_in_children(parent: &Node, offset: u32, insert_node: &Node) -> Ve
     merge_adjacent_text_nodes(new_children)
 }
 
-
 fn apply_replace_range(
     doc: &Document,
     from: u32,
@@ -1956,7 +1945,6 @@ fn insert_nodes_in_children(parent: &Node, offset: u32, fragment: &Fragment) -> 
     merge_adjacent_text_nodes(new_children)
 }
 
-
 use crate::model::ResolvedPos;
 
 /// Delete content that spans two different parent blocks. The common case is
@@ -2106,7 +2094,6 @@ fn common_prefix_len(a: &[u32], b: &[u32]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
-
 /// Replace a node at the given path in the tree with two new nodes, returning
 /// a new root. The node at `path` is removed and replaced by `first` and
 /// `second` in that order.
@@ -2220,7 +2207,6 @@ fn replace_node_at_path(root: &Node, path: &[u32], replacement: &Node) -> Node {
 
     rebuild_element(root, new_children)
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DocumentStats {
@@ -2493,10 +2479,12 @@ fn validate_marks_with_evidence<'schema>(
 
     #[cfg(test)]
     crate::yrs_engine::observability::record_canonical_mark_validation_attempt();
-    let result = visit(document.root(), schema, require_canonical_order).map(|is_canonical| CanonicalMarksEvidence {
-        source_root: document.root().clone(),
-        source_schema: schema,
-        is_canonical,
+    let result = visit(document.root(), schema, require_canonical_order).map(|is_canonical| {
+        CanonicalMarksEvidence {
+            source_root: document.root().clone(),
+            source_schema: schema,
+            is_canonical,
+        }
     });
     #[cfg(test)]
     if result.is_ok() {
@@ -3652,8 +3640,7 @@ mod document_validation_stats_tests {
             mark("italic"),
             mark_with_attrs("bold", &[("invalid", json!(true))]),
         ];
-        let error =
-            validate_mark_set(&noncanonical_before_bad_attrs, &schema, true).unwrap_err();
+        let error = validate_mark_set(&noncanonical_before_bad_attrs, &schema, true).unwrap_err();
         assert_eq!(error.code, "DOCUMENT_INVALID");
         assert_eq!(
             error.message,

@@ -3200,8 +3200,10 @@ fn compile_transaction_impl(
                     if current.is_none() {
                         let inherited = inherited_marks.take().unwrap_or_default();
                         if !inherited.is_empty() {
-                            *current =
-                                Some(super::derived_state::canonical_marks(&inherited, context.schema));
+                            *current = Some(super::derived_state::canonical_marks(
+                                &inherited,
+                                context.schema,
+                            ));
                         }
                     }
                     split_at_caret_kept_stored_marks = true;

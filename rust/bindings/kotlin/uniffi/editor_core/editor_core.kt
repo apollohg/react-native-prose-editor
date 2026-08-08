@@ -774,6 +774,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_editor_v2_apply_local_api(): Short
 
+    fun uniffi_editor_core_checksum_func_editor_v2_apply_native_intent(): Short
+
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_detach(): Short
@@ -812,7 +814,13 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_editor_v2_get_state(): Short
 
+    fun uniffi_editor_core_checksum_func_editor_v2_pin_position_epoch(): Short
+
     fun uniffi_editor_core_checksum_func_editor_v2_redo(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_v2_release_native_binding(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_v2_render_native(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_render_update(): Short
 
@@ -937,6 +945,12 @@ internal interface UniffiLib : Library {
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
+    fun uniffi_editor_core_fn_func_editor_v2_apply_native_intent(
+        `editorId`: RustBuffer.ByValue,
+        `requestJson`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
         `editorId`: RustBuffer.ByValue,
         `generation`: RustBuffer.ByValue,
@@ -1051,9 +1065,30 @@ internal interface UniffiLib : Library {
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
+    fun uniffi_editor_core_fn_func_editor_v2_pin_position_epoch(
+        `editorId`: RustBuffer.ByValue,
+        `ownerId`: RustBuffer.ByValue,
+        `documentRevision`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
     fun uniffi_editor_core_fn_func_editor_v2_redo(
         `editorId`: RustBuffer.ByValue,
         `requestJson`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_release_native_binding(
+        `editorId`: RustBuffer.ByValue,
+        `ownerId`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_render_native(
+        `editorId`: RustBuffer.ByValue,
+        `ownerId`: RustBuffer.ByValue,
+        `mirrorScalarAnchor`: RustBuffer.ByValue,
+        `mirrorScalarHead`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
@@ -1353,6 +1388,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_v2_apply_local_api() != 36451.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_apply_native_intent() != 46364.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound() != 21755.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1410,7 +1448,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_v2_get_state() != 43856.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_pin_position_epoch() != 42714.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_redo() != 48065.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_release_native_binding() != 2756.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_render_native() != 16234.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_render_update() != 13282.toShort()) {
@@ -2969,6 +3016,20 @@ fun `editorV2ApplyLocalApi`(
         },
     )
 
+fun `editorV2ApplyNativeIntent`(
+    `editorId`: kotlin.String,
+    `requestJson`: kotlin.String,
+): FfiJsonResult =
+    FfiConverterTypeFfiJsonResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_native_intent(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`requestJson`),
+                _status,
+            )
+        },
+    )
+
 fun `editorV2CollaborationAckOutbound`(
     `editorId`: kotlin.String,
     `generation`: kotlin.String,
@@ -3229,6 +3290,22 @@ fun `editorV2GetState`(`editorId`: kotlin.String): FfiJsonResult =
         },
     )
 
+fun `editorV2PinPositionEpoch`(
+    `editorId`: kotlin.String,
+    `ownerId`: kotlin.String,
+    `documentRevision`: kotlin.String,
+): FfiJsonResult =
+    FfiConverterTypeFfiJsonResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_pin_position_epoch(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`ownerId`),
+                FfiConverterString.lower(`documentRevision`),
+                _status,
+            )
+        },
+    )
+
 fun `editorV2Redo`(
     `editorId`: kotlin.String,
     `requestJson`: kotlin.String,
@@ -3238,6 +3315,38 @@ fun `editorV2Redo`(
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_redo(
                 FfiConverterString.lower(`editorId`),
                 FfiConverterString.lower(`requestJson`),
+                _status,
+            )
+        },
+    )
+
+fun `editorV2ReleaseNativeBinding`(
+    `editorId`: kotlin.String,
+    `ownerId`: kotlin.String,
+): FfiUnitResult =
+    FfiConverterTypeFfiUnitResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_release_native_binding(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`ownerId`),
+                _status,
+            )
+        },
+    )
+
+fun `editorV2RenderNative`(
+    `editorId`: kotlin.String,
+    `ownerId`: kotlin.String,
+    `mirrorScalarAnchor`: kotlin.UInt?,
+    `mirrorScalarHead`: kotlin.UInt?,
+): FfiJsonResult =
+    FfiConverterTypeFfiJsonResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_render_native(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`ownerId`),
+                FfiConverterOptionalUInt.lower(`mirrorScalarAnchor`),
+                FfiConverterOptionalUInt.lower(`mirrorScalarHead`),
                 _status,
             )
         },

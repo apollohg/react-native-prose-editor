@@ -1219,6 +1219,25 @@ impl YrsDocumentEngine {
         command: super::TypedCommand,
         preparation: Option<&'a std::cell::RefCell<Option<super::commands::PreparedCommandProof>>>,
     ) -> super::OperationResult<super::CommandPlan> {
+        self.plan_command_internal_at_selection(
+            request_id,
+            command,
+            preparation,
+            None,
+            None,
+            super::TransactionOrigin::LocalCommand,
+        )
+    }
+
+    fn plan_command_internal_at_selection<'a>(
+        &'a self,
+        request_id: u64,
+        command: super::TypedCommand,
+        preparation: Option<&'a std::cell::RefCell<Option<super::commands::PreparedCommandProof>>>,
+        selection: Option<&'a super::ResolvedSelection>,
+        initial_selection: Option<&'a super::SelectionInput>,
+        origin: super::TransactionOrigin,
+    ) -> super::OperationResult<super::CommandPlan> {
         let state = self
             .derived_state
             .as_ref()
@@ -1246,7 +1265,9 @@ impl YrsDocumentEngine {
                 document: &state.document,
                 position_map: &state.position_map,
                 rendered_text: &state.rendered_text,
-                selection: &state.resolved_selection,
+                selection: selection.unwrap_or(&state.resolved_selection),
+                initial_selection,
+                origin,
                 stored_marks: state.stored_marks.as_deref(),
                 schema: &self.schema,
                 resource_limits: &self.resource_limits,
@@ -1284,6 +1305,143 @@ impl YrsDocumentEngine {
             command,
             &mut OutboundUpdateSink::from_optional_outbox(outbox),
         )
+    }
+
+    pub(crate) fn apply_command_at_selection_with_outbox(
+        &mut self,
+        request_id: u64,
+        command: super::TypedCommand,
+        selection: super::SelectionInput,
+        origin: super::TransactionOrigin,
+        outbox: Option<&mut crate::collaboration_runtime::CollaborationOutbox>,
+    ) -> super::OperationResult<Option<super::TypedTransactionResult>> {
+        let resolved = self.resolve_selection_input_for_planning(request_id, &selection)?;
+        let preparation = std::cell::RefCell::new(None);
+        let mut outbound = OutboundUpdateSink::from_optional_outbox(outbox);
+        let (_, result) = match self.plan_command_internal_at_selection(
+            request_id,
+            command,
+            Some(&preparation),
+            Some(&resolved),
+            Some(&selection),
+            origin,
+        )? {
+            super::CommandPlan::NotApplicable => return Ok(None),
+            super::CommandPlan::SelectionOnly(transaction) => {
+                let compiled = self.compile_typed_transaction(transaction)?;
+                self.apply_compiled_transaction_with_history(compiled, true, None, &mut outbound)?
+            }
+            super::CommandPlan::Transaction(transaction) => {
+                if let Some(proof) = preparation.into_inner() {
+                    self.apply_prepared_command_transaction(
+                        transaction,
+                        proof,
+                        true,
+                        &mut outbound,
+                    )?
+                } else {
+                    self.apply_typed_transaction_with_staged_context(
+                        transaction,
+                        true,
+                        &mut outbound,
+                    )?
+                }
+            }
+        };
+        result.map(Some).ok_or_else(|| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                "anchored command produced no result envelope",
+            )
+        })
+    }
+
+    fn resolve_selection_input_for_planning(
+        &self,
+        request_id: u64,
+        selection: &super::SelectionInput,
+    ) -> super::OperationResult<super::ResolvedSelection> {
+        let state = self
+            .derived_state
+            .as_ref()
+            .ok_or_else(|| super::OperationError::engine_not_ready(request_id))?;
+        let resolve = |field: &'static str,
+                       point: super::RevisionedPosition|
+         -> super::OperationResult<u32> {
+            super::position::editor_offset_to_doc_pos(
+                point.offset,
+                point.kind,
+                &state.rendered_text,
+                &state.position_map,
+                &state.document,
+            )
+            .ok_or_else(|| {
+                super::OperationError::selection_position_invalid(
+                    request_id,
+                    field,
+                    format!("{field} is outside the current document"),
+                )
+            })
+        };
+        let resolved_point = |document: u32| -> super::OperationResult<super::ResolvedPoint> {
+            let scalar = state.position_map.doc_to_scalar(document, &state.document);
+            let utf16 = super::position::scalar_offset_to_utf16(&state.rendered_text, scalar)
+                .ok_or_else(|| {
+                    super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "resolved selection is not representable as UTF-16",
+                    )
+                })?;
+            Ok(super::ResolvedPoint {
+                document,
+                scalar,
+                utf16,
+            })
+        };
+        match selection {
+            super::SelectionInput::Text { anchor, head } => {
+                let anchor = resolve("selection.anchor", *anchor)?;
+                let head = resolve("selection.head", *head)?;
+                let normalized =
+                    Selection::text(anchor, head).normalized(&state.document, &state.position_map);
+                let Selection::Text { anchor, head } = normalized else {
+                    return Err(super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "text selection normalized to a non-text selection",
+                    ));
+                };
+                Ok(super::ResolvedSelection::Text {
+                    anchor: resolved_point(anchor)?,
+                    head: resolved_point(head)?,
+                })
+            }
+            super::SelectionInput::Node { at } => {
+                let at = resolve("selection.at", *at)?;
+                let Selection::Node { pos } =
+                    Selection::node(at).normalized(&state.document, &state.position_map)
+                else {
+                    return Err(super::OperationError::selection_position_invalid(
+                        request_id,
+                        "selection.at",
+                        "node selection did not resolve to a selectable node",
+                    ));
+                };
+                if !selectable_void_at(state.document.root(), pos, 0, &self.schema) {
+                    return Err(super::OperationError::selection_position_invalid(
+                        request_id,
+                        "selection.at",
+                        "node selection must target a selectable void or atom node",
+                    ));
+                }
+                Ok(super::ResolvedSelection::Node {
+                    at: resolved_point(pos)?,
+                })
+            }
+            super::SelectionInput::All => Ok(super::ResolvedSelection::All),
+        }
     }
 
     fn apply_command_with_sink(
@@ -3024,6 +3182,92 @@ impl YrsDocumentEngine {
     pub fn position_map(&self) -> Option<&PositionMap> {
         self.debug_assert_derived_revision_keys();
         self.derived_state.as_ref().map(|state| &state.position_map)
+    }
+
+    pub(crate) fn build_position_epoch_boundaries(
+        &self,
+    ) -> Option<Vec<crate::position_epoch::BoundaryAnchors>> {
+        self.debug_assert_derived_revision_keys();
+        let state = self.derived_state.as_ref()?;
+        let txn = self.doc.transact();
+        let fragment = txn.get_xml_fragment(self.fragment_name.as_str())?;
+        let count = usize::try_from(state.position_map.total_scalars())
+            .ok()?
+            .checked_add(1)?;
+        let mut boundaries = Vec::new();
+        boundaries.try_reserve_exact(count).ok()?;
+        let mut previous: Option<(u32, crate::position_epoch::BoundaryAnchors)> = None;
+        for scalar_offset in 0..=state.position_map.total_scalars() {
+            let doc_pos = state
+                .position_map
+                .scalar_to_doc(scalar_offset, &state.document);
+            let anchors = if let Some((previous_doc_pos, previous_anchors)) = &previous {
+                if *previous_doc_pos == doc_pos {
+                    previous_anchors.clone()
+                } else {
+                    super::position::boundary_anchors_from_doc_pos(
+                        &txn,
+                        &fragment,
+                        doc_pos,
+                        &self.schema,
+                    )?
+                }
+            } else {
+                super::position::boundary_anchors_from_doc_pos(
+                    &txn,
+                    &fragment,
+                    doc_pos,
+                    &self.schema,
+                )?
+            };
+            previous = Some((doc_pos, anchors.clone()));
+            boundaries.push(anchors);
+        }
+        Some(boundaries)
+    }
+
+    pub(crate) fn resolve_position_epoch_boundary(
+        &self,
+        boundary: &crate::position_epoch::BoundaryAnchors,
+        affinity: super::Affinity,
+        original_offset: u32,
+    ) -> Option<(u32, bool)> {
+        self.debug_assert_derived_revision_keys();
+        let state = self.derived_state.as_ref()?;
+        let txn = self.doc.transact();
+        let fragment = txn.get_xml_fragment(self.fragment_name.as_str())?;
+        let (leaf, ancestors, opposite_leaf, opposite_ancestors) = match affinity {
+            super::Affinity::Before => (
+                &boundary.before,
+                &boundary.ancestor_before,
+                &boundary.after,
+                &boundary.ancestor_after,
+            ),
+            super::Affinity::After => (
+                &boundary.after,
+                &boundary.ancestor_after,
+                &boundary.before,
+                &boundary.ancestor_before,
+            ),
+        };
+        for (fallback, sticky) in std::iter::once((false, leaf))
+            .chain(ancestors.iter().map(|sticky| (true, sticky)))
+            .chain(std::iter::once((true, opposite_leaf)))
+            .chain(opposite_ancestors.iter().map(|sticky| (true, sticky)))
+        {
+            if let Some(doc_pos) =
+                super::position::sticky_index_to_doc_pos(&txn, &fragment, sticky, &self.schema)
+            {
+                return Some((
+                    state.position_map.doc_to_scalar(doc_pos, &state.document),
+                    fallback,
+                ));
+            }
+        }
+        Some((
+            original_offset.min(state.position_map.total_scalars()),
+            true,
+        ))
     }
 
     pub fn relative_selection(&self) -> Option<&super::RelativeSelection> {
@@ -5995,7 +6239,10 @@ impl YrsDocumentEngine {
         origin: TransactionOrigin,
     ) -> YrsEngineResult<EngineCommit> {
         if let Some(state) = &self.derived_state {
-            if crate::boundary::json_values_equal_stack_safe(state.canonical_artifact.value(), value) {
+            if crate::boundary::json_values_equal_stack_safe(
+                state.canonical_artifact.value(),
+                value,
+            ) {
                 self.quarantined_remote_update = None;
                 self.reset_history_binding();
                 return Ok(EngineCommit {

@@ -467,7 +467,10 @@ fn local_empty_uses_the_schema_default_document_for_validated_admission() {
         serde_json::from_str::<serde_json::Value>(&document).unwrap(),
         json!({"type": "doc", "content": [{"type": "paragraph"}]})
     );
-    assert_eq!(super::editor::editor_v2_destroy(editor_id).value, Some(true));
+    assert_eq!(
+        super::editor::editor_v2_destroy(editor_id).value,
+        Some(true)
+    );
 }
 
 #[test]

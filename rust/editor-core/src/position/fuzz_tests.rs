@@ -17,7 +17,7 @@ mod tests {
     use crate::model::Document;
     use crate::position::PositionMap;
 
-        // Predefined text strings with varying Unicode characteristics
+    // Predefined text strings with varying Unicode characteristics
 
     const TEXT_POOL: &[&str] = &[
         "Hello world",                                 // ASCII
@@ -31,7 +31,6 @@ mod tests {
         "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", // family ZWJ (7 scalars)
         "Line one\nLine two\nLine three",              // multi-line
     ];
-
 
     #[derive(Debug, Clone, Copy)]
     enum BlockChoice {
@@ -49,7 +48,6 @@ mod tests {
         BlockChoice::Blockquote,
         BlockChoice::BulletList,
     ];
-
 
     struct ByteReader<'a> {
         data: &'a [u8],
@@ -182,7 +180,7 @@ mod tests {
         Some(Document::new(root))
     }
 
-        // Independent expected-value computation (oracle)
+    // Independent expected-value computation (oracle)
 
     fn expected_total_scalars(pmap: &PositionMap) -> u32 {
         pmap.blocks()
@@ -207,7 +205,6 @@ mod tests {
         positions
     }
 
-
     /// Returns true if the given scalar offset falls on an inter-block break
     /// (the synthetic "\n" separator between adjacent blocks).
     fn is_break_scalar(offset: u32, pmap: &PositionMap) -> bool {
@@ -224,7 +221,6 @@ mod tests {
         }
         false
     }
-
 
     fn check_invariants(doc: &Document, label: &str) {
         let pmap = PositionMap::build(doc, &crate::schema::presets::tiptap_schema());
@@ -307,7 +303,6 @@ mod tests {
             );
         }
     }
-
 
     /// Run invariants against a large number of deterministic pseudo-random
     /// byte sequences covering diverse document structures.

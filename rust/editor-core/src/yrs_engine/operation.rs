@@ -380,7 +380,10 @@ fn render_element_bytes(element: &RenderElement) -> usize {
             .saturating_add(attrs_bytes(attrs))
             .saturating_add(mention_theme.as_ref().map_or(0, attrs_bytes)),
         RenderElement::OpaqueBlockAtom {
-            node_type, label, attrs, ..
+            node_type,
+            label,
+            attrs,
+            ..
         } => string_bytes(node_type)
             .saturating_add(string_bytes(label))
             .saturating_add(4)

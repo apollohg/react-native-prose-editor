@@ -28,7 +28,6 @@ fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
 }
 
-
 #[test]
 fn test_text_selection_creation() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
@@ -89,7 +88,6 @@ fn test_text_selection_is_not_empty_when_range() {
     );
 }
 
-
 #[test]
 fn test_cursor_creation() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
@@ -126,7 +124,6 @@ fn test_cursor_from_to_equal() {
         "cursor to() should equal the cursor position"
     );
 }
-
 
 #[test]
 fn test_node_selection_creation() {
@@ -183,7 +180,6 @@ fn test_node_selection_from_to() {
     assert_eq!(sel.from(&document), 4, "node selection from() == pos");
     assert_eq!(sel.to(&document), 4, "node selection to() == pos");
 }
-
 
 #[test]
 fn test_all_selection_resolves_to_full_content() {
@@ -369,7 +365,6 @@ fn test_normalize_position_past_end_snaps_to_last_content() {
     }
 }
 
-
 #[test]
 fn test_map_cursor_after_insert_text() {
     // Document: <doc><p>Hello</p></doc>
@@ -489,7 +484,6 @@ fn test_map_text_range_spanning_insertion() {
     }
 }
 
-
 #[test]
 fn test_map_cursor_after_delete() {
     // Document: <doc><p>Hello</p></doc>
@@ -592,7 +586,6 @@ fn test_map_all_selection_stays_all() {
     );
 }
 
-
 #[test]
 fn test_map_node_selection_after_insert_before() {
     // <doc><p>Hi</p><hr/><p>Bye</p></doc>
@@ -613,7 +606,6 @@ fn test_map_node_selection_after_insert_before() {
         other => panic!("expected Node selection after map, got {:?}", other),
     }
 }
-
 
 #[test]
 fn test_selection_equality() {

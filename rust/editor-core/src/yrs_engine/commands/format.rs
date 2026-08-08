@@ -1,7 +1,7 @@
 use crate::model::Mark;
 use crate::yrs_engine::{
     Affinity, EditorOffsetKind, HistoryPolicy, OperationResult, RevisionedPosition,
-    RevisionedRange, SelectionIntent, TransactionOrigin, TypedOperation, TypedTransaction,
+    RevisionedRange, SelectionIntent, TypedOperation, TypedTransaction,
 };
 
 use super::{CommandPlan, PlanningContext, TypedCommand};
@@ -93,9 +93,13 @@ fn state_only_mark_transaction(
     CommandPlan::SelectionOnly(TypedTransaction {
         request_id: context.request_id,
         base_document_revision: context.revision,
-        origin: TransactionOrigin::LocalCommand,
+        origin: context.origin,
         operations,
-        selection_intent: SelectionIntent::Preserve,
+        selection_intent: context
+            .initial_selection
+            .cloned()
+            .map(SelectionIntent::Set)
+            .unwrap_or(SelectionIntent::Preserve),
         history_policy: HistoryPolicy::Boundary,
     })
 }

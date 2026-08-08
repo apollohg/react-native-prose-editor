@@ -89,10 +89,7 @@ fn is_image_node_identity(node_type: &str, attrs: &HashMap<String, serde_json::V
                 .get("original_type")
                 .and_then(serde_json::Value::as_str)
                 == Some("image")
-                || attrs
-                    .get("html_tag")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("img"))
+                || attrs.get("html_tag").and_then(serde_json::Value::as_str) == Some("img"))
 }
 
 fn viewer_element(element: RenderElement, mention_prefix: Option<&str>) -> FfiViewerElement {

@@ -936,7 +936,6 @@ fn test_empty_paragraph_scalar_to_doc() {
     assert_eq!(map.scalar_to_doc(1, &document), 1);
 }
 
-
 #[test]
 fn test_normalize_cursor_pos_inside_text() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
@@ -1011,7 +1010,6 @@ fn test_normalize_cursor_pos_nested_list() {
         "pos 7 (after bulletList) -> snap to doc_end of last block = 4"
     );
 }
-
 
 #[test]
 fn test_delta_tree_empty() {
@@ -1095,7 +1093,6 @@ fn test_delta_tree_clear() {
     assert!(dt.is_empty());
     assert_eq!(dt.accumulated_delta(5), (0, 0));
 }
-
 
 #[test]
 fn test_incremental_update_insert_text_in_first_block() {
@@ -1208,7 +1205,6 @@ fn test_incremental_update_preserves_roundtrip() {
         );
     }
 }
-
 
 #[test]
 fn test_compact_folds_deltas() {

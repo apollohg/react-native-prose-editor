@@ -14,7 +14,6 @@ use crate::schema::Schema;
 
 use delta_tree::DeltaTree;
 
-
 /// Maps one "rendered block" between doc positions and scalar offsets.
 ///
 /// A block is either:
@@ -42,7 +41,6 @@ pub struct BlockMapping {
     /// Whether this block maps a block-level void node instead of text content.
     pub is_void_block: bool,
 }
-
 
 /// Bidirectional index for converting between doc positions and rendered-text
 /// scalar offsets.
@@ -113,7 +111,6 @@ impl PositionMap {
         let (_, sd) = self.prefix_deltas.accumulated_delta(block_idx);
         (block.scalar_start as i64 + sd as i64) as u32
     }
-
 
     /// Convert a rendered-text scalar offset to a doc position.
     ///
@@ -197,7 +194,6 @@ impl PositionMap {
             .map(|position| (position, block_idx))
     }
 
-
     /// Convert a doc position to a rendered-text scalar offset.
     ///
     /// If the position falls on a structural token (between blocks), it is
@@ -259,7 +255,6 @@ impl PositionMap {
         }
     }
 
-
     /// Resolve a doc position to a `ResolvedPos` using the underlying document.
     // Not reachable from production call paths after the Task 16C legacy runtime
     // removal; exercised by crate tests.
@@ -267,7 +262,6 @@ impl PositionMap {
     pub fn resolve(&self, doc_pos: u32, doc: &Document) -> Result<ResolvedPos, String> {
         doc.resolve(doc_pos)
     }
-
 
     /// Snap a doc position to the nearest cursorable position.
     ///
@@ -312,7 +306,6 @@ impl PositionMap {
         let last_idx = self.blocks.len() - 1;
         self.effective_doc_end(last_idx)
     }
-
 
     /// Find the block index that contains or is nearest to the given doc position.
     ///

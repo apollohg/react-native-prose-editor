@@ -176,12 +176,10 @@ impl RenderElement {
                     crate::boundary::drop_json_object_values_stack_safe(theme);
                 }
             }
-            Self::OpaqueBlockAtom {
-                attrs,
-                ..
-            } => crate::boundary::drop_json_object_values_stack_safe(attrs),
-            Self::BlockStart { .. }
-            | Self::BlockEnd => {}
+            Self::OpaqueBlockAtom { attrs, .. } => {
+                crate::boundary::drop_json_object_values_stack_safe(attrs)
+            }
+            Self::BlockStart { .. } | Self::BlockEnd => {}
         }
     }
 }

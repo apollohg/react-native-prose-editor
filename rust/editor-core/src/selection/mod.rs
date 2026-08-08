@@ -4,7 +4,6 @@ use crate::model::Document;
 use crate::position::PositionMap;
 use crate::transform::StepMap;
 
-
 /// Represents a selection within the document.
 ///
 /// Three variants matching ProseMirror's selection model:
@@ -36,7 +35,6 @@ pub enum Selection {
 }
 
 impl Selection {
-
     /// Create a collapsed text selection (cursor) at `pos`.
     pub fn cursor(pos: u32) -> Self {
         Self::Text {
@@ -59,7 +57,6 @@ impl Selection {
     pub fn all() -> Self {
         Self::All
     }
-
 
     /// The anchor position. For `All`, resolves to `0`.
     pub fn anchor(&self, _doc: &Document) -> u32 {
@@ -104,13 +101,11 @@ impl Selection {
         self.anchor(doc) == self.head(doc)
     }
 
-
     /// Normalize the selection by snapping all positions to the nearest
     /// cursorable position using the `PositionMap`.
     pub fn normalized(self, doc: &Document, pos_map: &PositionMap) -> Self {
         normalize::normalize_selection(self, doc, pos_map)
     }
-
 
     /// Map this selection through a `StepMap` to get new positions after a
     /// document transformation.

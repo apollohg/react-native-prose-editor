@@ -2,7 +2,7 @@
 #
 # Cross-compile editor-core for Android targets using cargo-ndk. Since the
 # Task 16C cutover the v2 ABI is the only surface: every ABI is verified to
-# export exactly 31 editor_v2_* symbols and zero legacy
+# export exactly 35 editor_v2_* symbols and zero legacy
 # editor_*/collaboration_* symbols.
 #
 # Targets:
@@ -70,8 +70,8 @@ for pair in "${TARGET_ABI_PAIRS[@]}"; do
     v2_count="$(nm -gU "$TARGET_DIR/$target/release/$LIB_NAME" 2>/dev/null | grep -c 'uniffi_editor_core_fn_func_editor_v2_' || true)"
     legacy_lines="$(nm -gU "$TARGET_DIR/$target/release/$LIB_NAME" 2>/dev/null | grep -E 'uniffi_editor_core_(fn|checksum)_func_(editor_|collaboration_)' | grep -v 'editor_v2\|editor_core_version' || true)"
     echo "  $target: $v2_count editor_v2 symbols"
-    if [ "$v2_count" -ne 31 ]; then
-        echo "ERROR: expected exactly 31 editor_v2 symbols in $target .so" >&2
+    if [ "$v2_count" -ne 35 ]; then
+        echo "ERROR: expected exactly 35 editor_v2 symbols in $target .so" >&2
         exit 1
     fi
     if [ -n "$legacy_lines" ]; then

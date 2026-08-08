@@ -416,7 +416,7 @@ mod protocol_driven {
     use crate::boundary::ResourceLimits;
     use crate::native_bridge_test_support as bridge;
     use crate::session_initialization_test_support::{
-        collaboration_drive, collaboration_socket_open, ack_outbound, create_room_from_json,
+        ack_outbound, collaboration_drive, collaboration_socket_open, create_room_from_json,
         destroy_session, document_state, lease_outbound, receive_message, session_audit,
         transport_state, DocumentState, TransportState,
     };
@@ -502,15 +502,16 @@ mod protocol_driven {
         request_id: u64,
     ) -> usize {
         let mut delivered = 0;
-        while let Some(lease) = lease_outbound(
-            from,
-            request_id + delivered as u64,
-            from_generation,
-        )
-        .unwrap()
+        while let Some(lease) =
+            lease_outbound(from, request_id + delivered as u64, from_generation).unwrap()
         {
-            let outcome =
-                receive_message(to, request_id + delivered as u64, to_generation, &lease.frame).unwrap();
+            let outcome = receive_message(
+                to,
+                request_id + delivered as u64,
+                to_generation,
+                &lease.frame,
+            )
+            .unwrap();
             assert!(outcome.close.is_none(), "{outcome:?}");
             ack_outbound(
                 from,

@@ -7,7 +7,6 @@ use crate::serialize::{
     JsonParseError, UnknownTypeMode,
 };
 
-
 fn schema() -> Schema {
     crate::tiptap_schema()
 }
@@ -472,7 +471,6 @@ fn doc(children: Vec<Node>) -> Document {
     ))
 }
 
-
 #[test]
 fn test_to_html_plain_paragraph() {
     let d = doc(vec![paragraph(vec![text("Hello")])]);
@@ -766,7 +764,6 @@ fn test_to_html_multiple_paragraphs() {
     let html = to_html(&d, &schema());
     assert_eq!(html, "<p>First</p><p>Second</p>");
 }
-
 
 #[test]
 fn test_from_html_plain_paragraph() {
@@ -1084,7 +1081,6 @@ fn test_from_html_empty_paragraph() {
     );
 }
 
-
 #[test]
 fn test_from_html_b_tag_to_bold() {
     let d = from_html("<p><b>Hello</b></p>", &schema(), &default_opts()).unwrap();
@@ -1129,7 +1125,6 @@ fn test_from_html_strike_tag_to_strike() {
     );
 }
 
-
 #[test]
 fn test_from_html_bare_text_auto_wrapped() {
     let d = from_html("Hello world", &schema(), &default_opts()).unwrap();
@@ -1143,7 +1138,6 @@ fn test_from_html_bare_text_auto_wrapped() {
     assert_eq!(p.node_type(), "paragraph");
     assert_eq!(p.text_content(), "Hello world");
 }
-
 
 #[test]
 fn test_from_html_unknown_inline_tag_preserved_as_opaque() {
@@ -1498,7 +1492,6 @@ fn test_html_roundtrip_empty_paragraph() {
     assert_eq!(result, html);
 }
 
-
 #[test]
 fn test_from_html_li_without_p_wraps_in_paragraph() {
     // <li>text</li> without a wrapping <p> should auto-wrap text in paragraph
@@ -1591,7 +1584,6 @@ fn test_from_html_del_tag_roundtrips_to_s() {
     let html = to_html(&d, &schema());
     assert_eq!(html, "<p><s>Hello</s></p>");
 }
-
 
 fn pm_schema() -> Schema {
     crate::prosemirror_schema()
@@ -1787,7 +1779,6 @@ fn test_to_json_mark_with_attrs() {
     assert_eq!(marks[0]["type"], "link");
     assert_eq!(marks[0]["attrs"]["href"], "https://example.com");
 }
-
 
 #[test]
 fn test_from_json_valid_plain_paragraph() {
@@ -2037,7 +2028,6 @@ fn test_from_json_empty_paragraph_empty_content_array() {
     assert_eq!(p.child_count(), 0);
 }
 
-
 #[test]
 fn test_from_json_unknown_type_error_mode() {
     let json = serde_json::json!({
@@ -2175,7 +2165,6 @@ fn test_from_json_unknown_mark_preserve_mode_still_rejects() {
         Err(JsonParseError::UnknownMark(name)) if name == "superscript"
     ));
 }
-
 
 #[test]
 fn test_from_json_missing_type_field() {
@@ -2599,7 +2588,6 @@ fn test_json_roundtrip_complex_document() {
     ]);
     assert_json_roundtrip(&d, &schema(), "complex_document");
 }
-
 
 fn pm_doc(children: Vec<Node>) -> Document {
     Document::new(Node::element(

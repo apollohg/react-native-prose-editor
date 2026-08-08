@@ -175,12 +175,9 @@ impl From<RangeEnvelope> for RevisionedRange {
     }
 }
 
-/// Data-only mirror of the full [`TypedCommand`] surface. The outer request
-/// envelope denies unknown fields (serde cannot enforce that inside an
-/// internally tagged enum, but no variant carries an origin or policy field,
-/// so nothing privileged can be injected here).
+/// Data-only mirror of the full [`TypedCommand`] surface.
 #[derive(serde::Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum CommandEnvelope {
     InsertText {
         text: String,
@@ -241,6 +238,79 @@ enum CommandEnvelope {
         at: PositionEnvelope,
         width: u32,
         height: u32,
+    },
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeIntentRequestEnvelope {
+    version: u32,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
+    request_id: u64,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
+    owner_id: u64,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
+    position_epoch: u64,
+    intent: NativeIntentEnvelope,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum NativeIntentEnvelope {
+    SetSelection {
+        anchor: u32,
+        head: u32,
+    },
+    InsertText {
+        anchor: u32,
+        head: u32,
+        text: String,
+    },
+    ReplaceSelectionText {
+        anchor: u32,
+        head: u32,
+        text: String,
+    },
+    DeleteBackward {
+        anchor: u32,
+        head: u32,
+    },
+    DeleteForward {
+        anchor: u32,
+        head: u32,
+    },
+    DeleteSurroundingText {
+        anchor: u32,
+        head: u32,
+        before: u32,
+        after: u32,
+    },
+    DeleteRange {
+        anchor: u32,
+        head: u32,
+    },
+    SplitBlock {
+        anchor: u32,
+        head: u32,
+    },
+    DeleteAndSplit {
+        anchor: u32,
+        head: u32,
+    },
+    InsertContentHtml {
+        anchor: u32,
+        head: u32,
+        html: String,
+    },
+    InsertContentJson {
+        anchor: u32,
+        head: u32,
+        json: serde_json::Value,
+    },
+    Command {
+        anchor: u32,
+        head: u32,
+        command: CommandEnvelope,
     },
 }
 
@@ -321,6 +391,119 @@ enum LoweredInput {
 impl<'session> NativeTransactionBridge<'session> {
     pub(crate) fn new(session: &'session mut EditorSession) -> Self {
         Self { session }
+    }
+
+    pub(crate) fn submit_native_intent(&mut self, envelope: &str) -> Result<String, SessionError> {
+        let envelope: NativeIntentRequestEnvelope = parse_envelope(self.session, envelope)?;
+        admit_version(envelope.version, envelope.request_id)?;
+        if let Some(cached) = self
+            .session
+            .native_request_outcome(envelope.owner_id, envelope.request_id)?
+        {
+            return Ok(cached.to_owned());
+        }
+
+        let (anchor, head) = envelope.intent.offsets();
+        let resolved = self.session.resolve_epoch_range(
+            envelope.owner_id,
+            envelope.position_epoch,
+            anchor,
+            head,
+        )?;
+        let scalar_limit = self
+            .session
+            .engine
+            .position_map()
+            .ok_or_else(|| operation_error(OperationError::engine_not_ready(envelope.request_id)))?
+            .total_scalars();
+        let selection = scalar_selection(resolved.anchor, resolved.head, scalar_limit);
+        let request_id = envelope.request_id;
+        let outcome = match envelope.intent {
+            NativeIntentEnvelope::SetSelection { .. } => {
+                let (engine, outbox) = self.session.engine_and_outbox();
+                let mut outbox = outbox;
+                let transaction =
+                    native_selection_transaction(request_id, engine.revision(), selection);
+                let applied = engine.apply_typed_transaction_with_outbox(
+                    transaction,
+                    true,
+                    outbox.as_deref_mut(),
+                );
+                let (_, result) = match applied {
+                    Err(error)
+                        if error.code == "POSITION_INVALID" && resolved.anchor == resolved.head =>
+                    {
+                        engine.apply_typed_transaction_with_outbox(
+                            native_selection_transaction(
+                                request_id,
+                                engine.revision(),
+                                scalar_selection_with_affinity(
+                                    resolved.anchor,
+                                    resolved.head,
+                                    scalar_limit,
+                                    Affinity::Before,
+                                ),
+                            ),
+                            true,
+                            outbox.as_deref_mut(),
+                        )
+                    }
+                    result => result,
+                }
+                .map_err(operation_error)?;
+                typed_outcome(request_id, result)?
+            }
+            intent => {
+                self.admit_writable(request_id)?;
+                let command = lower_native_intent(
+                    intent,
+                    resolved.anchor,
+                    resolved.head,
+                    request_id,
+                    &self.session.engine,
+                )?;
+                let (engine, outbox) = self.session.engine_and_outbox();
+                let mut outbox = outbox;
+                let applied = engine.apply_command_at_selection_with_outbox(
+                    request_id,
+                    command.clone(),
+                    selection,
+                    TransactionOrigin::LocalInput,
+                    outbox.as_deref_mut(),
+                );
+                let result = match applied {
+                    Err(error)
+                        if error.code == "POSITION_INVALID" && resolved.anchor == resolved.head =>
+                    {
+                        engine.apply_command_at_selection_with_outbox(
+                            request_id,
+                            command,
+                            scalar_selection_with_affinity(
+                                resolved.anchor,
+                                resolved.head,
+                                scalar_limit,
+                                Affinity::Before,
+                            ),
+                            TransactionOrigin::LocalInput,
+                            outbox.as_deref_mut(),
+                        )
+                    }
+                    result => result,
+                }
+                .map_err(operation_error)?;
+                match result {
+                    Some(result) => NativeBridgeOutcome::Transaction(Box::new(result)),
+                    None => NativeBridgeOutcome::NotApplicable,
+                }
+            }
+        };
+        let serialized = serialize_native_outcome(outcome, resolved.fallback);
+        self.session.retain_native_request_outcome(
+            envelope.owner_id,
+            request_id,
+            serialized.clone(),
+        );
+        Ok(serialized)
     }
 
     /// Composition/typing commit: exactly one typed local-input transaction
@@ -500,6 +683,177 @@ impl<'session> NativeTransactionBridge<'session> {
             )));
         }
         Ok(())
+    }
+}
+
+impl NativeIntentEnvelope {
+    fn offsets(&self) -> (u32, u32) {
+        match self {
+            Self::SetSelection { anchor, head }
+            | Self::InsertText { anchor, head, .. }
+            | Self::ReplaceSelectionText { anchor, head, .. }
+            | Self::DeleteBackward { anchor, head }
+            | Self::DeleteForward { anchor, head }
+            | Self::DeleteSurroundingText { anchor, head, .. }
+            | Self::DeleteRange { anchor, head }
+            | Self::SplitBlock { anchor, head }
+            | Self::DeleteAndSplit { anchor, head }
+            | Self::InsertContentHtml { anchor, head, .. }
+            | Self::InsertContentJson { anchor, head, .. }
+            | Self::Command { anchor, head, .. } => (*anchor, *head),
+        }
+    }
+}
+
+fn scalar_position(offset: u32, scalar_limit: u32, affinity: Affinity) -> RevisionedPosition {
+    RevisionedPosition {
+        offset,
+        kind: EditorOffsetKind::Scalar,
+        affinity: if offset >= scalar_limit {
+            Affinity::Before
+        } else {
+            affinity
+        },
+    }
+}
+
+fn scalar_selection(anchor: u32, head: u32, scalar_limit: u32) -> SelectionInput {
+    let affinity = if anchor == head {
+        Affinity::After
+    } else {
+        Affinity::Before
+    };
+    scalar_selection_with_affinity(anchor, head, scalar_limit, affinity)
+}
+
+fn scalar_selection_with_affinity(
+    anchor: u32,
+    head: u32,
+    scalar_limit: u32,
+    affinity: Affinity,
+) -> SelectionInput {
+    SelectionInput::Text {
+        anchor: scalar_position(anchor, scalar_limit, affinity),
+        head: scalar_position(head, scalar_limit, affinity),
+    }
+}
+
+fn scalar_range(from: u32, to: u32, scalar_limit: u32) -> RevisionedRange {
+    RevisionedRange {
+        from: scalar_position(from, scalar_limit, Affinity::Before),
+        to: scalar_position(to, scalar_limit, Affinity::Before),
+    }
+}
+
+fn native_selection_transaction(
+    request_id: u64,
+    document_revision: u64,
+    selection: SelectionInput,
+) -> TypedTransaction {
+    TypedTransaction {
+        request_id,
+        base_document_revision: document_revision,
+        origin: TransactionOrigin::LocalInput,
+        operations: Vec::new(),
+        selection_intent: SelectionIntent::Set(selection),
+        history_policy: HistoryPolicy::Skip,
+    }
+}
+
+fn lower_native_intent(
+    intent: NativeIntentEnvelope,
+    anchor: u32,
+    head: u32,
+    request_id: u64,
+    engine: &YrsDocumentEngine,
+) -> Result<TypedCommand, SessionError> {
+    let command = match intent {
+        NativeIntentEnvelope::SetSelection { .. } => {
+            return Err(SessionError::new(
+                ErrorDomain::Operation,
+                "ENGINE_INVARIANT_FAILED",
+                "selection intent reached command lowering",
+            ));
+        }
+        NativeIntentEnvelope::InsertText { text, .. } => TypedCommand::InsertText { text },
+        NativeIntentEnvelope::ReplaceSelectionText { text, .. } => {
+            TypedCommand::ReplaceSelectionText { text }
+        }
+        NativeIntentEnvelope::DeleteBackward { .. } => TypedCommand::DeleteBackward,
+        NativeIntentEnvelope::DeleteForward { .. } => {
+            let limit = engine
+                .position_map()
+                .ok_or_else(|| operation_error(OperationError::engine_not_ready(request_id)))?
+                .total_scalars();
+            let (from, to) = if anchor == head {
+                (anchor, anchor.saturating_add(1).min(limit))
+            } else {
+                (anchor.min(head), anchor.max(head))
+            };
+            TypedCommand::DeleteRange {
+                range: scalar_range(from, to, limit),
+            }
+        }
+        NativeIntentEnvelope::DeleteSurroundingText { before, after, .. } => {
+            let limit = engine
+                .position_map()
+                .ok_or_else(|| operation_error(OperationError::engine_not_ready(request_id)))?
+                .total_scalars();
+            let from = anchor.min(head).saturating_sub(before);
+            let to = anchor.max(head).saturating_add(after).min(limit);
+            TypedCommand::DeleteRange {
+                range: scalar_range(from, to, limit),
+            }
+        }
+        NativeIntentEnvelope::DeleteRange { .. } => {
+            let limit = engine
+                .position_map()
+                .ok_or_else(|| operation_error(OperationError::engine_not_ready(request_id)))?
+                .total_scalars();
+            TypedCommand::DeleteRange {
+                range: scalar_range(anchor, head, limit),
+            }
+        }
+        NativeIntentEnvelope::SplitBlock { .. } => TypedCommand::SplitBlock,
+        NativeIntentEnvelope::DeleteAndSplit { .. } => TypedCommand::DeleteAndSplit,
+        NativeIntentEnvelope::InsertContentHtml { html, .. } => {
+            TypedCommand::InsertContentHtml { html }
+        }
+        NativeIntentEnvelope::InsertContentJson { json, .. } => {
+            TypedCommand::InsertContentJson { json }
+        }
+        NativeIntentEnvelope::Command { command, .. } => command.into(),
+    };
+    Ok(command)
+}
+
+pub(crate) fn serialize_native_outcome(
+    outcome: NativeBridgeOutcome,
+    position_fallback: bool,
+) -> String {
+    match outcome {
+        NativeBridgeOutcome::Transaction(result) => serde_json::json!({
+            "type": "transaction",
+            "changed": result.changed,
+            "documentRevision": result.document_revision.to_string(),
+            "stateRevision": result.state_revision.to_string(),
+            "canUndo": result.history_state.can_undo,
+            "canRedo": result.history_state.can_redo,
+            "positionFallback": position_fallback,
+        })
+        .to_string(),
+        NativeBridgeOutcome::NotApplicable => serde_json::json!({
+            "type": "notApplicable",
+            "positionFallback": position_fallback,
+        })
+        .to_string(),
+        NativeBridgeOutcome::Replacement(commit) => serde_json::json!({
+            "type": "replacement",
+            "changed": commit.changed,
+            "documentRevision": commit.document_revision.to_string(),
+            "positionFallback": position_fallback,
+        })
+        .to_string(),
     }
 }
 

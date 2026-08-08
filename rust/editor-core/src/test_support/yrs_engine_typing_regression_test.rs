@@ -133,7 +133,6 @@ fn doc(blocks: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({ "type": "doc", "content": blocks })
 }
 
-
 /// Type a sentence, switch bold on mid-way, then italic, exactly as a user
 /// tapping toolbar buttons between words would.
 #[test]
@@ -233,7 +232,10 @@ fn return_after_a_bold_run_carries_the_stored_mark_onto_the_new_line() {
     assert_eq!(
         document(&engine),
         doc(vec![
-            paragraph(serde_json::json!([plain("start "), marked("bold", &["bold"])])),
+            paragraph(serde_json::json!([
+                plain("start "),
+                marked("bold", &["bold"])
+            ])),
             paragraph(serde_json::json!([marked("next", &["bold"])])),
         ]),
         "bold was still active when Return was pressed, so the new line continues bold"
@@ -265,7 +267,6 @@ fn return_inside_a_marked_run_splits_it_across_both_lines() {
     );
 }
 
-
 /// The ordinary case: backspace removes characters one at a time from the end
 /// of a marked run without disturbing the run in front of it.
 #[test]
@@ -282,7 +283,10 @@ fn backspace_deletes_characters_out_of_a_marked_run_one_at_a_time() {
         let expected = if remaining.is_empty() {
             paragraph(serde_json::json!([plain("keep")]))
         } else {
-            paragraph(serde_json::json!([plain("keep"), marked(remaining, &["bold"])]))
+            paragraph(serde_json::json!([
+                plain("keep"),
+                marked(remaining, &["bold"])
+            ]))
         };
         assert_eq!(
             document(&engine),
@@ -381,7 +385,10 @@ fn backspacing_a_line_return_between_two_bold_runs_produces_one_bold_run() {
 
     assert_eq!(
         document(&engine),
-        doc(vec![paragraph(serde_json::json!([marked("onetwo", &["bold"])]))]),
+        doc(vec![paragraph(serde_json::json!([marked(
+            "onetwo",
+            &["bold"]
+        )]))]),
         "identically marked text either side of the removed break must coalesce"
     );
 }
@@ -400,7 +407,10 @@ fn backspacing_an_empty_line_removes_it_and_leaves_the_marked_line_intact() {
 
     assert_eq!(
         document(&engine),
-        doc(vec![paragraph(serde_json::json!([marked("bold", &["bold"])]))])
+        doc(vec![paragraph(serde_json::json!([marked(
+            "bold",
+            &["bold"]
+        )]))])
     );
 }
 
@@ -573,9 +583,9 @@ fn return_on_an_empty_list_item_escapes_the_list() {
     assert_eq!(
         document(&engine),
         doc(vec![
-            bullet_list(vec![list_item(vec![paragraph(serde_json::json!([plain(
-                "one"
-            )]))])]),
+            bullet_list(vec![list_item(vec![paragraph(serde_json::json!([
+                plain("one")
+            ]))])]),
             empty_paragraph(),
         ])
     );
@@ -591,9 +601,9 @@ fn indent_nests_an_item_under_the_previous_one_and_outdent_restores_it() {
         document(&engine),
         doc(vec![bullet_list(vec![list_item(vec![
             paragraph(serde_json::json!([plain("one")])),
-            bullet_list(vec![list_item(vec![paragraph(serde_json::json!([plain(
-                "two"
-            )]))])]),
+            bullet_list(vec![list_item(vec![paragraph(serde_json::json!([
+                plain("two")
+            ]))])]),
         ])])]),
         "the indented item becomes a nested list inside the item above it"
     );
@@ -677,9 +687,9 @@ fn return_on_an_empty_nested_item_outdents_to_the_parent_list() {
         doc(vec![bullet_list(vec![
             list_item(vec![
                 paragraph(serde_json::json!([plain("one")])),
-                bullet_list(vec![list_item(vec![paragraph(serde_json::json!([plain(
-                    "two"
-                )]))])]),
+                bullet_list(vec![list_item(vec![paragraph(serde_json::json!([
+                    plain("two")
+                ]))])]),
             ]),
             list_item(vec![empty_paragraph()]),
         ])])
@@ -779,7 +789,6 @@ fn backspacing_a_lone_list_item_away_returns_to_an_empty_document() {
     );
 }
 
-
 #[test]
 fn toggling_a_blockquote_wraps_the_current_paragraph() {
     let mut engine = engine();
@@ -789,9 +798,9 @@ fn toggling_a_blockquote_wraps_the_current_paragraph() {
 
     assert_eq!(
         document(&engine),
-        doc(vec![blockquote(vec![paragraph(serde_json::json!([plain(
-            "quoted"
-        )]))])])
+        doc(vec![blockquote(vec![paragraph(serde_json::json!([
+            plain("quoted")
+        ]))])])
     );
 }
 
@@ -845,9 +854,9 @@ fn backspace_at_the_start_of_a_later_quoted_line_merges_it_upwards() {
 
     assert_eq!(
         document(&engine),
-        doc(vec![blockquote(vec![paragraph(serde_json::json!([plain(
-            "aabb"
-        )]))])])
+        doc(vec![blockquote(vec![paragraph(serde_json::json!([
+            plain("aabb")
+        ]))])])
     );
 }
 
@@ -898,7 +907,6 @@ fn backspace_at_the_start_of_a_blockquote_below_a_paragraph_lifts_the_line_out()
         "escaping the quote must preserve both lines separately"
     );
 }
-
 
 #[test]
 fn bold_carries_across_return_inside_a_list_item() {

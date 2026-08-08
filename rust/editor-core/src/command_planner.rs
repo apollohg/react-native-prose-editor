@@ -314,7 +314,8 @@ fn marker_backspace_action(
         // removes exactly two tokens — the previous item's close and this
         // item's open — and the paragraph boundary sits after both.
         let item_boundary = node_delete_start(document, &resolved.node_path[..=depth])?;
-        let paragraph_boundary = node_delete_start(document, &resolved.node_path)?.checked_sub(2)?;
+        let paragraph_boundary =
+            node_delete_start(document, &resolved.node_path)?.checked_sub(2)?;
         return Some(SemanticCommandPlan {
             operations: vec![
                 SemanticOperation::JoinBlocks { pos: item_boundary },
@@ -330,14 +331,14 @@ fn marker_backspace_action(
     // Unwrapping instead would drop it into the parent bullet as a second
     // paragraph, losing the bullet entirely.
     if nearest_list_item_depth(document, schema, &resolved.node_path[..depth]).is_some() {
-        return Some(SemanticCommandPlan::one(SemanticOperation::OutdentListItem {
-            pos: doc_to,
-        }));
+        return Some(SemanticCommandPlan::one(
+            SemanticOperation::OutdentListItem { pos: doc_to },
+        ));
     }
     // First bullet of a top-level list: leave the list altogether.
-    Some(SemanticCommandPlan::one(SemanticOperation::UnwrapFromList {
-        pos: doc_to,
-    }))
+    Some(SemanticCommandPlan::one(
+        SemanticOperation::UnwrapFromList { pos: doc_to },
+    ))
 }
 
 /// Backspace at the very start of a text block that still has content joins it

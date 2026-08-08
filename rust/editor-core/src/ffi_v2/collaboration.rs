@@ -11,9 +11,7 @@
 
 use crate::collaboration_runtime::state::{SocketCloseDisposition, TransportGeneration};
 
-use super::editor::{
-    json_result, unit_result, with_editor, INTERNAL_UNCORRELATED_REQUEST_ID,
-};
+use super::editor::{json_result, unit_result, with_editor, INTERNAL_UNCORRELATED_REQUEST_ID};
 use super::types::{
     decimal_u64, parse_canonical_u64, FfiError, FfiJsonResult, FfiOutboundLease,
     FfiOutboundLeaseResult, FfiUnitResult,
@@ -170,11 +168,10 @@ pub fn editor_v2_collaboration_lease_outbound(
         Err(error) => return FfiOutboundLeaseResult::err(error),
     };
     match with_editor(&editor_id, |session| {
-        session
-            .lease_outbound(
-                INTERNAL_UNCORRELATED_REQUEST_ID,
-                TransportGeneration::from_value(generation),
-            )
+        session.lease_outbound(
+            INTERNAL_UNCORRELATED_REQUEST_ID,
+            TransportGeneration::from_value(generation),
+        )
     }) {
         Ok(Some(lease)) => FfiOutboundLeaseResult::ok(FfiOutboundLease {
             lease_id: lease.lease_id.to_string(),

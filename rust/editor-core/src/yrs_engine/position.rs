@@ -5,6 +5,7 @@ use yrs::{Any, Assoc, ReadTxn, StickyIndex};
 
 use crate::model::Document;
 use crate::position::PositionMap;
+use crate::position_epoch::BoundaryAnchors;
 use crate::schema::Schema;
 use crate::selection::Selection;
 
@@ -340,6 +341,162 @@ fn forward_doc_pos_to_sticky_index<T: ReadTxn>(
         BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(fragment)),
         schema,
     )
+}
+
+pub(crate) fn boundary_anchors_from_doc_pos<T: ReadTxn>(
+    txn: &T,
+    fragment: &XmlFragmentRef,
+    doc_pos: u32,
+    schema: &Schema,
+) -> Option<BoundaryAnchors> {
+    boundary_anchors_in_sequence(
+        txn,
+        fragment.children(txn),
+        doc_pos,
+        BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(fragment)),
+        schema,
+    )
+}
+
+fn boundary_anchors_in_sequence<'a, T: ReadTxn>(
+    txn: &T,
+    children: impl Iterator<Item = XmlOut> + 'a,
+    doc_pos: u32,
+    branch: BranchPtr,
+    schema: &Schema,
+) -> Option<BoundaryAnchors> {
+    let mut branch_index = 0u32;
+    let mut consumed_pm = 0u32;
+    let mut children = children.peekable();
+
+    while let Some(child) = children.next() {
+        match &child {
+            XmlOut::Text(text) => {
+                let text_value = xml_text_plain_string(text, txn)?;
+                let text_scalar_len = scalar_len(&text_value);
+                let mut retry_adjacent_text = false;
+                if doc_pos <= consumed_pm + text_scalar_len {
+                    let utf16_offset = scalar_offset_to_utf16(&text_value, doc_pos - consumed_pm)?;
+                    let text_branch = BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text));
+                    let before = sticky_at(txn, text_branch, utf16_offset, Assoc::Before)
+                        .or_else(|| sticky_at(txn, branch, branch_index, Assoc::Before));
+                    let after =
+                        sticky_at(txn, text_branch, utf16_offset, Assoc::After).or_else(|| {
+                            sticky_at(txn, branch, branch_index.checked_add(1)?, Assoc::After)
+                        });
+                    if let (Some(before), Some(after)) = (before, after) {
+                        return Some(BoundaryAnchors {
+                            before,
+                            after,
+                            ancestor_before: Vec::new(),
+                            ancestor_after: Vec::new(),
+                        });
+                    }
+                    if doc_pos < consumed_pm + text_scalar_len {
+                        return None;
+                    }
+                    retry_adjacent_text = true;
+                }
+                branch_index = branch_index.checked_add(1)?;
+                consumed_pm = consumed_pm.checked_add(text_scalar_len)?;
+                if retry_adjacent_text && !matches!(children.peek(), Some(XmlOut::Text(_))) {
+                    return None;
+                }
+            }
+            XmlOut::Element(element) => {
+                let child_size = xml_out_pm_size(txn, &child, schema)?;
+                if doc_pos == consumed_pm {
+                    return boundary_anchors_at(txn, branch, branch_index);
+                }
+                if doc_pos < consumed_pm.checked_add(child_size)? {
+                    let mut anchors = boundary_anchors_in_sequence(
+                        txn,
+                        element.children(txn),
+                        doc_pos.checked_sub(consumed_pm)?.checked_sub(1)?,
+                        BranchPtr::from(<XmlElementRef as AsRef<Branch>>::as_ref(element)),
+                        schema,
+                    )?;
+                    anchors.ancestor_before.push(sticky_at(
+                        txn,
+                        branch,
+                        branch_index,
+                        Assoc::Before,
+                    )?);
+                    anchors.ancestor_after.push(sticky_at(
+                        txn,
+                        branch,
+                        branch_index.checked_add(1)?,
+                        Assoc::After,
+                    )?);
+                    return Some(anchors);
+                }
+                branch_index = branch_index.checked_add(1)?;
+                consumed_pm = consumed_pm.checked_add(child_size)?;
+            }
+            XmlOut::Fragment(nested) => {
+                let child_size = xml_out_pm_size(txn, &child, schema)?;
+                if doc_pos == consumed_pm {
+                    return boundary_anchors_at(txn, branch, branch_index);
+                }
+                if doc_pos < consumed_pm.checked_add(child_size)? {
+                    let mut anchors = boundary_anchors_in_sequence(
+                        txn,
+                        nested.children(txn),
+                        doc_pos.checked_sub(consumed_pm)?,
+                        BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(nested)),
+                        schema,
+                    )?;
+                    anchors.ancestor_before.push(sticky_at(
+                        txn,
+                        branch,
+                        branch_index,
+                        Assoc::Before,
+                    )?);
+                    anchors.ancestor_after.push(sticky_at(
+                        txn,
+                        branch,
+                        branch_index.checked_add(1)?,
+                        Assoc::After,
+                    )?);
+                    return Some(anchors);
+                }
+                branch_index = branch_index.checked_add(1)?;
+                consumed_pm = consumed_pm.checked_add(child_size)?;
+            }
+        }
+    }
+
+    (doc_pos == consumed_pm)
+        .then(|| boundary_anchors_at(txn, branch, branch_index))
+        .flatten()
+}
+
+fn boundary_anchors_at<T: ReadTxn>(
+    txn: &T,
+    branch: BranchPtr,
+    index: u32,
+) -> Option<BoundaryAnchors> {
+    Some(BoundaryAnchors {
+        before: sticky_at(txn, branch, index, Assoc::Before)?,
+        after: sticky_at(txn, branch, index, Assoc::After)?,
+        ancestor_before: Vec::new(),
+        ancestor_after: Vec::new(),
+    })
+}
+
+fn sticky_at<T: ReadTxn>(
+    txn: &T,
+    branch: BranchPtr,
+    index: u32,
+    assoc: Assoc,
+) -> Option<StickyIndex> {
+    StickyIndex::at(txn, branch, index, assoc).or_else(|| {
+        let opposite = match assoc {
+            Assoc::Before => Assoc::After,
+            Assoc::After => Assoc::Before,
+        };
+        StickyIndex::at(txn, branch, index, opposite)
+    })
 }
 
 pub(crate) fn cursor_sticky_index_from_doc_pos<T: ReadTxn>(

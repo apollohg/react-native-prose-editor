@@ -3,8 +3,8 @@ use crate::boundary::{BoundedInput, InputKind};
 use crate::serialize::{FromHtmlOptions, UnknownTypeMode};
 use crate::yrs_engine::{
     Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, RevisionedPosition,
-    RevisionedRange, SelectionInput, SelectionIntent, StructuralReplacement, TransactionOrigin,
-    TypedOperation, TypedTransaction,
+    RevisionedRange, SelectionInput, SelectionIntent, StructuralReplacement, TypedOperation,
+    TypedTransaction,
 };
 
 fn point(offset: u32) -> RevisionedPosition {
@@ -81,11 +81,20 @@ fn transaction_with_selection(
     selection_intent: SelectionIntent,
     history: crate::command_planner::SemanticCommandHistory,
 ) -> TypedTransaction {
+    let selection_intent = if matches!(selection_intent, SelectionIntent::Preserve) {
+        context
+            .initial_selection
+            .cloned()
+            .map(SelectionIntent::Set)
+            .unwrap_or(SelectionIntent::Preserve)
+    } else {
+        selection_intent
+    };
     let history_policy = semantic_history_policy(history);
     TypedTransaction {
         request_id: context.request_id,
         base_document_revision: context.revision,
-        origin: TransactionOrigin::LocalCommand,
+        origin: context.origin,
         operations,
         selection_intent,
         history_policy,
@@ -426,7 +435,7 @@ pub(super) fn structural_fallback_transaction(
     Ok(TypedTransaction {
         request_id: context.request_id,
         base_document_revision: context.revision,
-        origin: TransactionOrigin::LocalCommand,
+        origin: context.origin,
         operations: vec![TypedOperation::ReplaceStructure(
             StructuralReplacement::new(
                 diff.parent_path,
@@ -919,7 +928,7 @@ mod tests {
     use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
     use crate::yrs_engine::canonical::CanonicalSchemaContext;
     use crate::yrs_engine::commands::PlanningContext;
-    use crate::yrs_engine::{EditingLimits, ResolvedPoint, ResolvedSelection};
+    use crate::yrs_engine::{EditingLimits, ResolvedPoint, ResolvedSelection, TransactionOrigin};
 
     const BEFORE: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}]}"#;
     const AFTER: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello"}]},{"type":"paragraph","content":[{"type":"text","text":"World"}]}]}"#;
@@ -969,6 +978,8 @@ mod tests {
             position_map: &position_map,
             rendered_text: &rendered_text,
             selection: &selection,
+            initial_selection: None,
+            origin: TransactionOrigin::LocalCommand,
             stored_marks: None,
             schema: &schema,
             resource_limits: &limits,

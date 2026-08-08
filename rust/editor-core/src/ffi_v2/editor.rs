@@ -669,7 +669,6 @@ pub(crate) fn unit_result(result: Result<(), FfiError>) -> FfiUnitResult {
     }
 }
 
-
 fn parse_request_envelope<'a, T: serde::Deserialize<'a>>(
     session: &EditorSession,
     json: &'a str,
@@ -843,7 +842,6 @@ where
     Ok(raw)
 }
 
-
 #[uniffi::export]
 pub fn editor_v2_create(config_json: String, snapshot_state: Option<Vec<u8>>) -> FfiJsonResult {
     json_result(crate::boundary::with_document_stack(|| {
@@ -875,7 +873,9 @@ fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<Str
         } => resolve_local_document(config_json, FfiViewerSourceKind::Html, source)
             .map(|resolved| resolved.schema)
             .map_err(ffi_error)?,
-        EditorInitialization::Room { .. } => resolve_configured_create_schema(&config).map_err(ffi_error)?,
+        EditorInitialization::Room { .. } => {
+            resolve_configured_create_schema(&config).map_err(ffi_error)?
+        }
     };
     let id = DocumentApiFacade::create_with_schema(config, schema.clone()).map_err(ffi_error)?;
     if room_bound {
@@ -1013,10 +1013,7 @@ pub(crate) fn resolve_local_document(
         }
     };
 
-    Ok(ResolvedLocalDocument {
-        document,
-        schema,
-    })
+    Ok(ResolvedLocalDocument { document, schema })
 }
 
 fn resolve_local_empty_document(config_json: &str) -> Result<ResolvedLocalDocument, SessionError> {
@@ -1033,10 +1030,7 @@ fn resolve_local_empty_document(config_json: &str) -> Result<ResolvedLocalDocume
     )
     .map_err(SessionError::from)?;
 
-    Ok(ResolvedLocalDocument {
-        document,
-        schema,
-    })
+    Ok(ResolvedLocalDocument { document, schema })
 }
 
 fn resolve_local_config(
@@ -1249,7 +1243,6 @@ pub fn editor_v2_destroy(editor_id: String) -> FfiUnitResult {
     })())
 }
 
-
 #[uniffi::export]
 pub fn editor_v2_get_state(editor_id: String) -> FfiJsonResult {
     json_result(with_editor(&editor_id, |session| {
@@ -1301,7 +1294,6 @@ pub fn editor_v2_get_content_snapshot(editor_id: String) -> FfiJsonResult {
     }))
 }
 
-
 #[uniffi::export]
 pub fn editor_v2_replace_document(editor_id: String, request_json: String) -> FfiJsonResult {
     json_result(with_editor_request_envelope(&editor_id, |session| {
@@ -1345,6 +1337,60 @@ pub fn editor_v2_apply_local_api(editor_id: String, request_json: String) -> Ffi
 #[uniffi::export]
 pub fn editor_v2_set_selection(editor_id: String, request_json: String) -> FfiJsonResult {
     bridge_entry(&editor_id, |bridge| bridge.submit_selection(&request_json))
+}
+
+#[uniffi::export]
+pub fn editor_v2_pin_position_epoch(
+    editor_id: String,
+    owner_id: String,
+    document_revision: String,
+) -> FfiJsonResult {
+    let owner_id = match parse_canonical_u64(&owner_id) {
+        Some(value) => value,
+        None => {
+            return FfiJsonResult::err(FfiError::from(config_invalid(
+                None,
+                "ownerId must be a canonical decimal u64 string",
+            )));
+        }
+    };
+    let document_revision = match parse_canonical_u64(&document_revision) {
+        Some(value) => value,
+        None => {
+            return FfiJsonResult::err(FfiError::from(config_invalid(
+                None,
+                "documentRevision must be a canonical decimal u64 string",
+            )));
+        }
+    };
+    json_result(with_editor(&editor_id, |session| {
+        let epoch = session.pin_position_epoch(owner_id, document_revision)?;
+        Ok(serde_json::json!({ "positionEpoch": epoch.to_string() }).to_string())
+    }))
+}
+
+#[uniffi::export]
+pub fn editor_v2_apply_native_intent(editor_id: String, request_json: String) -> FfiJsonResult {
+    json_result(with_editor_request_envelope(&editor_id, |session| {
+        NativeTransactionBridge::new(session).submit_native_intent(&request_json)
+    }))
+}
+
+#[uniffi::export]
+pub fn editor_v2_release_native_binding(editor_id: String, owner_id: String) -> FfiUnitResult {
+    let owner_id = match parse_canonical_u64(&owner_id) {
+        Some(value) => value,
+        None => {
+            return FfiUnitResult::err(FfiError::from(config_invalid(
+                None,
+                "ownerId must be a canonical decimal u64 string",
+            )));
+        }
+    };
+    unit_result(with_editor(&editor_id, |session| {
+        session.release_native_binding(owner_id);
+        Ok(())
+    }))
 }
 
 fn bridge_entry(

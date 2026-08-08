@@ -67,7 +67,6 @@ fn doc_and_schema(root: Node) -> (Document, crate::schema::Schema) {
     (Document::new(root), tiptap_schema())
 }
 
-
 #[test]
 fn test_insert_text_middle_of_word() {
     // <doc><p>Hello</p></doc>
@@ -248,7 +247,6 @@ fn test_insert_text_merges_with_adjacent_same_marks() {
     }
 }
 
-
 #[test]
 fn test_delete_range_middle_of_text() {
     // <doc><p>Hello</p></doc>
@@ -330,7 +328,6 @@ fn test_delete_across_differently_marked_text_nodes() {
         "deleting across marked boundaries should merge remaining text"
     );
 }
-
 
 #[test]
 fn test_add_bold_to_range() {
@@ -447,7 +444,6 @@ fn test_add_italic_to_bold_text() {
     );
 }
 
-
 #[test]
 fn test_remove_bold_from_bold_text() {
     // <doc><p><b>Hello</b></p></doc>
@@ -541,7 +537,6 @@ fn test_remove_bold_preserves_italic() {
     }
 }
 
-
 #[test]
 fn test_insert_text_directly_into_doc_is_error() {
     // Inserting text at pos 0 (doc level, before any paragraph) should fail
@@ -577,7 +572,6 @@ fn test_valid_transaction_passes_validation() {
         "valid transaction should pass content validation"
     );
 }
-
 
 #[test]
 fn test_step_map_after_insert_text() {
@@ -658,7 +652,6 @@ fn test_step_map_composing_multiple_steps() {
         "position before both ops should be unchanged"
     );
 }
-
 
 #[test]
 fn test_split_block_middle_of_text() {
@@ -962,7 +955,6 @@ fn test_split_block_empty_paragraph() {
     assert_eq!(new_doc.root().child(1).unwrap().text_content(), "");
 }
 
-
 #[test]
 fn test_join_blocks_two_paragraphs() {
     // <doc><p>He</p><p>llo</p></doc> → <doc><p>Hello</p></doc>
@@ -1176,7 +1168,6 @@ fn test_join_blocks_list_items() {
     assert_eq!(li.child(1).unwrap().text_content(), "llo");
 }
 
-
 #[test]
 fn test_step_map_split_block() {
     // SplitBlock at pos 3: inserts 2 tokens (close + open tag)
@@ -1290,7 +1281,6 @@ fn test_split_then_join_round_trip() {
         "round-trip split+join should restore original text"
     );
 }
-
 
 #[test]
 fn test_wrap_single_paragraph_in_bullet_list() {
@@ -1572,7 +1562,6 @@ fn test_wrap_invalid_list_type_errors() {
         "using a non-list node type for list_type should error"
     );
 }
-
 
 #[test]
 fn test_unwrap_only_list_item() {
@@ -2105,7 +2094,6 @@ fn test_replace_range_inline_content() {
     assert_eq!(new_doc.root().text_content(), "B");
 }
 
-
 #[test]
 fn test_transaction_source_variants() {
     // Just verify all source variants can be constructed
@@ -2129,7 +2117,6 @@ fn test_transaction_meta() {
         Some(&serde_json::Value::String("abc".to_string()))
     );
 }
-
 
 fn hard_break() -> Node {
     Node::void("hardBreak".to_string(), HashMap::new())
@@ -2361,7 +2348,6 @@ fn test_insert_paragraph_node_between_blocks() {
         "content size should increase by node_size() of the inserted paragraph"
     );
 }
-
 
 #[test]
 fn test_replace_range_replace_selection_with_text() {
@@ -2627,7 +2613,6 @@ fn test_insert_node_then_delete_restores_original_inline() {
         "round-trip insert+delete of hardBreak should restore 'Hello'"
     );
 }
-
 
 #[test]
 fn test_delete_range_invalid_range_returns_error() {

@@ -49,7 +49,7 @@ use crate::model::Document;
 use crate::position::PositionMap;
 use crate::schema::{presets::tiptap_schema, Schema};
 use crate::selection::Selection;
-use crate::session::SessionError;
+use crate::session::{EditorSession, SessionError};
 use crate::yrs_engine::ResolvedSelection;
 use crate::yrs_engine::YrsEngineError;
 
@@ -102,12 +102,11 @@ pub(crate) fn install_render_snapshot_test_hook(
 ) -> RenderSnapshotTestHookGuard {
     *RENDER_SNAPSHOT_TEST_HOOK
         .lock()
-        .expect("render snapshot test hook poisoned") =
-        Some(RenderSnapshotTestHook {
-            editor_id,
-            entered,
-            resume,
-        });
+        .expect("render snapshot test hook poisoned") = Some(RenderSnapshotTestHook {
+        editor_id,
+        entered,
+        resume,
+    });
     RenderSnapshotTestHookGuard { editor_id }
 }
 
@@ -158,6 +157,8 @@ struct AtomicRenderSnapshot {
     /// Hosts must consume this rather than inspecting rendered characters,
     /// which cannot see structure that renders no text (an empty list item).
     document_is_empty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position_epoch: Option<String>,
 }
 
 /// Resolve the schema for a v2 create envelope exactly the way the session
@@ -292,79 +293,130 @@ pub fn editor_v2_render_update(
     mirror_scalar_head: Option<u32>,
 ) -> FfiJsonResult {
     json_result(with_editor(&editor_id, |session| {
-        let mirror = match (mirror_scalar_anchor, mirror_scalar_head) {
-            (None, None) => None,
-            (Some(anchor), Some(head)) => Some((anchor, head)),
-            _ => {
-                return Err(config_invalid(
-                    "render update mirror requires both scalar anchor and head",
-                ));
-            }
-        };
-        let engine = &session.engine;
-        let document = engine.document().ok_or_else(engine_not_ready)?;
-        let position_map = engine.position_map().ok_or_else(engine_not_ready)?;
-        let schema = registered_schema(&editor_id)?;
-
-        let render_blocks = crate::render::incremental::try_render_blocks(document, &schema)
-            .map_err(render_preparation_error)?;
-        pause_render_snapshot_for_test(&editor_id);
-
-        let (selection, selection_value, stored_marks) = match mirror {
-            Some((anchor, head)) => {
-                let selection = map_scalar_selection(document, position_map, anchor, head);
-                let value = selection_json(document, position_map, &selection);
-                (selection, value, None)
-            }
-            None => {
-                let resolved = engine.resolved_selection().ok_or_else(engine_not_ready)?;
-                (
-                    resolved_selection_to_legacy(resolved),
-                    resolved_selection_json(resolved),
-                    engine.stored_marks(),
-                )
-            }
-        };
-        let commands = crate::editor_state::command_applicability(
-            document,
-            &schema,
-            &selection,
-            engine.resource_limits(),
-        );
-        let active_state = crate::editor_state::active_state(
-            document,
-            &schema,
-            &selection,
-            stored_marks,
-            commands,
-            engine.resource_limits(),
-        );
-        let scalar_length = position_map.doc_to_scalar(u32::MAX, document);
-        let document_is_empty = crate::editor_state::document_is_empty(document, &schema);
-
-        let snapshot = AtomicRenderSnapshot {
-            render_blocks: serialize_render_blocks(&render_blocks),
-            // Full blocks every time; native consumers may derive a patch.
-            render_patch: Value::Null,
-            selection: selection_value,
-            active_state: serialize_active_state(&active_state),
-            history_state: serde_json::json!({
-                "canUndo": engine.can_undo(),
-                "canRedo": engine.can_redo(),
-            }),
-            document_version: decimal_u64(engine.revision())
-                .as_str()
-                .expect("decimal u64 serializer returns a string")
-                .to_owned(),
-            state_revision: decimal_u64(engine.state_revision())
-                .as_str()
-                .expect("decimal u64 serializer returns a string")
-                .to_owned(),
-            scalar_length,
-            document_is_empty,
-        };
-        Ok(serde_json::to_string(&snapshot).expect("atomic render snapshot serializes"))
+        render_snapshot_json(
+            session,
+            &editor_id,
+            mirror_scalar_anchor,
+            mirror_scalar_head,
+            None,
+        )
     }))
+}
+
+#[uniffi::export]
+pub fn editor_v2_render_native(
+    editor_id: String,
+    owner_id: String,
+    mirror_scalar_anchor: Option<u32>,
+    mirror_scalar_head: Option<u32>,
+) -> FfiJsonResult {
+    let owner_id = match parse_canonical_u64(&owner_id) {
+        Some(owner_id) => owner_id,
+        None => {
+            return FfiJsonResult::err(super::types::FfiError::from(config_invalid(
+                "native render ownerId must be a canonical decimal u64 string",
+            )))
+        }
+    };
+    json_result(with_editor(&editor_id, |session| {
+        render_snapshot_json(
+            session,
+            &editor_id,
+            mirror_scalar_anchor,
+            mirror_scalar_head,
+            Some(owner_id),
+        )
+    }))
+}
+
+fn render_snapshot_json(
+    session: &mut EditorSession,
+    editor_id: &str,
+    mirror_scalar_anchor: Option<u32>,
+    mirror_scalar_head: Option<u32>,
+    owner_id: Option<u64>,
+) -> Result<String, SessionError> {
+    let mirror = match (mirror_scalar_anchor, mirror_scalar_head) {
+        (None, None) => None,
+        (Some(anchor), Some(head)) => Some((anchor, head)),
+        _ => {
+            return Err(config_invalid(
+                "render mirror requires both scalar anchor and head",
+            ))
+        }
+    };
+    let engine = &session.engine;
+    let document = engine.document().ok_or_else(engine_not_ready)?;
+    let position_map = engine.position_map().ok_or_else(engine_not_ready)?;
+    let schema = registered_schema(&editor_id)?;
+
+    let render_blocks = crate::render::incremental::try_render_blocks(document, &schema)
+        .map_err(render_preparation_error)?;
+    pause_render_snapshot_for_test(&editor_id);
+
+    let (selection, selection_value, stored_marks) = match mirror {
+        Some((anchor, head)) => {
+            let selection = map_scalar_selection(document, position_map, anchor, head);
+            let value = selection_json(document, position_map, &selection);
+            (selection, value, None)
+        }
+        None => {
+            let resolved = engine.resolved_selection().ok_or_else(engine_not_ready)?;
+            (
+                resolved_selection_to_legacy(resolved),
+                resolved_selection_json(resolved),
+                engine.stored_marks(),
+            )
+        }
+    };
+    let commands = crate::editor_state::command_applicability(
+        document,
+        &schema,
+        &selection,
+        engine.resource_limits(),
+    );
+    let active_state = crate::editor_state::active_state(
+        document,
+        &schema,
+        &selection,
+        stored_marks,
+        commands,
+        engine.resource_limits(),
+    );
+    let scalar_length = position_map.doc_to_scalar(u32::MAX, document);
+    let document_is_empty = crate::editor_state::document_is_empty(document, &schema);
+
+    let document_version = engine.revision();
+    let mut snapshot = AtomicRenderSnapshot {
+        render_blocks: serialize_render_blocks(&render_blocks),
+        // Full blocks every time; native consumers may derive a patch.
+        render_patch: Value::Null,
+        selection: selection_value,
+        active_state: serialize_active_state(&active_state),
+        history_state: serde_json::json!({
+            "canUndo": engine.can_undo(),
+            "canRedo": engine.can_redo(),
+        }),
+        document_version: decimal_u64(document_version)
+            .as_str()
+            .expect("decimal u64 serializer returns a string")
+            .to_owned(),
+        state_revision: decimal_u64(engine.state_revision())
+            .as_str()
+            .expect("decimal u64 serializer returns a string")
+            .to_owned(),
+        scalar_length,
+        document_is_empty,
+        position_epoch: None,
+    };
+    if let Some(owner_id) = owner_id {
+        snapshot.position_epoch = Some(
+            session
+                .pin_position_epoch(owner_id, document_version)?
+                .to_string(),
+        );
+    }
+    Ok(serde_json::to_string(&snapshot).expect("atomic render snapshot serializes"))
 }
 
 #[uniffi::export]

@@ -24,7 +24,6 @@ use crate::schema::Schema;
 
 pub use mapping::StepMap;
 
-
 /// Errors that can occur when applying a transaction to a document.
 #[derive(Debug)]
 pub enum TransformError {
@@ -55,7 +54,6 @@ impl std::fmt::Display for TransformError {
     }
 }
 
-
 /// The origin of a transaction, used for filtering and history bookkeeping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // Not reachable from production call paths after the legacy runtime removal;
@@ -76,7 +74,6 @@ pub enum Source {
     Reconciliation,
 }
 
-
 /// A single atomic document transformation.
 ///
 /// Steps are the building blocks of transactions. Each step describes one
@@ -95,10 +92,17 @@ pub enum Step {
 
     /// Delete content between two document positions. Both positions must be
     /// within the same parent node (for this initial implementation).
-    DeleteRange { from: u32, to: u32 },
+    DeleteRange {
+        from: u32,
+        to: u32,
+    },
 
     /// Apply a mark to a range of text. May split text nodes at boundaries.
-    AddMark { from: u32, to: u32, mark: Mark },
+    AddMark {
+        from: u32,
+        to: u32,
+        mark: Mark,
+    },
 
     /// Remove all instances of a mark type from a range of text.
     RemoveMark {
@@ -114,7 +118,9 @@ pub enum Step {
     },
 
     /// Join two adjacent block nodes at the given boundary position.
-    JoinBlocks { pos: u32 },
+    JoinBlocks {
+        pos: u32,
+    },
 
     WrapInList {
         from: u32,
@@ -130,15 +136,24 @@ pub enum Step {
     },
 
     /// Unwrap a list item, lifting its content out of the list.
-    UnwrapFromList { pos: u32 },
+    UnwrapFromList {
+        pos: u32,
+    },
 
     /// Increase the nesting level of the list item at `pos`.
-    IndentListItem { pos: u32 },
+    IndentListItem {
+        pos: u32,
+    },
 
     /// Decrease the nesting level of the list item at `pos`.
-    OutdentListItem { pos: u32 },
+    OutdentListItem {
+        pos: u32,
+    },
 
-    InsertNode { pos: u32, node: Node },
+    InsertNode {
+        pos: u32,
+        node: Node,
+    },
 
     /// Replace the attrs of a node without changing its content.
     UpdateNodeAttrs {
@@ -153,7 +168,6 @@ pub enum Step {
         content: Fragment,
     },
 }
-
 
 /// A batch of steps to apply atomically to a document.
 ///

@@ -193,7 +193,9 @@ fn default_schema_rejects_an_empty_json_root() {
     );
 
     assert!(result.value.is_none());
-    let error = result.error.expect("invalid root reports an admission error");
+    let error = result
+        .error
+        .expect("invalid root reports an admission error");
     assert_eq!(error.code, "DOCUMENT_INVALID");
     assert_eq!(
         error.message,
@@ -544,5 +546,8 @@ fn viewer_enforces_editor_derived_output_limit() {
     let error = result.error.expect("derived-output limit must reject");
     assert!(result.value.is_none());
     assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-    assert_eq!(error.details_json.as_deref(), Some(r#"{"field":"maxDerivedOutputBytes"}"#));
+    assert_eq!(
+        error.details_json.as_deref(),
+        Some(r#"{"field":"maxDerivedOutputBytes"}"#)
+    );
 }

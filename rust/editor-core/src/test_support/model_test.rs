@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use crate::model::{Document, Fragment, Mark, Node};
 
-
 fn bold() -> Mark {
     Mark::new("bold".to_string(), HashMap::new())
 }
@@ -64,7 +63,6 @@ fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
 }
 
-
 #[test]
 fn test_mark_creation() {
     let m = bold();
@@ -102,7 +100,6 @@ fn test_mark_equality_with_attrs() {
     assert_eq!(a, b, "same link attrs should be equal");
     assert_ne!(a, c, "different link attrs should not be equal");
 }
-
 
 #[test]
 fn test_text_node_creation() {
@@ -146,7 +143,6 @@ fn test_element_node_creation() {
     assert_eq!(p.child_count(), 1);
 }
 
-
 #[test]
 fn test_empty_fragment() {
     let f = Fragment::empty();
@@ -177,7 +173,6 @@ fn test_fragment_child_access() {
     assert_eq!(f.child(2).unwrap().text_content(), "c");
     assert!(f.child(3).is_none());
 }
-
 
 #[test]
 fn test_text_node_size() {
@@ -262,7 +257,6 @@ fn test_spec_example_doc_size() {
     );
 }
 
-
 #[test]
 fn test_document_creation() {
     let root = doc(vec![paragraph(vec![text("test")])]);
@@ -278,7 +272,6 @@ fn test_document_content_size() {
     // content_size = paragraph node_size = 1 + 2 + 1 = 4
     assert_eq!(document.content_size(), 4);
 }
-
 
 #[test]
 fn test_text_content_simple() {
@@ -321,7 +314,6 @@ fn test_text_content_void_node() {
     assert_eq!(p.text_content(), "beforeafter");
 }
 
-
 #[test]
 fn test_node_child_count() {
     let p = paragraph(vec![text("a"), text("b"), text("c")]);
@@ -349,7 +341,6 @@ fn test_void_node_has_no_children() {
     assert_eq!(hr.child_count(), 0);
     assert!(hr.child(0).is_none());
 }
-
 
 #[test]
 fn test_list_document_size() {
@@ -402,7 +393,6 @@ fn test_paragraph_with_hard_break_size() {
     let p = paragraph(vec![text("before"), hard_break(), text("after")]);
     assert_eq!(p.node_size(), 14);
 }
-
 
 #[test]
 fn test_resolve_simple_doc() {
@@ -769,7 +759,6 @@ fn test_resolve_unicode_emoji() {
     assert_eq!(r.parent_offset, 7);
 }
 
-
 #[test]
 fn test_resolve_parent_node() {
     // doc > paragraph > "Hello"
@@ -785,7 +774,6 @@ fn test_resolve_parent_node() {
     let parent = r.parent(&d);
     assert_eq!(parent.node_type(), "doc");
 }
-
 
 #[test]
 fn test_document_node_at() {

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use memchr::memchr2;
+use serde::{Deserialize, Serialize};
 
 pub(crate) const HARD_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;

@@ -18,6 +18,7 @@ pub mod ffi_v2;
 pub(crate) mod model;
 pub(crate) mod native_transaction_bridge;
 pub(crate) mod position;
+pub(crate) mod position_epoch;
 pub(crate) mod registry;
 pub(crate) mod render;
 pub(crate) mod schema;

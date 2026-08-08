@@ -1892,6 +1892,14 @@ public func editorV2ApplyLocalApi(editorId: String, requestJson: String) -> FfiJ
     )
 })
 }
+public func editorV2ApplyNativeIntent(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_apply_native_intent(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
+    )
+})
+}
 public func editorV2CollaborationAckOutbound(editorId: String, generation: String, leaseId: String) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
@@ -2078,11 +2086,38 @@ public func editorV2GetState(editorId: String) -> FfiJsonResult  {
     )
 })
 }
+public func editorV2PinPositionEpoch(editorId: String, ownerId: String, documentRevision: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_pin_position_epoch(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(ownerId),
+        FfiConverterString.lower(documentRevision),$0
+    )
+})
+}
 public func editorV2Redo(editorId: String, requestJson: String) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_redo(
         FfiConverterString.lower(editorId),
         FfiConverterString.lower(requestJson),$0
+    )
+})
+}
+public func editorV2ReleaseNativeBinding(editorId: String, ownerId: String) -> FfiUnitResult  {
+    return try!  FfiConverterTypeFfiUnitResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_release_native_binding(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(ownerId),$0
+    )
+})
+}
+public func editorV2RenderNative(editorId: String, ownerId: String, mirrorScalarAnchor: UInt32?, mirrorScalarHead: UInt32?) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_render_native(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(ownerId),
+        FfiConverterOptionUInt32.lower(mirrorScalarAnchor),
+        FfiConverterOptionUInt32.lower(mirrorScalarHead),$0
     )
 })
 }
@@ -2187,6 +2222,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_v2_apply_local_api() != 36451) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_func_editor_v2_apply_native_intent() != 46364) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound() != 21755) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2244,7 +2282,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_v2_get_state() != 43856) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_func_editor_v2_pin_position_epoch() != 42714) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_func_editor_v2_redo() != 48065) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_release_native_binding() != 2756) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_render_native() != 16234) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_render_update() != 13282) {
