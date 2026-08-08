@@ -48,6 +48,13 @@ pub enum OutboxReservationError {
     Allocation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutboxAdmissionClass {
+    Document,
+    Awareness,
+    Protocol,
+}
+
 /// Shared reservation accounting. Live in an `Arc` so an unconsumed
 /// reservation releases its capacity on drop even if the owning commit path
 /// unwinds through an error return.
@@ -55,6 +62,8 @@ pub enum OutboxReservationError {
 struct ReservationLedger {
     reserved_messages: AtomicUsize,
     reserved_bytes: AtomicUsize,
+    reserved_non_document_messages: AtomicUsize,
+    reserved_non_document_bytes: AtomicUsize,
 }
 
 impl ReservationLedger {
@@ -68,6 +77,22 @@ impl ReservationLedger {
         self.reserved_messages
             .fetch_sub(messages, Ordering::Relaxed);
         self.reserved_bytes.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    fn charge_non_document(&self, messages: usize, bytes: usize) {
+        self.charge(messages, bytes);
+        self.reserved_non_document_messages
+            .fetch_add(messages, Ordering::Relaxed);
+        self.reserved_non_document_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn release_non_document(&self, messages: usize, bytes: usize) {
+        self.release(messages, bytes);
+        self.reserved_non_document_messages
+            .fetch_sub(messages, Ordering::Relaxed);
+        self.reserved_non_document_bytes
+            .fetch_sub(bytes, Ordering::Relaxed);
     }
 }
 
@@ -124,7 +149,7 @@ impl Drop for ProtocolReplyReservation {
     fn drop(&mut self) {
         if !self.consumed {
             self.ledger
-                .release(self.reply_count, self.upper_bound_bytes);
+                .release_non_document(self.reply_count, self.upper_bound_bytes);
         }
     }
 }
@@ -212,6 +237,8 @@ struct ActiveOutboundLease {
 pub struct CollaborationOutbox {
     max_pending_messages: usize,
     max_pending_bytes: usize,
+    max_non_document_messages: usize,
+    max_non_document_bytes: usize,
     pending_ordered: VecDeque<OutboxOrderedMessage>,
     pending_bytes: usize,
     pending_awareness_bytes: usize,
@@ -224,11 +251,22 @@ pub struct CollaborationOutbox {
 }
 
 impl CollaborationOutbox {
+    fn non_document_message_limit(max_pending_messages: usize) -> usize {
+        if max_pending_messages > 1 {
+            max_pending_messages - 1
+        } else {
+            max_pending_messages
+        }
+    }
+
     /// Build an outbox with explicit ceilings (message count / total bytes).
     pub fn with_ceilings(max_pending_messages: usize, max_pending_bytes: usize) -> Self {
+        let document_byte_reserve = (max_pending_bytes / 4).max(1).min(max_pending_bytes);
         Self {
             max_pending_messages,
             max_pending_bytes,
+            max_non_document_messages: Self::non_document_message_limit(max_pending_messages),
+            max_non_document_bytes: max_pending_bytes.saturating_sub(document_byte_reserve),
             pending_ordered: VecDeque::new(),
             pending_bytes: 0,
             pending_awareness_bytes: 0,
@@ -257,7 +295,7 @@ impl CollaborationOutbox {
         request_id: u64,
         upper_bound_bytes: usize,
     ) -> Result<OutboxReservation, OutboxReservationError> {
-        self.admit_reservation(1, upper_bound_bytes)?;
+        self.admit_reservation(OutboxAdmissionClass::Document, 1, upper_bound_bytes)?;
         if self.pending_ordered.try_reserve(1).is_err() {
             return Err(OutboxReservationError::Allocation);
         }
@@ -277,11 +315,12 @@ impl CollaborationOutbox {
         &mut self,
         upper_bound_bytes: usize,
     ) -> Result<ProtocolReplyReservation, OutboxReservationError> {
-        self.admit_reservation(1, upper_bound_bytes)?;
+        self.coalesce_unleased_awareness();
+        self.admit_reservation(OutboxAdmissionClass::Awareness, 1, upper_bound_bytes)?;
         if self.pending_ordered.try_reserve(1).is_err() {
             return Err(OutboxReservationError::Allocation);
         }
-        self.ledger.charge(1, upper_bound_bytes);
+        self.ledger.charge_non_document(1, upper_bound_bytes);
         Ok(ProtocolReplyReservation {
             ledger: Arc::clone(&self.ledger),
             reply_count: 1,
@@ -298,11 +337,16 @@ impl CollaborationOutbox {
         reply_count: usize,
         upper_bound_bytes: usize,
     ) -> Result<ProtocolReplyReservation, OutboxReservationError> {
-        self.admit_reservation(reply_count, upper_bound_bytes)?;
+        self.admit_reservation(
+            OutboxAdmissionClass::Protocol,
+            reply_count,
+            upper_bound_bytes,
+        )?;
         if self.pending_protocol.try_reserve(reply_count).is_err() {
             return Err(OutboxReservationError::Allocation);
         }
-        self.ledger.charge(reply_count, upper_bound_bytes);
+        self.ledger
+            .charge_non_document(reply_count, upper_bound_bytes);
         Ok(ProtocolReplyReservation {
             ledger: Arc::clone(&self.ledger),
             reply_count,
@@ -360,7 +404,7 @@ impl CollaborationOutbox {
         );
         reservation.consumed = true;
         self.ledger
-            .release(reservation.reply_count, reservation.upper_bound_bytes);
+            .release_non_document(reservation.reply_count, reservation.upper_bound_bytes);
         self.pending_awareness_bytes = self.pending_awareness_bytes.saturating_add(message.len());
         self.pending_ordered
             .push_back(OutboxOrderedMessage::AwarenessBroadcast(
@@ -398,7 +442,7 @@ impl CollaborationOutbox {
         );
         reservation.consumed = true;
         self.ledger
-            .release(reservation.reply_count, reservation.upper_bound_bytes);
+            .release_non_document(reservation.reply_count, reservation.upper_bound_bytes);
         for message in messages {
             self.pending_protocol_bytes = self.pending_protocol_bytes.saturating_add(message.len());
             self.pending_protocol.push_back(OutboxProtocolReply {
@@ -626,10 +670,14 @@ impl CollaborationOutbox {
     pub fn set_ceilings_for_test(&mut self, max_pending_messages: usize, max_pending_bytes: usize) {
         self.max_pending_messages = max_pending_messages;
         self.max_pending_bytes = max_pending_bytes;
+        self.max_non_document_messages = Self::non_document_message_limit(max_pending_messages);
+        let document_byte_reserve = (max_pending_bytes / 4).max(1).min(max_pending_bytes);
+        self.max_non_document_bytes = max_pending_bytes.saturating_sub(document_byte_reserve);
     }
 
     fn admit_reservation(
         &self,
+        class: OutboxAdmissionClass,
         messages: usize,
         upper_bound_bytes: usize,
     ) -> Result<(), OutboxReservationError> {
@@ -662,7 +710,73 @@ impl CollaborationOutbox {
                 actual: requested_bytes,
             });
         }
+        if class != OutboxAdmissionClass::Document {
+            let non_document_messages = self
+                .pending_protocol
+                .len()
+                .saturating_add(
+                    self.pending_ordered
+                        .iter()
+                        .filter(|message| {
+                            matches!(message, OutboxOrderedMessage::AwarenessBroadcast(_))
+                        })
+                        .count(),
+                )
+                .saturating_add(
+                    self.ledger
+                        .reserved_non_document_messages
+                        .load(Ordering::Relaxed),
+                )
+                .saturating_add(messages);
+            if non_document_messages > self.max_non_document_messages {
+                return Err(OutboxReservationError::Saturated {
+                    field: OUTBOX_MESSAGES_FIELD,
+                    limit: self.max_non_document_messages,
+                    actual: non_document_messages,
+                });
+            }
+            let non_document_bytes = self
+                .pending_awareness_bytes
+                .saturating_add(self.pending_protocol_bytes)
+                .saturating_add(
+                    self.ledger
+                        .reserved_non_document_bytes
+                        .load(Ordering::Relaxed),
+                )
+                .saturating_add(upper_bound_bytes);
+            if non_document_bytes > self.max_non_document_bytes {
+                return Err(OutboxReservationError::Saturated {
+                    field: OUTBOX_BYTES_FIELD,
+                    limit: self.max_non_document_bytes,
+                    actual: non_document_bytes,
+                });
+            }
+        }
         Ok(())
+    }
+
+    fn coalesce_unleased_awareness(&mut self) {
+        let keep_leased_front = matches!(
+            self.active_lease,
+            Some(ActiveOutboundLease {
+                kind: OutboundLeaseKind::AwarenessBroadcast,
+                ..
+            })
+        );
+        let mut index = 0usize;
+        let mut removed_bytes = 0usize;
+        self.pending_ordered.retain(|message| {
+            let keep = !matches!(message, OutboxOrderedMessage::AwarenessBroadcast(_))
+                || (keep_leased_front && index == 0);
+            if !keep {
+                if let OutboxOrderedMessage::AwarenessBroadcast(entry) = message {
+                    removed_bytes = removed_bytes.saturating_add(entry.message.len());
+                }
+            }
+            index = index.saturating_add(1);
+            keep
+        });
+        self.pending_awareness_bytes = self.pending_awareness_bytes.saturating_sub(removed_bytes);
     }
 
     fn require_matching_lease(

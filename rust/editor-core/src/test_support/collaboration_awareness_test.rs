@@ -974,7 +974,8 @@ fn withdrawal_review_fix_pending_tombstone_survives_close_detach_and_reconnect()
         // A full queue cannot reserve the new socket's Step 1. Preserve the
         // earlier saturation assertion, then make room for its actual
         // production-shaped reconnect sequence.
-        bridge::set_outbox_ceilings(id, 2, 10 * 1024 * 1024).unwrap();
+        // Two protocol frames plus the protected document slot.
+        bridge::set_outbox_ceilings(id, 3, 10 * 1024 * 1024).unwrap();
         lifecycle_action(id, generation);
         assert_eq!(desired_awareness(id).unwrap(), None, "{label}");
         assert!(local_peer(id).is_none(), "{label}");
@@ -1802,7 +1803,6 @@ fn renewed_announcements_refresh_the_peer_expiry_deadline() {
     destroy_session(id);
 }
 
-
 /// Serialize a sticky cursor anchored at `utf16_index` of the seed text on a
 /// raw doc sharing the session's lineage.
 fn sticky_cursor_json(doc: &Doc, utf16_index: u32) -> Value {
@@ -2061,7 +2061,10 @@ fn omitting_the_intent_selection_retains_the_cursor_and_an_explicit_null_clears_
     );
     assert!(established.error.is_none(), "{established:?}");
     let cursor_after_establish = desired_awareness(id).unwrap().unwrap()["cursor"].clone();
-    assert!(cursor_after_establish.is_object(), "{cursor_after_establish}");
+    assert!(
+        cursor_after_establish.is_object(),
+        "{cursor_after_establish}"
+    );
     assert_eq!(local_peer(id).unwrap().cursor, Some((7, 7)));
     drain_protocol_replies(id, generation);
 
@@ -2146,7 +2149,11 @@ fn omitting_the_intent_selection_retains_the_cursor_and_an_explicit_null_clears_
         json!({ "state": { "name": "local author" }, "focused": false }).to_string(),
     );
     assert!(still_absent.error.is_none(), "{still_absent:?}");
-    assert!(desired_awareness(id).unwrap().unwrap().get("cursor").is_none());
+    assert!(desired_awareness(id)
+        .unwrap()
+        .unwrap()
+        .get("cursor")
+        .is_none());
     destroy_session(id);
 }
 
@@ -2239,13 +2246,8 @@ fn repeating_an_awareness_selection_patch_does_not_advance_the_local_clock() {
     );
     assert!(repeated.error.is_none(), "{repeated:?}");
     assert_eq!(
-        serde_json::from_str::<Value>(
-            repeated
-                .value
-                .as_deref()
-                .expect("selection patch value"),
-        )
-        .unwrap(),
+        serde_json::from_str::<Value>(repeated.value.as_deref().expect("selection patch value"),)
+            .unwrap(),
         json!({"outboundChanged": false}),
     );
     assert_eq!(local_peer(id).unwrap().clock, clock_after_initial_patch);
@@ -2274,7 +2276,11 @@ fn awareness_selection_patch_updates_the_retained_cursor_while_disconnected() {
         serde_json::from_str(result.value.as_deref().expect("selection patch value")).unwrap();
 
     assert_eq!(outcome, json!({"outboundChanged": false}));
-    assert!(desired_awareness(id).unwrap().unwrap().get("cursor").is_some());
+    assert!(desired_awareness(id)
+        .unwrap()
+        .unwrap()
+        .get("cursor")
+        .is_some());
     assert_eq!(pending_protocol_replies(id).unwrap(), Some((0, 0)));
     destroy_session(id);
 }

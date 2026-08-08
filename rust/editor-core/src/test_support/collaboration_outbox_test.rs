@@ -26,6 +26,44 @@ fn input_envelope(request_id: u64, revision: u64, text: &str) -> String {
 }
 
 #[test]
+fn awareness_churn_coalesces_without_consuming_document_reserve() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    for request_id in 1..=1_000 {
+        let reservation = outbox.reserve_awareness_broadcast(8).unwrap();
+        outbox.install_awareness_broadcast(reservation, request_id, vec![request_id as u8; 8]);
+    }
+    assert_eq!(outbox.pending_protocol_reply_count(), 1);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 8);
+
+    let document = outbox.reserve_document_update(2_000, 48).unwrap();
+    outbox.install(document, vec![1; 16]);
+    assert_eq!(outbox.pending_document_update_count(), 1);
+}
+
+#[test]
+fn leased_awareness_is_immutable_with_one_coalesced_replacement() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let first = outbox.reserve_awareness_broadcast(4).unwrap();
+    outbox.install_awareness_broadcast(first, 1, vec![1; 4]);
+    let leased = outbox.lease_next().unwrap().unwrap();
+
+    for request_id in 2..=100 {
+        let replacement = outbox.reserve_awareness_broadcast(4).unwrap();
+        outbox.install_awareness_broadcast(replacement, request_id, vec![request_id as u8; 4]);
+    }
+    assert_eq!(outbox.pending_protocol_reply_count(), 2);
+    assert!(matches!(
+        outbox.lease_next().unwrap().unwrap().payload,
+        OutboundLeasePayload::ProtocolReply(ref frame) if frame == &[1; 4]
+    ));
+    outbox.ack_lease(leased.lease_id).unwrap();
+    assert!(matches!(
+        outbox.lease_next().unwrap().unwrap().payload,
+        OutboundLeasePayload::ProtocolReply(ref frame) if frame == &[100; 4]
+    ));
+}
+
+#[test]
 fn leased_front_remains_queued_and_charged_until_exact_ack() {
     let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
     let reservation = outbox.reserve_document_update(11, 3).unwrap();
