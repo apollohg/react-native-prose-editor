@@ -186,6 +186,11 @@ internal object NativeCollaborationTransportRegistry {
             }
             base
         }
+        if (event is AndroidCollaborationTransportEvent.Directive &&
+            event.directive.remoteCommitApplied
+        ) {
+            NativeEditorViewRegistry.rebaseAfterRemoteCommit(editorId)
+        }
         synchronized(lock) { eventEmitter }?.invoke(payload)
     }
 

@@ -91,6 +91,19 @@ internal interface EditorV2Backend {
      * must never stitch it to a separate `getState` response.
      */
     fun renderUpdate(editorId: String, mirrorAnchor: Int?, mirrorHead: Int?): EditorV2CallResult<String>
+    fun renderNative(
+        editorId: String,
+        ownerId: String,
+        mirrorAnchor: Int?,
+        mirrorHead: Int?,
+    ): EditorV2CallResult<String>
+    fun pinPositionEpoch(
+        editorId: String,
+        ownerId: String,
+        documentRevision: String,
+    ): EditorV2CallResult<String>
+    fun applyNativeIntent(editorId: String, requestJson: String): EditorV2CallResult<String>
+    fun releaseNativeBinding(editorId: String, ownerId: String): EditorV2Error?
 
     /** Engine-authoritative scalar→doc selection resolution for one session. */
     fun resolveScalarSelection(editorId: String, anchor: Int, head: Int): EditorV2CallResult<String>

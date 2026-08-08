@@ -94,12 +94,12 @@ class EditorV2StagingViewTest {
 
     @Test
     fun `view mutations route through the v2 adapter`() {
-        backend.calls.clear()
         editText.setSelection(5)
+        backend.calls.clear()
         editText.handleTextCommit("X")
         assertEquals("HelloX", documentText())
         assertEquals("HelloX", editText.text.toString())
-        assertEquals(1, backend.calls.count { it == "applyInput" })
+        assertEquals(1, backend.calls.count { it == "applyNativeIntent" })
     }
 
     @Test
@@ -133,7 +133,7 @@ class EditorV2StagingViewTest {
         val revisionBefore = adapter.baseDocumentRevision
         inputConnection.finishComposingText()
         assertEquals(revisionBefore + 1u, adapter.baseDocumentRevision)
-        assertEquals(1, backend.calls.count { it == "applyInput" })
+        assertEquals(1, backend.calls.count { it == "applyNativeIntent" })
     }
 
     @Test
@@ -145,7 +145,7 @@ class EditorV2StagingViewTest {
 
         inputConnection.commitText(" the", 1)
 
-        assertEquals(1, backend.calls.count { it == "applyInput" })
+        assertEquals(1, backend.calls.count { it == "applyNativeIntent" })
         assertEquals("Hello the", documentText())
     }
 
@@ -217,7 +217,7 @@ class EditorV2StagingViewTest {
     }
 
     @Test
-    fun `revision mismatch split applies remote refresh without line boundary restart`() {
+    fun `revision mismatch split follows after affinity and refreshes the line boundary`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         activity.setContentView(editText)
         assertTrue(editText.requestFocus())
@@ -230,10 +230,10 @@ class EditorV2StagingViewTest {
         editText.handleReturnKey()
         shadowOf(Looper.getMainLooper()).idle()
 
-        assertEquals("Hello REMOTE", documentText())
-        assertEquals("Hello REMOTE", editText.text.toString())
-        assertEquals(0, imeTraceCount(editText, "lineBoundaryInputRefreshScheduled"))
-        assertEquals(0, imeTraceCount(editText, "restartInput:source=lineBoundary:"))
+        assertEquals("Hello REMOTE\n", documentText())
+        assertEquals("Hello REMOTE\n", editText.text.toString())
+        assertEquals(1, imeTraceCount(editText, "lineBoundaryInputRefreshScheduled"))
+        assertEquals(1, imeTraceCount(editText, "restartInput:source=lineBoundary:"))
     }
 
     @Test
@@ -311,7 +311,7 @@ class EditorV2StagingViewTest {
     }
 
     @Test
-    fun `stale revision refreshes the view from rust state`() {
+    fun `stale revision rebases the typed character after concurrent caret content`() {
         // Sync the caret while fresh; a remote-side change then advances the
         // session behind the view's back, so the next commit goes stale.
         editText.setSelection(5)
@@ -321,9 +321,8 @@ class EditorV2StagingViewTest {
 
         editText.handleTextCommit("X")
 
-        // The stale commit is never retried; the view refreshes from Rust.
-        assertEquals("Hello REMOTE", documentText())
-        assertEquals("Hello REMOTE", editText.text.toString())
+        assertEquals("Hello REMOTEX", documentText())
+        assertEquals("Hello REMOTEX", editText.text.toString())
     }
 
     @Test

@@ -162,6 +162,19 @@ internal object NativeEditorViewRegistry {
         viewsByEditorId[editorId]?.size ?: 0
 
     @Synchronized
+    private fun liveViewsFor(editorId: Long): List<NativeEditorExpoView> =
+        viewsByEditorId[editorId]?.mapNotNull { it.view.get() }.orEmpty()
+
+    fun rebaseAfterRemoteCommit(handle: String) {
+        val viewToken = EditorV2Registry.viewTokenForHandle(handle) ?: return
+        liveViewsFor(viewToken).forEach { view ->
+            if (view.markRemoteCommitRebaseScheduled(viewToken)) {
+                mainHandler.post { view.applyRemoteCommitRefresh(viewToken) }
+            }
+        }
+    }
+
+    @Synchronized
     fun registerInputView(editorId: Long, view: EditorEditText) {
         if (editorId == 0L || destroyingEditorIds.contains(editorId)) return
         if (!liveEditorIds.contains(editorId) && !rustEditorExists(editorId)) return
@@ -814,6 +827,11 @@ class NativeEditorExpoView(
         val atomicUpdateJSON: String
     )
 
+    private data class NativeCommitKey(
+        val editorId: String,
+        val documentRevision: String,
+    )
+
     private data class EditorErrorBinding(
         val adapter: EditorV2Adapter,
         val editorId: String,
@@ -900,6 +918,10 @@ class NativeEditorExpoView(
     private var lastToolbarItemsJson: String? = null
     private var lastToolbarFrameJson: String? = null
     private var lastDocumentVersion: String? = null
+    private var renderedDocumentRevision: String? = null
+    @Volatile
+    private var remoteCommitRebaseScheduled = false
+    private var remoteCommitRebaseEditorId: Long? = null
     private var toolbarState = NativeToolbarState.empty
     private var showsToolbar = true
     private var toolbarPlacement = ToolbarPlacement.KEYBOARD
@@ -951,6 +973,7 @@ class NativeEditorExpoView(
     private var pendingNativeActionRetryAttempts = 0
     private var lastReadyEditorId: Long? = null
     private val pendingEditorUpdateEvents = java.util.ArrayDeque<PendingEditorUpdateEvent>()
+    private val pendingEditorUpdateKeys = mutableSetOf<NativeCommitKey>()
     private var pendingEditorUpdateDispatchGeneration = 0
     private var pendingEditorUpdateDispatchScheduled = false
     private val pendingEditorErrorEvents = java.util.ArrayDeque<PendingEditorErrorEvent>()
@@ -1029,7 +1052,7 @@ class NativeEditorExpoView(
         val previousEditorId = richTextView.editorId
         if (previousEditorId != id) {
             invalidateAutoGrowContentHeightEmission()
-            clearPendingEditorUpdateDispatchQueue("editorRebind")
+            drainPendingEditorUpdateEvents()
             clearEditorErrorBinding("editorRebind")
         }
         if (previousEditorId == id && richTextView.editorEditText.editorId == id) {
@@ -1056,6 +1079,7 @@ class NativeEditorExpoView(
         if (previousEditorId != id) {
             NativeEditorViewRegistry.unregister(previousEditorId, this)
             lastDocumentVersion = null
+            renderedDocumentRevision = null
             cancelPendingToolbarRefocus()
             cancelPendingEditorUpdateRetry()
             if (pendingEditorUpdateEditorId != null && pendingEditorUpdateEditorId != id) {
@@ -1550,7 +1574,11 @@ class NativeEditorExpoView(
                 refreshReadyStateIfSettled()
                 return@Runnable
             }
-            when (applyEditorUpdateOutcome(updateJson, scheduleViewCommandRetry = false)) {
+            val outcome = applyEditorUpdateOutcome(
+                updateJson,
+                scheduleViewCommandRetry = false,
+            )
+            when (outcome) {
                 PendingEditorUpdateApplyOutcome.APPLIED -> {
                     appliedEditorUpdateRevision = revision
                     pendingEditorUpdateJson = null
@@ -1972,6 +2000,12 @@ class NativeEditorExpoView(
         }
     }
 
+    private fun isSupersededEditorUpdate(updateJson: String): Boolean {
+        val rendered = renderedDocumentRevision?.toULongOrNull() ?: return false
+        val incoming = documentVersionFromUpdateJSON(updateJson)?.toULongOrNull() ?: return false
+        return incoming < rendered
+    }
+
     private fun preflightUpdateEventFromJSON(updateJSON: String?): PreflightUpdateEvent? {
         val update = updateJSON ?: return null
         val documentRevision = documentVersionFromUpdateJSON(update) ?: return null
@@ -2216,6 +2250,7 @@ class NativeEditorExpoView(
         lastEditorResetUpdateJsonProp = null
         lastEditorResetUpdateEditorIdProp = null
         lastDocumentVersion = null
+        renderedDocumentRevision = null
         lastReadyEditorId = null
         toolbarState = NativeToolbarState.empty
         keyboardToolbarView.applyState(toolbarState)
@@ -2514,13 +2549,13 @@ class NativeEditorExpoView(
             adapter.adoptExternalRender(updateJson)
                 ?: return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
         }
+        drainPendingEditorUpdateEvents()
         isApplyingJSUpdate = true
         val applied = try {
             richTextView.editorEditText.applyUpdateJSON(
                 adoptedUpdateJson,
                 refreshInputConnectionForExternalUpdate = true
             )
-            clearPendingEditorUpdateDispatchQueue("jsResetUpdate")
             true
         } catch (error: Throwable) {
             Log.w(LOG_TAG, "Failed to apply JS editor reset update", error)
@@ -2541,6 +2576,39 @@ class NativeEditorExpoView(
     private fun isEditorReadyForNativeUpdate(): Boolean {
         val editorId = richTextView.editorId
         return editorId == 0L || (isAttachedToNativeWindow && richTextView.editorEditText.editorId == editorId)
+    }
+
+    @Synchronized
+    internal fun markRemoteCommitRebaseScheduled(editorId: Long): Boolean {
+        if (remoteCommitRebaseScheduled && remoteCommitRebaseEditorId == editorId) return false
+        remoteCommitRebaseScheduled = true
+        remoteCommitRebaseEditorId = editorId
+        return true
+    }
+
+    @Synchronized
+    private fun clearRemoteCommitRebaseScheduled(editorId: Long) {
+        if (remoteCommitRebaseEditorId != editorId) return
+        remoteCommitRebaseScheduled = false
+        remoteCommitRebaseEditorId = null
+    }
+
+    internal fun applyRemoteCommitRefresh(expectedEditorId: Long) {
+        clearRemoteCommitRebaseScheduled(expectedEditorId)
+        if (richTextView.editorId != expectedEditorId) return
+        if (richTextView.editorId == 0L || !isEditorReadyForNativeUpdate()) return
+        if (isApplyingJSUpdate) return
+        // Preparing an external update commits a live composition. The commit
+        // re-bases the adapter itself, so leave the half-typed word alone.
+        if (richTextView.editorEditText.hasPendingCompositionForExternalRefresh()) return
+        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId) ?: return
+        val preflight = richTextView.editorEditText.prepareForExternalEditorUpdateWithResult()
+        if (!preflight.ready) return
+        val update = preflight.adoptedUpdateJSON ?: adapter.refreshFromRustState(null) ?: return
+        richTextView.editorEditText.applyUpdateJSON(
+            update,
+            refreshInputConnectionForExternalUpdate = true
+        )
     }
 
     private fun applyEditorUpdateOutcome(
@@ -2568,6 +2636,14 @@ class NativeEditorExpoView(
         val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
         if (adapter != null && !adapter.validateExternalRender(updateJson)) {
             return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+        }
+        if (adapter != null && isSupersededEditorUpdate(updateJson)) {
+            richTextView.editorEditText.recordImeTraceForTesting(
+                "pendingEditorUpdateSuperseded",
+                "updateRevision=${documentVersionFromUpdateJSON(updateJson)}" +
+                    " rendered=$renderedDocumentRevision"
+            )
+            return PendingEditorUpdateApplyOutcome.APPLIED
         }
         if (!isEditorReadyForNativeUpdate()) {
             if (scheduleViewCommandRetry) {
@@ -2600,13 +2676,13 @@ class NativeEditorExpoView(
                 return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
             }
         }
+        drainPendingEditorUpdateEvents()
         isApplyingJSUpdate = true
         return try {
             richTextView.editorEditText.applyUpdateJSON(
                 adoptedUpdateJson,
                 refreshInputConnectionForExternalUpdate = true
             )
-            clearPendingEditorUpdateDispatchQueue("jsUpdate")
             PendingEditorUpdateApplyOutcome.APPLIED
         } catch (error: Throwable) {
             Log.w(LOG_TAG, "Failed to apply JS editor update", error)
@@ -2687,6 +2763,7 @@ class NativeEditorExpoView(
             )
             return
         }
+        renderedDocumentRevision = documentRevision
         val sourceEditorId = eventEditorId(richTextView.editorId)
         val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
         val cachedAtomicUpdateJSON =
@@ -2711,14 +2788,15 @@ class NativeEditorExpoView(
             )
             return
         }
-        pendingEditorUpdateEvents.addLast(
-            PendingEditorUpdateEvent(
+        val event = PendingEditorUpdateEvent(
                 editorId = sourceEditorId,
                 documentRevision = documentRevision,
                 viewUpdateJSON = updateJSON,
                 atomicUpdateJSON = atomicUpdateJSON
             )
-        )
+        val key = NativeCommitKey(event.editorId, event.documentRevision)
+        if (!pendingEditorUpdateKeys.add(key)) return
+        pendingEditorUpdateEvents.addLast(event)
         richTextView.editorEditText.recordImeTraceForTesting(
             "nativeViewEditorUpdateQueued",
             "queue=${pendingEditorUpdateEvents.size} jsonLength=${updateJSON.length}"
@@ -2745,6 +2823,7 @@ class NativeEditorExpoView(
         var drainedCount = 0
         while (pendingEditorUpdateEvents.isNotEmpty()) {
             val event = pendingEditorUpdateEvents.removeFirst()
+            pendingEditorUpdateKeys.remove(NativeCommitKey(event.editorId, event.documentRevision))
             if (event.editorId != eventEditorId(richTextView.editorId)) {
                 richTextView.editorEditText.recordImeTraceForTesting(
                     "nativeViewEditorUpdateSkipped",
@@ -2752,7 +2831,8 @@ class NativeEditorExpoView(
                 )
                 continue
             }
-            dispatchEditorUpdate(event, emitToJS = true)
+            val isCurrentRevision = event.documentRevision == renderedDocumentRevision
+            dispatchEditorUpdate(event, emitToJS = true, applyViewState = isCurrentRevision)
             drainedCount += 1
         }
         richTextView.editorEditText.recordImeTraceForTesting(
@@ -2761,38 +2841,34 @@ class NativeEditorExpoView(
         )
     }
 
-    private fun clearPendingEditorUpdateDispatchQueue(reason: String) {
-        if (pendingEditorUpdateEvents.isEmpty() && !pendingEditorUpdateDispatchScheduled) return
-        val clearedCount = pendingEditorUpdateEvents.size
-        pendingEditorUpdateEvents.clear()
-        pendingEditorUpdateDispatchScheduled = false
-        pendingEditorUpdateDispatchGeneration += 1
-        richTextView.editorEditText.recordImeTraceForTesting(
-            "nativeViewEditorUpdateQueueCleared",
-            "reason=$reason count=$clearedCount"
-        )
-    }
-
-    private fun dispatchEditorUpdate(event: PendingEditorUpdateEvent, emitToJS: Boolean) {
+    private fun dispatchEditorUpdate(
+        event: PendingEditorUpdateEvent,
+        emitToJS: Boolean,
+        applyViewState: Boolean = true,
+    ) {
         val updateJSON = event.viewUpdateJSON
         val startedAt = System.nanoTime()
-        noteDocumentVersionFromUpdateJSON(updateJSON)
+        if (applyViewState) noteDocumentVersionFromUpdateJSON(updateJSON)
         val noteNanos = System.nanoTime() - startedAt
         val toolbarStartedAt = System.nanoTime()
-        NativeToolbarState.fromUpdateJson(updateJSON)?.let { state ->
-            toolbarState = state
-            keyboardToolbarView.applyState(state)
+        if (applyViewState) {
+            NativeToolbarState.fromUpdateJson(updateJSON)?.let { state ->
+                toolbarState = state
+                keyboardToolbarView.applyState(state)
+            }
         }
         val toolbarNanos = System.nanoTime() - toolbarStartedAt
         val mentionStartedAt = System.nanoTime()
-        refreshMentionQuery()
+        if (applyViewState) refreshMentionQuery()
         val mentionNanos = System.nanoTime() - mentionStartedAt
         val retryStartedAt = System.nanoTime()
-        clearPendingNativeActionRetryIfScopeChanged()
-        schedulePendingPreflightWake()
-        richTextView.refreshRemoteSelections()
+        if (applyViewState) {
+            clearPendingNativeActionRetryIfScopeChanged()
+            schedulePendingPreflightWake()
+            richTextView.refreshRemoteSelections()
+        }
         val retryNanos = System.nanoTime() - retryStartedAt
-        if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
+        if (applyViewState && heightBehavior == EditorHeightBehavior.AUTO_GROW) {
             post {
                 requestLayout()
                 emitContentHeightIfNeeded(force = false)

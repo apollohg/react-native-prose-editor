@@ -196,8 +196,8 @@ class EditorV2AdapterTest {
 
         val mapping = adapter.syncSelection(2, 2)
         assertNotNull(mapping)
-        assertEquals(3, mapping!![0])
-        assertEquals(3, mapping[1])
+        assertEquals(3, mapping!!.docAnchor)
+        assertEquals(3, mapping.docHead)
 
         backend.calls.clear()
         val update = adapter.insertText("X", 2)
@@ -208,6 +208,28 @@ class EditorV2AdapterTest {
 
         val undone = adapter.undo()
         assertEquals("ab", renderedText(undone))
+    }
+
+    @Test
+    fun `room typing survives a remote revision advance between keystrokes`() {
+        val adapter = makeRoomAdapter()
+        adapter.claimNativeBindingIfUnowned(1L)
+        assertEquals("seedX", renderedText(adapter.insertText("X", 4)))
+
+        val session = backend.sessions.getValue(adapter.editorId)
+        session.text.append("R")
+        session.revision += 1uL
+
+        val update = adapter.insertText("Y", 5)
+
+        assertEquals(
+            "a keystroke concurrent with a remote update must still be typed",
+            "seedXRY",
+            documentText(adapter)
+        )
+        assertEquals("seedXRY", renderedText(update))
+
+        assertEquals("seedXRYZ", documentText(adapter.also { it.insertText("Z", 7) }))
     }
 
     @Test
@@ -322,8 +344,8 @@ class EditorV2AdapterTest {
         adapter.setContentHtml("<p>abcd</p>")
         val mapping = adapter.syncSelection(3, 1)
         assertNotNull(mapping)
-        assertEquals(4, mapping!![0])
-        assertEquals(2, mapping[1])
+        assertEquals(4, mapping!!.docAnchor)
+        assertEquals(2, mapping.docHead)
 
         val update = adapter.replaceTextRange(1, 3, "X")
         assertEquals("aXd", renderedText(update))
@@ -545,7 +567,7 @@ class EditorV2AdapterTest {
         // Selection/navigation remains allowed.
         val mapping = adapter.syncSelection(1, 1)
         assertNotNull(mapping)
-        assertEquals(2, mapping!![0])
+        assertEquals(2, mapping!!.docAnchor)
 
         // Controlled content still passes.
         val replaced = adapter.setContentJson(
@@ -557,7 +579,77 @@ class EditorV2AdapterTest {
     // MARK: stale revision recovery
 
     @Test
-    fun `revision mismatch refreshes from rust state and never retries`() {
+    fun `pre sync mismatch refuses selection relative input without replay`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        adapter.syncSelection(0, 0)
+        val session = sessionOf(adapter)
+        session.text.append("R")
+        session.revision += 1u
+        backend.calls.clear()
+
+        val update = adapter.insertText("X", 2)
+
+        assertEquals("baseR", documentText(adapter))
+        assertEquals("baseR", renderedText(update))
+        assertEquals(1, backend.calls.count { it == "setSelection" })
+        assertEquals(0, backend.calls.count { it == "applyInput" })
+    }
+
+    @Test
+    fun `pre sync mismatch refuses selection replacement without replay`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        adapter.syncSelection(0, 0)
+        val session = sessionOf(adapter)
+        session.text.append("R")
+        session.revision += 1u
+
+        val update = adapter.replaceTextRange(1, 3, "Q")
+
+        assertEquals("baseR", documentText(adapter))
+        assertEquals("baseR", renderedText(update))
+    }
+
+    @Test
+    fun `pre sync mismatch refuses split without replay`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        adapter.syncSelection(0, 0)
+        val session = sessionOf(adapter)
+        session.text.append("R")
+        session.revision += 1u
+        backend.calls.clear()
+
+        val split = adapter.splitBlockAt(2)
+
+        assertNotNull(split)
+        assertFalse(split!!.committed)
+        assertEquals("baseR", renderedText(split.updateJson))
+        assertEquals(0, backend.calls.count { it == "applyCommand" })
+    }
+
+    @Test
+    fun `a second mismatch after recovery returns a refresh without another retry`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        adapter.syncSelection(0, 0)
+        val session = sessionOf(adapter)
+        session.text.append("R")
+        session.revision += 1u
+        backend.advanceRevisionAfterNextRender = true
+        backend.calls.clear()
+
+        val update = adapter.insertText("X", 2)
+
+        assertNotNull(update)
+        assertEquals("baseR", documentText(adapter))
+        assertEquals(0, backend.calls.count { it == "applyInput" })
+        assertEquals(1, backend.calls.count { it == "renderUpdate" })
+    }
+
+    @Test
+    fun `revision mismatch refuses caret relative input without replay`() {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>base</p>")
 
@@ -569,11 +661,11 @@ class EditorV2AdapterTest {
         session.revision += 1u
 
         backend.calls.clear()
-        val update = adapter.insertText("NORETRY", 0)
-        assertNotNull("a stale op resolves into a refresh update", update)
-        assertEquals("the stale op must not be retried", 1L, backend.calls.count { it == "applyInput" }.toLong())
-        assertEquals("a race refreshes exclusively through one atomic render", 0, backend.calls.count { it == "getState" })
-        assertEquals("a race performs exactly one atomic render", 1, backend.calls.count { it == "renderUpdate" })
+        val update = adapter.insertText("REBASED", 0)
+        assertNotNull("a stale input returns the authoritative refresh", update)
+        assertEquals("the keystroke is attempted once", 1L, backend.calls.count { it == "applyInput" }.toLong())
+        assertEquals("a race refreshes exclusively through atomic renders", 0, backend.calls.count { it == "getState" })
+        assertEquals("one render recovers the race", 1, backend.calls.count { it == "renderUpdate" })
         assertEquals("EXTbase", renderedText(update))
         assertEquals("EXTbase", documentText(adapter))
 
@@ -582,7 +674,67 @@ class EditorV2AdapterTest {
     }
 
     @Test
-    fun `split renders identify stale and not applicable refreshes as uncommitted`() {
+    fun `a toolbar state read between keystrokes does not defeat the rebase`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>seed</p>")
+        adapter.syncSelection(4, 4)
+        adapter.currentStateJson()
+        val session = sessionOf(adapter)
+        session.text.append("R")
+        session.revision += 1u
+
+        backend.calls.clear()
+        adapter.insertText("X", 4)
+
+        assertEquals("seedR", documentText(adapter))
+        assertFalse(backend.calls.any { it == "applyInput" })
+    }
+
+    @Test
+    fun `a mirrored refresh does not cache its mirror as the synced selection`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>seed</p>")
+        adapter.syncSelection(4, 4)
+        val session = sessionOf(adapter)
+        session.text.append("R")
+        session.revision += 1u
+
+        adapter.deleteScalarRange(1, 3)
+        backend.calls.clear()
+
+        adapter.insertText("Q", 1)
+
+        assertEquals(
+            "the next keystroke must re-sync rather than trust the mirror",
+            1L,
+            backend.calls.count { it == "setSelection" }.toLong()
+        )
+        assertEquals("sQeedR", documentText(adapter))
+    }
+
+    @Test
+    fun `revision mismatch never rebases a positioned mutation`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        adapter.syncSelection(0, 0)
+        val session = sessionOf(adapter)
+        session.text.insert(0, "EXT")
+        session.revision += 1u
+
+        backend.calls.clear()
+        val update = adapter.deleteScalarRange(0, 4)
+
+        assertNotNull(update)
+        assertEquals(
+            "a mutation carrying explicit positions must never be replayed",
+            1L,
+            backend.calls.count { it == "applyCommand" }.toLong()
+        )
+        assertEquals("EXTbase", documentText(adapter))
+    }
+
+    @Test
+    fun `split renders refuse a stale split and mark not applicable uncommitted`() {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>base</p>")
         adapter.syncSelection(0, 0)
@@ -877,4 +1029,5 @@ class EditorV2AdapterTest {
         assertEquals(ULong.MAX_VALUE.toString(), errors.last().requestId)
         assertEquals("max", documentText(adapter))
     }
+
 }

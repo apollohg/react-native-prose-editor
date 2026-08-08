@@ -30,11 +30,16 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         var outboundLease: Pair<String, ByteArray>? = null
         var nextLeaseId = 1uL
         val commands = mutableListOf<JSONObject>()
+        var nextPositionEpoch = 1uL
+        val positionEpochs = mutableMapOf<String, String>()
+        val positionEpochTexts = mutableMapOf<String, String>()
+        val nativeOutcomes = mutableMapOf<String, LinkedHashMap<String, String>>()
     }
 
     val sessions = LinkedHashMap<String, FakeSession>()
     private var nextId = 0uL
     private var nextSplitCommandNotApplicableRemoteText: String? = null
+    var advanceRevisionAfterNextRender = false
     var awarenessSelectionResult: EditorV2CallResult<String> =
         EditorV2CallResult.Ok("""{"outboundChanged":false}""")
     var lastAwarenessSelectionJson: String? = null
@@ -623,7 +628,181 @@ internal class FakeEditorV2Backend : EditorV2Backend {
             .put("stateRevision", session.revision.toString())
             .put("scalarLength", text.codePointCount(0, text.length))
             .put("documentIsEmpty", text.isEmpty())
-        return EditorV2CallResult.Ok(update.toString())
+        val updateJson = update.toString()
+        if (advanceRevisionAfterNextRender) {
+            advanceRevisionAfterNextRender = false
+            session.revision += 1u
+        }
+        return EditorV2CallResult.Ok(updateJson)
+    }
+
+    override fun renderNative(
+        editorId: String,
+        ownerId: String,
+        mirrorAnchor: Int?,
+        mirrorHead: Int?,
+    ): EditorV2CallResult<String> {
+        calls.add("renderNative")
+        val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        val rendered = renderUpdate(editorId, mirrorAnchor, mirrorHead)
+        if (rendered !is EditorV2CallResult.Ok) return rendered
+        val epoch = session.nextPositionEpoch++.toString()
+        session.positionEpochs[ownerId] = epoch
+        session.positionEpochTexts[ownerId] = session.text.toString()
+        return EditorV2CallResult.Ok(JSONObject(rendered.value).put("positionEpoch", epoch).toString())
+    }
+
+    override fun pinPositionEpoch(
+        editorId: String,
+        ownerId: String,
+        documentRevision: String,
+    ): EditorV2CallResult<String> {
+        calls.add("pinPositionEpoch")
+        val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        if (documentRevision != session.revision.toString()) {
+            return EditorV2CallResult.Err(
+                EditorV2Error("operation", "REVISION_MISMATCH", "document revision mismatch")
+            )
+        }
+        val epoch = session.nextPositionEpoch++.toString()
+        session.positionEpochs[ownerId] = epoch
+        session.positionEpochTexts[ownerId] = session.text.toString()
+        return EditorV2CallResult.Ok(JSONObject().put("positionEpoch", epoch).toString())
+    }
+
+    override fun applyNativeIntent(editorId: String, requestJson: String): EditorV2CallResult<String> {
+        calls.add("applyNativeIntent")
+        val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        val request = JSONObject(requestJson)
+        val requestId = canonicalRequestId(request)
+            ?: return EditorV2CallResult.Err(configInvalid("requestId must be canonical decimal u64 text"))
+        val ownerId = canonicalV2U64(request.optString("ownerId"))
+            ?: return EditorV2CallResult.Err(configInvalid("ownerId must be canonical decimal u64 text", requestId))
+        val cached = session.nativeOutcomes[ownerId]?.get(requestId)
+        if (cached != null) return EditorV2CallResult.Ok(cached)
+        if (session.positionEpochs[ownerId] != request.optString("positionEpoch")) {
+            return EditorV2CallResult.Err(
+                EditorV2Error("boundary", "POSITION_EPOCH_INVALID", "position epoch is not pinned", requestId)
+            )
+        }
+        val intent = request.getJSONObject("intent")
+        if (intent.getString("type") != "setSelection") {
+            admitWritable(session, requestId)?.let { return EditorV2CallResult.Err(it) }
+        }
+        val epochText = session.positionEpochTexts.getValue(ownerId)
+        val collapsed = intent.getInt("anchor") == intent.getInt("head")
+        session.anchor = remapEpochOffset(
+            intent.getInt("anchor"),
+            epochText,
+            session.text.toString(),
+            affinityAfter = collapsed,
+        )
+        session.head = remapEpochOffset(
+            intent.getInt("head"),
+            epochText,
+            session.text.toString(),
+            affinityAfter = collapsed,
+        )
+        val outcome = when (intent.getString("type")) {
+            "setSelection" -> transactionOutcome(session, changed = false)
+            "insertText" -> {
+                insertAtSelection(session, intent.getString("text"))
+                transactionOutcome(session, changed = true)
+            }
+            "replaceSelectionText" -> {
+                insertAtSelection(session, intent.getString("text"))
+                transactionOutcome(session, changed = true)
+            }
+            "deleteBackward" -> nativeDeleteRange(
+                session,
+                if (session.anchor == session.head) (session.anchor - 1).coerceAtLeast(0) else minOf(session.anchor, session.head),
+                maxOf(session.anchor, session.head),
+            )
+            "deleteForward" -> nativeDeleteRange(
+                session,
+                minOf(session.anchor, session.head),
+                if (session.anchor == session.head) (session.anchor + 1).coerceAtMost(session.text.length) else maxOf(session.anchor, session.head),
+            )
+            "deleteSurroundingText" -> nativeDeleteRange(
+                session,
+                minOf(session.anchor, session.head).minus(intent.getInt("before")).coerceAtLeast(0),
+                maxOf(session.anchor, session.head).plus(intent.getInt("after")).coerceAtMost(session.text.length),
+            )
+            "deleteRange" -> nativeDeleteRange(session, minOf(session.anchor, session.head), maxOf(session.anchor, session.head))
+            else -> {
+                val command = if (intent.getString("type") == "command") {
+                    intent.getJSONObject("command")
+                } else {
+                    JSONObject(intent.toString()).apply {
+                        remove("anchor")
+                        remove("head")
+                    }
+                }
+                val result = applyCommand(
+                    editorId,
+                    JSONObject()
+                        .put("version", 1)
+                        .put("requestId", requestId)
+                        .put("baseDocumentRevision", session.revision.toString())
+                        .put("command", command)
+                        .toString(),
+                )
+                if (result is EditorV2CallResult.Err) return result
+                (result as EditorV2CallResult.Ok).value
+            }
+        }
+        val retained = JSONObject(outcome).put("positionFallback", false).toString()
+        session.nativeOutcomes.getOrPut(ownerId) { LinkedHashMap() }[requestId] = retained
+        return EditorV2CallResult.Ok(retained)
+    }
+
+    override fun releaseNativeBinding(editorId: String, ownerId: String): EditorV2Error? {
+        calls.add("releaseNativeBinding")
+        val session = liveSession(editorId) ?: return destroyedError()
+        session.positionEpochs.remove(ownerId)
+        session.positionEpochTexts.remove(ownerId)
+        session.nativeOutcomes.remove(ownerId)
+        return null
+    }
+
+    private fun remapEpochOffset(
+        offset: Int,
+        oldText: String,
+        newText: String,
+        affinityAfter: Boolean,
+    ): Int {
+        val oldOffset = offset.coerceIn(0, oldText.length)
+        var prefix = 0
+        val sharedLimit = minOf(oldText.length, newText.length)
+        while (prefix < sharedLimit && oldText[prefix] == newText[prefix]) prefix += 1
+        var suffix = 0
+        while (
+            suffix < oldText.length - prefix &&
+            suffix < newText.length - prefix &&
+            oldText[oldText.length - suffix - 1] == newText[newText.length - suffix - 1]
+        ) {
+            suffix += 1
+        }
+        val oldEnd = oldText.length - suffix
+        val newEnd = newText.length - suffix
+        return when {
+            oldOffset < prefix -> oldOffset
+            oldOffset > oldEnd -> oldOffset + (newEnd - oldEnd)
+            oldOffset == prefix && oldEnd == prefix && !affinityAfter -> prefix
+            oldOffset == oldEnd -> newEnd
+            affinityAfter -> newEnd
+            else -> prefix
+        }.coerceIn(0, newText.length)
+    }
+
+    private fun nativeDeleteRange(session: FakeSession, from: Int, to: Int): String {
+        if (from >= to) return JSONObject().put("type", "notApplicable").toString()
+        pushUndo(session)
+        session.text.delete(from, to)
+        session.anchor = from
+        session.head = from
+        session.revision += 1u
+        return transactionOutcome(session, changed = true)
     }
 
     override fun resolveScalarSelection(editorId: String, anchor: Int, head: Int): EditorV2CallResult<String> {

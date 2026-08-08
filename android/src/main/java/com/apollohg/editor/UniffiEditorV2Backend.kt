@@ -3,6 +3,7 @@ package com.apollohg.editor
 import uniffi.editor_core.editorV2ApplyCommand
 import uniffi.editor_core.editorV2ApplyInput
 import uniffi.editor_core.editorV2ApplyLocalApi
+import uniffi.editor_core.editorV2ApplyNativeIntent
 import uniffi.editor_core.editorV2CollaborationAckOutbound
 import uniffi.editor_core.editorV2CollaborationDetach
 import uniffi.editor_core.editorV2CollaborationDrive
@@ -22,8 +23,11 @@ import uniffi.editor_core.editorV2GetDocumentHtml
 import uniffi.editor_core.editorV2GetDocumentJson
 import uniffi.editor_core.editorV2GetState
 import uniffi.editor_core.editorV2Redo
+import uniffi.editor_core.editorV2ReleaseNativeBinding
+import uniffi.editor_core.editorV2RenderNative
 import uniffi.editor_core.editorV2RenderUpdate
 import uniffi.editor_core.editorV2ReplaceDocument
+import uniffi.editor_core.editorV2PinPositionEpoch
 import uniffi.editor_core.editorV2ResolveScalarSelection
 import uniffi.editor_core.editorV2ScalarToDoc
 import uniffi.editor_core.editorV2SetSelection
@@ -189,6 +193,33 @@ internal object UniffiEditorV2Backend : EditorV2Backend {
         }
         return normalize(editorV2RenderUpdate(editorId, anchor, head))
     }
+
+    override fun renderNative(
+        editorId: String,
+        ownerId: String,
+        mirrorAnchor: Int?,
+        mirrorHead: Int?,
+    ): EditorV2CallResult<String> {
+        val anchor = mirrorAnchor?.let(::exactV2U32)
+        val head = mirrorHead?.let(::exactV2U32)
+        if ((mirrorAnchor != null && anchor == null) || (mirrorHead != null && head == null)) {
+            return EditorV2CallResult.Err(contractError("render mirror is not an exact u32"))
+        }
+        return normalize(editorV2RenderNative(editorId, ownerId, anchor, head))
+    }
+
+    override fun pinPositionEpoch(
+        editorId: String,
+        ownerId: String,
+        documentRevision: String,
+    ): EditorV2CallResult<String> =
+        normalize(editorV2PinPositionEpoch(editorId, ownerId, documentRevision))
+
+    override fun applyNativeIntent(editorId: String, requestJson: String): EditorV2CallResult<String> =
+        normalize(editorV2ApplyNativeIntent(editorId, requestJson))
+
+    override fun releaseNativeBinding(editorId: String, ownerId: String): EditorV2Error? =
+        editorV2ReleaseNativeBinding(editorId, ownerId).error?.toV2()
 
     override fun resolveScalarSelection(editorId: String, anchor: Int, head: Int): EditorV2CallResult<String> {
         val exactAnchor = exactV2U32(anchor)

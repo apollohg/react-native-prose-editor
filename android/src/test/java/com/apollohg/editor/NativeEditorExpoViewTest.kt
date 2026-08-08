@@ -51,6 +51,7 @@ class NativeEditorExpoViewTest {
         val errors = mutableListOf<Map<String, Any>>()
         try {
             view.onEditorErrorForTesting = { errors += it }
+            view.onEditorUpdateForTesting = {}
             view.onAddonEventForTesting = {}
             view.onEditorReadyForTesting = {}
             view.onSelectionChangeForTesting = {}
@@ -93,6 +94,7 @@ class NativeEditorExpoViewTest {
         val errors = mutableListOf<Map<String, Any>>()
         try {
             view.onEditorErrorForTesting = { errors += it }
+            view.onEditorUpdateForTesting = {}
             view.onAddonEventForTesting = {}
             view.onEditorReadyForTesting = {}
             view.onSelectionChangeForTesting = {}
@@ -130,6 +132,7 @@ class NativeEditorExpoViewTest {
         val errors = mutableListOf<Map<String, Any>>()
         try {
             view.onEditorErrorForTesting = { errors += it }
+            view.onEditorUpdateForTesting = {}
             view.onAddonEventForTesting = {}
             view.onEditorReadyForTesting = {}
             view.onSelectionChangeForTesting = {}
@@ -206,6 +209,7 @@ class NativeEditorExpoViewTest {
             firstView.onEditorErrorForTesting = { firstErrors += it }
             secondView.onEditorErrorForTesting = { secondErrors += it }
             listOf(firstView, secondView).forEach { view ->
+                view.onEditorUpdateForTesting = {}
                 view.onAddonEventForTesting = {}
                 view.onEditorReadyForTesting = {}
                 view.onSelectionChangeForTesting = {}
@@ -233,7 +237,7 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `delayed editor update keeps captured source identity and canonical revision after rebind`() {
+    fun `delayed editor updates drain with captured identity across rebind`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val backend = FakeEditorV2Backend()
@@ -257,10 +261,12 @@ class NativeEditorExpoViewTest {
             view.onEditorUpdate(JSONObject(renderUpdateJson("B")).put("documentVersion", "8").toString())
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
 
-            assertEquals(1, payloads.size)
-            assertEquals(adapterB.editorId, payloads.single()["editorId"])
-            assertEquals("8", payloads.single()["documentRevision"])
-            assertEquals("B", JSONObject(payloads.single()["updateJson"] as String)
+            assertEquals(2, payloads.size)
+            assertEquals(adapterA.editorId, payloads[0]["editorId"])
+            assertEquals("7", payloads[0]["documentRevision"])
+            assertEquals(adapterB.editorId, payloads[1]["editorId"])
+            assertEquals("8", payloads[1]["documentRevision"])
+            assertEquals("B", JSONObject(payloads[1]["updateJson"] as String)
                 .getJSONArray("renderBlocks").getJSONArray(0).getJSONObject(1).getString("text"))
         } finally {
             EditorV2Registry.remove(adapterA.editorId)
@@ -271,7 +277,7 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `queued native update from prior A binding is discarded after A to B to A rebind`() {
+    fun `queued native update from prior A binding drains before A to B to A rebind`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val backend = FakeEditorV2Backend()
@@ -296,7 +302,9 @@ class NativeEditorExpoViewTest {
             view.setEditorId(tokenA)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
 
-            assertTrue(payloads.isEmpty())
+            assertEquals(1, payloads.size)
+            assertEquals(adapterA.editorId, payloads.single()["editorId"])
+            assertEquals("7", payloads.single()["documentRevision"])
             assertEquals(0, view.pendingEditorUpdateEventCountForTesting())
         } finally {
             EditorV2Registry.remove(adapterA.editorId)
@@ -1325,15 +1333,17 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `successful JS editor update clears queued native update events`() {
+    fun `successful JS editor update preserves queued native update events`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val editorId = 778843L
         val editText = view.richTextView.editorEditText
         val nativeUpdateJson = renderUpdateJson("native")
         val jsUpdateJson = renderUpdateJson("controlled")
+        val payloads = mutableListOf<Map<String, Any>>()
 
         view.onAddonEventForTesting = {}
+        view.onEditorUpdateForTesting = { payloads += it }
         view.richTextView.setEditorIdWhileDetached(editorId)
         editText.applyUpdateJSON(renderUpdateJson("initial"), notifyListener = false)
         editText.setSelection(editText.text?.length ?: 0)
@@ -1353,6 +1363,8 @@ class NativeEditorExpoViewTest {
 
         assertTrue(applied.get())
         assertEquals(0, view.pendingEditorUpdateEventCountForTesting())
+        assertEquals(1, payloads.size)
+        assertEquals(nativeUpdateJson, payloads.single()["updateJson"])
         assertEquals("controlled", editText.text?.toString())
 
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
@@ -1360,7 +1372,7 @@ class NativeEditorExpoViewTest {
         assertEquals(0, view.pendingEditorUpdateEventCountForTesting())
         assertTrue(
             editText.imeTraceSnapshotForTesting().any {
-                it.contains("nativeViewEditorUpdateQueueCleared")
+                it.contains("nativeViewEditorUpdateDrained")
             }
         )
 
@@ -1377,6 +1389,7 @@ class NativeEditorExpoViewTest {
         val resetUpdateJson = renderUpdateJson("reset")
 
         view.onAddonEventForTesting = {}
+        view.onEditorUpdateForTesting = {}
         view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
         view.onEditorReadyForTesting = {}
         view.richTextView.setEditorIdWhileDetached(editorId)
@@ -1422,6 +1435,7 @@ class NativeEditorExpoViewTest {
         val resetUpdateJson = renderUpdateJson("")
 
         view.onAddonEventForTesting = {}
+        view.onEditorUpdateForTesting = {}
         view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
         view.onEditorReadyForTesting = {}
         view.richTextView.setEditorIdWhileDetached(editorId)
@@ -3435,7 +3449,7 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `mutating controlled update preflight renders once and preserves next input`() {
+    fun `mutating controlled update preflight preserves committed composition and next input`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val backend = FakeEditorV2Backend()
@@ -3444,6 +3458,7 @@ class NativeEditorExpoViewTest {
         val editText = view.richTextView.editorEditText
         try {
             view.onAddonEventForTesting = {}
+            view.onEditorUpdateForTesting = {}
             view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
             view.onEditorReadyForTesting = {}
             view.onSelectionChangeForTesting = {}
@@ -3457,7 +3472,11 @@ class NativeEditorExpoViewTest {
 
             assertTrue(view.applyEditorUpdate(atomicRenderUpdateJson("controlled", "0")))
 
-            assertEquals(renderCallsBeforeControlledUpdate + 1, adapter.renderUpdateCallCountForTesting)
+            assertEquals(
+                "backend calls=${backend.calls}",
+                renderCallsBeforeControlledUpdate + 2,
+                adapter.renderUpdateCallCountForTesting
+            )
             assertEquals("native", editText.text?.toString())
 
             editText.setSelection(editText.text?.length ?: 0)
@@ -3496,6 +3515,7 @@ class NativeEditorExpoViewTest {
             .toString()
         try {
             view.onAddonEventForTesting = {}
+            view.onEditorUpdateForTesting = {}
             view.onEditorReadyForTesting = {}
             view.onSelectionChangeForTesting = {}
             view.setAttachedToNativeWindowForTesting(true)
@@ -3523,6 +3543,7 @@ class NativeEditorExpoViewTest {
         val editText = view.richTextView.editorEditText
         try {
             view.onAddonEventForTesting = {}
+            view.onEditorUpdateForTesting = {}
             view.onEditorReadyForTesting = {}
             view.onSelectionChangeForTesting = {}
             view.setAttachedToNativeWindowForTesting(true)
@@ -3732,6 +3753,212 @@ class NativeEditorExpoViewTest {
         ) as AppContext
         return TestExpoContext(reactContext, appContext)
     }
+
+    @Test
+    fun `a remote commit rebases the view so the next keystroke is not refused`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val payloads = mutableListOf<Map<String, Any>>()
+        try {
+            bindFocusedViewForTypingTest(activity, view, viewToken, payloads)
+            val editText = view.richTextView.editorEditText
+            assertTrue(commitBoundText(view, "a"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+
+            val session = backend.sessions.getValue(adapter.editorId)
+            session.text.append("R")
+            session.revision += 1uL
+            NativeEditorViewRegistry.rebaseAfterRemoteCommit(adapter.editorId)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+
+            assertEquals("the remote commit is visible without a JS round trip", "aR", editText.text.toString())
+
+            backend.calls.clear()
+            assertTrue(commitBoundText(view, "b"))
+            assertEquals(
+                "the rebase means the keystroke is admitted first time",
+                1L,
+                backend.calls.count { it == "applyNativeIntent" }.toLong()
+            )
+            assertTrue(editText.text.toString().contains("b"))
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `controlled push at an already rendered revision keeps newer typed text`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val payloads = mutableListOf<Map<String, Any>>()
+        try {
+            bindFocusedViewForTypingTest(activity, view, viewToken, payloads)
+            val editText = view.richTextView.editorEditText
+
+            assertTrue(commitBoundText(view, "a"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+            val deliveredRevision = payloads.last()["documentRevision"] as String
+
+            assertTrue(commitBoundText(view, "b"))
+            assertEquals("ab", editText.text.toString())
+
+            view.setPendingEditorUpdateJson(atomicRenderUpdateJson("a", deliveredRevision))
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(1)
+            view.applyPendingEditorUpdateIfNeeded()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+
+            assertEquals(
+                "a superseded push must not rewind the typed character",
+                "ab",
+                editText.text.toString()
+            )
+            assertTrue(
+                view.imeTraceSnapshotForTypingTest().any {
+                    it.startsWith("pendingEditorUpdateSuperseded")
+                }
+            )
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `malformed older controlled push is rejected before supersession`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val payloads = mutableListOf<Map<String, Any>>()
+        val errors = mutableListOf<Map<String, Any>>()
+        try {
+            view.onEditorErrorForTesting = { errors += it }
+            bindFocusedViewForTypingTest(activity, view, viewToken, payloads)
+            val editText = view.richTextView.editorEditText
+            assertTrue(commitBoundText(view, "a"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+            val olderRevision = payloads.last()["documentRevision"] as String
+            assertTrue(commitBoundText(view, "b"))
+
+            val malformed = JSONObject(atomicRenderUpdateJson("a", olderRevision))
+            malformed.remove("historyState")
+            view.setPendingEditorUpdateJson(malformed.toString())
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(2)
+            view.applyPendingEditorUpdateIfNeeded()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+
+            assertEquals("ab", editText.text.toString())
+            assertEquals(1, errors.size)
+            @Suppress("UNCHECKED_CAST")
+            val error = errors.single()["error"] as Map<String, Any?>
+            assertEquals("FFI_RESULT_INVALID", error["code"])
+            assertEquals(0, view.pendingEditorUpdateRevisionForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `controlled push at equal rendered revision is not superseded`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val payloads = mutableListOf<Map<String, Any>>()
+        try {
+            bindFocusedViewForTypingTest(activity, view, viewToken, payloads)
+            assertTrue(commitBoundText(view, "a"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+            val revision = payloads.last()["documentRevision"] as String
+
+            view.setPendingEditorUpdateJson(atomicRenderUpdateJson("a", revision))
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(3)
+            view.applyPendingEditorUpdateIfNeeded()
+
+            assertFalse(view.imeTraceSnapshotForTypingTest().any {
+                it.startsWith("pendingEditorUpdateSuperseded")
+            })
+            assertEquals(0, view.pendingEditorUpdateRevisionForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `controlled push at a newer revision still applies over typed text`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val payloads = mutableListOf<Map<String, Any>>()
+        try {
+            bindFocusedViewForTypingTest(activity, view, viewToken, payloads)
+            val editText = view.richTextView.editorEditText
+
+            assertTrue(commitBoundText(view, "a"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+            val renderedRevision = (payloads.last()["documentRevision"] as String).toULong()
+            val session = backend.sessions.getValue(adapter.editorId)
+            session.text = StringBuilder("remote")
+            session.revision = renderedRevision + 1u
+            session.anchor = session.text.length
+            session.head = session.text.length
+
+            view.setPendingEditorUpdateJson(
+                atomicRenderUpdateJson("remote", (renderedRevision + 1u).toString())
+            )
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(1)
+            view.applyPendingEditorUpdateIfNeeded()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+
+            assertEquals("remote", editText.text.toString())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    private fun bindFocusedViewForTypingTest(
+        activity: Activity,
+        view: NativeEditorExpoView,
+        viewToken: Long,
+        payloads: MutableList<Map<String, Any>>
+    ) {
+        view.onEditorUpdateForTesting = { payloads += it }
+        view.onAddonEventForTesting = {}
+        view.onEditorReadyForTesting = {}
+        view.onSelectionChangeForTesting = {}
+        view.onFocusChangeForTesting = {}
+        view.onContentHeightChangeForTesting = {}
+        activity.setContentView(view)
+        view.setAttachedToNativeWindowForTesting(true)
+        view.setEditorId(viewToken)
+        assertTrue(view.richTextView.editorEditText.requestFocus())
+    }
+
+    private fun NativeEditorExpoView.imeTraceSnapshotForTypingTest(): List<String> =
+        richTextView.editorEditText.imeTraceSnapshotForTesting()
 
     @Test
     fun `auto grow honours a host minimum height so the whole box is tappable`() {

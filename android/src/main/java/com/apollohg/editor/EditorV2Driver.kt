@@ -9,6 +9,12 @@ internal data class EditorV2SplitRender(
     val committed: Boolean,
 )
 
+internal data class EditorV2SelectionSync(
+    val docAnchor: Int,
+    val docHead: Int,
+    val refreshedUpdateJson: String?,
+)
+
 /**
  * The v2 driver: the ONLY engine path for views.
  *
@@ -44,10 +50,8 @@ internal interface EditorV2Driver {
     fun undo(): String?
     fun redo(): String?
 
-    /** Sync the scalar selection and return [docAnchor, docHead], or null on structured failure. */
-    fun syncSelection(anchor: Int, head: Int): IntArray?
-    /** Selection sync where no doc mapping is consumed. */
-    fun syncSelectionQuiet(anchor: Int, head: Int)
+    fun syncSelection(anchor: Int, head: Int): EditorV2SelectionSync?
+    fun syncSelectionQuiet(anchor: Int, head: Int): String?
     fun scalarPositionForDoc(docPos: Int): Int?
     fun docPositionForScalar(scalar: Int): Int?
 

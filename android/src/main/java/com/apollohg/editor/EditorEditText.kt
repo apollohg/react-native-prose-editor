@@ -367,6 +367,13 @@ class EditorEditText @JvmOverloads constructor(
      * means the view has no engine traffic.
      */
     internal var v2Driver: EditorV2Driver? = null
+        set(value) {
+            if (field === value) return
+            (field as? EditorV2Adapter)?.releaseNativeBindingOwner(nativeBindingToken)
+            field = value
+            (value as? EditorV2Adapter)?.claimNativeBindingIfUnowned(nativeBindingToken)
+        }
+    private val nativeBindingToken = nextNativeBindingToken.incrementAndGet()
 
     fun lastRenderAppliedPatch(): Boolean = lastRenderAppliedPatchForTesting
     fun lastApplyUpdateTrace(): ApplyUpdateTrace? = lastApplyUpdateTraceForTesting
@@ -1779,6 +1786,9 @@ class EditorEditText @JvmOverloads constructor(
      * for the caller that will apply it. This prevents a second state render
      * after a composing commit has already produced and adopted one.
      */
+    internal fun hasPendingCompositionForExternalRefresh(): Boolean =
+        activeInputConnection?.hasPendingComposition() == true
+
     fun prepareForExternalEditorUpdateWithResult(): ExternalEditorUpdatePreparation {
         externalUpdatePreparationCaptureDepth += 1
         if (externalUpdatePreparationCaptureDepth == 1) {
@@ -2802,9 +2812,10 @@ class EditorEditText @JvmOverloads constructor(
         val (scalarAnchor, scalarHead) = rawScalarSelection(currentText) ?: return
 
         v2Driver?.let { driver ->
-            val mapping = driver.syncSelection(scalarAnchor, scalarHead)
-            if (mapping != null) {
-                editorListener?.onSelectionChanged(mapping[0], mapping[1])
+            val sync = driver.syncSelection(scalarAnchor, scalarHead)
+            if (sync != null) {
+                sync.refreshedUpdateJson?.let { applyRustUpdateJSON(it) }
+                editorListener?.onSelectionChanged(sync.docAnchor, sync.docHead)
             }
             return
         }
@@ -3127,16 +3138,16 @@ class EditorEditText @JvmOverloads constructor(
     private fun applyRequestedCursorScalar(requestedCursorScalar: Int?) {
         val requested = requestedCursorScalar ?: return
         if (!hasLiveEditor()) return
-        val currentText = text?.toString().orEmpty()
         val safeScalar = requested.coerceAtLeast(0)
         val cursorDriver = v2Driver
         if (cursorDriver != null) {
-            cursorDriver.syncSelectionQuiet(safeScalar, safeScalar)
+            cursorDriver.syncSelectionQuiet(safeScalar, safeScalar)?.let(::applyRustUpdateJSON)
         } else {
             onSetSelectionScalarInRustForTesting?.let { callback ->
                 callback(safeScalar, safeScalar)
             }
         }
+        val currentText = text?.toString().orEmpty()
         val localScalar = safeScalar.coerceIn(0, currentText.codePointCount(0, currentText.length))
         val safeUtf16 = PositionBridge.scalarToUtf16(localScalar, currentText)
             .coerceIn(0, currentText.length)
@@ -4874,6 +4885,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     companion object {
+        private val nextNativeBindingToken = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE / 2)
         private const val DEFAULT_AUTO_CAPITALIZE = "sentences"
         private const val DEFAULT_AUTO_CORRECT = true
         private const val DEFAULT_KEYBOARD_TYPE = "default"

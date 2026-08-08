@@ -1721,6 +1721,72 @@ class EditorInputConnectionTest {
     }
 
     @Test
+    fun `typing keeps every character when a remote update lands between keystrokes`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
+            as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(backend, editorId, roomBound = true)!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            this.editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>ab</p>")?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        editText.setSelection(2)
+        val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
+
+        assertTrue(inputConnection.commitText("X", 1))
+        assertEquals("abX", editText.text.toString())
+
+        val session = backend.sessions.getValue(editorId)
+        session.text.append("R")
+        session.revision += 1uL
+
+        assertTrue(inputConnection.commitText("Y", 1))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertTrue(
+            "the typed character must survive a concurrent remote update, saw ${editText.text}",
+            editText.text.toString().contains("Y")
+        )
+    }
+
+    @Test
+    fun `composition commit survives a remote update landing mid composition`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
+            as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(backend, editorId, roomBound = true)!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            this.editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>hello</p>")?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        editText.setSelection(0, 5)
+        val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
+        assertTrue(inputConnection.setComposingText("hello", 1))
+
+        val session = backend.sessions.getValue(editorId)
+        session.text.append(" REMOTE")
+        session.revision += 1uL
+
+        assertTrue(inputConnection.commitText("HELLO", 1))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertTrue(
+            "the committed word must survive a concurrent remote update, saw ${editText.text}",
+            editText.text.toString().contains("HELLO")
+        )
+    }
+
+    @Test
     fun `composition replacement return defers one refresh until the split render is applied`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
@@ -1759,7 +1825,7 @@ class EditorInputConnectionTest {
     }
 
     @Test
-    fun `stale composition return applies remote refresh without line boundary restart`() {
+    fun `stale composition return follows after affinity and refreshes the line boundary`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
             as EditorV2CallResult.Ok
@@ -1787,11 +1853,11 @@ class EditorInputConnectionTest {
         assertTrue(inputConnection.commitText("\n", 1))
         shadowOf(Looper.getMainLooper()).idle()
 
-        assertEquals("seed REMOTE", editText.text.toString())
-        assertEquals(0, editText.imeTraceSnapshotForTesting().count {
+        assertEquals("seed REMOTE\n", editText.text.toString())
+        assertEquals(1, editText.imeTraceSnapshotForTesting().count {
             it.startsWith("lineBoundaryInputRefreshScheduled")
         })
-        assertEquals(0, editText.imeTraceSnapshotForTesting().count {
+        assertEquals(1, editText.imeTraceSnapshotForTesting().count {
             it.startsWith("restartInput:source=lineBoundary:")
         })
     }
