@@ -126,72 +126,76 @@ internal object NativeCollaborationTransportRegistry {
         token: Any,
         event: AndroidCollaborationTransportEvent,
     ) {
-        val payload = synchronized(lock) {
+        val sequence = synchronized(lock) {
             if (!transports.containsKey(editorId) || transportTokens[editorId] !== token) return
             val current = eventSequences[editorId] ?: 0uL
             if (current == ULong.MAX_VALUE) return
             val next = current + 1uL
             eventSequences[editorId] = next
-            val base = mutableMapOf<String, Any?>(
-                "editorId" to editorId,
-                "eventSequence" to next.toString(),
-            )
-            when (event) {
-                is AndroidCollaborationTransportEvent.Directive -> {
-                    val state = state(editorId) ?: return
-                    base["kind"] = "state"
-                    base["generation"] = event.generation
-                    base["state"] = state
-                    base["peers"] = peers(editorId)
-                    base["diagnostics"] = mapOf(
-                        "wakeReason" to event.wakeReason.wireValue,
-                        "transportState" to event.directive.transportState,
-                        "nextDeadlineMillis" to event.directive.nextDeadlineMillis,
-                        "remoteCommitApplied" to event.directive.remoteCommitApplied,
-                        "peersChanged" to event.directive.peersChanged,
-                        "renewedLocal" to event.directive.renewedLocal,
-                        "expiredPeerCount" to event.directive.expiredPeers.size,
-                    )
-                }
-                is AndroidCollaborationTransportEvent.Error -> {
-                    base["kind"] = "error"
-                    base["generation"] = event.generation
-                    base["error"] = event.error.toJSMap()
-                }
-                is AndroidCollaborationTransportEvent.ProtocolAdapter -> {
-                    val adapterEvent = event.event
-                    base["kind"] = "protocolAdapter"
-                    base["generation"] = adapterEvent.generation
-                    base["attemptId"] = adapterEvent.attemptId
-                    base["eventId"] = adapterEvent.eventId
-                    base["negotiatedProtocol"] = adapterEvent.negotiatedProtocol
-                    when (val phase = adapterEvent.phase) {
-                        NativeCollaborationProtocolAdapterPhase.Open -> {
-                            base["phase"] = "open"
-                        }
-                        is NativeCollaborationProtocolAdapterPhase.Message -> {
-                            base["phase"] = "message"
-                            base["frame"] = when (val frame = phase.frame) {
-                                is NativeCollaborationProtocolFrame.Text ->
-                                    mapOf("type" to "text", "data" to frame.data)
-                                is NativeCollaborationProtocolFrame.Binary ->
-                                    mapOf(
-                                        "type" to "binary",
-                                        "data" to Base64.encodeToString(frame.data, Base64.NO_WRAP),
-                                    )
-                            }
+            next
+        }
+        val payload = mutableMapOf<String, Any?>(
+            "editorId" to editorId,
+            "eventSequence" to sequence.toString(),
+        )
+        when (event) {
+            is AndroidCollaborationTransportEvent.Directive -> {
+                val state = state(editorId) ?: return
+                payload["kind"] = "state"
+                payload["generation"] = event.generation
+                payload["state"] = state
+                payload["peers"] = peers(editorId)
+                payload["diagnostics"] = mapOf(
+                    "wakeReason" to event.wakeReason.wireValue,
+                    "transportState" to event.directive.transportState,
+                    "nextDeadlineMillis" to event.directive.nextDeadlineMillis,
+                    "remoteCommitApplied" to event.directive.remoteCommitApplied,
+                    "peersChanged" to event.directive.peersChanged,
+                    "renewedLocal" to event.directive.renewedLocal,
+                    "expiredPeerCount" to event.directive.expiredPeers.size,
+                )
+            }
+            is AndroidCollaborationTransportEvent.Error -> {
+                payload["kind"] = "error"
+                payload["generation"] = event.generation
+                payload["error"] = event.error.toJSMap()
+            }
+            is AndroidCollaborationTransportEvent.ProtocolAdapter -> {
+                val adapterEvent = event.event
+                payload["kind"] = "protocolAdapter"
+                payload["generation"] = adapterEvent.generation
+                payload["attemptId"] = adapterEvent.attemptId
+                payload["eventId"] = adapterEvent.eventId
+                payload["negotiatedProtocol"] = adapterEvent.negotiatedProtocol
+                when (val phase = adapterEvent.phase) {
+                    NativeCollaborationProtocolAdapterPhase.Open -> {
+                        payload["phase"] = "open"
+                    }
+                    is NativeCollaborationProtocolAdapterPhase.Message -> {
+                        payload["phase"] = "message"
+                        payload["frame"] = when (val frame = phase.frame) {
+                            is NativeCollaborationProtocolFrame.Text ->
+                                mapOf("type" to "text", "data" to frame.data)
+                            is NativeCollaborationProtocolFrame.Binary ->
+                                mapOf(
+                                    "type" to "binary",
+                                    "data" to Base64.encodeToString(frame.data, Base64.NO_WRAP),
+                                )
                         }
                     }
                 }
             }
-            base
+        }
+        val emitter = synchronized(lock) {
+            if (!transports.containsKey(editorId) || transportTokens[editorId] !== token) return
+            eventEmitter
         }
         if (event is AndroidCollaborationTransportEvent.Directive &&
             event.directive.remoteCommitApplied
         ) {
             NativeEditorViewRegistry.rebaseAfterRemoteCommit(editorId)
         }
-        synchronized(lock) { eventEmitter }?.invoke(payload)
+        emitter?.invoke(payload)
     }
 
     private fun state(editorId: String): Map<String, Any?>? {

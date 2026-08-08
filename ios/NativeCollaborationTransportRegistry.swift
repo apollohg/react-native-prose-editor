@@ -9,12 +9,23 @@ enum NativeCollaborationTransportRegistry {
     private static var transports: [UInt64: NativeCollaborationTransport] = [:]
     private static var transportTokens: [UInt64: UUID] = [:]
     private static var eventSequences: [UInt64: UInt64] = [:]
+    private static var eventProcessors: [UInt64: CollaborationEventProcessor] = [:]
     private static var remoteRebases: [UInt64: RemoteRebaseState] = [:]
     private static var eventEmitter: EventEmitter?
 
     private struct RemoteRebaseState {
         let token: UUID
         var dirty: Bool
+    }
+
+    private final class CollaborationEventProcessor {
+        let queue: DispatchQueue
+
+        init(editorId: UInt64) {
+            queue = DispatchQueue(
+                label: "com.apollohg.native-editor.collaboration-events.\(editorId)"
+            )
+        }
     }
 
     static func setEventEmitter(_ emitter: EventEmitter?) {
@@ -43,6 +54,7 @@ enum NativeCollaborationTransportRegistry {
             if parsed == nil {
                 let existing = transports.removeValue(forKey: editorId)
                 transportTokens.removeValue(forKey: editorId)
+                eventProcessors.removeValue(forKey: editorId)
                 remoteRebases.removeValue(forKey: editorId)
                 existing?.destroy()
                 return nil
@@ -63,6 +75,7 @@ enum NativeCollaborationTransportRegistry {
                 )
                 transports[editorId] = transport
                 transportTokens[editorId] = token
+                eventProcessors[editorId] = CollaborationEventProcessor(editorId: editorId)
                 created = true
             }
             let error = transport.configure(parsed)
@@ -71,6 +84,7 @@ enum NativeCollaborationTransportRegistry {
                 // unusable owner registered. Existing owners remain intact.
                 transports.removeValue(forKey: editorId)
                 transportTokens.removeValue(forKey: editorId)
+                eventProcessors.removeValue(forKey: editorId)
                 transport.destroy()
             }
             return error
@@ -114,6 +128,7 @@ enum NativeCollaborationTransportRegistry {
             transports.removeValue(forKey: editorId)?.destroy()
             transportTokens.removeValue(forKey: editorId)
             eventSequences.removeValue(forKey: editorId)
+            eventProcessors.removeValue(forKey: editorId)
             remoteRebases.removeValue(forKey: editorId)
         }
     }
@@ -136,6 +151,7 @@ enum NativeCollaborationTransportRegistry {
             transports.removeAll()
             transportTokens.removeAll()
             eventSequences.removeAll()
+            eventProcessors.removeAll()
             remoteRebases.removeAll()
             owned.forEach { $0.destroy() }
             eventEmitter = nil
@@ -148,64 +164,74 @@ enum NativeCollaborationTransportRegistry {
         token: UUID
     ) {
         queue.async {
-            guard transports[editorId] != nil, transportTokens[editorId] == token else { return }
+            guard transports[editorId] != nil,
+                  transportTokens[editorId] == token,
+                  let processor = eventProcessors[editorId]
+            else { return }
             let next = (eventSequences[editorId] ?? 0).addingReportingOverflow(1)
             guard !next.overflow, next.partialValue > 0 else {
                 return
             }
             eventSequences[editorId] = next.partialValue
-
-            var payload: [String: Any] = [
-                "editorId": String(editorId),
-                "eventSequence": String(next.partialValue),
-            ]
-            switch event {
-            case let .directive(directive, generation, wakeReason):
-                guard let state = state(editorId: editorId) else {
-                    return
-                }
-                payload["kind"] = "state"
-                payload["generation"] = generation ?? NSNull()
-                payload["state"] = state
-                payload["peers"] = peers(editorId: editorId)
-                payload["diagnostics"] = [
-                    "wakeReason": wakeReason.rawValue,
-                    "transportState": directive.transportState,
-                    "nextDeadlineMillis": directive.nextDeadlineMillis ?? NSNull(),
-                    "remoteCommitApplied": directive.remoteCommitApplied,
-                    "peersChanged": directive.peersChanged,
-                    "renewedLocal": directive.renewedLocal,
-                    "expiredPeerCount": directive.expiredPeers.count,
+            let sequence = next.partialValue
+            processor.queue.async {
+                var payload: [String: Any] = [
+                    "editorId": String(editorId),
+                    "eventSequence": String(sequence),
                 ]
-            case let .error(error, generation):
-                payload["kind"] = "error"
-                payload["generation"] = generation ?? NSNull()
-                payload["error"] = errorDictionary(error)
-            case let .protocolAdapter(adapterEvent):
-                payload["kind"] = "protocolAdapter"
-                payload["generation"] = adapterEvent.generation
-                payload["attemptId"] = adapterEvent.attemptId
-                payload["eventId"] = adapterEvent.eventId
-                payload["negotiatedProtocol"] =
-                    adapterEvent.negotiatedProtocol ?? NSNull()
-                switch adapterEvent.phase {
-                case .open:
-                    payload["phase"] = "open"
-                case .message(.text(let text)):
-                    payload["phase"] = "message"
-                    payload["frame"] = ["type": "text", "data": text]
-                case .message(.binary(let data)):
-                    payload["phase"] = "message"
-                    payload["frame"] = [
-                        "type": "binary",
-                        "data": data.base64EncodedString(),
+                switch event {
+                case let .directive(directive, generation, wakeReason):
+                    guard let state = state(editorId: editorId) else { return }
+                    payload["kind"] = "state"
+                    payload["generation"] = generation ?? NSNull()
+                    payload["state"] = state
+                    payload["peers"] = peers(editorId: editorId)
+                    payload["diagnostics"] = [
+                        "wakeReason": wakeReason.rawValue,
+                        "transportState": directive.transportState,
+                        "nextDeadlineMillis": directive.nextDeadlineMillis ?? NSNull(),
+                        "remoteCommitApplied": directive.remoteCommitApplied,
+                        "peersChanged": directive.peersChanged,
+                        "renewedLocal": directive.renewedLocal,
+                        "expiredPeerCount": directive.expiredPeers.count,
                     ]
+                case let .error(error, generation):
+                    payload["kind"] = "error"
+                    payload["generation"] = generation ?? NSNull()
+                    payload["error"] = errorDictionary(error)
+                case let .protocolAdapter(adapterEvent):
+                    payload["kind"] = "protocolAdapter"
+                    payload["generation"] = adapterEvent.generation
+                    payload["attemptId"] = adapterEvent.attemptId
+                    payload["eventId"] = adapterEvent.eventId
+                    payload["negotiatedProtocol"] =
+                        adapterEvent.negotiatedProtocol ?? NSNull()
+                    switch adapterEvent.phase {
+                    case .open:
+                        payload["phase"] = "open"
+                    case .message(.text(let text)):
+                        payload["phase"] = "message"
+                        payload["frame"] = ["type": "text", "data": text]
+                    case .message(.binary(let data)):
+                        payload["phase"] = "message"
+                        payload["frame"] = [
+                            "type": "binary",
+                            "data": data.base64EncodedString(),
+                        ]
+                    }
+                }
+                queue.async {
+                    guard transports[editorId] != nil,
+                          transportTokens[editorId] == token,
+                          eventProcessors[editorId] === processor
+                    else { return }
+                    if case let .directive(directive, _, _) = event,
+                       directive.remoteCommitApplied {
+                        scheduleRemoteRebase(editorId: editorId, token: token)
+                    }
+                    eventEmitter?(payload)
                 }
             }
-            if case let .directive(directive, _, _) = event, directive.remoteCommitApplied {
-                scheduleRemoteRebase(editorId: editorId, token: token)
-            }
-            eventEmitter?(payload)
         }
     }
 
