@@ -12,7 +12,7 @@ configs:
 options:
   minimumXcodeGenVersion: 2.38.0
   deploymentTarget:
-    iOS: "15.1"
+    iOS: "16.4"
   createIntermediateGroups: true
   groupSortPosition: top
   generateEmptyDirectories: true
@@ -20,6 +20,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.9
+    NODE_PATH: $(SRCROOT)/../example/node_modules
     IOS_DEVELOPMENT_TEAM: ""
     DEVELOPMENT_TEAM: $(IOS_DEVELOPMENT_TEAM)
     CODE_SIGN_STYLE: Automatic
@@ -33,7 +34,7 @@ targets:
   NativeEditorTestHost:
     type: application
     platform: iOS
-    deploymentTarget: "15.1"
+    deploymentTarget: "16.4"
     sources:
       - path: TestHost
     settings:
@@ -52,7 +53,7 @@ targets:
   NativeEditorTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "15.1"
+    deploymentTarget: "16.4"
     hostApplication: NativeEditorTestHost
     sources:
       - path: ../ios
@@ -66,6 +67,7 @@ targets:
       # Keep the debug/device collector in the actual checked-in source phase
       # exactly once; the broad ios source root excludes this explicit entry.
       - path: ../ios/Viewer/PreparedProseInstrumentation.swift
+      - path: ../common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.cpp
       - path: ../ios/Tests
       # Bundled so RenderBridgeTests can read the shared security fixtures on
       # physical devices, where the repository host path is unavailable.
@@ -87,6 +89,7 @@ targets:
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/NativeEditorTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NativeEditorTestHost
         BUNDLE_LOADER: $(TEST_HOST)
         INFOPLIST_KEY_CFBundleDisplayName: NativeEditorTests
+        SWIFT_OBJC_INTERFACE_HEADER_NAME: ReactNativeProseEditor-Swift.h
         LD_RUNPATH_SEARCH_PATHS:
           - $(inherited)
           - "@loader_path/Frameworks"
@@ -94,6 +97,7 @@ targets:
         HEADER_SEARCH_PATHS:
           - $(inherited)
           - $(SRCROOT)/../ios/editor_coreFFI
+          - $(SRCROOT)/../common/cpp
         OTHER_SWIFT_FLAGS:
           - $(inherited)
           - -Xcc

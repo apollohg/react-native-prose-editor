@@ -6,7 +6,7 @@ ENV['NODE_PATH'] = [
   ENV['NODE_PATH'],
 ].compact.join(':')
 
-platform :ios, '15.1'
+platform :ios, '16.4'
 
 root_podspec = File.join(__dir__, '..', 'ReactNativeProseEditor.podspec')
 raise "ReactNativeProseEditor root podspec is required for React Native codegen" unless File.file?(root_podspec)
@@ -18,7 +18,10 @@ install! 'cocoapods', deterministic_uuids: false
 prepare_react_native_project!
 
 target 'NativeEditorTestHost' do
-  use_expo_modules!
+  use_expo_modules!(
+    projectRoot: File.join(__dir__, '..', 'example'),
+    exclude: ['@apollohg/react-native-prose-editor'],
+  )
   react_native_path = '../example/node_modules/react-native'
 
   use_react_native!(
@@ -27,8 +30,6 @@ target 'NativeEditorTestHost' do
     :app_path => "#{Pod::Config.instance.installation_root}/..",
     :privacy_file_aggregation_enabled => true,
   )
-
-  pod 'ExpoModulesCore', :path => '../example/node_modules/expo-modules-core'
 
   target 'NativeEditorTests' do
     inherit! :complete
@@ -44,7 +45,7 @@ target 'NativeEditorTestHost' do
 
     installer.pods_project.targets.each do |target|
       target.build_configurations.each do |config|
-        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.4'
         config.build_settings['SWIFT_VERSION'] = '5.9'
 
         if target.name == 'fmt'

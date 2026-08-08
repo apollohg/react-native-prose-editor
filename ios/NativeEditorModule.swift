@@ -1,4 +1,4 @@
-@preconcurrency import ExpoModulesCore
+@preconcurrency public import ExpoModulesCore
 import UIKit
 
 /// Test-facing parser for the v2 create value. Handles are never bridged

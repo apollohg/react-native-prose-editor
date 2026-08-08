@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 #if __has_include("ReactNativeProseEditor-Swift.h")
 #import "ReactNativeProseEditor-Swift.h"
