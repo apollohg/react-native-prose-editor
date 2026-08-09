@@ -453,11 +453,12 @@ final class RenderBridge {
                         theme: theme
                     )
                     if endedBlock.listContext != nil {
-                        let isOutermostFinalListItem = (endedBlock.listContext?["isLast"] as? Bool) == true
-                            && !blockStack.contains(where: { $0.listContext != nil })
-                        pendingTrailingParagraphSpacing = isOutermostFinalListItem
+                        let spacing = (endedBlock.listContext?["isLast"] as? Bool) == true
                             ? (theme?.list?.spacingAfter ?? theme?.list?.itemSpacing)
                             : theme?.list?.itemSpacing
+                        if let spacing {
+                            pendingTrailingParagraphSpacing = (pendingTrailingParagraphSpacing ?? 0) + spacing
+                        }
                     }
                 }
 

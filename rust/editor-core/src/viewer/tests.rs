@@ -275,6 +275,38 @@ fn authored_zero_width_text_is_not_semantically_empty() {
 }
 
 #[test]
+fn reports_only_structurally_empty_trailing_text_blocks() {
+    let trailing_empty_paragraphs = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+            {"type": "paragraph"},
+            {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+            {"type": "paragraph"},
+            {"type": "paragraph"}
+        ]
+    });
+    let authored_zero_width_text = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": "\u{200B}"}]}
+        ]
+    });
+
+    let trailing = compile_json_with(trailing_empty_paragraphs, local_config(), true)
+        .value
+        .expect("trailing empty paragraphs compile");
+    let authored = compile_json_with(authored_zero_width_text, local_config(), true)
+        .value
+        .expect("authored zero-width text compiles");
+
+    assert_eq!(trailing.trailing_empty_text_block_count(), 2);
+    assert_eq!(trailing.preferred_text_block_name(), "paragraph");
+    assert_eq!(authored.trailing_empty_text_block_count(), 0);
+}
+
+#[test]
 fn disabled_images_do_not_hide_empty_structural_containers() {
     let empty_blockquote = serde_json::json!({
         "type": "doc",

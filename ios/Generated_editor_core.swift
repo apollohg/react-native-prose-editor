@@ -521,9 +521,13 @@ public protocol ViewerCompiledDocumentProtocol: AnyObject, Sendable {
 
     func isEmpty()  -> Bool
 
+    func preferredTextBlockName()  -> String
+
     func retainedBytesDecimal()  -> String
 
     func semanticKey()  -> String
+
+    func trailingEmptyTextBlockCount()  -> UInt32
 
 }
 open class ViewerCompiledDocument: ViewerCompiledDocumentProtocol, @unchecked Sendable {
@@ -592,6 +596,13 @@ open func isEmpty() -> Bool  {
 })
 }
 
+open func preferredTextBlockName() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_method_viewercompileddocument_preferred_text_block_name(self.uniffiClonePointer(),$0
+    )
+})
+}
+
 open func retainedBytesDecimal() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_editor_core_fn_method_viewercompileddocument_retained_bytes_decimal(self.uniffiClonePointer(),$0
@@ -602,6 +613,13 @@ open func retainedBytesDecimal() -> String  {
 open func semanticKey() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_editor_core_fn_method_viewercompileddocument_semantic_key(self.uniffiClonePointer(),$0
+    )
+})
+}
+
+open func trailingEmptyTextBlockCount() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_editor_core_fn_method_viewercompileddocument_trailing_empty_text_block_count(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -2327,10 +2345,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_method_viewercompileddocument_is_empty() != 2370) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_method_viewercompileddocument_preferred_text_block_name() != 32137) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_method_viewercompileddocument_retained_bytes_decimal() != 13333) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_method_viewercompileddocument_semantic_key() != 2241) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_method_viewercompileddocument_trailing_empty_text_block_count() != 11698) {
         return InitializationResult.apiChecksumMismatch
     }
 

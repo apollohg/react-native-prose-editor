@@ -707,24 +707,33 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     ): PreparedProseLayout {
         val warningSemanticGeneration = semanticGenerationIdentity
         if (widthPx <= 0 || !density.isFinite() || density <= 0f) return PreparedProseLayout.error(key, 0, ProseViewerError.invalidWidth())
-        if (document.isEmpty && collapsesWhenEmpty) return PreparedProseLayout(key, widthPx, 0, emptyList(), retainedBytes = document.retainedBytes)
+        val visibleBlocks = if (collapsesWhenEmpty) {
+            document.blocks.dropLast(document.trailingEmptyTextBlockCount.coerceAtMost(document.blocks.size))
+        } else {
+            document.blocks
+        }
+        if (visibleBlocks.isEmpty() && collapsesWhenEmpty) return PreparedProseLayout(key, widthPx, 0, emptyList(), retainedBytes = document.retainedBytes)
         val contentWidth = max(1, widthPx - theme.insetLeftPx - theme.insetRightPx)
         var cursorY = theme.insetTopPx
         var retained = document.retainedBytes + theme.retainedBytes
         val interactions = mutableListOf<PreparedProseInteraction>()
         val imageAttachments = mutableListOf<ViewerImageAttachment>()
         val markers = mutableMapOf<Int, PreparedMarker>()
-        document.blocks.forEach { block ->
+        visibleBlocks.forEach { block ->
             listItemAncestors(block).forEach { ancestor ->
                 if (markers[ancestor.identity] == null) {
                     markers[ancestor.identity] = markerFor(ancestor.context, theme.paintFor(block), theme)
                 }
             }
         }
-        val blocks = document.blocks.mapIndexed { index, block ->
-            val endsOutermostList = block.outermostListItemIsLast &&
-                index + 1 < document.blocks.size &&
-                document.blocks[index + 1].outermostListItemIdentity != block.outermostListItemIdentity
+        val blocks = visibleBlocks.mapIndexed { index, block ->
+            val nextAncestorIdentities = visibleBlocks.getOrNull(index + 1)
+                ?.let(::listItemAncestors)
+                ?.mapTo(mutableSetOf()) { it.identity }
+                .orEmpty()
+            val disappearingListItemIdentities = listItemAncestors(block)
+                .filter { it.identity !in nextAncestorIdentities }
+                .mapTo(mutableSetOf()) { it.identity }
             val prepared = prepareBlock(
                 block,
                 imageAttachments.size,
@@ -732,7 +741,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 theme,
                 contentWidth,
                 cursorY,
-                if (endsOutermostList) theme.listSpacingAfterPx else null,
+                disappearingListItemIdentities,
                 warningSemanticGeneration,
             )
             cursorY = prepared.nextY
@@ -759,7 +768,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val attachment: ViewerImageAttachment? = null, val nextY: Int, val extraBytes: Long)
 
-    private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int, outermostListSpacingAfter: Int?, warningSemanticGeneration: String): BlockResult {
+    private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int, disappearingListItemIdentities: Set<Int>, warningSemanticGeneration: String): BlockResult {
         val paint = theme.paintFor(block)
         val ancestors = listItemAncestors(block)
         val ancestorMarkers = ancestors.mapNotNull { ancestor -> measuredMarkers[ancestor.identity]?.let { ancestor to it } }
@@ -772,8 +781,18 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val quoteInset = if (block.inBlockquote) theme.quoteBorderWidthPx + theme.quoteMarkerGapPx + theme.quoteIndentPx else 0
         val codeInset = if (block.nodeType == "codeBlock") theme.codePaddingHorizontalPx else 0
         val textX = theme.insetLeftPx + listInset + quoteInset + codeInset
-        val itemSpacing = outermostListSpacingAfter
-            ?: if (ancestors.isEmpty()) paint.spacingAfterPx else ancestors.count { it.isFinalRenderableLeaf } * theme.listItemSpacingPx
+        val itemSpacing = if (ancestors.isEmpty()) {
+            paint.spacingAfterPx
+        } else {
+            ancestors.sumOf { ancestor ->
+                when {
+                    ancestor.identity in disappearingListItemIdentities && ancestor.context.isLast -> theme.listSpacingAfterPx
+                    ancestor.identity in disappearingListItemIdentities -> theme.listItemSpacingPx
+                    ancestor.isFinalRenderableLeaf -> theme.listItemSpacingPx
+                    else -> 0
+                }
+            }
+        }
         if (block.nodeType == "image") {
             val source = ViewerImageAttachment.sourceAndDeclaredSize(block)
             if (source != null) {

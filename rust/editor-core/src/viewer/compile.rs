@@ -26,6 +26,19 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
             &resolved.schema,
             |node| !request.images_enabled && is_image_node(node),
         );
+        let trailing_empty_text_block_count = u32::try_from(
+            crate::editor_state::trailing_empty_text_block_count_after_omitting(
+                &resolved.document,
+                &resolved.schema,
+                |node| !request.images_enabled && is_image_node(node),
+            ),
+        )
+        .unwrap_or(u32::MAX);
+        let preferred_text_block_name = resolved
+            .schema
+            .preferred_text_block()
+            .map(|spec| spec.name.clone())
+            .unwrap_or_default();
         let elements = crate::render::incremental::flatten_render_blocks(
             &crate::render::incremental::render_blocks(&resolved.document, &resolved.schema),
         )
@@ -40,12 +53,15 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
             request.images_enabled,
             request.mention_prefix.as_deref(),
         );
-        let retained_bytes = retained_bytes(&semantic_key, &elements);
+        let retained_bytes = retained_bytes(&semantic_key, &elements)
+            .saturating_add(preferred_text_block_name.len());
 
         Ok::<_, crate::session::SessionError>(Arc::new(ViewerCompiledDocument {
             semantic_key,
             elements,
             is_empty,
+            preferred_text_block_name,
+            trailing_empty_text_block_count,
             retained_bytes,
         }))
     });

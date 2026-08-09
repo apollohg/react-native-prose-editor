@@ -54,6 +54,8 @@ pub struct ViewerCompiledDocument {
     pub(crate) semantic_key: String,
     pub(crate) elements: Vec<FfiViewerElement>,
     pub(crate) is_empty: bool,
+    pub(crate) preferred_text_block_name: String,
+    pub(crate) trailing_empty_text_block_count: u32,
     pub(crate) retained_bytes: usize,
 }
 
@@ -69,6 +71,14 @@ impl ViewerCompiledDocument {
 
     pub fn is_empty(&self) -> bool {
         self.is_empty
+    }
+
+    pub fn preferred_text_block_name(&self) -> String {
+        self.preferred_text_block_name.clone()
+    }
+
+    pub fn trailing_empty_text_block_count(&self) -> u32 {
+        self.trailing_empty_text_block_count
     }
 
     pub fn retained_bytes_decimal(&self) -> String {

@@ -262,6 +262,47 @@ final class PreparedProseRenderingTests: XCTestCase {
         }
     }
 
+    func testNestedListSpacingAfter() throws {
+        let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after nested"}]}]}]}]}"#)
+        try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(
+                document,
+                themeJSON: #"{"list":{"itemSpacing":6,"spacingAfter":20}}"#
+            )
+
+            XCTAssertEqual(layout.blocks.count, 3)
+            XCTAssertEqual(layout.blocks[2].bounds.minY - layout.blocks[1].bounds.maxY, 20, accuracy: 0.001)
+        }
+    }
+
+    func testStackedNestedListSpacingAfter() throws {
+        let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}"#)
+        try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in
+            XCTAssertEqual(document.blocks[1].listItemAncestors.count, 2)
+            XCTAssertTrue(document.blocks[1].listItemAncestors.allSatisfy(\.context.isLast))
+            let layout = try prepare(
+                document,
+                themeJSON: #"{"list":{"itemSpacing":6,"spacingAfter":20}}"#
+            )
+
+            XCTAssertEqual(layout.blocks.count, 3)
+            XCTAssertEqual(layout.blocks[2].bounds.minY - layout.blocks[1].bounds.maxY, 40, accuracy: 0.001)
+        }
+    }
+
+    func testMixedNestedListSpacingAfter() throws {
+        let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}"#)
+        try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(
+                document,
+                themeJSON: #"{"list":{"itemSpacing":6,"spacingAfter":20}}"#
+            )
+
+            XCTAssertEqual(layout.blocks.count, 3)
+            XCTAssertEqual(layout.blocks[2].bounds.minY - layout.blocks[1].bounds.maxY, 26, accuracy: 0.001)
+        }
+    }
+
     func testListMarkerScaleDoesNotResizeOrderedNumbers() throws {
         let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}"#)
         try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in

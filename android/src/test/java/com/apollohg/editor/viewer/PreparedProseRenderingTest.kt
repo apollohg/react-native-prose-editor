@@ -221,6 +221,21 @@ class PreparedProseRenderingTest {
     }
 
     @Test
+    fun `collapse trailing empty paragraphs preserves interior blocks`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"paragraph"},{"type":"paragraph","content":[{"type":"text","text":"second"}]},{"type":"paragraph"},{"type":"paragraph"}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val engine = StaticLayoutAndroidProseLayoutEngine()
+
+        val collapsed = engine.prepare(document, key(), theme(), Fixture.widthPx, 1f, true)
+        val expanded = engine.prepare(document, key(), theme(), Fixture.widthPx, 1f, false)
+
+        assertEquals(3, collapsed.blocks.size)
+        assertEquals(5, expanded.blocks.size)
+    }
+
+    @Test
     fun `list spacingAfter replaces terminal item spacing before following content`() {
         val document = compileSource(
             """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"third"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}""",
@@ -249,6 +264,51 @@ class PreparedProseRenderingTest {
 
         assertEquals(2, layout.blocks.size)
         assertEquals(20, layout.blocks[1].bounds.top - layout.blocks[0].bounds.bottom)
+    }
+
+    @Test
+    fun `nested list spacingAfter applies before parent content`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after nested"}]}]}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val layout = prepare(
+            document,
+            PreparedProseTheme.resolve("""{"list":{"itemSpacing":6,"spacingAfter":20}}""", 1f),
+        )
+
+        assertEquals(3, layout.blocks.size)
+        assertEquals(20, layout.blocks[2].bounds.top - layout.blocks[1].bounds.bottom)
+    }
+
+    @Test
+    fun `nested and outer list spacingAfter stack at a shared ending`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val layout = prepare(
+            document,
+            PreparedProseTheme.resolve("""{"list":{"itemSpacing":6,"spacingAfter":20}}""", 1f),
+        )
+
+        assertEquals(3, layout.blocks.size)
+        assertEquals(40, layout.blocks[2].bounds.top - layout.blocks[1].bounds.bottom)
+    }
+
+    @Test
+    fun `nested list ending with a non-final parent keeps parent item spacing`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val layout = prepare(
+            document,
+            PreparedProseTheme.resolve("""{"list":{"itemSpacing":6,"spacingAfter":20}}""", 1f),
+        )
+
+        assertEquals(3, layout.blocks.size)
+        assertEquals(26, layout.blocks[2].bounds.top - layout.blocks[1].bounds.bottom)
     }
 
     @Test

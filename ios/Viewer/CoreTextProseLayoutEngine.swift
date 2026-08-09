@@ -307,9 +307,16 @@ final class CoreTextProseLayoutEngine {
         }
         for (index, block) in document.blocks.enumerated() {
             let listMarker = block.listItemBoundary.flatMap { listMarkersByIdentity[$0.identity] }
-            let endsOutermostList = block.outermostListItemIsLast
-                && index + 1 < document.blocks.count
-                && document.blocks[index + 1].outermostListItemIdentity != block.outermostListItemIdentity
+            let nextAncestorIdentities = Set(
+                document.blocks.indices.contains(index + 1)
+                    ? listItemAncestors(document.blocks[index + 1]).map(\.identity)
+                    : []
+            )
+            let disappearingListItemIdentities = Set(
+                listItemAncestors(block)
+                    .filter { !nextAncestorIdentities.contains($0.identity) }
+                    .map(\.identity)
+            )
             let prepared = prepareBlock(
                 block,
                 attachmentOrdinal: imageAttachments.count,
@@ -317,7 +324,7 @@ final class CoreTextProseLayoutEngine {
                 theme: theme,
                 width: canonicalWidth,
                 cursorY: cursorY,
-                outermostListSpacingAfter: endsOutermostList ? theme.listSpacingAfter : nil,
+                disappearingListItemIdentities: disappearingListItemIdentities,
                 displayScale: displayScale,
                 warningSemanticGeneration: warningSemanticGeneration
             )
@@ -357,6 +364,16 @@ final class CoreTextProseLayoutEngine {
         )
     }
 
+    private func listItemAncestors(_ block: ViewerBlock) -> [ViewerListItemAncestor] {
+        if !block.listItemAncestors.isEmpty {
+            return block.listItemAncestors
+        }
+        guard let boundary = block.listItemBoundary,
+              let context = block.listContext
+        else { return [] }
+        return [ViewerListItemAncestor(identity: boundary.identity, context: context)]
+    }
+
     private func prepareBlock(
         _ block: ViewerBlock,
         attachmentOrdinal: Int,
@@ -364,7 +381,7 @@ final class CoreTextProseLayoutEngine {
         theme: PreparedProseTheme,
         width: CGFloat,
         cursorY: CGFloat,
-        outermostListSpacingAfter: CGFloat?,
+        disappearingListItemIdentities: Set<Int>,
         displayScale: CGFloat,
         warningSemanticGeneration: String
     ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], attachment: ViewerImageAttachment?, nextY: CGFloat, retainedBytes: Int) {
@@ -387,9 +404,23 @@ final class CoreTextProseLayoutEngine {
         let quoteInset = block.inBlockquote ? theme.quoteBorderWidth + theme.quoteMarkerGap + theme.quoteIndent : 0
         let codeInset = block.nodeType == "codeBlock" ? theme.codePaddingHorizontal : 0
         let textX = contentX + listInset + quoteInset + codeInset
-        let itemSpacing = outermostListSpacingAfter ?? (block.listContext == nil
-            ? paint.spacingAfter
-            : (block.listItemBoundary?.isFinalRenderableLeaf ?? true ? theme.listItemSpacing : 0))
+        let itemSpacing: CGFloat
+        if block.listContext == nil {
+            itemSpacing = paint.spacingAfter
+        } else {
+            let boundarySpacing = listItemAncestors(block).reduce(CGFloat.zero) { spacing, ancestor in
+                if disappearingListItemIdentities.contains(ancestor.identity) {
+                    return spacing + (ancestor.context.isLast ? theme.listSpacingAfter : theme.listItemSpacing)
+                }
+                if ancestor.identity == block.listItemBoundary?.identity,
+                   block.listItemBoundary?.isFinalRenderableLeaf == true
+                {
+                    return spacing + theme.listItemSpacing
+                }
+                return spacing
+            }
+            itemSpacing = boundarySpacing
+        }
         if block.nodeType == "image", let image = ViewerImageAttachment.sourceAndDeclaredSize(in: block) {
             let imageWidth = max(1, contentWidth - listInset - quoteInset)
             let provisionalHeight = max(44, min(240, imageWidth * 0.56))

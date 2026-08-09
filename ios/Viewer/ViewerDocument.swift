@@ -178,6 +178,11 @@ struct ViewerListItemBoundary: Hashable {
     let isFinalRenderableLeaf: Bool
 }
 
+struct ViewerListItemAncestor: Hashable {
+    let identity: Int
+    let context: ViewerListContext
+}
+
 enum ViewerInline: Hashable {
     case text(text: String, marks: [FfiViewerMark])
     case atom(nodeType: String, docPos: UInt32, attrsJSON: String, label: String)
@@ -191,6 +196,7 @@ struct ViewerBlock: Hashable {
     let inBlockquote: Bool
     let listContext: ViewerListContext?
     let listItemBoundary: ViewerListItemBoundary?
+    let listItemAncestors: [ViewerListItemAncestor]
     let outermostListItemIdentity: Int?
     let outermostListItemIsLast: Bool
     let inlines: [ViewerInline]
@@ -201,6 +207,7 @@ struct ViewerBlock: Hashable {
         inBlockquote: Bool,
         listContext: ViewerListContext?,
         listItemBoundary: ViewerListItemBoundary?,
+        listItemAncestors: [ViewerListItemAncestor] = [],
         outermostListItemIdentity: Int? = nil,
         outermostListItemIsLast: Bool = false,
         inlines: [ViewerInline]
@@ -210,6 +217,7 @@ struct ViewerBlock: Hashable {
         self.inBlockquote = inBlockquote
         self.listContext = listContext
         self.listItemBoundary = listItemBoundary
+        self.listItemAncestors = listItemAncestors
         self.outermostListItemIdentity = outermostListItemIdentity
         self.outermostListItemIsLast = outermostListItemIsLast
         self.inlines = inlines
@@ -222,6 +230,7 @@ struct ViewerBlock: Hashable {
             inBlockquote: inBlockquote,
             listContext: listContext,
             listItemBoundary: boundary,
+            listItemAncestors: listItemAncestors,
             outermostListItemIdentity: outermostListItemIdentity,
             outermostListItemIsLast: outermostListItemIsLast,
             inlines: inlines
@@ -237,6 +246,7 @@ struct ViewerDocument {
     let blocks: [ViewerBlock]
     let isEmpty: Bool
     let retainedBytes: Int
+    let trailingEmptyTextBlockCount: Int
     let preparedTheme: PreparedProseTheme?
 
     var paragraphs: [ViewerParagraph] {
@@ -265,6 +275,7 @@ struct ViewerDocument {
         }
         self.isEmpty = isEmpty
         self.retainedBytes = retainedBytes
+        trailingEmptyTextBlockCount = 0
         preparedTheme = nil
     }
 
@@ -273,12 +284,14 @@ struct ViewerDocument {
         blocks: [ViewerBlock],
         isEmpty: Bool,
         retainedBytes: Int,
+        trailingEmptyTextBlockCount: Int = 0,
         preparedTheme: PreparedProseTheme? = nil
     ) {
         self.semanticKey = semanticKey
         self.blocks = blocks
         self.isEmpty = isEmpty
         self.retainedBytes = retainedBytes
+        self.trailingEmptyTextBlockCount = trailingEmptyTextBlockCount
         self.preparedTheme = preparedTheme
     }
 
@@ -286,6 +299,7 @@ struct ViewerDocument {
         semanticKey = compiled.semanticKey()
         isEmpty = compiled.isEmpty()
         retainedBytes = Int(compiled.retainedBytesDecimal()) ?? 0
+        trailingEmptyTextBlockCount = Int(compiled.trailingEmptyTextBlockCount())
         preparedTheme = nil
 
         struct Builder {
@@ -301,6 +315,7 @@ struct ViewerDocument {
         var renderableLeavesByListItem: [Int: [Int]] = [:]
         var listItemDepthByIdentity: [Int: UInt16] = [:]
         var nextListItemIdentity = 0
+        let preferredTextBlockName = compiled.preferredTextBlockName()
         for element in compiled.elements() {
             switch element {
             case let .blockStart(nodeType: nodeType, depth: depth, listContextJson: listContextJSON):
@@ -333,6 +348,12 @@ struct ViewerDocument {
             case let .blockAtom(nodeType: nodeType, docPos: docPos, attrsJson: attrsJson, label: label):
                 let listContext = stack.reversed().compactMap(\.listContext).first
                 let listItemIdentity = stack.reversed().compactMap(\.listItemIdentity).first
+                let listItemAncestors = stack.compactMap { builder -> ViewerListItemAncestor? in
+                    guard let identity = builder.listItemIdentity,
+                          let context = builder.listContext
+                    else { return nil }
+                    return ViewerListItemAncestor(identity: identity, context: context)
+                }
                 let outermostListItem = stack.first { $0.listItemIdentity != nil }
                 rendered.append(
                     ViewerBlock(
@@ -341,6 +362,7 @@ struct ViewerDocument {
                         inBlockquote: stack.contains { $0.nodeType == "blockquote" },
                         listContext: listContext,
                         listItemBoundary: nil,
+                        listItemAncestors: listItemAncestors,
                         outermostListItemIdentity: outermostListItem?.listItemIdentity,
                         outermostListItemIsLast: outermostListItem?.listContext?.isLast ?? false,
                         inlines: [.atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJson, label: label)]
@@ -350,10 +372,19 @@ struct ViewerDocument {
                     renderableLeavesByListItem[listItemIdentity, default: []].append(rendered.count - 1)
                 }
             case .blockEnd:
-                guard let builder = stack.popLast(), !builder.inlines.isEmpty else { continue }
+                guard let builder = stack.popLast() else { continue }
+                guard !builder.inlines.isEmpty ||
+                    (stack.isEmpty && builder.nodeType == preferredTextBlockName)
+                else { continue }
                 let ancestors = stack + [builder]
                 let listContext = ancestors.reversed().compactMap(\.listContext).first
                 let listItemIdentity = ancestors.reversed().compactMap(\.listItemIdentity).first
+                let listItemAncestors = ancestors.compactMap { ancestor -> ViewerListItemAncestor? in
+                    guard let identity = ancestor.listItemIdentity,
+                          let context = ancestor.listContext
+                    else { return nil }
+                    return ViewerListItemAncestor(identity: identity, context: context)
+                }
                 let outermostListItem = ancestors.first { $0.listItemIdentity != nil }
                 let inBlockquote = ancestors.contains { $0.nodeType == "blockquote" }
                 rendered.append(
@@ -363,6 +394,7 @@ struct ViewerDocument {
                         inBlockquote: inBlockquote,
                         listContext: listContext,
                         listItemBoundary: nil,
+                        listItemAncestors: listItemAncestors,
                         outermostListItemIdentity: outermostListItem?.listItemIdentity,
                         outermostListItemIsLast: outermostListItem?.listContext?.isLast ?? false,
                         inlines: builder.inlines
@@ -409,6 +441,7 @@ struct ViewerDocument {
             blocks: blocks,
             isEmpty: isEmpty,
             retainedBytes: retainedBytes,
+            trailingEmptyTextBlockCount: trailingEmptyTextBlockCount,
             preparedTheme: theme
         )
     }

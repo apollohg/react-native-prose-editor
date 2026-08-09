@@ -1158,16 +1158,20 @@ public final class PreparedProseLayoutRegistry: NSObject {
         _ compiledDocument: ViewerDocument,
         request: ProseViewerRequest
     ) -> ViewerDocument {
-        var document = compiledDocument
-        if document.isEmpty && !request.configuration.collapsesWhenEmpty {
-            document = ViewerDocument(
-                semanticKey: document.semanticKey,
-                blocks: document.blocks,
-                isEmpty: false,
-                retainedBytes: document.retainedBytes
-            )
-        }
-        return document
+        let collapse = request.configuration.collapsesWhenEmpty
+        let trailingCount = collapse
+            ? min(compiledDocument.trailingEmptyTextBlockCount, compiledDocument.blocks.count)
+            : 0
+        let blocks = trailingCount == 0
+            ? compiledDocument.blocks
+            : Array(compiledDocument.blocks.dropLast(trailingCount))
+        return ViewerDocument(
+            semanticKey: compiledDocument.semanticKey,
+            blocks: blocks,
+            isEmpty: collapse ? blocks.isEmpty : false,
+            retainedBytes: compiledDocument.retainedBytes,
+            trailingEmptyTextBlockCount: compiledDocument.trailingEmptyTextBlockCount
+        )
     }
 
     /// Parsed paint values are immutable and shared across all width-specific

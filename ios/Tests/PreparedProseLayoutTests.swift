@@ -3,6 +3,119 @@ import Foundation
 import XCTest
 
 final class PreparedProseLayoutTests: XCTestCase {
+    func testCollapseTrailingEmptyParagraphs() {
+        let blocks = ["first", "", "second", "", ""].map { text in
+            ViewerBlock(
+                nodeType: "paragraph",
+                depth: 0,
+                inBlockquote: false,
+                listContext: nil,
+                listItemBoundary: nil,
+                inlines: [.text(text: text.isEmpty ? "\u{200B}" : text, marks: [])]
+            )
+        }
+        let document = ViewerDocument(
+            semanticKey: String(repeating: "a", count: 64),
+            blocks: blocks,
+            isEmpty: false,
+            retainedBytes: 128,
+            trailingEmptyTextBlockCount: 2
+        )
+        let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+        func request(collapse: Bool) -> ProseViewerRequest {
+            ProseViewerRequest(
+                source: .json("{}"),
+                configuration: ProseViewerConfiguration(
+                    configJSON: "{}",
+                    collapsesWhenEmpty: collapse
+                )
+            )
+        }
+
+        let collapsed = registry.measure(
+            request: request(collapse: true),
+            widthPoints: 160,
+            scale: 2
+        )
+        let expanded = registry.measure(
+            request: request(collapse: false),
+            widthPoints: 160,
+            scale: 2
+        )
+
+        XCTAssertEqual(collapsed.blocks.count, 3)
+        XCTAssertEqual(expanded.blocks.count, 5)
+    }
+
+    func testCollapseTrailingHiddenInlineImagePreservesPrecedingParagraph() {
+        let source = """
+        {"type":"doc","content":[
+          {"type":"paragraph","content":[{"type":"text","text":"keep"}]},
+          {"type":"paragraph","content":[{"type":"image","attrs":{"src":"https://example.test/image.png"}}]}
+        ]}
+        """
+        let configJSON = """
+        {"schema":{"nodes":[
+          {"name":"doc","content":"block+","role":"doc"},
+          {"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},
+          {"name":"image","content":"","group":"inline","role":"inline","isVoid":true,"attrs":{"src":{}}},
+          {"name":"text","group":"inline","role":"text"}
+        ],"marks":[]},"initialization":{"type":"localEmpty"}}
+        """
+        let request = ProseViewerRequest(
+            source: .json(source),
+            configuration: ProseViewerConfiguration(
+                configJSON: configJSON,
+                imagesEnabled: false,
+                collapsesWhenEmpty: true
+            )
+        )
+
+        let layout = PreparedProseLayoutRegistry().measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2
+        )
+
+        XCTAssertNil(layout.error)
+        XCTAssertEqual(layout.blocks.count, 1)
+    }
+
+    func testCustomBlockContainerDoesNotBecomeAnEmptyLeaf() {
+        let source = """
+        {"type":"doc","content":[
+          {"type":"callout","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"keep"}]}
+          ]}
+        ]}
+        """
+        let configJSON = """
+        {"schema":{"nodes":[
+          {"name":"doc","content":"block+","role":"doc"},
+          {"name":"callout","content":"block+","group":"block","role":"block"},
+          {"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},
+          {"name":"text","group":"inline","role":"text"}
+        ],"marks":[]},"initialization":{"type":"localEmpty"}}
+        """
+        let request = ProseViewerRequest(
+            source: .json(source),
+            configuration: ProseViewerConfiguration(
+                configJSON: configJSON,
+                imagesEnabled: false,
+                collapsesWhenEmpty: false
+            )
+        )
+
+        let layout = PreparedProseLayoutRegistry().measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2
+        )
+
+        XCTAssertNil(layout.error)
+        XCTAssertEqual(layout.blocks.count, 1)
+    }
+
     private let document = ViewerDocument(
         semanticKey: String(repeating: "a", count: 64),
         paragraphs: [ViewerParagraph(text: "One prepared paragraph")],

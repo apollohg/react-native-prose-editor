@@ -133,7 +133,7 @@ nm -gU "$CDYLIB_PATH" | grep -q "uniffi_editor_core_fn_func_viewer_compile" || {
     echo "error: dylib is missing uniffi_editor_core_fn_func_viewer_compile" >&2
     exit 1
 }
-for method in semantic_key elements is_empty retained_bytes_decimal; do
+for method in semantic_key elements is_empty preferred_text_block_name trailing_empty_text_block_count retained_bytes_decimal; do
     nm -gU "$CDYLIB_PATH" | grep -q "uniffi_editor_core_fn_method_viewercompileddocument_${method}" || {
         echo "error: dylib is missing ViewerCompiledDocument.${method}" >&2
         exit 1
@@ -192,7 +192,7 @@ for artifact in \
         echo "error: generated binding $artifact is missing viewer_compile" >&2
         exit 1
     }
-    for method in semantic_key elements is_empty retained_bytes_decimal; do
+    for method in semantic_key elements is_empty preferred_text_block_name trailing_empty_text_block_count retained_bytes_decimal; do
         grep -q "uniffi_editor_core_fn_method_viewercompileddocument_${method}" "$artifact" || {
             echo "error: generated binding $artifact is missing ViewerCompiledDocument.${method}" >&2
             exit 1

@@ -1810,7 +1810,7 @@ class RenderBridgeTest {
     }
 
     @Test
-    fun `render - list spacingAfter applies only when outermost list ends`() {
+    fun `render - list spacingAfter applies whenever a list ends`() {
         val json = """
         [
             {"type": "blockStart", "nodeType": "listItem", "depth": 0,
@@ -1860,8 +1860,47 @@ class RenderBridgeTest {
         fun separatorAfter(text: String): Int = result.indexOf('\n', result.indexOf(text) + text.length)
 
         assertEquals(6, spacingAt(separatorAfter("First item")))
-        assertEquals(6, spacingAt(separatorAfter("Nested item")))
+        assertEquals(20, spacingAt(separatorAfter("Nested item")))
         assertEquals(20, spacingAt(separatorAfter("After nested")))
+    }
+
+    @Test
+    fun `render - nested and outer list spacingAfter stack at a shared ending`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Parent item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Nested item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "After list", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """{"list":{"itemSpacing":6,"spacingAfter":20}}"""
+        )
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val separatorIndex = result.indexOf('\n', result.indexOf("Nested item") + "Nested item".length)
+        val span = result.getSpans(
+            separatorIndex,
+            separatorIndex + 1,
+            ParagraphSpacerSpan::class.java,
+        ).single()
+        val paint = Paint().apply { textSize = baseFontSize }
+        val natural = paint.fontMetricsInt
+        val spaced = Paint.FontMetricsInt()
+        span.getSize(paint, result, separatorIndex, separatorIndex + 1, spaced)
+
+        assertEquals(40, spaced.descent - natural.descent)
     }
 
     @Test
@@ -1900,6 +1939,36 @@ class RenderBridgeTest {
             "Nested list separator should not keep parent paragraph spacing when itemSpacing is zero",
             spacerSpans.isEmpty()
         )
+    }
+
+    @Test
+    fun `render - list close clears paragraph spacing when list spacing is unset`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "After", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """{"paragraph":{"spacingAfter":14}}"""
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val separatorIndex = result.indexOf('\n', result.indexOf("Item") + "Item".length)
+        val spacerSpans = result.getSpans(
+            separatorIndex,
+            separatorIndex + 1,
+            ParagraphSpacerSpan::class.java,
+        )
+
+        assertTrue(spacerSpans.isEmpty())
     }
 
     @Test

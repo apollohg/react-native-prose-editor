@@ -66,6 +66,7 @@ internal data class ViewerDocument(
     val blocks: List<ViewerBlock>,
     val isEmpty: Boolean,
     val retainedBytes: Long,
+    val trailingEmptyTextBlockCount: Int = 0,
 )
 
 internal data class ProseViewerRequest(
@@ -233,7 +234,13 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                 "The document exceeds the maximum admitted image attachment count.",
             )
         }
-        return ViewerDocument(semanticKey, fallback, compiled.isEmpty(), compiled.retainedBytesDecimal().toLongOrNull() ?: 0)
+        return ViewerDocument(
+            semanticKey = semanticKey,
+            blocks = fallback,
+            isEmpty = compiled.isEmpty(),
+            retainedBytes = compiled.retainedBytesDecimal().toLongOrNull() ?: 0,
+            trailingEmptyTextBlockCount = compiled.trailingEmptyTextBlockCount().toInt(),
+        )
     } finally {
         result.destroy()
     }

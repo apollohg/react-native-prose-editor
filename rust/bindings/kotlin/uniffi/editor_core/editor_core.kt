@@ -844,9 +844,13 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_method_viewercompileddocument_is_empty(): Short
 
+    fun uniffi_editor_core_checksum_method_viewercompileddocument_preferred_text_block_name(): Short
+
     fun uniffi_editor_core_checksum_method_viewercompileddocument_retained_bytes_decimal(): Short
 
     fun uniffi_editor_core_checksum_method_viewercompileddocument_semantic_key(): Short
+
+    fun uniffi_editor_core_checksum_method_viewercompileddocument_trailing_empty_text_block_count(): Short
 
     fun ffi_editor_core_uniffi_contract_version(): Int
 }
@@ -915,6 +919,11 @@ internal interface UniffiLib : Library {
         uniffi_out_err: UniffiRustCallStatus,
     ): Byte
 
+    fun uniffi_editor_core_fn_method_viewercompileddocument_preferred_text_block_name(
+        `ptr`: Pointer,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
     fun uniffi_editor_core_fn_method_viewercompileddocument_retained_bytes_decimal(
         `ptr`: Pointer,
         uniffi_out_err: UniffiRustCallStatus,
@@ -924,6 +933,11 @@ internal interface UniffiLib : Library {
         `ptr`: Pointer,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_method_viewercompileddocument_trailing_empty_text_block_count(
+        `ptr`: Pointer,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): Int
 
     fun uniffi_editor_core_fn_func_editor_core_version(uniffi_out_err: UniffiRustCallStatus): RustBuffer.ByValue
 
@@ -1493,10 +1507,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_method_viewercompileddocument_is_empty() != 2370.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_method_viewercompileddocument_preferred_text_block_name() != 32137.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_method_viewercompileddocument_retained_bytes_decimal() != 13333.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_method_viewercompileddocument_semantic_key() != 2241.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_method_viewercompileddocument_trailing_empty_text_block_count() != 11698.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1902,9 +1922,13 @@ public interface ViewerCompiledDocumentInterface {
 
     fun `isEmpty`(): kotlin.Boolean
 
+    fun `preferredTextBlockName`(): kotlin.String
+
     fun `retainedBytesDecimal`(): kotlin.String
 
     fun `semanticKey`(): kotlin.String
+
+    fun `trailingEmptyTextBlockCount`(): kotlin.UInt
 
     companion object
 }
@@ -2011,6 +2035,15 @@ open class ViewerCompiledDocument :
             },
         )
 
+    override fun `preferredTextBlockName`(): kotlin.String =
+        FfiConverterString.lift(
+            callWithPointer {
+                uniffiRustCall { _status ->
+                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_preferred_text_block_name(it, _status)
+                }
+            },
+        )
+
     override fun `retainedBytesDecimal`(): kotlin.String =
         FfiConverterString.lift(
             callWithPointer {
@@ -2025,6 +2058,15 @@ open class ViewerCompiledDocument :
             callWithPointer {
                 uniffiRustCall { _status ->
                     UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_semantic_key(it, _status)
+                }
+            },
+        )
+
+    override fun `trailingEmptyTextBlockCount`(): kotlin.UInt =
+        FfiConverterUInt.lift(
+            callWithPointer {
+                uniffiRustCall { _status ->
+                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_trailing_empty_text_block_count(it, _status)
                 }
             },
         )

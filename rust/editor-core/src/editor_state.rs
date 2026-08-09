@@ -915,6 +915,34 @@ pub(crate) fn document_is_empty_after_omitting(
             .is_none_or(|content| content.iter().all(|node| is_omitted(node)))
 }
 
+pub(crate) fn trailing_empty_text_block_count_after_omitting(
+    document: &Document,
+    schema: &Schema,
+    mut is_omitted: impl FnMut(&Node) -> bool,
+) -> usize {
+    let Some(content) = document.root().content() else {
+        return 0;
+    };
+    let Some(preferred_text_block) = schema.preferred_text_block() else {
+        return 0;
+    };
+    let visible_blocks = content
+        .iter()
+        .filter(|node| !is_omitted(node))
+        .collect::<Vec<_>>();
+
+    visible_blocks
+        .into_iter()
+        .rev()
+        .take_while(|block| {
+            block.node_type() == preferred_text_block.name
+                && block
+                    .content()
+                    .is_none_or(|content| content.iter().all(|node| is_omitted(node)))
+        })
+        .count()
+}
+
 pub(crate) fn document_node_count(node: &Node) -> usize {
     node.content().map_or(1, |content| {
         content

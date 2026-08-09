@@ -741,8 +741,25 @@ object RenderBridge {
         val pendingLeadingMargins: MutableMap<Int, PendingLeadingMargin> = linkedMapOf(),
         val pendingCodeBlockSpans: MutableList<PendingCodeBlockSpan> = mutableListOf(),
         var isFirstBlock: Boolean = true,
-        var nextBlockSpacingBefore: Float? = null
-    )
+        var nextBlockSpacingBefore: Float? = null,
+        var pendingListBoundarySpacing: Float? = null,
+    ) {
+        fun replaceNextBlockSpacing(spacing: Float?) {
+            nextBlockSpacingBefore = spacing
+            pendingListBoundarySpacing = null
+        }
+
+        fun addListBoundarySpacing(spacing: Float?) {
+            if (spacing == null) {
+                if (pendingListBoundarySpacing == null) {
+                    nextBlockSpacingBefore = null
+                }
+                return
+            }
+            pendingListBoundarySpacing = (pendingListBoundarySpacing ?: 0f) + spacing
+            nextBlockSpacingBefore = pendingListBoundarySpacing
+        }
+    }
 
     fun buildSpannable(
         json: String,
@@ -932,7 +949,7 @@ object RenderBridge {
                     state.isFirstBlock = false
                     val spacingBefore = theme?.effectiveTextStyle(nodeType)?.spacingAfter
                         ?: theme?.list?.itemSpacing
-                    state.nextBlockSpacingBefore = spacingBefore
+                    state.replaceNextBlockSpacing(spacingBefore)
                     appendVoidBlock(
                         state.result,
                         nodeType,
@@ -985,7 +1002,7 @@ object RenderBridge {
                         )
                     }
                     state.isFirstBlock = false
-                    state.nextBlockSpacingBefore = blockSpacing
+                    state.replaceNextBlockSpacing(blockSpacing)
                     appendOpaqueBlockAtom(
                         state.result,
                         nodeType,
@@ -1040,9 +1057,11 @@ object RenderBridge {
                             )
                         }
                         state.isFirstBlock = false
-                        state.nextBlockSpacingBefore = blockSpacing
+                        state.replaceNextBlockSpacing(blockSpacing)
                     } else if (nestedListItemContainer && theme?.list?.itemSpacing != null) {
-                        state.nextBlockSpacingBefore = theme.list.itemSpacing
+                        if (state.pendingListBoundarySpacing == null) {
+                            state.replaceNextBlockSpacing(theme.list.itemSpacing)
+                        }
                     }
 
                     val ctx = BlockContext(
@@ -1155,14 +1174,12 @@ object RenderBridge {
                             pendingLeadingMargins = state.pendingLeadingMargins
                         )
                         if (endedBlock.listContext != null) {
-                            val isOutermostFinalListItem =
-                                endedBlock.listContext.optBoolean("isLast", false) &&
-                                    state.blockStack.none { it.listContext != null }
-                            state.nextBlockSpacingBefore = if (isOutermostFinalListItem) {
+                            val spacing = if (endedBlock.listContext.optBoolean("isLast", false)) {
                                 theme?.list?.spacingAfter ?: theme?.list?.itemSpacing
                             } else {
                                 theme?.list?.itemSpacing
                             }
+                            state.addListBoundarySpacing(spacing)
                         }
                         if (endedBlock.nodeType == "codeBlock" && endedBlock.renderStart < state.result.length) {
                             state.pendingCodeBlockSpans.add(
