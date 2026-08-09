@@ -1525,6 +1525,122 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.buttonLabelForTesting(2), "Heading 2")
     }
 
+    func testAccessoryToolbarMenuGroupUsesEditMenuWithoutAttachingMenuToVisibleButton() {
+        let toolbar = EditorAccessoryToolbarView(frame: CGRect(x: 0, y: 0, width: 320, height: 56))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        viewController.view.addSubview(toolbar)
+        defer {
+            toolbar.removeFromSuperview()
+            window.isHidden = true
+        }
+        toolbar.setItemsJSONForTesting("""
+        [
+          {
+            "type": "group",
+            "key": "headings",
+            "label": "Headings",
+            "icon": { "type": "glyph", "text": "H" },
+            "presentation": "menu",
+            "items": [
+              {
+                "type": "heading",
+                "level": 1,
+                "label": "Heading 1",
+                "icon": { "type": "default", "id": "h1" }
+              }
+            ]
+          },
+          {
+            "type": "group",
+            "key": "insert",
+            "label": "Insert",
+            "icon": { "type": "glyph", "text": "+" },
+            "presentation": "menu",
+            "items": [
+              {
+                "type": "action",
+                "key": "custom",
+                "label": "Custom",
+                "icon": { "type": "glyph", "text": "+" }
+              }
+            ]
+          }
+        ]
+        """)
+        toolbar.applyStateJSONForTesting("""
+        {
+          "activeState": {
+            "marks": {},
+            "nodes": { "h1": true },
+            "commands": { "toggleHeading1": true },
+            "allowedMarks": [],
+            "insertableNodes": []
+          },
+          "historyState": {
+            "canUndo": false,
+            "canRedo": false
+          }
+        }
+        """)
+        toolbar.layoutIfNeeded()
+
+        var descendants = toolbar.subviews
+        var descendantIndex = 0
+        while descendantIndex < descendants.count {
+            descendants.append(contentsOf: descendants[descendantIndex].subviews)
+            descendantIndex += 1
+        }
+        let visibleButton = descendants
+            .compactMap { $0 as? UIButton }
+            .first { $0.accessibilityLabel == "Headings" }
+
+        XCTAssertNotNil(visibleButton)
+        XCTAssertNil(visibleButton?.menu, "the visible parent button must not become UIKit's hidden menu source")
+        XCTAssertEqual(visibleButton?.accessibilityHint, "Shows menu")
+
+        guard let editMenuInteraction = toolbar.interactions.first(where: { $0 is UIEditMenuInteraction }) as? UIEditMenuInteraction else {
+            return XCTFail("the toolbar should own the edit-menu presentation interaction")
+        }
+        defer {
+            editMenuInteraction.dismissMenu()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+        }
+        toolbar.triggerButtonTapForTesting(0)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+        let configuration = UIEditMenuConfiguration(identifier: nil, sourcePoint: .zero)
+        let menu = editMenuInteraction.delegate?.editMenuInteraction?(
+            editMenuInteraction,
+            menuFor: configuration,
+            suggestedActions: []
+        )
+        let headingAction = menu?.children.first as? UIAction
+
+        XCTAssertEqual(toolbar.editMenuPresentationRequestCountForTesting, 1)
+        XCTAssertEqual(menu?.title, "Headings")
+        XCTAssertEqual(menu?.preferredElementSize, .large)
+        XCTAssertEqual(headingAction?.title, "Heading 1")
+        XCTAssertEqual(headingAction?.state, .on)
+        XCTAssertFalse(headingAction?.attributes.contains(.disabled) ?? true)
+
+        toolbar.triggerButtonTapForTesting(1)
+        XCTAssertEqual(
+            toolbar.editMenuPresentationRequestCountForTesting,
+            2,
+            "tapping a different source should immediately request its menu"
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+
+        toolbar.triggerButtonTapForTesting(1)
+        XCTAssertEqual(
+            toolbar.editMenuPresentationRequestCountForTesting,
+            2,
+            "tapping the active source should dismiss without requesting another presentation"
+        )
+    }
+
     func testAccessoryToolbarGroupedChildrenCanOverrideParentPlacement() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         toolbar.setItemsJSONForTesting("""

@@ -691,6 +691,106 @@ private struct NativeToolbarItem {
     }
 }
 
+@available(iOS 16.0, *)
+private final class ToolbarEditMenuPresenter: NSObject, UIEditMenuInteractionDelegate {
+    private final class Presentation {
+        weak var sourceButton: UIButton?
+        let menuProvider: () -> UIMenu?
+
+        init(sourceButton: UIButton, menuProvider: @escaping () -> UIMenu?) {
+            self.sourceButton = sourceButton
+            self.menuProvider = menuProvider
+        }
+    }
+
+    lazy var interaction = UIEditMenuInteraction(delegate: self)
+
+    private var presentations: [String: Presentation] = [:]
+    private var activePresentationIdentifier: String?
+    private(set) var presentationRequestCount = 0
+
+    func toggle(from sourceButton: UIButton, menuProvider: @escaping () -> UIMenu?) {
+        if activePresentation?.sourceButton === sourceButton {
+            interaction.dismissMenu()
+            return
+        }
+        guard let hostView = interaction.view else { return }
+        let identifier = UUID().uuidString
+        presentations[identifier] = Presentation(
+            sourceButton: sourceButton,
+            menuProvider: menuProvider
+        )
+        activePresentationIdentifier = identifier
+        presentationRequestCount += 1
+        let sourcePoint = sourceButton.convert(
+            CGPoint(x: sourceButton.bounds.midX, y: sourceButton.bounds.midY),
+            to: hostView
+        )
+        interaction.presentEditMenu(
+            with: UIEditMenuConfiguration(identifier: identifier as NSString, sourcePoint: sourcePoint)
+        )
+    }
+
+    func reloadVisibleMenu() {
+        interaction.reloadVisibleMenu()
+    }
+
+    func dismiss() {
+        interaction.dismissMenu()
+        presentations.removeAll()
+        activePresentationIdentifier = nil
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        menuFor configuration: UIEditMenuConfiguration,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        presentation(for: configuration)?.menuProvider()
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        targetRectFor configuration: UIEditMenuConfiguration
+    ) -> CGRect {
+        guard let sourceButton = presentation(for: configuration)?.sourceButton,
+              let hostView = interaction.view
+        else {
+            return .null
+        }
+        return sourceButton.convert(sourceButton.bounds, to: hostView)
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        willDismissMenuFor configuration: UIEditMenuConfiguration,
+        animator: any UIEditMenuInteractionAnimating
+    ) {
+        guard let identifier = identifier(for: configuration) else { return }
+        animator.addCompletion { [weak self] in
+            guard let self else { return }
+            self.presentations.removeValue(forKey: identifier)
+            if self.activePresentationIdentifier == identifier {
+                self.activePresentationIdentifier = nil
+            }
+        }
+    }
+
+    private var activePresentation: Presentation? {
+        guard let activePresentationIdentifier else { return nil }
+        return presentations[activePresentationIdentifier]
+    }
+
+    private func presentation(for configuration: UIEditMenuConfiguration) -> Presentation? {
+        guard let identifier = identifier(for: configuration) else { return activePresentation }
+        return presentations[identifier]
+    }
+
+    private func identifier(for configuration: UIEditMenuConfiguration) -> String? {
+        (configuration.identifier as? NSString).map(String.init)
+    }
+}
+
 final class EditorAccessoryToolbarView: UIInputView {
     private static let baseHeight: CGFloat = 50
     private static let mentionRowHeight: CGFloat = 52
@@ -738,6 +838,7 @@ final class EditorAccessoryToolbarView: UIInputView {
     private var theme: EditorToolbarTheme?
     private var mentionTheme: EditorMentionTheme?
     private var didAnimateChromeTransition = false
+    private var editMenuPresenter: AnyObject?
     fileprivate var onPressItem: ((NativeToolbarItem) -> Void)?
     var onSelectMentionSuggestion: ((NativeMentionSuggestion) -> Void)?
     var isShowingMentionSuggestions: Bool {
@@ -790,6 +891,10 @@ final class EditorAccessoryToolbarView: UIInputView {
     }
     var selectedButtonCountForTesting: Int {
         buttonBindings.filter(\.button.isSelected).count
+    }
+    var editMenuPresentationRequestCountForTesting: Int {
+        guard #available(iOS 16.0, *) else { return 0 }
+        return (editMenuPresenter as? ToolbarEditMenuPresenter)?.presentationRequestCount ?? 0
     }
     func mentionButtonAtForTesting(_ index: Int) -> MentionSuggestionChipButton? {
         mentionButtons.indices.contains(index) ? mentionButtons[index] : nil
@@ -869,6 +974,11 @@ final class EditorAccessoryToolbarView: UIInputView {
         isOpaque = false
         allowsSelfSizing = true
         setupView()
+        if #available(iOS 16.0, *) {
+            let presenter = ToolbarEditMenuPresenter()
+            editMenuPresenter = presenter
+            addInteraction(presenter.interaction)
+        }
         rebuildButtons()
     }
 
@@ -1095,10 +1205,10 @@ final class EditorAccessoryToolbarView: UIInputView {
             binding.button.isEnabled = buttonState.enabled
             binding.button.isSelected = buttonState.active
             binding.button.accessibilityTraits = buttonState.active ? [.button, .selected] : .button
-            if binding.item.type == .group, (binding.item.presentation ?? .expand) == .menu {
-                binding.button.menu = makeGroupMenu(item: binding.item)
-            }
             updateButtonAppearance(binding.button, item: binding.item, enabled: buttonState.enabled, active: buttonState.active)
+        }
+        if #available(iOS 16.0, *) {
+            (editMenuPresenter as? ToolbarEditMenuPresenter)?.reloadVisibleMenu()
         }
     }
 
@@ -1263,6 +1373,9 @@ final class EditorAccessoryToolbarView: UIInputView {
     }
 
     private func rebuildButtons() {
+        if #available(iOS 16.0, *) {
+            (editMenuPresenter as? ToolbarEditMenuPresenter)?.dismiss()
+        }
         buttonBindings.removeAll()
         separators.removeAll()
         for arrangedSubview in startPinnedStackView.arrangedSubviews {
@@ -1385,6 +1498,17 @@ final class EditorAccessoryToolbarView: UIInputView {
         }
     }
 
+    private func presentGroupMenu(_ item: NativeToolbarItem, from sourceButton: UIButton) {
+        guard #available(iOS 16.0, *),
+              let presenter = editMenuPresenter as? ToolbarEditMenuPresenter
+        else {
+            return
+        }
+        presenter.toggle(from: sourceButton) { [weak self] in
+            self?.makeGroupMenu(item: item)
+        }
+    }
+
     private func makeGroupMenu(item: NativeToolbarItem) -> UIMenu? {
         guard item.type == .group else { return nil }
         let actions = item.items.compactMap { child -> UIAction? in
@@ -1403,7 +1527,9 @@ final class EditorAccessoryToolbarView: UIInputView {
             }
         }
         guard !actions.isEmpty else { return nil }
-        return UIMenu(title: item.label ?? "", children: actions)
+        let menu = UIMenu(title: item.label ?? "", children: actions)
+        menu.preferredElementSize = .large
+        return menu
     }
 
     private func makeButton(item: NativeToolbarItem) -> UIButton {
@@ -1445,10 +1571,13 @@ final class EditorAccessoryToolbarView: UIInputView {
         heightConstraint.isActive = true
         if item.type == .group,
            (item.presentation ?? .expand) == .menu,
-           #available(iOS 14.0, *)
+           #available(iOS 16.0, *)
         {
-            button.menu = makeGroupMenu(item: item)
-            button.showsMenuAsPrimaryAction = true
+            button.accessibilityHint = "Shows menu"
+            button.addAction(UIAction { [weak self, weak button] _ in
+                guard let button else { return }
+                self?.presentGroupMenu(item, from: button)
+            }, for: .touchUpInside)
         } else {
             button.addAction(UIAction { [weak self] _ in
                 self?.handleToolbarButtonPress(item)
