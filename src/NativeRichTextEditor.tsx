@@ -73,6 +73,16 @@ import {
     normalizeDocumentJson,
     type ImageNodeAttributes,
 } from './schemas';
+import {
+    useFocusPreservingFrames,
+    type NativeRichTextEditorFocusPreservingRefs,
+} from './useFocusPreservingFrames';
+
+export type {
+    NativeRichTextEditorFocusPreservingElement,
+    NativeRichTextEditorFocusPreservingRef,
+    NativeRichTextEditorFocusPreservingRefs,
+} from './useFocusPreservingFrames';
 
 interface NativeEditorViewHandle {
     focus?: () => void;
@@ -82,6 +92,7 @@ interface NativeEditorViewHandle {
 
 interface NativeEditorViewProps {
     style?: StyleProp<ViewStyle>;
+    onLayout?: () => void;
     accessibilityLabel?: string;
     accessibilityHint?: string;
     editorId: string;
@@ -621,6 +632,8 @@ export interface NativeRichTextEditorProps {
     onFocus?: () => void;
     /** Called when the editor loses focus. */
     onBlur?: () => void;
+    /** External native views whose taps preserve this editor's focus, keyboard, and selection. */
+    focusPreservingRefs?: NativeRichTextEditorFocusPreservingRefs;
     /** Style applied to the native editor view. */
     style?: StyleProp<ViewStyle>;
     /** Style applied to the outer React container wrapping the editor and inline toolbar. */
@@ -775,6 +788,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             onHistoryStateChange,
             onFocus,
             onBlur,
+            focusPreservingRefs,
             onLocalCommit,
         },
         ref
@@ -873,6 +887,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         }
         const toolbarFrameOwnerId = toolbarFrameOwnerIdRef.current;
         const registeredToolbarFrames = useEditorToolbarFrames(toolbarFrameOwnerId);
+        const { frames: suppliedFocusPreservingFrames, refresh: refreshFocusPreservingFrames } =
+            useFocusPreservingFrames(focusPreservingRefs, editable && isFocused);
         const latestRevisionRef = useRef<string | null>(null);
         const currentPushedUpdateEditorIdRef = useRef(editorId);
         currentPushedUpdateEditorIdRef.current = editorId;
@@ -1877,8 +1893,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const nativeViewStyle =
             nativeViewStyleParts.length <= 1 ? nativeViewStyleParts[0] : nativeViewStyleParts;
         const currentPushedUpdate = pushedUpdate?.editorId === editorId ? pushedUpdate : null;
+        const focusPreservingFrames = [
+            ...registeredToolbarFrames,
+            ...suppliedFocusPreservingFrames,
+        ];
         const toolbarFrameJson = serializeToolbarFrames(
-            editable && isFocused ? registeredToolbarFrames : undefined
+            editable && isFocused ? focusPreservingFrames : undefined
         );
 
         return (
@@ -1886,6 +1906,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 <NativeEditorView
                     ref={nativeViewRef}
                     style={nativeViewStyle}
+                    onLayout={refreshFocusPreservingFrames}
                     accessibilityLabel={accessibilityLabel}
                     accessibilityHint={accessibilityHint}
                     editorId={editorId}

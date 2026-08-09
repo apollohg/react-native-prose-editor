@@ -1,5 +1,5 @@
 import type { NativeEditorDocumentHandle } from '../NativeEditorBridge';
-import type { ReadonlyActiveState } from '../index';
+import type { NativeRichTextEditorFocusPreservingRef, ReadonlyActiveState } from '../index';
 import type { NativeRichTextEditorProps } from '../NativeRichTextEditor';
 
 declare const documentHandle: NativeEditorDocumentHandle;
@@ -59,10 +59,20 @@ void removedComponentProps;
 declare const readonlyActiveState: ReadonlyActiveState;
 void readonlyActiveState;
 
-const readonlyActiveStateCallback: NonNullable<NativeRichTextEditorProps['onActiveStateChange']> =
-    (state) => {
-        // @ts-expect-error render snapshots must remain recursively immutable for consumers
-        state.marks.bold = false;
-    };
+const readonlyActiveStateCallback: NonNullable<NativeRichTextEditorProps['onActiveStateChange']> = (
+    state
+) => {
+    // @ts-expect-error render snapshots must remain recursively immutable for consumers
+    state.marks.bold = false;
+};
 
 void readonlyActiveStateCallback;
+
+declare const focusPreservingRef: NativeRichTextEditorFocusPreservingRef;
+
+const focusPreservingProps: readonly NativeRichTextEditorProps[] = [
+    { documentHandle, focusPreservingRefs: focusPreservingRef },
+    { documentHandle, focusPreservingRefs: [focusPreservingRef] as const },
+];
+
+void focusPreservingProps;

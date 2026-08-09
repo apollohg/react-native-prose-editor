@@ -1834,6 +1834,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
     it('forwards focused toolbar frames to native without racing a refocus after blur', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const onBlur = jest.fn();
+        const sendRef = createRef<View>();
         const viewPrototype = (
             View as unknown as {
                 prototype: {
@@ -1850,15 +1851,22 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 if (testID === 'editor-toolbar-root') {
                     callback(12, 24, 320, 48);
                 }
+                if (testID === 'send') {
+                    callback(300, 700, 44, 44);
+                }
             });
 
         try {
             const { getByTestId } = render(
-                <NativeRichTextEditor
-                    documentHandle={handle}
-                    toolbarPlacement='inline'
-                    onBlur={onBlur}
-                />
+                <>
+                    <NativeRichTextEditor
+                        documentHandle={handle}
+                        toolbarPlacement='inline'
+                        focusPreservingRefs={sendRef}
+                        onBlur={onBlur}
+                    />
+                    <View ref={sendRef} testID='send' />
+                </>
             );
             const nativeView = getByTestId('native-editor-view');
 
@@ -1870,10 +1878,10 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             });
 
             expect(JSON.parse(getByTestId('native-editor-view').props.toolbarFrameJson)).toEqual({
-                x: 12,
-                y: 24,
-                width: 320,
-                height: 48,
+                frames: [
+                    { x: 12, y: 24, width: 320, height: 48 },
+                    { x: 300, y: 700, width: 44, height: 44 },
+                ],
             });
             expect(mockNativeFocus).not.toHaveBeenCalled();
 
@@ -1886,6 +1894,86 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             expect(getByTestId('native-editor-view').props.toolbarFrameJson).toBeUndefined();
             expect(onBlur).toHaveBeenCalledTimes(1);
             expect(mockNativeFocus).not.toHaveBeenCalled();
+        } finally {
+            measureInWindow.mockRestore();
+            handle.destroy();
+        }
+    });
+
+    it('forwards single and multiple focus-preserving element frames only while focused', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const sendRef = createRef<View>();
+        const attachmentRef = createRef<View>();
+        const viewPrototype = (
+            View as unknown as {
+                prototype: {
+                    measureInWindow: (
+                        callback: (x: number, y: number, width: number, height: number) => void
+                    ) => void;
+                };
+            }
+        ).prototype;
+        const measureInWindow = jest
+            .spyOn(viewPrototype, 'measureInWindow')
+            .mockImplementation(function (callback) {
+                const testID = (this as unknown as { props?: { testID?: string } }).props?.testID;
+                if (testID === 'send') {
+                    callback(300, 700, 44, 44);
+                }
+                if (testID === 'attachment') {
+                    callback(244, 700, 44, 44);
+                }
+            });
+
+        try {
+            const { getByTestId, rerender } = render(
+                <>
+                    <NativeRichTextEditor documentHandle={handle} focusPreservingRefs={sendRef} />
+                    <View ref={sendRef} testID='send' />
+                    <View ref={attachmentRef} testID='attachment' />
+                </>
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onFocusChange({
+                    nativeEvent: { isFocused: true, editorId: handle.editorId },
+                });
+            });
+
+            expect(JSON.parse(getByTestId('native-editor-view').props.toolbarFrameJson)).toEqual({
+                x: 300,
+                y: 700,
+                width: 44,
+                height: 44,
+            });
+            expect(mockNativeFocus).not.toHaveBeenCalled();
+            expect(mockNativeBlur).not.toHaveBeenCalled();
+
+            rerender(
+                <>
+                    <NativeRichTextEditor
+                        documentHandle={handle}
+                        focusPreservingRefs={[sendRef, attachmentRef]}
+                    />
+                    <View ref={sendRef} testID='send' />
+                    <View ref={attachmentRef} testID='attachment' />
+                </>
+            );
+
+            expect(JSON.parse(getByTestId('native-editor-view').props.toolbarFrameJson)).toEqual({
+                frames: [
+                    { x: 300, y: 700, width: 44, height: 44 },
+                    { x: 244, y: 700, width: 44, height: 44 },
+                ],
+            });
+
+            act(() => {
+                getByTestId('native-editor-view').props.onFocusChange({
+                    nativeEvent: { isFocused: false, editorId: handle.editorId },
+                });
+            });
+
+            expect(getByTestId('native-editor-view').props.toolbarFrameJson).toBeUndefined();
         } finally {
             measureInWindow.mockRestore();
             handle.destroy();
