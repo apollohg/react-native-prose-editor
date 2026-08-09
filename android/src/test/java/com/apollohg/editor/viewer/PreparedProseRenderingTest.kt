@@ -196,6 +196,62 @@ class PreparedProseRenderingTest {
     }
 
     @Test
+    fun `terminal block spacing does not increase viewer height`() {
+        val fixtures = listOf(
+            Triple(
+                """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}""",
+                """{"paragraph":{"spacingAfter":13},"contentInsets":{"bottom":7}}""",
+                13,
+            ),
+            Triple(
+                """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
+                """{"list":{"itemSpacing":11,"spacingAfter":20},"contentInsets":{"bottom":7}}""",
+                11,
+            ),
+        )
+
+        fixtures.forEach { (source, themeJson, expectedGap) ->
+            val document = compileSource(source, Fixture.structural.first().configJson)
+            val theme = PreparedProseTheme.resolve(themeJson, 1f)
+            val layout = prepare(document, theme)
+            assertEquals(2, layout.blocks.size)
+            assertEquals(expectedGap, layout.blocks[1].bounds.top - layout.blocks[0].bounds.bottom)
+            assertEquals(layout.blocks[1].bounds.bottom + 7, layout.heightPx)
+        }
+    }
+
+    @Test
+    fun `list spacingAfter replaces terminal item spacing before following content`() {
+        val document = compileSource(
+            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"third"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}""",
+            Fixture.structural.first().configJson,
+        )
+        val layout = prepare(
+            document,
+            PreparedProseTheme.resolve("""{"list":{"itemSpacing":6,"spacingAfter":20}}""", 1f),
+        )
+
+        assertEquals(4, layout.blocks.size)
+        assertEquals(6, layout.blocks[1].bounds.top - layout.blocks[0].bounds.bottom)
+        assertEquals(20, layout.blocks[2].bounds.top - layout.blocks[1].bounds.bottom)
+        assertEquals(20, layout.blocks[3].bounds.top - layout.blocks[2].bounds.bottom)
+    }
+
+    @Test
+    fun `list spacingAfter supports taskItem node names`() {
+        val source = """{"type":"doc","content":[{"type":"taskList","content":[{"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}"""
+        val config = """{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"taskList","content":"taskItem+","group":"block","role":"list"},{"name":"taskItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"text","group":"inline","role":"text"}],"marks":[]},"initialization":{"type":"localEmpty"}}"""
+        val document = compileSource(source, config)
+        val layout = prepare(
+            document,
+            PreparedProseTheme.resolve("""{"list":{"itemSpacing":6,"spacingAfter":20}}""", 1f),
+        )
+
+        assertEquals(2, layout.blocks.size)
+        assertEquals(20, layout.blocks[1].bounds.top - layout.blocks[0].bounds.bottom)
+    }
+
+    @Test
     fun `marker ink box follows signed glyph bounds so a bullet is not stretched below its ink`() {
         val bullet = preparedMarkerInk(Rect(0, -9, 5, -3), layoutAscentPx = -12, layoutDescentPx = 4)
         assertEquals(9, bullet.ascentPx)
@@ -754,7 +810,7 @@ private data class Fixture(
                     && document.blocks.first().listContext?.index == 0xFFFF_FFFFL
             },
             expectedGeometry = ExpectedGeometry(
-                heightPx = 162,
+                heightPx = 158,
                 blockBounds = listOf(
                     Rect(0, 0, 640, 43),
                     Rect(0, 43, 640, 94),

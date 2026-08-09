@@ -3007,6 +3007,70 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(paragraphStyle?.paragraphSpacing ?? -1, 6, accuracy: 0.1)
     }
 
+    func testRender_listSpacingAfterAppliesOnlyWhenOutermostListEnds() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 2, "start": 1, "isFirst": true, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "First item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 2, "total": 2, "start": 1, "isFirst": false, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Parent item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Nested item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "After nested", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "After list", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "list": [
+                "itemSpacing": 6,
+                "spacingAfter": 20,
+            ],
+        ])
+
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+        let text = result.string as NSString
+        let firstStyle = result.attribute(
+            .paragraphStyle,
+            at: text.range(of: "First item").location,
+            effectiveRange: nil
+        ) as? NSParagraphStyle
+        let nestedStyle = result.attribute(
+            .paragraphStyle,
+            at: text.range(of: "Nested item").location,
+            effectiveRange: nil
+        ) as? NSParagraphStyle
+        let outerFinalStyle = result.attribute(
+            .paragraphStyle,
+            at: text.range(of: "After nested").location,
+            effectiveRange: nil
+        ) as? NSParagraphStyle
+
+        XCTAssertEqual(firstStyle?.paragraphSpacing ?? -1, 6, accuracy: 0.1)
+        XCTAssertEqual(nestedStyle?.paragraphSpacing ?? -1, 6, accuracy: 0.1)
+        XCTAssertEqual(outerFinalStyle?.paragraphSpacing ?? -1, 20, accuracy: 0.1)
+    }
+
     func testRender_nestedFirstListItemDoesNotKeepParentParagraphSpacingWhenItemSpacingIsZero() {
         let json = """
         [

@@ -501,6 +501,7 @@ internal data class PreparedProseTheme(
     val listIndentPx: Int,
     val listBaseIndentMultiplier: Float,
     val listItemSpacingPx: Int,
+    val listSpacingAfterPx: Int,
     val listMarkerColor: Int,
     val listMarkerScale: Float,
     val listMarkerGapPx: Int,
@@ -562,10 +563,11 @@ internal data class PreparedProseTheme(
             val headings = listOf("h1" to 32f, "h2" to 28f, "h3" to 24f, "h4" to 21f, "h5" to 19f, "h6" to 17f).associate { (name, size) ->
                 name to paint(EditorTextStyle(fontSize = size, fontWeight = "700", spacingAfter = 10f).mergedWith(theme.headings[name]), paragraph)
             }
+            val listItemSpacingPx = px(theme.list?.itemSpacing ?: 4f, 4f)
             return PreparedProseTheme(
                 density, scaledDensity, text, paragraph, headings, quote, paint(theme.effectiveTextStyle("codeBlock"), codeFallback),
                 px(theme.contentInsets?.top ?: 0f, 0f), px(theme.contentInsets?.right ?: 0f, 0f), px(theme.contentInsets?.bottom ?: 0f, 0f), px(theme.contentInsets?.left ?: 0f, 0f),
-                px(theme.list?.indent ?: 28f, 28f), theme.list?.baseIndentMultiplier ?: 1f, px(theme.list?.itemSpacing ?: 4f, 4f), theme.list?.markerColor ?: text.color, theme.list?.markerScale ?: 1f,
+                px(theme.list?.indent ?: 28f, 28f), theme.list?.baseIndentMultiplier ?: 1f, listItemSpacingPx, px(theme.list?.spacingAfter ?: theme.list?.itemSpacing ?: 4f, 4f), theme.list?.markerColor ?: text.color, theme.list?.markerScale ?: 1f,
                 px(theme.list?.markerGap ?: PREPARED_LIST_MARKER_GAP_DP, PREPARED_LIST_MARKER_GAP_DP),
                 px(theme.blockquote?.indent ?: 16f, 16f), theme.blockquote?.borderColor ?: 0xFFC7C7CC.toInt(), px(theme.blockquote?.borderWidth ?: 3f, 3f), px(theme.blockquote?.markerGap ?: 10f, 10f),
                 theme.codeBlock?.backgroundColor ?: 0xFFF2F2F7.toInt(), (theme.codeBlock?.borderRadius ?: 8f) * density, px(theme.codeBlock?.paddingHorizontal ?: 12f, 12f), px(theme.codeBlock?.paddingVertical ?: 8f, 8f),
@@ -719,15 +721,27 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 }
             }
         }
-        val blocks = document.blocks.map { block ->
-            val prepared = prepareBlock(block, imageAttachments.size, markers, theme, contentWidth, cursorY, warningSemanticGeneration)
+        val blocks = document.blocks.mapIndexed { index, block ->
+            val endsOutermostList = block.outermostListItemIsLast &&
+                index + 1 < document.blocks.size &&
+                document.blocks[index + 1].outermostListItemIdentity != block.outermostListItemIdentity
+            val prepared = prepareBlock(
+                block,
+                imageAttachments.size,
+                markers,
+                theme,
+                contentWidth,
+                cursorY,
+                if (endsOutermostList) theme.listSpacingAfterPx else null,
+                warningSemanticGeneration,
+            )
             cursorY = prepared.nextY
             retained += prepared.block.retainedBytes + prepared.extraBytes
             interactions += prepared.interactions
             prepared.attachment?.let(imageAttachments::add)
             prepared.block
         }
-        val height = max(0, max(cursorY, blocks.maxOfOrNull { it.bounds.bottom } ?: cursorY) + theme.insetBottomPx)
+        val height = max(0, (blocks.maxOfOrNull { it.bounds.bottom } ?: cursorY) + theme.insetBottomPx)
         interactions.sortWith(compareBy<PreparedProseInteraction> { it.rects.firstOrNull()?.top ?: Int.MAX_VALUE }.thenBy { it.rects.firstOrNull()?.left ?: Int.MAX_VALUE })
         val nodes = interactions.mapIndexed { index, interaction ->
             PreparedProseAccessibilityNode(
@@ -745,7 +759,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val attachment: ViewerImageAttachment? = null, val nextY: Int, val extraBytes: Long)
 
-    private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int, warningSemanticGeneration: String): BlockResult {
+    private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int, outermostListSpacingAfter: Int?, warningSemanticGeneration: String): BlockResult {
         val paint = theme.paintFor(block)
         val ancestors = listItemAncestors(block)
         val ancestorMarkers = ancestors.mapNotNull { ancestor -> measuredMarkers[ancestor.identity]?.let { ancestor to it } }
@@ -758,7 +772,8 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val quoteInset = if (block.inBlockquote) theme.quoteBorderWidthPx + theme.quoteMarkerGapPx + theme.quoteIndentPx else 0
         val codeInset = if (block.nodeType == "codeBlock") theme.codePaddingHorizontalPx else 0
         val textX = theme.insetLeftPx + listInset + quoteInset + codeInset
-        val itemSpacing = if (ancestors.isEmpty()) paint.spacingAfterPx else ancestors.count { it.isFinalRenderableLeaf } * theme.listItemSpacingPx
+        val itemSpacing = outermostListSpacingAfter
+            ?: if (ancestors.isEmpty()) paint.spacingAfterPx else ancestors.count { it.isFinalRenderableLeaf } * theme.listItemSpacingPx
         if (block.nodeType == "image") {
             val source = ViewerImageAttachment.sourceAndDeclaredSize(block)
             if (source != null) {

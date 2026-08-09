@@ -92,6 +92,7 @@ struct PreparedProseTheme {
     let listIndent: CGFloat
     let listBaseIndentMultiplier: CGFloat
     let listItemSpacing: CGFloat
+    let listSpacingAfter: CGFloat
     let listMarkerColor: UIColor
     let listMarkerScale: CGFloat
     let listMarkerGap: CGFloat
@@ -166,6 +167,7 @@ struct PreparedProseTheme {
                 fallback: paragraph
             )
         }
+        let listItemSpacing = theme.list?.itemSpacing ?? 4
         return PreparedProseTheme(
             fontScale: resolvedScale,
             text: text,
@@ -181,7 +183,8 @@ struct PreparedProseTheme {
             ),
             listIndent: theme.list?.indent ?? 28,
             listBaseIndentMultiplier: theme.list?.baseIndentMultiplier ?? 1,
-            listItemSpacing: theme.list?.itemSpacing ?? 4,
+            listItemSpacing: listItemSpacing,
+            listSpacingAfter: theme.list?.spacingAfter ?? listItemSpacing,
             listMarkerColor: theme.list?.markerColor ?? text.color,
             listMarkerScale: theme.list?.markerScale ?? 1,
             listMarkerGap: theme.list?.markerGap ?? PreparedProseTheme.defaultListMarkerGap,
@@ -302,8 +305,11 @@ final class CoreTextProseLayoutEngine {
             else { continue }
             listMarkersByIdentity[boundary.identity] = makeListMarker(context, paint: theme.paint(for: block), theme: theme)
         }
-        for block in document.blocks {
+        for (index, block) in document.blocks.enumerated() {
             let listMarker = block.listItemBoundary.flatMap { listMarkersByIdentity[$0.identity] }
+            let endsOutermostList = block.outermostListItemIsLast
+                && index + 1 < document.blocks.count
+                && document.blocks[index + 1].outermostListItemIdentity != block.outermostListItemIdentity
             let prepared = prepareBlock(
                 block,
                 attachmentOrdinal: imageAttachments.count,
@@ -311,6 +317,7 @@ final class CoreTextProseLayoutEngine {
                 theme: theme,
                 width: canonicalWidth,
                 cursorY: cursorY,
+                outermostListSpacingAfter: endsOutermostList ? theme.listSpacingAfter : nil,
                 displayScale: displayScale,
                 warningSemanticGeneration: warningSemanticGeneration
             )
@@ -320,7 +327,7 @@ final class CoreTextProseLayoutEngine {
             cursorY = prepared.nextY
             retainedBytes += prepared.retainedBytes
         }
-        cursorY = blocks.reduce(cursorY) { max($0, $1.bounds.maxY) } + theme.contentInsets.bottom
+        cursorY = (blocks.map(\.bounds.maxY).max() ?? cursorY) + theme.contentInsets.bottom
         let pixelHeight = ceil(cursorY * displayScale)
         interactions.sort { lhs, rhs in
             let left = lhs.rects.first ?? .zero
@@ -357,6 +364,7 @@ final class CoreTextProseLayoutEngine {
         theme: PreparedProseTheme,
         width: CGFloat,
         cursorY: CGFloat,
+        outermostListSpacingAfter: CGFloat?,
         displayScale: CGFloat,
         warningSemanticGeneration: String
     ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], attachment: ViewerImageAttachment?, nextY: CGFloat, retainedBytes: Int) {
@@ -379,9 +387,9 @@ final class CoreTextProseLayoutEngine {
         let quoteInset = block.inBlockquote ? theme.quoteBorderWidth + theme.quoteMarkerGap + theme.quoteIndent : 0
         let codeInset = block.nodeType == "codeBlock" ? theme.codePaddingHorizontal : 0
         let textX = contentX + listInset + quoteInset + codeInset
-        let itemSpacing = block.listContext == nil
+        let itemSpacing = outermostListSpacingAfter ?? (block.listContext == nil
             ? paint.spacingAfter
-            : (block.listItemBoundary?.isFinalRenderableLeaf ?? true ? theme.listItemSpacing : 0)
+            : (block.listItemBoundary?.isFinalRenderableLeaf ?? true ? theme.listItemSpacing : 0))
         if block.nodeType == "image", let image = ViewerImageAttachment.sourceAndDeclaredSize(in: block) {
             let imageWidth = max(1, contentWidth - listInset - quoteInset)
             let provisionalHeight = max(44, min(240, imageWidth * 0.56))

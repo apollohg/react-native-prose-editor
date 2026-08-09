@@ -57,6 +57,7 @@ data class EditorListTheme(
     val indent: Float? = null,
     val baseIndentMultiplier: Float? = null,
     val itemSpacing: Float? = null,
+    val spacingAfter: Float? = null,
     val markerColor: Int? = null,
     val markerScale: Float? = null,
     val markerGap: Float? = null
@@ -68,6 +69,7 @@ data class EditorListTheme(
                 indent = json.optNullableFloat("indent"),
                 baseIndentMultiplier = json.optNullableFloat("baseIndentMultiplier"),
                 itemSpacing = json.optNullableFloat("itemSpacing"),
+                spacingAfter = json.optNullableFloat("spacingAfter"),
                 markerColor = parseColor(json.optNullableString("markerColor")),
                 markerScale = json.optNullableFloat("markerScale"),
                 markerGap = json.optNullableFloat("markerGap")

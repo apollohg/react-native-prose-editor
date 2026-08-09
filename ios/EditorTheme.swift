@@ -64,6 +64,7 @@ struct EditorListTheme {
     var indent: CGFloat?
     var baseIndentMultiplier: CGFloat?
     var itemSpacing: CGFloat?
+    var spacingAfter: CGFloat?
     var markerColor: UIColor?
     var markerScale: CGFloat?
     var markerGap: CGFloat?
@@ -72,6 +73,7 @@ struct EditorListTheme {
         indent = EditorTheme.cgFloat(dictionary["indent"])
         baseIndentMultiplier = EditorTheme.cgFloat(dictionary["baseIndentMultiplier"])
         itemSpacing = EditorTheme.cgFloat(dictionary["itemSpacing"])
+        spacingAfter = EditorTheme.cgFloat(dictionary["spacingAfter"])
         markerColor = EditorTheme.color(from: dictionary["markerColor"])
         markerScale = EditorTheme.cgFloat(dictionary["markerScale"])
         markerGap = EditorTheme.cgFloat(dictionary["markerGap"])

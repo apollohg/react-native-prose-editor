@@ -203,6 +203,65 @@ final class PreparedProseRenderingTests: XCTestCase {
         }
     }
 
+    func testTerminalBlockSpacingDoesNotIncreaseViewerHeight() throws {
+        let fixtures: [(source: FixtureSource, themeJSON: String, expectedGap: CGFloat)] = [
+            (
+                .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]},{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}"#),
+                #"{"paragraph":{"spacingAfter":13},"contentInsets":{"bottom":7}}"#,
+                13
+            ),
+            (
+                .json(#"{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}"#),
+                #"{"list":{"itemSpacing":11,"spacingAfter":20},"contentInsets":{"bottom":7}}"#,
+                11
+            ),
+        ]
+
+        for fixture in fixtures {
+            try withCompiledDocument(source: fixture.source, configJSON: Fixture.customConfig) { document in
+                let layout = try prepare(document, themeJSON: fixture.themeJSON)
+                XCTAssertEqual(layout.blocks.count, 2)
+                XCTAssertEqual(
+                    layout.blocks[1].bounds.minY - layout.blocks[0].bounds.maxY,
+                    fixture.expectedGap,
+                    accuracy: 0.001
+                )
+                let expectedHeight = ceil((layout.blocks[1].bounds.maxY + 7) * 2) / 2
+                XCTAssertEqual(layout.size.height, expectedHeight, accuracy: 0.001)
+            }
+        }
+    }
+
+    func testListSpacingAfterReplacesTerminalItemSpacingBeforeFollowingContent() throws {
+        let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"third"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}"#)
+        try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(
+                document,
+                themeJSON: #"{"list":{"itemSpacing":6,"spacingAfter":20}}"#
+            )
+
+            XCTAssertEqual(layout.blocks.count, 4)
+            XCTAssertEqual(layout.blocks[1].bounds.minY - layout.blocks[0].bounds.maxY, 6, accuracy: 0.001)
+            XCTAssertEqual(layout.blocks[2].bounds.minY - layout.blocks[1].bounds.maxY, 20, accuracy: 0.001)
+            XCTAssertEqual(layout.blocks[3].bounds.minY - layout.blocks[2].bounds.maxY, 20, accuracy: 0.001)
+        }
+    }
+
+    func testListSpacingAfterSupportsTaskItemNodeNames() throws {
+        let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"taskList","content":[{"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}"#)
+        let config = #"{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"taskList","content":"taskItem+","group":"block","role":"list"},{"name":"taskItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"text","group":"inline","role":"text"}],"marks":[]},"initialization":{"type":"localEmpty"}}"#
+
+        try withCompiledDocument(source: source, configJSON: config) { document in
+            let layout = try prepare(
+                document,
+                themeJSON: #"{"list":{"itemSpacing":6,"spacingAfter":20}}"#
+            )
+
+            XCTAssertEqual(layout.blocks.count, 2)
+            XCTAssertEqual(layout.blocks[1].bounds.minY - layout.blocks[0].bounds.maxY, 20, accuracy: 0.001)
+        }
+    }
+
     func testListMarkerScaleDoesNotResizeOrderedNumbers() throws {
         let source = FixtureSource.json(#"{"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}"#)
         try withCompiledDocument(source: source, configJSON: Fixture.customConfig) { document in

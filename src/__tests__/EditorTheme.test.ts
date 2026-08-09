@@ -70,13 +70,15 @@ describe('EditorTheme', () => {
         expect(JSON.parse(json!)).toEqual({ links: { color: '#445566' } });
     });
 
-    it('serializes the list marker gap', () => {
+    it('serializes list layout spacing', () => {
         const json = serializeEditorTheme({
-            list: { indent: 28, markerGap: 12, markerScale: undefined },
+            list: { indent: 28, markerGap: 12, spacingAfter: 20, markerScale: undefined },
         });
 
         expect(json).toBeTruthy();
-        expect(JSON.parse(json!)).toEqual({ list: { indent: 28, markerGap: 12 } });
+        expect(JSON.parse(json!)).toEqual({
+            list: { indent: 28, markerGap: 12, spacingAfter: 20 },
+        });
     });
 
     it('serializes toolbar height overrides', () => {

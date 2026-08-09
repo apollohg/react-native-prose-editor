@@ -1154,8 +1154,15 @@ object RenderBridge {
                             density = density,
                             pendingLeadingMargins = state.pendingLeadingMargins
                         )
-                        if (isListItemNodeType(endedBlock.nodeType) && endedBlock.listContext != null) {
-                            state.nextBlockSpacingBefore = theme?.list?.itemSpacing
+                        if (endedBlock.listContext != null) {
+                            val isOutermostFinalListItem =
+                                endedBlock.listContext.optBoolean("isLast", false) &&
+                                    state.blockStack.none { it.listContext != null }
+                            state.nextBlockSpacingBefore = if (isOutermostFinalListItem) {
+                                theme?.list?.spacingAfter ?: theme?.list?.itemSpacing
+                            } else {
+                                theme?.list?.itemSpacing
+                            }
                         }
                         if (endedBlock.nodeType == "codeBlock" && endedBlock.renderStart < state.result.length) {
                             state.pendingCodeBlockSpans.add(

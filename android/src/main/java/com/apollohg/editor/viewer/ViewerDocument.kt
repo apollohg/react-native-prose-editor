@@ -18,6 +18,7 @@ internal data class ViewerListContext(
     val index: Long,
     val kind: String?,
     val checked: Boolean,
+    val isLast: Boolean,
 )
 
 /** Identifies the nearest list item and its first/final renderable leaf. */
@@ -55,6 +56,8 @@ internal data class ViewerBlock(
     val listItemBoundary: ViewerListItemBoundary?,
     val inlines: List<ViewerInline>,
     val listItemAncestors: List<ViewerListItemAncestor> = emptyList(),
+    val outermostListItemIdentity: Int? = null,
+    val outermostListItemIsLast: Boolean = false,
 )
 
 /** Semantic positions live only in [ViewerInline.Atom], never in Android drawing spans. */
@@ -151,6 +154,8 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                 listItemBoundary = null,
                 inlines = inlines,
                 listItemAncestors = itemAncestors,
+                outermostListItemIdentity = itemAncestors.firstOrNull()?.identity,
+                outermostListItemIsLast = itemAncestors.firstOrNull()?.context?.isLast == true,
             )
             itemAncestors.forEach { ancestor ->
                 descendantLeavesByListItem.getOrPut(ancestor.identity) { mutableListOf() } += rendered.lastIndex
@@ -164,7 +169,7 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
             when (element) {
                 is FfiViewerElement.BlockStart -> {
                     val context = listContext(element.listContextJson)
-                    val identity = if (element.nodeType == "listItem") nextListItemIdentity++ else null
+                    val identity = if (context != null) nextListItemIdentity++ else null
                     identity?.let { listItemDepths[it] = element.depth.toInt() }
                     stack += Builder(
                         element.nodeType,
@@ -188,7 +193,9 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                     val builder = stack.removeLastOrNull() ?: return@forEach
                     // Containers are represented by inherited context. Every text block,
                     // including an empty paragraph, remains a leaf for list boundaries.
-                    if (builder.nodeType !in CONTAINER_BLOCKS) appendLeaf(builder.nodeType, builder.depth, builder.inlines, stack + builder)
+                    if (builder.nodeType !in CONTAINER_BLOCKS && builder.listItemIdentity == null) {
+                        appendLeaf(builder.nodeType, builder.depth, builder.inlines, stack + builder)
+                    }
                 }
             }
         }
@@ -238,7 +245,13 @@ internal fun listContext(json: String?): ViewerListContext? = runCatching {
     json ?: return@runCatching null
     val value = JSONObject(json)
     val index = if (value.has("index")) u32(value.opt("index")) else 1L
-    ViewerListContext(value.optBoolean("ordered"), index, value.optionalString("kind"), value.optBoolean("checked"))
+    ViewerListContext(
+        value.optBoolean("ordered"),
+        index,
+        value.optionalString("kind"),
+        value.optBoolean("checked"),
+        value.optBoolean("isLast"),
+    )
 }.getOrNull()
 
 /**
