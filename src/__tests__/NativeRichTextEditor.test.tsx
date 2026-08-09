@@ -998,6 +998,47 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('emits content changes for incremental native commit snapshots', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const onContentChange = jest.fn();
+        const { getByTestId } = render(
+            <NativeRichTextEditor documentHandle={handle} onContentChange={onContentChange} />
+        );
+        v2Runtime.module.editorV2ApplyInput(
+            handle.editorId,
+            JSON.stringify({
+                version: 1,
+                requestId: '1',
+                baseDocumentRevision: handle.bridge.getState().documentRevision,
+                text: '!',
+            })
+        );
+        const atomicUpdate = JSON.parse(renderUpdateValue(handle.editorId)) as Record<
+            string,
+            unknown
+        >;
+        const renderBlocks = atomicUpdate.renderBlocks as unknown[];
+        atomicUpdate.renderBlocks = null;
+        atomicUpdate.renderPatch = {
+            startIndex: 0,
+            deleteCount: renderBlocks.length,
+            renderBlocks,
+        };
+
+        act(() => {
+            getByTestId('native-editor-view').props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: JSON.stringify(atomicUpdate),
+                    documentRevision: handle.bridge.getState().documentRevision,
+                },
+            });
+        });
+
+        expect(onContentChange).toHaveBeenCalledWith('<p>hello!</p>');
+        handle.destroy();
+    });
+
     it.each(['iOS', 'Android'])(
         'accepts only an authentic canonical %s native commit payload and suppresses its exact echo',
         (platform) => {

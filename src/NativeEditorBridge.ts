@@ -184,9 +184,11 @@ type DeepReadonly<T> =
 /** A recursively immutable active-state view supplied by atomic render snapshots. */
 export type ReadonlyActiveState = DeepReadonly<ActiveState>;
 
-interface NativeEditorV2AtomicRenderSnapshotShape {
-    renderBlocks: RenderElement[][];
-    renderPatch: RenderBlocksPatch | null;
+type NativeEditorV2AtomicRenderPayload =
+    | { renderBlocks: RenderElement[][]; renderPatch: null }
+    | { renderBlocks: null; renderPatch: RenderBlocksPatch };
+
+type NativeEditorV2AtomicRenderSnapshotShape = NativeEditorV2AtomicRenderPayload & {
     selection: Selection;
     activeState: ActiveState;
     historyState: HistoryState;
@@ -195,7 +197,7 @@ interface NativeEditorV2AtomicRenderSnapshotShape {
     scalarLength: number;
     /** The core's own answer for whether the document holds no content. */
     documentIsEmpty: boolean;
-}
+};
 
 /** A recursively immutable view of the value frozen by renderUpdate(). */
 export type NativeEditorV2AtomicRenderSnapshot =
@@ -970,7 +972,8 @@ export function normalizeNativeEditorV2RenderUpdateValue(
     ) {
         return null;
     }
-    const renderBlocks = normalizeRenderBlocks(parsed.renderBlocks);
+    const renderBlocks =
+        parsed.renderBlocks === null ? null : normalizeRenderBlocks(parsed.renderBlocks);
     const renderPatch = normalizeRenderPatch(parsed.renderPatch);
     const selection = normalizeRenderSelection(parsed.selection);
     const activeState = normalizeRenderActiveState(parsed.activeState);
@@ -980,7 +983,6 @@ export function normalizeNativeEditorV2RenderUpdateValue(
     const scalarLength = nativeEditorV2U32(parsed.scalarLength);
     const documentIsEmpty = parsed.documentIsEmpty;
     if (
-        renderBlocks == null ||
         renderPatch === undefined ||
         selection == null ||
         activeState == null ||
@@ -992,9 +994,16 @@ export function normalizeNativeEditorV2RenderUpdateValue(
     ) {
         return null;
     }
+    let renderPayload: NativeEditorV2AtomicRenderPayload;
+    if (renderBlocks == null) {
+        if (parsed.renderBlocks !== null || renderPatch == null) return null;
+        renderPayload = { renderBlocks: null, renderPatch };
+    } else {
+        if (renderPatch !== null) return null;
+        renderPayload = { renderBlocks, renderPatch: null };
+    }
     return deepFreezeV2Value({
-        renderBlocks,
-        renderPatch,
+        ...renderPayload,
         selection,
         activeState,
         historyState,
