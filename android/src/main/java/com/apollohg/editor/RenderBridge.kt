@@ -672,6 +672,32 @@ class MarkerGapSpan(private val widthPx: Float) : ReplacementSpan() {
     override fun draw(canvas: Canvas, text: CharSequence, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) = Unit
 }
 
+internal class OrderedListMarkerSpan(
+    internal val labelForTesting: String
+) : ReplacementSpan() {
+    override fun getSize(
+        paint: Paint,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        fm: Paint.FontMetricsInt?
+    ): Int = kotlin.math.ceil(paint.measureText(labelForTesting).toDouble()).toInt()
+
+    override fun draw(
+        canvas: Canvas,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        x: Float,
+        top: Int,
+        y: Int,
+        bottom: Int,
+        paint: Paint
+    ) {
+        canvas.drawText(labelForTesting, x, y.toFloat(), paint)
+    }
+}
+
 class CenteredBulletSpan(
     private val textColor: Int,
     private val markerWidthPx: Float,
@@ -1083,6 +1109,25 @@ object RenderBridge {
                     if (markerListContext != null) {
                         val ordered = markerListContext.optBoolean("ordered", false)
                         val isTask = markerListContext.optString("kind", "") == "task"
+                        val visualListDepth = (
+                            state.blockStack.count { it.listContext != null } - 1
+                        ).coerceAtLeast(0)
+                        val presentationLabel = if (ordered) {
+                            val index = if (!markerListContext.has("index")) {
+                                1L
+                            } else {
+                                exactV2U32(
+                                    markerListContext.opt("index") as? Number
+                                )?.toLong() ?: 0L
+                            }
+                            OrderedListMarkerFormatter.label(
+                                index,
+                                visualListDepth,
+                                theme?.list?.orderedMarker
+                            )
+                        } else {
+                            null
+                        }
                         val marker = listMarkerString(markerListContext)
                         val markerBaseSize =
                             resolveTextStyle(
@@ -1129,6 +1174,14 @@ object RenderBridge {
                                 MarkerGapSpan(markerGapPx),
                                 markerEnd - 1,
                                 markerEnd,
+                                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                            )
+                        }
+                        if (ordered && presentationLabel != null && marker.endsWith(' ')) {
+                            state.result.setSpan(
+                                OrderedListMarkerSpan(presentationLabel),
+                                markerStart,
+                                markerEnd - 1,
                                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                             )
                         }

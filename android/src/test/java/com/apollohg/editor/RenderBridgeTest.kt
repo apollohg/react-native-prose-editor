@@ -23,6 +23,7 @@ import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import android.text.style.URLSpan
 import android.text.style.UnderlineSpan
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -804,6 +805,116 @@ class RenderBridgeTest {
         )
         assertTrue("Should contain first item text", string.contains("First item"))
         assertTrue("Should contain second item text", string.contains("Second item"))
+    }
+
+    @Test
+    fun `ordered list marker formatter cycles schemes and formats boundaries`() {
+        val theme = EditorOrderedListMarkerTheme.fromJson(
+            JSONObject("""{"schemes":["decimal","lowerAlpha","lowerRoman"],"suffix":")"}""")
+        )
+
+        assertEquals("1)", OrderedListMarkerFormatter.label(1, 0, theme))
+        assertEquals("z)", OrderedListMarkerFormatter.label(26, 1, theme))
+        assertEquals("aa)", OrderedListMarkerFormatter.label(27, 1, theme))
+        assertEquals("ix)", OrderedListMarkerFormatter.label(9, 2, theme))
+        assertEquals("2)", OrderedListMarkerFormatter.label(2, 3, theme))
+        assertEquals(
+            "4000.",
+            OrderedListMarkerFormatter.label(
+                4_000,
+                2,
+                EditorOrderedListMarkerTheme(
+                    listOf(EditorOrderedListNumberingScheme.LOWER_ROMAN),
+                    "."
+                )
+            )
+        )
+        assertEquals(
+            "0.",
+            OrderedListMarkerFormatter.label(
+                0,
+                0,
+                EditorOrderedListMarkerTheme(
+                    listOf(EditorOrderedListNumberingScheme.UPPER_ALPHA),
+                    "."
+                )
+            )
+        )
+        assertEquals(
+            "4294967296.",
+            OrderedListMarkerFormatter.label(
+                4_294_967_296,
+                0,
+                EditorOrderedListMarkerTheme(
+                    listOf(EditorOrderedListNumberingScheme.LOWER_ALPHA),
+                    "."
+                )
+            )
+        )
+        val normalized = EditorOrderedListMarkerTheme.fromJson(
+            JSONObject("""{"schemes":["unknown"],"suffix":"!"}""")
+        )
+        assertEquals("27.", OrderedListMarkerFormatter.label(27, 0, normalized))
+    }
+
+    @Test
+    fun `render - nested ordered marker uses semantic list depth without changing canonical text`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Outer item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Nested item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """{"list":{"orderedMarker":{"schemes":["decimal","lowerAlpha"],"suffix":")"}}}"""
+        )
+
+        val rendered = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme)
+
+        assertTrue(rendered.toString().contains("1. "))
+        assertEquals(
+            "a)",
+            rendered.getSpans(0, rendered.length, OrderedListMarkerSpan::class.java)
+                .last()
+                .labelForTesting
+        )
+    }
+
+    @Test
+    fun `render - missing ordered index keeps canonical and visual defaults aligned`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": true, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """{"list":{"orderedMarker":{"schemes":["lowerAlpha"],"suffix":")"}}}"""
+        )
+
+        val rendered = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme)
+
+        assertTrue(rendered.toString().startsWith("1. "))
+        assertEquals(
+            "a)",
+            rendered.getSpans(0, rendered.length, OrderedListMarkerSpan::class.java)
+                .single()
+                .labelForTesting
+        )
     }
 
     @Test

@@ -60,7 +60,8 @@ data class EditorListTheme(
     val spacingAfter: Float? = null,
     val markerColor: Int? = null,
     val markerScale: Float? = null,
-    val markerGap: Float? = null
+    val markerGap: Float? = null,
+    val orderedMarker: EditorOrderedListMarkerTheme? = null
 ) {
     companion object {
         fun fromJson(json: JSONObject?): EditorListTheme? {
@@ -72,7 +73,10 @@ data class EditorListTheme(
                 spacingAfter = json.optNullableFloat("spacingAfter"),
                 markerColor = parseColor(json.optNullableString("markerColor")),
                 markerScale = json.optNullableFloat("markerScale"),
-                markerGap = json.optNullableFloat("markerGap")
+                markerGap = json.optNullableFloat("markerGap"),
+                orderedMarker = EditorOrderedListMarkerTheme.fromJson(
+                    json.optJSONObject("orderedMarker")
+                )
             )
         }
     }
