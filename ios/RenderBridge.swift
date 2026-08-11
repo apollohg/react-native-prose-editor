@@ -1034,7 +1034,8 @@ final class RenderBridge {
         if let markerContext = currentBlock.listMarkerContext {
             mutableAttrs[RenderBridgeAttributes.listMarkerContext] = markerContext
             let visualListDepth = max(0, blockStack.filter { $0.listContext != nil }.count - 1)
-            if (markerContext["ordered"] as? NSNumber)?.boolValue == true,
+            if (markerContext["kind"] as? String) != "task",
+               (markerContext["ordered"] as? NSNumber)?.boolValue == true,
                let rawIndex = markerContext["index"] as? NSNumber,
                let index = v2ExactUInt32(rawIndex)
             {

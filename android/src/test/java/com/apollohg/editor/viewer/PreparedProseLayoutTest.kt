@@ -23,6 +23,8 @@ import com.apollohg.editor.ProseViewerInteractionListenerAdapter
 import com.apollohg.editor.ProseViewerMention
 import com.apollohg.editor.ProseViewerSource
 import com.apollohg.editor.ProseViewerView
+import com.apollohg.editor.OrderedListMarkerSpan
+import com.apollohg.editor.RenderBridge
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -877,6 +879,123 @@ class PreparedProseLayoutTest {
         assertEquals("", nestedLeafMarkers[1].label)
         assertTrue(nestedLeafMarkers[1].checked)
         assertEquals(listOf("i)", "1)"), nestedLeafMarkers.drop(2).mapNotNull { it.label })
+    }
+
+    @Test
+    fun `ordered marker editor and viewer rendering conform for shared tuples`() {
+        data class Fixture(val index: Long, val semanticDepth: Int, val expected: String)
+
+        val fixtures = listOf(
+            Fixture(index = 27, semanticDepth = 0, expected = "AA)"),
+            Fixture(index = 3_999, semanticDepth = 1, expected = "MMMCMXCIX)"),
+            Fixture(index = 42, semanticDepth = 2, expected = "42)"),
+        )
+        val themeJson =
+            """{"list":{"orderedMarker":{"schemes":["upperAlpha","upperRoman","decimal"],"suffix":")"}}}"""
+        val editorTheme = com.apollohg.editor.EditorTheme.fromJson(themeJson)
+        val viewerTheme = PreparedProseTheme.resolve(themeJson, density = 1f)
+
+        fixtures.forEach { fixture ->
+            val renderElements = JSONArray()
+            repeat(fixture.semanticDepth + 1) { depth ->
+                val deepest = depth == fixture.semanticDepth
+                renderElements.put(
+                    JSONObject()
+                        .put("type", "blockStart")
+                        .put("nodeType", "listItem")
+                        .put("depth", depth)
+                        .put(
+                            "listContext",
+                            JSONObject()
+                                .put("ordered", deepest)
+                                .put("index", if (deepest) fixture.index else 1)
+                                .put("isFirst", true)
+                                .put("isLast", true),
+                        ),
+                )
+            }
+            renderElements.put(
+                JSONObject()
+                    .put("type", "blockStart")
+                    .put("nodeType", "paragraph")
+                    .put("depth", fixture.semanticDepth + 1),
+            )
+            renderElements.put(
+                JSONObject()
+                    .put("type", "textRun")
+                    .put("text", "item")
+                    .put("marks", JSONArray()),
+            )
+            renderElements.put(JSONObject().put("type", "blockEnd"))
+            repeat(fixture.semanticDepth + 1) {
+                renderElements.put(JSONObject().put("type", "blockEnd"))
+            }
+
+            val editor = RenderBridge.buildSpannable(
+                renderElements.toString(),
+                16f,
+                0xFF000000.toInt(),
+                editorTheme,
+            )
+            val editorLabel = editor.getSpans(
+                0,
+                editor.length,
+                OrderedListMarkerSpan::class.java,
+            ).single().label
+
+            val orderedContext = ViewerListContext(
+                ordered = true,
+                index = fixture.index,
+                kind = null,
+                checked = false,
+                isLast = true,
+            )
+            val ancestors = (0..fixture.semanticDepth).map { depth ->
+                val deepest = depth == fixture.semanticDepth
+                ViewerListItemAncestor(
+                    identity = depth,
+                    context = if (deepest) orderedContext else orderedContext.copy(ordered = false),
+                    nestingDepth = 50 - depth,
+                    isFirstRenderableLeaf = deepest,
+                    isFinalRenderableLeaf = deepest,
+                )
+            }
+            val block = ViewerBlock(
+                nodeType = "paragraph",
+                depth = 80 + fixture.semanticDepth,
+                inBlockquote = false,
+                listContext = orderedContext,
+                listItemBoundary = ViewerListItemBoundary(
+                    identity = ancestors.last().identity,
+                    nestingDepth = 40 - fixture.semanticDepth,
+                    isFirstRenderableLeaf = true,
+                    isFinalRenderableLeaf = true,
+                ),
+                inlines = listOf(ViewerInline.Text("item", emptyList())),
+                listItemAncestors = ancestors,
+            )
+            val viewer = StaticLayoutAndroidProseLayoutEngine().prepare(
+                document = ViewerDocument(
+                    semanticKey = "conformance-${fixture.semanticDepth}",
+                    blocks = listOf(block),
+                    isEmpty = false,
+                    retainedBytes = 64,
+                ),
+                key = testLayoutKey("conformance-${fixture.semanticDepth}"),
+                theme = viewerTheme,
+                widthPx = 320,
+                density = 1f,
+                collapsesWhenEmpty = false,
+            )
+            val viewerLabel = viewer.blocks
+                .flatMap { it.fragments }
+                .single { it.kind == PreparedProseFragmentKind.MARKER }
+                .label
+
+            assertEquals(fixture.expected, editorLabel)
+            assertEquals(fixture.expected, viewerLabel)
+            assertEquals(editorLabel, viewerLabel)
+        }
     }
 
     @Test

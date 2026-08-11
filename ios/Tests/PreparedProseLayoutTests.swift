@@ -1,5 +1,6 @@
 import CoreText
 import Foundation
+import UIKit
 import XCTest
 
 final class PreparedProseLayoutTests: XCTestCase {
@@ -275,6 +276,134 @@ final class PreparedProseLayoutTests: XCTestCase {
             .compactMap(\.label)
 
         XCTAssertEqual(markerLabels, ["i)"])
+    }
+
+    func testOrderedMarkerEditorAndViewerRenderingConformForSharedTuples() throws {
+        let fixtures: [(index: Int, semanticDepth: Int, expected: String)] = [
+            (27, 0, "AA)"),
+            (3_999, 1, "MMMCMXCIX)"),
+            (42, 2, "42)"),
+        ]
+        let themeDictionary: [String: Any] = [
+            "list": [
+                "orderedMarker": [
+                    "schemes": ["upperAlpha", "upperRoman", "decimal"],
+                    "suffix": ")",
+                ],
+            ],
+        ]
+        let themeJSONData = try JSONSerialization.data(withJSONObject: themeDictionary)
+        let themeJSON = try XCTUnwrap(String(data: themeJSONData, encoding: .utf8))
+        let editorTheme = EditorTheme(dictionary: themeDictionary)
+        let viewerTheme = PreparedProseTheme.resolve(themeJSON: themeJSON)
+
+        for fixture in fixtures {
+            var elements: [[String: Any]] = []
+            for depth in 0...fixture.semanticDepth {
+                let deepest = depth == fixture.semanticDepth
+                elements.append([
+                    "type": "blockStart",
+                    "nodeType": "listItem",
+                    "depth": depth,
+                    "listContext": [
+                        "ordered": deepest,
+                        "index": deepest ? fixture.index : 1,
+                        "isFirst": true,
+                        "isLast": true,
+                    ],
+                ])
+            }
+            elements.append([
+                "type": "blockStart",
+                "nodeType": "paragraph",
+                "depth": fixture.semanticDepth + 1,
+            ])
+            elements.append(["type": "textRun", "text": "item", "marks": []])
+            elements.append(["type": "blockEnd"])
+            for _ in 0...fixture.semanticDepth {
+                elements.append(["type": "blockEnd"])
+            }
+            let renderData = try JSONSerialization.data(withJSONObject: elements)
+            let renderJSON = try XCTUnwrap(String(data: renderData, encoding: .utf8))
+            let editor = RenderBridge.renderElements(
+                fromJSON: renderJSON,
+                baseFont: .systemFont(ofSize: 16),
+                textColor: .label,
+                theme: editorTheme
+            )
+            let editorLabel = editor.attribute(
+                RenderBridgeAttributes.orderedListMarkerLabel,
+                at: 0,
+                effectiveRange: nil
+            ) as? String
+
+            let orderedContext = ViewerListContext(
+                ordered: true,
+                index: fixture.index,
+                kind: nil,
+                checked: false,
+                isLast: true
+            )
+            let ancestors = (0...fixture.semanticDepth).map { depth in
+                ViewerListItemAncestor(
+                    identity: depth,
+                    context: depth == fixture.semanticDepth
+                        ? orderedContext
+                        : ViewerListContext(
+                            ordered: false,
+                            index: 1,
+                            kind: nil,
+                            checked: false,
+                            isLast: true
+                        )
+                )
+            }
+            let block = ViewerBlock(
+                nodeType: "paragraph",
+                depth: UInt16(80 + fixture.semanticDepth),
+                inBlockquote: false,
+                listContext: orderedContext,
+                listItemBoundary: ViewerListItemBoundary(
+                    identity: ancestors.last!.identity,
+                    nestingDepth: UInt16(40 - fixture.semanticDepth),
+                    isFirstRenderableLeaf: true,
+                    isFinalRenderableLeaf: true
+                ),
+                listItemAncestors: ancestors,
+                inlines: [.text(text: "item", marks: [])]
+            )
+            let semanticKey = "conformance-\(fixture.semanticDepth)"
+            let viewer = try CoreTextProseLayoutEngine().prepare(
+                document: ViewerDocument(
+                    semanticKey: semanticKey,
+                    blocks: [block],
+                    isEmpty: false,
+                    retainedBytes: 64,
+                    preparedTheme: viewerTheme
+                ),
+                key: ProseLayoutKey(
+                    semanticKey: semanticKey,
+                    widthPixels: 640,
+                    themeDigest: "ordered-marker-conformance",
+                    nativeFontRevision: 0,
+                    fontEnvironmentRevision: 0,
+                    displayScale: 2,
+                    attachmentRevision: 0,
+                    generationIdentity: semanticKey,
+                    semanticGenerationIdentity: semanticKey
+                ),
+                widthPoints: 320,
+                displayScale: 2
+            )
+            let viewerLabel = viewer.blocks
+                .flatMap(\.fragments)
+                .first { $0.kind == .marker }?
+                .label
+
+            XCTAssertEqual(editorLabel, fixture.expected)
+            XCTAssertEqual(viewerLabel, fixture.expected)
+            XCTAssertEqual(editorLabel, viewerLabel)
+        }
     }
 
     private let document = ViewerDocument(

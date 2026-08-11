@@ -13,8 +13,9 @@ struct EditorOrderedListMarkerTheme {
     let suffix: String
 
     init(dictionary: [String: Any]) {
-        let parsed = (dictionary["schemes"] as? [String])?
-            .compactMap(EditorOrderedListNumberingScheme.init(rawValue:)) ?? []
+        let parsed = (dictionary["schemes"] as? [Any])?.compactMap { value in
+            (value as? String).flatMap(EditorOrderedListNumberingScheme.init(rawValue:))
+        } ?? []
         schemes = parsed.isEmpty ? [.decimal] : parsed
         let parsedSuffix = dictionary["suffix"] as? String
         suffix = parsedSuffix == ")" ? ")" : "."

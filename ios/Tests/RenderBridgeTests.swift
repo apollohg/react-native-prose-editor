@@ -2056,6 +2056,137 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(OrderedListMarkerFormatter.label(index: 4_000, nestingDepth: 2, theme: invalid), "4000.")
     }
 
+    func testOrderedListMarkerThemeNormalizesMissingEmptyAndMixedSchemes() {
+        let missing = EditorOrderedListMarkerTheme(dictionary: [:])
+        let empty = EditorOrderedListMarkerTheme(dictionary: ["schemes": []])
+        let mixed = EditorOrderedListMarkerTheme(dictionary: [
+            "schemes": ["lowerAlpha", 7, NSNull(), "unknown", "upperRoman"],
+        ])
+        let malformed = EditorOrderedListMarkerTheme(dictionary: [
+            "schemes": [7, NSNull(), "unknown"],
+        ])
+
+        XCTAssertEqual(missing.schemes, [.decimal])
+        XCTAssertEqual(empty.schemes, [.decimal])
+        XCTAssertEqual(mixed.schemes, [.lowerAlpha, .upperRoman])
+        XCTAssertEqual(malformed.schemes, [.decimal])
+    }
+
+    func testOrderedListMarkerFormatterFormatsUppercaseSchemesAndRomanBoundary() {
+        let theme = EditorOrderedListMarkerTheme(dictionary: [
+            "schemes": ["upperAlpha", "upperRoman"],
+            "suffix": ")",
+        ])
+
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 27, nestingDepth: 0, theme: theme), "AA)")
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 9, nestingDepth: 1, theme: theme), "IX)")
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 3_999, nestingDepth: 1, theme: theme), "MMMCMXCIX)")
+    }
+
+    func testRender_absentOrderedMarkerUsesDecimalDotPresentation() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": true, "index": 3, "total": 1, "start": 3, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Default item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: EditorTheme(dictionary: ["list": [:]])
+        )
+
+        XCTAssertEqual(
+            result.attribute(
+                RenderBridgeAttributes.orderedListMarkerLabel,
+                at: 0,
+                effectiveRange: nil
+            ) as? String,
+            "3."
+        )
+    }
+
+    func testRender_orderedUnderTaskUsesTaskAncestryDepth() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "taskItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "kind": "task", "checked": false, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Task", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Nested ordered", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "list": ["orderedMarker": ["schemes": ["decimal", "lowerAlpha"]]],
+        ])
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+        let nestedLocation = (result.string as NSString).range(of: "Nested ordered").location
+
+        XCTAssertEqual(
+            result.attribute(
+                RenderBridgeAttributes.orderedListMarkerLabel,
+                at: nestedLocation,
+                effectiveRange: nil
+            ) as? String,
+            "a."
+        )
+    }
+
+    func testRender_taskKindTakesPrecedenceOverAdversarialOrderedFlag() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "taskItem", "depth": 0,
+             "listContext": {"ordered": true, "index": 4, "kind": "task", "checked": false, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Task", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: EditorTheme(dictionary: [
+                "list": ["orderedMarker": ["schemes": ["upperRoman"], "suffix": ")"]],
+            ])
+        )
+
+        XCTAssertEqual(
+            RenderBridge.listMarkerString(listContext: [
+                "ordered": true,
+                "index": 4,
+                "kind": "task",
+                "checked": false,
+            ]),
+            "\u{2610} "
+        )
+        XCTAssertNil(
+            result.attribute(
+                RenderBridgeAttributes.orderedListMarkerLabel,
+                at: 0,
+                effectiveRange: nil
+            )
+        )
+    }
+
     func testRender_nestedOrderedListUsesThemedLabelsWithoutChangingCanonicalMarkers() {
         let json = """
         [

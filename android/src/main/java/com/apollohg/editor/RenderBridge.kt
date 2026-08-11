@@ -673,7 +673,7 @@ class MarkerGapSpan(private val widthPx: Float) : ReplacementSpan() {
 }
 
 internal class OrderedListMarkerSpan(
-    internal val labelForTesting: String
+    internal val label: String
 ) : ReplacementSpan() {
     override fun getSize(
         paint: Paint,
@@ -681,7 +681,7 @@ internal class OrderedListMarkerSpan(
         start: Int,
         end: Int,
         fm: Paint.FontMetricsInt?
-    ): Int = kotlin.math.ceil(paint.measureText(labelForTesting).toDouble()).toInt()
+    ): Int = kotlin.math.ceil(paint.measureText(label).toDouble()).toInt()
 
     override fun draw(
         canvas: Canvas,
@@ -694,7 +694,7 @@ internal class OrderedListMarkerSpan(
         bottom: Int,
         paint: Paint
     ) {
-        canvas.drawText(labelForTesting, x, y.toFloat(), paint)
+        canvas.drawText(label, x, y.toFloat(), paint)
     }
 }
 

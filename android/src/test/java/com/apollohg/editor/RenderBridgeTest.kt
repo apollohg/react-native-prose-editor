@@ -855,6 +855,99 @@ class RenderBridgeTest {
             JSONObject("""{"schemes":["unknown"],"suffix":"!"}""")
         )
         assertEquals("27.", OrderedListMarkerFormatter.label(27, 0, normalized))
+
+        val uppercase = EditorOrderedListMarkerTheme.fromJson(
+            JSONObject("""{"schemes":["upperAlpha","upperRoman"],"suffix":")"}""")
+        )
+        assertEquals("AA)", OrderedListMarkerFormatter.label(27, 0, uppercase))
+        assertEquals("IX)", OrderedListMarkerFormatter.label(9, 1, uppercase))
+        assertEquals("MMMCMXCIX)", OrderedListMarkerFormatter.label(3_999, 1, uppercase))
+    }
+
+    @Test
+    fun `ordered marker theme normalizes missing empty and mixed schemes`() {
+        val missing = EditorOrderedListMarkerTheme.fromJson(JSONObject())
+        val empty = EditorOrderedListMarkerTheme.fromJson(JSONObject("""{"schemes":[]}"""))
+        val mixed = EditorOrderedListMarkerTheme.fromJson(
+            JSONObject("""{"schemes":["lowerAlpha",7,null,"unknown","upperRoman"]}""")
+        )
+        val malformed = EditorOrderedListMarkerTheme.fromJson(
+            JSONObject("""{"schemes":[7,null,"unknown"]}""")
+        )
+
+        assertEquals(listOf(EditorOrderedListNumberingScheme.DECIMAL), missing?.schemes)
+        assertEquals(listOf(EditorOrderedListNumberingScheme.DECIMAL), empty?.schemes)
+        assertEquals(
+            listOf(
+                EditorOrderedListNumberingScheme.LOWER_ALPHA,
+                EditorOrderedListNumberingScheme.UPPER_ROMAN,
+            ),
+            mixed?.schemes,
+        )
+        assertEquals(listOf(EditorOrderedListNumberingScheme.DECIMAL), malformed?.schemes)
+    }
+
+    @Test
+    fun `render - absent ordered marker uses decimal dot presentation`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": true, "index": 3, "total": 1, "start": 3, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Default item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val rendered = RenderBridge.buildSpannable(
+            json,
+            baseFontSize,
+            textColor,
+            EditorTheme.fromJson("""{"list":{}}"""),
+        )
+
+        assertEquals("3. ", rendered.toString().substringBefore("Default item"))
+        assertEquals(
+            "3.",
+            rendered.getSpans(0, rendered.length, OrderedListMarkerSpan::class.java)
+                .single()
+                .label,
+        )
+    }
+
+    @Test
+    fun `render - scalar positions follow canonical marker while replacement paints longer label`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": true, "index": 27, "total": 1, "start": 27, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """{"list":{"orderedMarker":{"schemes":["upperRoman"],"suffix":")"}}}""",
+        )
+
+        val rendered = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme)
+        val backingText = rendered.toString()
+        val markerSpan = rendered.getSpans(
+            0,
+            rendered.length,
+            OrderedListMarkerSpan::class.java,
+        ).single()
+        val canonicalTextStart = 4
+
+        assertEquals("27. Item", backingText)
+        assertEquals("XXVII)", markerSpan.label)
+        assertTrue(markerSpan.label.length != rendered.getSpanEnd(markerSpan) - rendered.getSpanStart(markerSpan))
+        assertEquals(0, rendered.getSpanStart(markerSpan))
+        assertEquals(3, rendered.getSpanEnd(markerSpan))
+        assertEquals(canonicalTextStart, PositionBridge.utf16ToScalar(canonicalTextStart, backingText))
+        assertEquals(canonicalTextStart, PositionBridge.scalarToUtf16(canonicalTextStart, backingText))
     }
 
     @Test
@@ -886,7 +979,7 @@ class RenderBridgeTest {
             "a)",
             rendered.getSpans(0, rendered.length, OrderedListMarkerSpan::class.java)
                 .last()
-                .labelForTesting
+                .label
         )
     }
 
@@ -913,7 +1006,7 @@ class RenderBridgeTest {
             "a)",
             rendered.getSpans(0, rendered.length, OrderedListMarkerSpan::class.java)
                 .single()
-                .labelForTesting
+                .label
         )
     }
 
