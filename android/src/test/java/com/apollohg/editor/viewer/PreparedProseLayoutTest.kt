@@ -796,6 +796,7 @@ class PreparedProseLayoutTest {
             isLast = true,
         )
         val bulletContext = orderedContext.copy(ordered = false)
+        val checkedTaskContext = bulletContext.copy(kind = "task", checked = true)
         fun ancestor(
             identity: Int,
             context: ViewerListContext,
@@ -820,9 +821,9 @@ class PreparedProseLayoutTest {
                 ancestor(2, orderedContext, storedDepth = 0, isMarkerOwner = true),
             ),
             listOf(
-                ancestor(103, bulletContext, storedDepth = 20, isMarkerOwner = false),
-                ancestor(104, orderedContext, storedDepth = 2, isMarkerOwner = false),
-                ancestor(105, bulletContext, storedDepth = 0, isMarkerOwner = false),
+                ancestor(103, bulletContext, storedDepth = 20, isMarkerOwner = true),
+                ancestor(104, checkedTaskContext, storedDepth = 2, isMarkerOwner = true),
+                ancestor(105, orderedContext, storedDepth = 0, isMarkerOwner = true),
                 ancestor(3, orderedContext, storedDepth = 1, isMarkerOwner = true),
             ),
         )
@@ -862,12 +863,20 @@ class PreparedProseLayoutTest {
             density = 1f,
             collapsesWhenEmpty = false,
         )
-        val markerLabels = layout.blocks
+        val markerFragments = layout.blocks
             .flatMap { it.fragments }
             .filter { it.kind == PreparedProseFragmentKind.MARKER }
-            .mapNotNull { it.label }
+        val markerLabels = markerFragments.mapNotNull { it.label }
+        val nestedLeafMarkers = layout.blocks.last().fragments
+            .filter { it.kind == PreparedProseFragmentKind.MARKER }
 
-        assertEquals(listOf("1)", "a)", "i)", "1)"), markerLabels)
+        assertEquals(listOf("1)", "a)", "i)", "•", "", "i)", "1)"), markerLabels)
+        assertEquals(listOf("•", "", "i)", "1)"), nestedLeafMarkers.mapNotNull { it.label })
+        assertEquals("•", nestedLeafMarkers[0].label)
+        assertFalse(nestedLeafMarkers[0].checked)
+        assertEquals("", nestedLeafMarkers[1].label)
+        assertTrue(nestedLeafMarkers[1].checked)
+        assertEquals(listOf("i)", "1)"), nestedLeafMarkers.drop(2).mapNotNull { it.label })
     }
 
     @Test
