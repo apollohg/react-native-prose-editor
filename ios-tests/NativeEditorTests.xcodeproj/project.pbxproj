@@ -55,6 +55,7 @@
 		DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */; };
 		E0497F12FE357FCA9190C51B /* NativeCollaborationTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B991A14504C9E29076097E /* NativeCollaborationTransport.swift */; };
 		ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */; };
+		E9203AB55BC24C58AC4A5DF300CAD857 /* OrderedListMarkerFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB458955B8F04E609FC85FCCF8CB9467 /* OrderedListMarkerFormatter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -97,6 +98,7 @@
 		A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridgeTests.swift; sourceTree = "<group>"; };
 		AAFA4DB42F32DDE95171E72A /* NativeEditorTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NativeEditorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD2EDD1353EF86CAD0E419CB /* PreparedProseViewerShadowNode.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PreparedProseViewerShadowNode.cpp; sourceTree = "<group>"; };
+		AB458955B8F04E609FC85FCCF8CB9467 /* OrderedListMarkerFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderedListMarkerFormatter.swift; sourceTree = "<group>"; };
 		B44533DC8D4FA27875F041AC /* ProseViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProseViewerView.swift; sourceTree = "<group>"; };
 		BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2Shadow.swift; sourceTree = "<group>"; };
 		C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "prepared-prose-benchmark-config.json"; sourceTree = "<group>"; };
@@ -159,6 +161,7 @@
 				2261CB51C233C88B5737A00A /* NativeCollaborationTransportRegistry.swift */,
 				786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */,
 				8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */,
+				AB458955B8F04E609FC85FCCF8CB9467 /* OrderedListMarkerFormatter.swift */,
 				F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */,
 				B44533DC8D4FA27875F041AC /* ProseViewerView.swift */,
 				516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */,
@@ -656,6 +659,7 @@
 				408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */,
 				3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */,
 				191425460B07769B3AE268AC /* PREPPreparedProseViewerComponentView.mm in Sources */,
+				E9203AB55BC24C58AC4A5DF300CAD857 /* OrderedListMarkerFormatter.swift in Sources */,
 				109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */,
 				4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */,
 				512B8F095CBF6793BD82B241 /* PreparedProseAccessibilityTests.swift in Sources */,
