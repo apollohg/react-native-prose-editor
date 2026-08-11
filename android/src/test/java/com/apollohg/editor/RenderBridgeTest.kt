@@ -1022,6 +1022,32 @@ class RenderBridgeTest {
 
 
     @Test
+    fun `task marker kind takes precedence over ordered visual presentation`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "taskItem", "depth": 0,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1,
+                             "isFirst": true, "isLast": true, "kind": "task", "checked": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "todo", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertTrue(result.toString().startsWith(LayoutConstants.TASK_LIST_MARKER_UNCHECKED))
+        val annotations = result.getSpans(0, 2, android.text.Annotation::class.java)
+            .filter { it.key == RenderBridge.NATIVE_TASK_LIST_MARKER_ANNOTATION }
+        assertEquals(1, annotations.size)
+        assertTrue(
+            result.getSpans(0, result.length, OrderedListMarkerSpan::class.java).isEmpty()
+        )
+    }
+
+
+    @Test
     fun `render - opaque inline atom`() {
         val json = """
         [

@@ -1112,7 +1112,7 @@ object RenderBridge {
                         val visualListDepth = (
                             state.blockStack.count { it.listContext != null } - 1
                         ).coerceAtLeast(0)
-                        val presentationLabel = if (ordered) {
+                        val presentationLabel = if (ordered && !isTask) {
                             val index = if (!markerListContext.has("index")) {
                                 1L
                             } else {
@@ -1177,7 +1177,7 @@ object RenderBridge {
                                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                             )
                         }
-                        if (ordered && presentationLabel != null && marker.endsWith(' ')) {
+                        if (ordered && !isTask && presentationLabel != null && marker.endsWith(' ')) {
                             state.result.setSpan(
                                 OrderedListMarkerSpan(presentationLabel),
                                 markerStart,
