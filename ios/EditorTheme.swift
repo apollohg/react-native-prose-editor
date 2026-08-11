@@ -68,6 +68,7 @@ struct EditorListTheme {
     var markerColor: UIColor?
     var markerScale: CGFloat?
     var markerGap: CGFloat?
+    var orderedMarker: EditorOrderedListMarkerTheme?
 
     init(dictionary: [String: Any]) {
         indent = EditorTheme.cgFloat(dictionary["indent"])
@@ -77,6 +78,9 @@ struct EditorListTheme {
         markerColor = EditorTheme.color(from: dictionary["markerColor"])
         markerScale = EditorTheme.cgFloat(dictionary["markerScale"])
         markerGap = EditorTheme.cgFloat(dictionary["markerGap"])
+        if let orderedMarker = dictionary["orderedMarker"] as? [String: Any] {
+            self.orderedMarker = EditorOrderedListMarkerTheme(dictionary: orderedMarker)
+        }
     }
 }
 

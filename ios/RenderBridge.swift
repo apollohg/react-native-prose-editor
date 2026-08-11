@@ -24,6 +24,8 @@ enum RenderBridgeAttributes {
     /// Marks blocks that should render a visible list marker.
     static let listMarkerContext = NSAttributedString.Key("com.apollohg.editor.listMarkerContext")
 
+    static let orderedListMarkerLabel = NSAttributedString.Key("com.apollohg.editor.orderedListMarkerLabel")
+
     /// Stores the rendered list marker color for the paragraph marker.
     static let listMarkerColor = NSAttributedString.Key("com.apollohg.editor.listMarkerColor")
 
@@ -1031,6 +1033,18 @@ final class RenderBridge {
         }
         if let markerContext = currentBlock.listMarkerContext {
             mutableAttrs[RenderBridgeAttributes.listMarkerContext] = markerContext
+            let visualListDepth = max(0, blockStack.filter { $0.listContext != nil }.count - 1)
+            if (markerContext["ordered"] as? NSNumber)?.boolValue == true,
+               let rawIndex = markerContext["index"] as? NSNumber,
+               let index = v2ExactUInt32(rawIndex)
+            {
+                mutableAttrs[RenderBridgeAttributes.orderedListMarkerLabel] =
+                    OrderedListMarkerFormatter.label(
+                        index: index,
+                        nestingDepth: visualListDepth,
+                        theme: theme?.list?.orderedMarker
+                    )
+            }
             mutableAttrs[RenderBridgeAttributes.listMarkerColor] = theme?.list?.markerColor
             mutableAttrs[RenderBridgeAttributes.listMarkerScale] = theme?.list?.markerScale
             mutableAttrs[RenderBridgeAttributes.listMarkerGap] = theme?.list?.markerGap

@@ -364,7 +364,9 @@ final class EditorLayoutManager: NSLayoutManager {
                 baseFont: baseFont,
                 markerScale: markerScale
             )
-            let markerText = RenderBridge.listMarkerString(listContext: listContext)
+            let markerText = attrs[RenderBridgeAttributes.orderedListMarkerLabel] as? String
+                ?? RenderBridge.listMarkerString(listContext: listContext)
+                    .trimmingCharacters(in: .whitespaces)
             let markerOrigin = Self.orderedMarkerDrawingOrigin(
                 usedRect: usedRect,
                 lineFragmentRect: lineFragmentRect,

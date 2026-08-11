@@ -2034,6 +2034,90 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(firstStyle?.headIndent, 48.0 + LayoutConstants.listMarkerWidth)
     }
 
+    func testOrderedListMarkerFormatterCyclesSchemesAndFormatsBoundaries() {
+        let theme = EditorOrderedListMarkerTheme(dictionary: [
+            "schemes": ["decimal", "lowerAlpha", "lowerRoman"],
+            "suffix": ")",
+        ])
+
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 1, nestingDepth: 0, theme: theme), "1)")
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 26, nestingDepth: 1, theme: theme), "z)")
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 27, nestingDepth: 1, theme: theme), "aa)")
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 9, nestingDepth: 2, theme: theme), "ix)")
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 2, nestingDepth: 3, theme: theme), "2)")
+    }
+
+    func testOrderedListMarkerFormatterFallsBackToDecimal() {
+        let invalid = EditorOrderedListMarkerTheme(dictionary: [
+            "schemes": ["unknown"],
+            "suffix": "!",
+        ])
+
+        XCTAssertEqual(OrderedListMarkerFormatter.label(index: 4_000, nestingDepth: 2, theme: invalid), "4000.")
+    }
+
+    func testRender_nestedOrderedListUsesThemedLabelsWithoutChangingCanonicalMarkers() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Outer item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Nested item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "list": [
+                "orderedMarker": [
+                    "schemes": ["decimal", "lowerAlpha"],
+                    "suffix": ".",
+                ],
+            ],
+        ])
+
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+        let text = result.string as NSString
+        let outerLocation = text.range(of: "Outer item").location
+        let nestedLocation = text.range(of: "Nested item").location
+
+        XCTAssertEqual(
+            result.attribute(
+                RenderBridgeAttributes.orderedListMarkerLabel,
+                at: outerLocation,
+                effectiveRange: nil
+            ) as? String,
+            "1."
+        )
+        XCTAssertEqual(
+            result.attribute(
+                RenderBridgeAttributes.orderedListMarkerLabel,
+                at: nestedLocation,
+                effectiveRange: nil
+            ) as? String,
+            "a."
+        )
+        XCTAssertEqual(
+            RenderBridge.listMarkerString(listContext: ["ordered": true, "index": 1]),
+            "1. "
+        )
+        XCTAssertEqual(
+            RenderBridge.listMarkerString(listContext: ["ordered": true, "index": 2]),
+            "2. "
+        )
+    }
+
     // MARK: - Unordered List
 
     func testRender_unorderedListItem() {
