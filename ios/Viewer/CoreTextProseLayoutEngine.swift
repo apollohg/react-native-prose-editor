@@ -305,9 +305,12 @@ final class CoreTextProseLayoutEngine {
                   let context = block.listContext,
                   listMarkersByIdentity[boundary.identity] == nil
             else { continue }
+            let markerNestingDepth = block.listItemAncestors.firstIndex { ancestor in
+                ancestor.identity == boundary.identity
+            } ?? 0
             listMarkersByIdentity[boundary.identity] = makeListMarker(
                 context,
-                nestingDepth: Int(boundary.nestingDepth),
+                nestingDepth: markerNestingDepth,
                 paint: theme.paint(for: block),
                 theme: theme
             )
@@ -398,8 +401,9 @@ final class CoreTextProseLayoutEngine {
         let listDepth = block.listContext == nil
             ? 0
             : (block.listItemBoundary.map { Int($0.nestingDepth) } ?? max(0, Int(block.depth) - 1))
+        let fallbackMarkerNestingDepth = max(0, block.listItemAncestors.count - 1)
         let measuredListMarker = listMarker ?? block.listContext.map {
-            makeListMarker($0, nestingDepth: listDepth, paint: paint, theme: theme)
+            makeListMarker($0, nestingDepth: fallbackMarkerNestingDepth, paint: paint, theme: theme)
         }
         let marker = block.listItemBoundary.map { $0.isFirstRenderableLeaf ? measuredListMarker : nil } ?? measuredListMarker
         // The marker gutter is an independently measured column. In particular,
