@@ -787,6 +787,90 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `ordered markers use semantic ancestor depth and configured schemes`() {
+        val orderedContext = ViewerListContext(
+            ordered = true,
+            index = 1,
+            kind = null,
+            checked = false,
+            isLast = true,
+        )
+        val bulletContext = orderedContext.copy(ordered = false)
+        fun ancestor(
+            identity: Int,
+            context: ViewerListContext,
+            storedDepth: Int,
+            isMarkerOwner: Boolean,
+        ) = ViewerListItemAncestor(
+            identity = identity,
+            context = context,
+            nestingDepth = storedDepth,
+            isFirstRenderableLeaf = isMarkerOwner,
+            isFinalRenderableLeaf = isMarkerOwner,
+        )
+        val ancestorChains = listOf(
+            listOf(ancestor(0, orderedContext, storedDepth = 2, isMarkerOwner = true)),
+            listOf(
+                ancestor(100, bulletContext, storedDepth = 8, isMarkerOwner = false),
+                ancestor(1, orderedContext, storedDepth = 0, isMarkerOwner = true),
+            ),
+            listOf(
+                ancestor(101, orderedContext, storedDepth = 12, isMarkerOwner = false),
+                ancestor(102, bulletContext, storedDepth = 3, isMarkerOwner = false),
+                ancestor(2, orderedContext, storedDepth = 0, isMarkerOwner = true),
+            ),
+            listOf(
+                ancestor(103, bulletContext, storedDepth = 20, isMarkerOwner = false),
+                ancestor(104, orderedContext, storedDepth = 2, isMarkerOwner = false),
+                ancestor(105, bulletContext, storedDepth = 0, isMarkerOwner = false),
+                ancestor(3, orderedContext, storedDepth = 1, isMarkerOwner = true),
+            ),
+        )
+        val blocks = ancestorChains.mapIndexed { index, ancestors ->
+            val markerOwner = ancestors.last()
+            ViewerBlock(
+                nodeType = "paragraph",
+                depth = 40 + index,
+                inBlockquote = index == 1,
+                listContext = markerOwner.context,
+                listItemBoundary = ViewerListItemBoundary(
+                    identity = markerOwner.identity,
+                    nestingDepth = markerOwner.nestingDepth,
+                    isFirstRenderableLeaf = true,
+                    isFinalRenderableLeaf = true,
+                ),
+                inlines = listOf(ViewerInline.Text("item", emptyList())),
+                listItemAncestors = ancestors,
+            )
+        }
+        val document = ViewerDocument(
+            semanticKey = "ordered-marker-theme",
+            blocks = blocks,
+            isEmpty = false,
+            retainedBytes = 128,
+        )
+        val theme = PreparedProseTheme.resolve(
+            """{"list":{"orderedMarker":{"schemes":["decimal","lowerAlpha","lowerRoman"],"suffix":")"}}}""",
+            density = 1f,
+        )
+
+        val layout = StaticLayoutAndroidProseLayoutEngine().prepare(
+            document = document,
+            key = testLayoutKey("ordered-marker-theme"),
+            theme = theme,
+            widthPx = 320,
+            density = 1f,
+            collapsesWhenEmpty = false,
+        )
+        val markerLabels = layout.blocks
+            .flatMap { it.fragments }
+            .filter { it.kind == PreparedProseFragmentKind.MARKER }
+            .mapNotNull { it.label }
+
+        assertEquals(listOf("1)", "a)", "i)", "1)"), markerLabels)
+    }
+
+    @Test
     fun `culling skips a large offscreen prefix and visits each visible block once`() {
         val blockLayout = StaticLayout.Builder
             .obtain("x", 0, 1, TextPaint().apply { textSize = 14f }, 10)

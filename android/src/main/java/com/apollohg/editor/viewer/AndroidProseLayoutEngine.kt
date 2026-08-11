@@ -21,8 +21,10 @@ import android.text.style.UnderlineSpan
 import android.text.style.ReplacementSpan
 import com.apollohg.editor.EditorLinkTheme
 import com.apollohg.editor.EditorMentionTheme
+import com.apollohg.editor.EditorOrderedListMarkerTheme
 import com.apollohg.editor.EditorTextStyle
 import com.apollohg.editor.EditorTheme
+import com.apollohg.editor.OrderedListMarkerFormatter
 import com.apollohg.editor.ProseViewerError
 import java.text.Bidi
 import kotlin.math.abs
@@ -505,6 +507,7 @@ internal data class PreparedProseTheme(
     val listMarkerColor: Int,
     val listMarkerScale: Float,
     val listMarkerGapPx: Int,
+    val orderedListMarker: EditorOrderedListMarkerTheme?,
     val quoteIndentPx: Int,
     val quoteBorderColor: Int,
     val quoteBorderWidthPx: Int,
@@ -569,6 +572,7 @@ internal data class PreparedProseTheme(
                 px(theme.contentInsets?.top ?: 0f, 0f), px(theme.contentInsets?.right ?: 0f, 0f), px(theme.contentInsets?.bottom ?: 0f, 0f), px(theme.contentInsets?.left ?: 0f, 0f),
                 px(theme.list?.indent ?: 28f, 28f), theme.list?.baseIndentMultiplier ?: 1f, listItemSpacingPx, px(theme.list?.spacingAfter ?: theme.list?.itemSpacing ?: 4f, 4f), theme.list?.markerColor ?: text.color, theme.list?.markerScale ?: 1f,
                 px(theme.list?.markerGap ?: PREPARED_LIST_MARKER_GAP_DP, PREPARED_LIST_MARKER_GAP_DP),
+                theme.list?.orderedMarker,
                 px(theme.blockquote?.indent ?: 16f, 16f), theme.blockquote?.borderColor ?: 0xFFC7C7CC.toInt(), px(theme.blockquote?.borderWidth ?: 3f, 3f), px(theme.blockquote?.markerGap ?: 10f, 10f),
                 theme.codeBlock?.backgroundColor ?: 0xFFF2F2F7.toInt(), (theme.codeBlock?.borderRadius ?: 8f) * density, px(theme.codeBlock?.paddingHorizontal ?: 12f, 12f), px(theme.codeBlock?.paddingVertical ?: 8f, 8f),
                 theme.horizontalRule?.color ?: 0xFFC7C7CC.toInt(), max(1, px(theme.horizontalRule?.thickness ?: 1f, 1f)), px(theme.horizontalRule?.verticalMargin ?: 12f, 12f),
@@ -720,9 +724,14 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         val imageAttachments = mutableListOf<ViewerImageAttachment>()
         val markers = mutableMapOf<Int, PreparedMarker>()
         visibleBlocks.forEach { block ->
-            listItemAncestors(block).forEach { ancestor ->
+            listItemAncestors(block).forEachIndexed { nestingDepth, ancestor ->
                 if (markers[ancestor.identity] == null) {
-                    markers[ancestor.identity] = markerFor(ancestor.context, theme.paintFor(block), theme)
+                    markers[ancestor.identity] = markerFor(
+                        ancestor.context,
+                        nestingDepth,
+                        theme.paintFor(block),
+                        theme,
+                    )
                 }
             }
         }
@@ -1100,8 +1109,21 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             .build()
     }
 
-    private fun markerFor(context: ViewerListContext, textPaint: PreparedTextPaint, theme: PreparedProseTheme): PreparedMarker {
-        val label = when { context.kind == "task" -> ""; context.ordered -> "${context.index}."; else -> "•" }
+    private fun markerFor(
+        context: ViewerListContext,
+        nestingDepth: Int,
+        textPaint: PreparedTextPaint,
+        theme: PreparedProseTheme,
+    ): PreparedMarker {
+        val label = when {
+            context.kind == "task" -> ""
+            context.ordered -> OrderedListMarkerFormatter.label(
+                context.index,
+                nestingDepth,
+                theme.orderedListMarker,
+            )
+            else -> "•"
+        }
         val markerScale = if (!context.ordered && context.kind != "task") max(0.01f, theme.listMarkerScale) else 1f
         val markerPaint = textPaint.copy(sizePx = max(1f, textPaint.sizePx * markerScale), color = theme.listMarkerColor)
         if (label.isEmpty()) {
