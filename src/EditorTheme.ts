@@ -123,6 +123,20 @@ export interface EditorHeadingTheme {
     h6?: EditorTextStyle;
 }
 
+export type EditorOrderedListNumberingScheme =
+    | 'decimal'
+    | 'lowerAlpha'
+    | 'upperAlpha'
+    | 'lowerRoman'
+    | 'upperRoman';
+
+export interface EditorOrderedListMarkerTheme {
+    /** Numbering schemes selected by visual list depth and cycled when necessary. */
+    schemes?: readonly EditorOrderedListNumberingScheme[];
+    /** Punctuation drawn after the formatted index. Defaults to `.`. */
+    suffix?: '.' | ')';
+}
+
 /** Layout of list indentation and markers. */
 export interface EditorListTheme {
     /** Indentation added per nesting depth, in layout units. */
@@ -139,6 +153,8 @@ export interface EditorListTheme {
     markerScale?: number;
     /** Gap between the marker and the item text, in layout units. */
     markerGap?: number;
+    /** Ordered-list marker presentation by visual nesting depth. */
+    orderedMarker?: EditorOrderedListMarkerTheme;
 }
 
 /** The rule drawn for `horizontalRule` nodes. */

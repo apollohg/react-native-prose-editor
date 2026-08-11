@@ -81,6 +81,26 @@ describe('EditorTheme', () => {
         });
     });
 
+    it('serializes ordered-list marker schemes and suffix', () => {
+        const json = serializeEditorTheme({
+            list: {
+                orderedMarker: {
+                    schemes: ['decimal', 'lowerAlpha', 'lowerRoman'],
+                    suffix: ')',
+                },
+            },
+        });
+
+        expect(JSON.parse(json!)).toEqual({
+            list: {
+                orderedMarker: {
+                    schemes: ['decimal', 'lowerAlpha', 'lowerRoman'],
+                    suffix: ')',
+                },
+            },
+        });
+    });
+
     it('serializes toolbar height overrides', () => {
         const json = serializeEditorTheme({
             toolbar: {

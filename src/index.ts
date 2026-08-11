@@ -52,6 +52,8 @@ export type {
     EditorLinkTheme,
     EditorHeadingTheme,
     EditorListTheme,
+    EditorOrderedListNumberingScheme,
+    EditorOrderedListMarkerTheme,
     EditorHorizontalRuleTheme,
     EditorBlockquoteTheme,
     EditorCodeBlockTheme,
