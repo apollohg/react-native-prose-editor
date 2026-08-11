@@ -21,10 +21,14 @@ enum class EditorOrderedListNumberingScheme {
     }
 }
 
+private val DEFAULT_ORDERED_LIST_SCHEMES = listOf(
+    EditorOrderedListNumberingScheme.DECIMAL,
+    EditorOrderedListNumberingScheme.LOWER_ALPHA,
+    EditorOrderedListNumberingScheme.LOWER_ROMAN,
+)
+
 data class EditorOrderedListMarkerTheme(
-    val schemes: List<EditorOrderedListNumberingScheme> = listOf(
-        EditorOrderedListNumberingScheme.DECIMAL
-    ),
+    val schemes: List<EditorOrderedListNumberingScheme> = DEFAULT_ORDERED_LIST_SCHEMES,
     val suffix: String = "."
 ) {
     companion object {
@@ -41,7 +45,7 @@ data class EditorOrderedListMarkerTheme(
 
             return EditorOrderedListMarkerTheme(
                 schemes = parsedSchemes.ifEmpty {
-                    listOf(EditorOrderedListNumberingScheme.DECIMAL)
+                    DEFAULT_ORDERED_LIST_SCHEMES
                 },
                 suffix = if (json.optString("suffix") == ")") ")" else "."
             )
@@ -75,7 +79,7 @@ internal object OrderedListMarkerFormatter {
     ): String {
         val resolvedTheme = theme ?: EditorOrderedListMarkerTheme()
         val schemes = resolvedTheme.schemes.ifEmpty {
-            listOf(EditorOrderedListNumberingScheme.DECIMAL)
+            DEFAULT_ORDERED_LIST_SCHEMES
         }
         val scheme = schemes[nestingDepth.coerceAtLeast(0) % schemes.size]
         val suffix = if (resolvedTheme.suffix == ")") ")" else "."

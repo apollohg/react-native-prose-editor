@@ -2066,10 +2066,15 @@ final class RenderBridgeTests: XCTestCase {
             "schemes": [7, NSNull(), "unknown"],
         ])
 
-        XCTAssertEqual(missing.schemes, [.decimal])
-        XCTAssertEqual(empty.schemes, [.decimal])
+        let defaultSchemes: [EditorOrderedListNumberingScheme] = [
+            .decimal,
+            .lowerAlpha,
+            .lowerRoman,
+        ]
+        XCTAssertEqual(missing.schemes, defaultSchemes)
+        XCTAssertEqual(empty.schemes, defaultSchemes)
         XCTAssertEqual(mixed.schemes, [.lowerAlpha, .upperRoman])
-        XCTAssertEqual(malformed.schemes, [.decimal])
+        XCTAssertEqual(malformed.schemes, defaultSchemes)
     }
 
     func testOrderedListMarkerFormatterFormatsUppercaseSchemesAndRomanBoundary() {
@@ -2083,13 +2088,31 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(OrderedListMarkerFormatter.label(index: 3_999, nestingDepth: 1, theme: theme), "MMMCMXCIX)")
     }
 
-    func testRender_absentOrderedMarkerUsesDecimalDotPresentation() {
+    func testRender_absentOrderedMarkerCyclesDefaultSchemesBySemanticDepth() {
         let json = """
         [
             {"type": "blockStart", "nodeType": "listItem", "depth": 0,
-             "listContext": {"ordered": true, "index": 3, "total": 1, "start": 3, "isFirst": true, "isLast": true}},
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
             {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
-            {"type": "textRun", "text": "Default item", "marks": []},
+            {"type": "textRun", "text": "Depth zero", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Depth one", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 2,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 3},
+            {"type": "textRun", "text": "Depth two", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 3,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 4},
+            {"type": "textRun", "text": "Depth three", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
             {"type": "blockEnd"},
             {"type": "blockEnd"}
         ]
@@ -2101,14 +2124,16 @@ final class RenderBridgeTests: XCTestCase {
             theme: EditorTheme(dictionary: ["list": [:]])
         )
 
-        XCTAssertEqual(
+        let text = result.string as NSString
+        let labels = ["Depth zero", "Depth one", "Depth two", "Depth three"].map { value in
             result.attribute(
                 RenderBridgeAttributes.orderedListMarkerLabel,
-                at: 0,
+                at: text.range(of: value).location,
                 effectiveRange: nil
-            ) as? String,
-            "3."
-        )
+            ) as? String
+        }
+
+        XCTAssertEqual(labels, ["1.", "a.", "i.", "1."])
     }
 
     func testRender_orderedUnderTaskUsesTaskAncestryDepth() {

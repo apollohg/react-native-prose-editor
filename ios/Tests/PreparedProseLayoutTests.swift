@@ -117,7 +117,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(layout.blocks.count, 1)
     }
 
-    func testOrderedListMarkersUseSemanticNestingDepthAndConfiguredSchemes() throws {
+    func testOrderedListMarkersUseDefaultSchemesBySemanticNestingDepth() throws {
         let orderedContext = ViewerListContext(
             ordered: true,
             index: 1,
@@ -178,15 +178,12 @@ final class PreparedProseLayoutTests: XCTestCase {
                 inlines: [.text(text: "item", marks: [])]
             )
         }
-        let themeJSON = """
-        {"list":{"orderedMarker":{"schemes":["decimal","lowerAlpha","lowerRoman"],"suffix":")"}}}
-        """
         let document = ViewerDocument(
             semanticKey: String(repeating: "a", count: 64),
             blocks: blocks,
             isEmpty: false,
             retainedBytes: 128,
-            preparedTheme: PreparedProseTheme.resolve(themeJSON: themeJSON)
+            preparedTheme: PreparedProseTheme.resolve(themeJSON: nil)
         )
         let key = ProseLayoutKey(
             semanticKey: document.semanticKey,
@@ -211,7 +208,7 @@ final class PreparedProseLayoutTests: XCTestCase {
             .filter { $0.kind == .marker }
             .compactMap(\.label)
 
-        XCTAssertEqual(markerLabels, ["1)", "a)", "i)", "1)"])
+        XCTAssertEqual(markerLabels, ["1.", "a.", "i.", "1."])
     }
 
     func testOrderedListFallbackUsesSemanticAncestorDepth() throws {

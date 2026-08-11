@@ -131,7 +131,10 @@ export type EditorOrderedListNumberingScheme =
     | 'upperRoman';
 
 export interface EditorOrderedListMarkerTheme {
-    /** Numbering schemes selected by visual list depth and cycled when necessary. */
+    /**
+     * Numbering schemes selected by visual list depth and cycled when necessary.
+     * Defaults to `decimal`, `lowerAlpha`, `lowerRoman`.
+     */
     schemes?: readonly EditorOrderedListNumberingScheme[];
     /** Punctuation drawn after the formatted index. Defaults to `.`. */
     suffix?: '.' | ')';

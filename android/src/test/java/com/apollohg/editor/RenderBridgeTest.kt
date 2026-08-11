@@ -875,8 +875,13 @@ class RenderBridgeTest {
             JSONObject("""{"schemes":[7,null,"unknown"]}""")
         )
 
-        assertEquals(listOf(EditorOrderedListNumberingScheme.DECIMAL), missing?.schemes)
-        assertEquals(listOf(EditorOrderedListNumberingScheme.DECIMAL), empty?.schemes)
+        val defaultSchemes = listOf(
+            EditorOrderedListNumberingScheme.DECIMAL,
+            EditorOrderedListNumberingScheme.LOWER_ALPHA,
+            EditorOrderedListNumberingScheme.LOWER_ROMAN,
+        )
+        assertEquals(defaultSchemes, missing?.schemes)
+        assertEquals(defaultSchemes, empty?.schemes)
         assertEquals(
             listOf(
                 EditorOrderedListNumberingScheme.LOWER_ALPHA,
@@ -884,17 +889,35 @@ class RenderBridgeTest {
             ),
             mixed?.schemes,
         )
-        assertEquals(listOf(EditorOrderedListNumberingScheme.DECIMAL), malformed?.schemes)
+        assertEquals(defaultSchemes, malformed?.schemes)
     }
 
     @Test
-    fun `render - absent ordered marker uses decimal dot presentation`() {
+    fun `render - absent ordered marker cycles default schemes by semantic depth`() {
         val json = """
         [
             {"type": "blockStart", "nodeType": "listItem", "depth": 0,
-             "listContext": {"ordered": true, "index": 3, "total": 1, "start": 3, "isFirst": true, "isLast": true}},
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
             {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
-            {"type": "textRun", "text": "Default item", "marks": []},
+            {"type": "textRun", "text": "Depth zero", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Depth one", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 2,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 3},
+            {"type": "textRun", "text": "Depth two", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 3,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 4},
+            {"type": "textRun", "text": "Depth three", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
             {"type": "blockEnd"},
             {"type": "blockEnd"}
         ]
@@ -907,13 +930,16 @@ class RenderBridgeTest {
             EditorTheme.fromJson("""{"list":{}}"""),
         )
 
-        assertEquals("3. ", rendered.toString().substringBefore("Default item"))
         assertEquals(
-            "3.",
+            listOf("1.", "a.", "i.", "1."),
             rendered.getSpans(0, rendered.length, OrderedListMarkerSpan::class.java)
-                .single()
-                .label,
+                .sortedBy { rendered.getSpanStart(it) }
+                .map { it.label },
         )
+        assertTrue(rendered.toString().contains("1. Depth zero"))
+        assertTrue(rendered.toString().contains("1. Depth one"))
+        assertTrue(rendered.toString().contains("1. Depth two"))
+        assertTrue(rendered.toString().contains("1. Depth three"))
     }
 
     @Test

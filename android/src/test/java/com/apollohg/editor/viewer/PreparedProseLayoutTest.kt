@@ -789,7 +789,7 @@ class PreparedProseLayoutTest {
     }
 
     @Test
-    fun `ordered markers use semantic ancestor depth and configured schemes`() {
+    fun `ordered markers use default schemes by semantic ancestor depth`() {
         val orderedContext = ViewerListContext(
             ordered = true,
             index = 1,
@@ -852,10 +852,7 @@ class PreparedProseLayoutTest {
             isEmpty = false,
             retainedBytes = 128,
         )
-        val theme = PreparedProseTheme.resolve(
-            """{"list":{"orderedMarker":{"schemes":["decimal","lowerAlpha","lowerRoman"],"suffix":")"}}}""",
-            density = 1f,
-        )
+        val theme = PreparedProseTheme.resolve(null, density = 1f)
 
         val layout = StaticLayoutAndroidProseLayoutEngine().prepare(
             document = document,
@@ -872,13 +869,13 @@ class PreparedProseLayoutTest {
         val nestedLeafMarkers = layout.blocks.last().fragments
             .filter { it.kind == PreparedProseFragmentKind.MARKER }
 
-        assertEquals(listOf("1)", "a)", "i)", "•", "", "i)", "1)"), markerLabels)
-        assertEquals(listOf("•", "", "i)", "1)"), nestedLeafMarkers.mapNotNull { it.label })
+        assertEquals(listOf("1.", "a.", "i.", "•", "", "i.", "1."), markerLabels)
+        assertEquals(listOf("•", "", "i.", "1."), nestedLeafMarkers.mapNotNull { it.label })
         assertEquals("•", nestedLeafMarkers[0].label)
         assertFalse(nestedLeafMarkers[0].checked)
         assertEquals("", nestedLeafMarkers[1].label)
         assertTrue(nestedLeafMarkers[1].checked)
-        assertEquals(listOf("i)", "1)"), nestedLeafMarkers.drop(2).mapNotNull { it.label })
+        assertEquals(listOf("i.", "1."), nestedLeafMarkers.drop(2).mapNotNull { it.label })
     }
 
     @Test

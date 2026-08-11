@@ -9,6 +9,12 @@ enum EditorOrderedListNumberingScheme: String {
 }
 
 struct EditorOrderedListMarkerTheme {
+    static let defaultSchemes: [EditorOrderedListNumberingScheme] = [
+        .decimal,
+        .lowerAlpha,
+        .lowerRoman,
+    ]
+
     let schemes: [EditorOrderedListNumberingScheme]
     let suffix: String
 
@@ -16,7 +22,7 @@ struct EditorOrderedListMarkerTheme {
         let parsed = (dictionary["schemes"] as? [Any])?.compactMap { value in
             (value as? String).flatMap(EditorOrderedListNumberingScheme.init(rawValue:))
         } ?? []
-        schemes = parsed.isEmpty ? [.decimal] : parsed
+        schemes = parsed.isEmpty ? Self.defaultSchemes : parsed
         let parsedSuffix = dictionary["suffix"] as? String
         suffix = parsedSuffix == ")" ? ")" : "."
     }
