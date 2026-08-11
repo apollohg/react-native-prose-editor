@@ -116,6 +116,81 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertEqual(layout.blocks.count, 1)
     }
 
+    func testOrderedListMarkersUseSemanticNestingDepthAndConfiguredSchemes() throws {
+        let orderedContext = ViewerListContext(
+            ordered: true,
+            index: 1,
+            kind: nil,
+            checked: false,
+            isLast: true
+        )
+        let bulletAncestor = ViewerListItemAncestor(
+            identity: 100,
+            context: ViewerListContext(
+                ordered: false,
+                index: 1,
+                kind: nil,
+                checked: false,
+                isLast: true
+            )
+        )
+        let blocks = (0...3).map { nestingDepth in
+            ViewerBlock(
+                nodeType: "paragraph",
+                depth: UInt16(nestingDepth + 1),
+                inBlockquote: false,
+                listContext: orderedContext,
+                listItemBoundary: ViewerListItemBoundary(
+                    identity: nestingDepth,
+                    nestingDepth: UInt16(nestingDepth),
+                    isFirstRenderableLeaf: true,
+                    isFinalRenderableLeaf: true
+                ),
+                listItemAncestors: nestingDepth == 1
+                    ? [
+                        bulletAncestor,
+                        ViewerListItemAncestor(identity: nestingDepth, context: orderedContext),
+                    ]
+                    : [ViewerListItemAncestor(identity: nestingDepth, context: orderedContext)],
+                inlines: [.text(text: "item", marks: [])]
+            )
+        }
+        let themeJSON = """
+        {"list":{"orderedMarker":{"schemes":["decimal","lowerAlpha","lowerRoman"],"suffix":")"}}}
+        """
+        let document = ViewerDocument(
+            semanticKey: String(repeating: "a", count: 64),
+            blocks: blocks,
+            isEmpty: false,
+            retainedBytes: 128,
+            preparedTheme: PreparedProseTheme.resolve(themeJSON: themeJSON)
+        )
+        let key = ProseLayoutKey(
+            semanticKey: document.semanticKey,
+            widthPixels: 640,
+            themeDigest: "ordered-marker-theme",
+            nativeFontRevision: 0,
+            fontEnvironmentRevision: 0,
+            displayScale: 2,
+            attachmentRevision: 0,
+            generationIdentity: "ordered-marker-theme",
+            semanticGenerationIdentity: "ordered-marker-theme"
+        )
+
+        let layout = try CoreTextProseLayoutEngine().prepare(
+            document: document,
+            key: key,
+            widthPoints: 320,
+            displayScale: 2
+        )
+        let markerLabels = layout.blocks
+            .flatMap(\.fragments)
+            .filter { $0.kind == .marker }
+            .compactMap(\.label)
+
+        XCTAssertEqual(markerLabels, ["1)", "a)", "i)", "1)"])
+    }
+
     private let document = ViewerDocument(
         semanticKey: String(repeating: "a", count: 64),
         paragraphs: [ViewerParagraph(text: "One prepared paragraph")],

@@ -96,6 +96,7 @@ struct PreparedProseTheme {
     let listMarkerColor: UIColor
     let listMarkerScale: CGFloat
     let listMarkerGap: CGFloat
+    let orderedListMarker: EditorOrderedListMarkerTheme?
     static let defaultListMarkerGap: CGFloat = 6
     let quoteIndent: CGFloat
     let quoteBorderColor: UIColor
@@ -188,6 +189,7 @@ struct PreparedProseTheme {
             listMarkerColor: theme.list?.markerColor ?? text.color,
             listMarkerScale: theme.list?.markerScale ?? 1,
             listMarkerGap: theme.list?.markerGap ?? PreparedProseTheme.defaultListMarkerGap,
+            orderedListMarker: theme.list?.orderedMarker,
             quoteIndent: theme.blockquote?.indent ?? 16,
             quoteBorderColor: theme.blockquote?.borderColor ?? UIColor.systemGray3,
             quoteBorderWidth: theme.blockquote?.borderWidth ?? 3,
@@ -303,7 +305,12 @@ final class CoreTextProseLayoutEngine {
                   let context = block.listContext,
                   listMarkersByIdentity[boundary.identity] == nil
             else { continue }
-            listMarkersByIdentity[boundary.identity] = makeListMarker(context, paint: theme.paint(for: block), theme: theme)
+            listMarkersByIdentity[boundary.identity] = makeListMarker(
+                context,
+                nestingDepth: Int(boundary.nestingDepth),
+                paint: theme.paint(for: block),
+                theme: theme
+            )
         }
         for (index, block) in document.blocks.enumerated() {
             let listMarker = block.listItemBoundary.flatMap { listMarkersByIdentity[$0.identity] }
@@ -388,11 +395,13 @@ final class CoreTextProseLayoutEngine {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
         let paint = theme.paint(for: block)
-        let measuredListMarker = listMarker ?? block.listContext.map { makeListMarker($0, paint: paint, theme: theme) }
-        let marker = block.listItemBoundary.map { $0.isFirstRenderableLeaf ? measuredListMarker : nil } ?? measuredListMarker
         let listDepth = block.listContext == nil
             ? 0
             : (block.listItemBoundary.map { Int($0.nestingDepth) } ?? max(0, Int(block.depth) - 1))
+        let measuredListMarker = listMarker ?? block.listContext.map {
+            makeListMarker($0, nestingDepth: listDepth, paint: paint, theme: theme)
+        }
+        let marker = block.listItemBoundary.map { $0.isFirstRenderableLeaf ? measuredListMarker : nil } ?? measuredListMarker
         // The marker gutter is an independently measured column. In particular,
         // baseIndentMultiplier == 0 must not permit text to overlap a scaled
         // ordered marker or task box. `measuredListMarker` stays item-scoped,
@@ -834,6 +843,7 @@ final class CoreTextProseLayoutEngine {
 
     private func makeListMarker(
         _ context: ViewerListContext,
+        nestingDepth: Int,
         paint: PreparedTextPaint,
         theme: PreparedProseTheme
     ) -> PreparedListMarker {
@@ -845,7 +855,11 @@ final class CoreTextProseLayoutEngine {
         if context.kind == "task" {
             label = ""
         } else if context.ordered {
-            label = "\(context.index)."
+            label = OrderedListMarkerFormatter.label(
+                index: UInt32(exactly: context.index) ?? 0,
+                nestingDepth: nestingDepth,
+                theme: theme.orderedListMarker
+            )
         } else {
             label = "•"
         }
