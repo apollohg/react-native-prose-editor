@@ -1107,8 +1107,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
         const afterLocalEngineMutation = useCallback(() => {
             onLocalCommitRef.current?.();
-            document.refresh();
             pushEngineUpdateToView();
+            document.refresh();
         }, [document, pushEngineUpdateToView]);
 
         const editableRef = useRef(editable);

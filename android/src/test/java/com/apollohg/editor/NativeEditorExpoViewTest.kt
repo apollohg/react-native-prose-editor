@@ -3524,7 +3524,9 @@ class NativeEditorExpoViewTest {
             assertTrue(view.applyEditorUpdate(externalSnapshot))
             backend.calls.clear()
 
-            val state = JSONObject(view.refreshToolbarStateFromEditorSelectionForTesting())
+            val state = JSONObject(
+                requireNotNull(view.refreshToolbarStateFromEditorSelectionForTesting())
+            )
             assertEquals(2, state.getJSONObject("selection").getInt("anchorScalar"))
             assertEquals(0, backend.calls.count { it == "getState" })
         } finally {

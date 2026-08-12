@@ -337,6 +337,21 @@ function catchThrown(fn: () => unknown): unknown {
     throw new Error('expected the call to throw');
 }
 
+function catchRejectedNativeRecord(fn: () => unknown): unknown {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+        const error = catchThrown(fn);
+        expect(consoleError).toHaveBeenCalledTimes(1);
+        expect(consoleError).toHaveBeenCalledWith(
+            'NativeEditorBridge: native module returned a record this boundary rejected',
+            expect.any(String)
+        );
+        return error;
+    } finally {
+        consoleError.mockRestore();
+    }
+}
+
 /**
  * Drain the microtask queue completely. The bridge resolves one protocol
  * adapter event through a multi-hop promise chain around an async callback,
@@ -417,7 +432,7 @@ describe('NativeEditorBridge v2', () => {
         });
 
         it('throws the non-retryable class for malformed records on the imperative path', () => {
-            const error = catchThrown(() =>
+            const error = catchRejectedNativeRecord(() =>
                 unwrapNativeEditorV2Result({ value: 'v', error: mockV2Error() }, (v) => v)
             );
             expectNonRetryable(error, 'FFI_RESULT_INVALID');
@@ -799,7 +814,7 @@ describe('NativeEditorBridge v2', () => {
                 okRecord(JSON.stringify({ ...MOCK_V2_STATE, documentRevision: 4 }))
             );
             expectNonRetryable(
-                catchThrown(() => handle.bridge.getState()),
+                catchRejectedNativeRecord(() => handle.bridge.getState()),
                 'FFI_RESULT_INVALID'
             );
         });
@@ -832,7 +847,7 @@ describe('NativeEditorBridge v2', () => {
                 )
             );
             expectNonRetryable(
-                catchThrown(() => handle.bridge.getState()),
+                catchRejectedNativeRecord(() => handle.bridge.getState()),
                 'FFI_RESULT_INVALID'
             );
         });
@@ -843,7 +858,7 @@ describe('NativeEditorBridge v2', () => {
                 okRecord(JSON.stringify({ ...MOCK_V2_STATE, documentRevision: '04' }))
             );
             expectNonRetryable(
-                catchThrown(() => handle.bridge.getState()),
+                catchRejectedNativeRecord(() => handle.bridge.getState()),
                 'FFI_RESULT_INVALID'
             );
         });
@@ -872,7 +887,7 @@ describe('NativeEditorBridge v2', () => {
                 )
             );
             expectNonRetryable(
-                catchThrown(() =>
+                catchRejectedNativeRecord(() =>
                     handle.bridge.applyInput({ baseDocumentRevision: '4', text: 'x' })
                 ),
                 'FFI_RESULT_INVALID'
@@ -1092,7 +1107,7 @@ describe('NativeEditorBridge v2', () => {
                 okRecord(JSON.stringify(malformed))
             );
             expectNonRetryable(
-                catchThrown(() => handle.bridge.renderUpdate()),
+                catchRejectedNativeRecord(() => handle.bridge.renderUpdate()),
                 'FFI_RESULT_INVALID'
             );
         });
@@ -1182,7 +1197,7 @@ describe('NativeEditorBridge v2', () => {
             mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(okRecord(malformed));
 
             expectNonRetryable(
-                catchThrown(() => handle.bridge.renderUpdate()),
+                catchRejectedNativeRecord(() => handle.bridge.renderUpdate()),
                 'FFI_RESULT_INVALID'
             );
         });
@@ -2005,7 +2020,7 @@ describe('NativeEditorBridge v2', () => {
                 okRecord(JSON.stringify({ editorId: '01' }))
             );
             expectNonRetryable(
-                catchThrown(() => createHandle()),
+                catchRejectedNativeRecord(() => createHandle()),
                 'FFI_RESULT_INVALID'
             );
         });
@@ -2235,7 +2250,7 @@ describe('NativeEditorBridge v2', () => {
                 okRecord(JSON.stringify({ type: 'surprise' }))
             );
             expectNonRetryable(
-                catchThrown(() =>
+                catchRejectedNativeRecord(() =>
                     handle.bridge.applyCommand({ baseDocumentRevision: '4', command: {} })
                 ),
                 'FFI_RESULT_INVALID'
@@ -2285,7 +2300,7 @@ describe('NativeEditorBridge v2', () => {
                 })
             );
             expectNonRetryable(
-                catchThrown(() => handle.bridge.snapshotExport()),
+                catchRejectedNativeRecord(() => handle.bridge.snapshotExport()),
                 'FFI_RESULT_INVALID'
             );
         });

@@ -90,8 +90,7 @@ class EditorV2AdapterTest {
     }
 
     private fun renderedText(updateJson: String?): String {
-        assertNotNull(updateJson)
-        val update = JSONObject(updateJson)
+        val update = JSONObject(requireNotNull(updateJson))
         val blocks = update.getJSONArray("renderBlocks")
         val text = StringBuilder()
         for (blockIndex in 0 until blocks.length()) {
@@ -196,7 +195,7 @@ class EditorV2AdapterTest {
         val update = adapter.setContentHtml("<p>Hello</p>")
         assertEquals("Hello", renderedText(update))
         assertEquals(1uL, adapter.baseDocumentRevision)
-        val parsed = JSONObject(update)
+        val parsed = JSONObject(requireNotNull(update))
         assertEquals(1, parsed.getInt("documentVersion"))
         assertFalse(parsed.getJSONObject("historyState").getBoolean("canUndo"))
         assertEquals("Hello", documentText(adapter))
@@ -346,7 +345,7 @@ class EditorV2AdapterTest {
 
         val update = adapter.replaceTextRange(0, 3, "the")
         assertEquals("the", renderedText(update))
-        val selection = JSONObject(update).getJSONObject("selection")
+        val selection = JSONObject(requireNotNull(update)).getJSONObject("selection")
         assertEquals(3, selection.getInt("anchorScalar"))
         assertEquals(3, selection.getInt("headScalar"))
         assertEquals(revisionBefore + 1uL, adapter.baseDocumentRevision)
@@ -376,7 +375,7 @@ class EditorV2AdapterTest {
 
         val deleted = adapter.deleteBackwardAtSelection(2, 2)
         assertEquals("a", renderedText(deleted))
-        val backwardSelection = JSONObject(deleted).getJSONObject("selection")
+        val backwardSelection = JSONObject(requireNotNull(deleted)).getJSONObject("selection")
         assertEquals(1, backwardSelection.getInt("anchorScalar"))
         assertEquals(1, backwardSelection.getInt("headScalar"))
 
@@ -400,7 +399,7 @@ class EditorV2AdapterTest {
         val deleted = adapter.deleteScalarRange(1, 3)
 
         assertEquals("ad", renderedText(deleted))
-        val selection = JSONObject(deleted).getJSONObject("selection")
+        val selection = JSONObject(requireNotNull(deleted)).getJSONObject("selection")
         assertEquals(1, selection.getInt("anchorScalar"))
         assertEquals(1, selection.getInt("headScalar"))
     }
@@ -472,7 +471,7 @@ class EditorV2AdapterTest {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>ab</p>")
         backend.calls.clear()
-        val update = JSONObject(adapter.insertText("c", 2))
+        val update = JSONObject(requireNotNull(adapter.insertText("c", 2)))
         assertTrue(update.has("renderBlocks"))
         assertTrue(update.has("activeState"))
         // The scalar extent rides the accessor payload but stays
@@ -496,7 +495,9 @@ class EditorV2AdapterTest {
     @Test
     fun `render update mirrors scalar selection to doc positions`() {
         val adapter = makeAdapter()
-        val update = JSONObject(adapter.setContentHtml("<p>ab</p><p>cd</p>"))
+        val update = JSONObject(
+            requireNotNull(adapter.setContentHtml("<p>ab</p><p>cd</p>"))
+        )
         val selection = update.getJSONObject("selection")
         assertEquals("text", selection.getString("type"))
         assertEquals(0, selection.getInt("anchorScalar"))
@@ -508,7 +509,7 @@ class EditorV2AdapterTest {
     @Test
     fun `empty document refresh carries blocks and no selection`() {
         val adapter = makeAdapter()
-        val update = JSONObject(adapter.currentStateJson())
+        val update = JSONObject(requireNotNull(adapter.currentStateJson()))
         assertTrue(update.has("renderBlocks"))
         assertTrue(update.has("activeState"))
         assertFalse(update.has("scalarLength"))
@@ -871,7 +872,11 @@ class EditorV2AdapterTest {
     @Test
     fun `external snapshot keeps active state derived from its authoritative selection`() {
         val adapter = makeAdapter()
-        val adopted = JSONObject(adoptExternalRender(adapter, atomicRenderSnapshot("ab", "4", selectionScalar = 1)))
+        val adopted = JSONObject(
+            requireNotNull(
+                adoptExternalRender(adapter, atomicRenderSnapshot("ab", "4", selectionScalar = 1))
+            )
+        )
 
         assertTrue(adopted.getJSONObject("activeState").getJSONObject("marks").getBoolean("bold"))
         assertEquals(4uL, adapter.baseDocumentRevision)
@@ -891,9 +896,12 @@ class EditorV2AdapterTest {
 
         assertEquals(false, adapter.historyCanUndo())
         assertEquals(true, adapter.historyCanRedo())
-        val state = JSONObject(adapter.currentStateJson())
+        val state = JSONObject(requireNotNull(adapter.currentStateJson()))
         assertEquals(2, state.getJSONObject("selection").getInt("anchorScalar"))
-        assertEquals(2, JSONObject(adapter.selectionJson()).getInt("anchorScalar"))
+        assertEquals(
+            2,
+            JSONObject(requireNotNull(adapter.selectionJson())).getInt("anchorScalar")
+        )
         assertEquals(0, backend.calls.count { it == "getState" })
     }
 
@@ -919,7 +927,10 @@ class EditorV2AdapterTest {
         assertEquals(true, adapter.historyCanUndo())
         assertEquals(false, adapter.historyCanRedo())
         assertEquals(0, backend.calls.count { it == "getState" })
-        assertEquals(2, JSONObject(adapter.selectionJson()).getInt("anchorScalar"))
+        assertEquals(
+            2,
+            JSONObject(requireNotNull(adapter.selectionJson())).getInt("anchorScalar")
+        )
     }
 
     // MARK: undo/redo
@@ -983,13 +994,13 @@ class EditorV2AdapterTest {
     fun `synthesized update carries rust state not fabricated state`() {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>ab</p>")
-        val update = JSONObject(adapter.insertText("c", 2))
+        val update = JSONObject(requireNotNull(adapter.insertText("c", 2)))
         assertEquals(2, update.getInt("documentVersion"))
         val history = update.getJSONObject("historyState")
         assertTrue(history.getBoolean("canUndo"))
         assertFalse(history.getBoolean("canRedo"))
 
-        val state = JSONObject(adapter.currentStateJson())
+        val state = JSONObject(requireNotNull(adapter.currentStateJson()))
         assertTrue(state.has("activeState"))
         assertEquals(2, state.getInt("documentVersion"))
     }

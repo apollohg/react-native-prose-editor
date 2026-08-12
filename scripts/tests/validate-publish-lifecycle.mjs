@@ -64,10 +64,15 @@ assert.equal(
   'cd example/ios && pod install --no-repo-update',
   'native package validation must install the generated example CocoaPods project',
 );
+assert.equal(
+  packageJson.scripts?.['install:ios-test-pods'],
+  'cd ios-tests && pod install --deployment',
+  'native package validation must install the iOS test workspace from its lockfile',
+);
 assert.match(
   packageJson.scripts?.['validate:package'] ?? '',
-  /^npm run prepare:example:native && /,
-  'package validation must prepare generated native projects before consuming them',
+  /^npm run prepare:example:native && npm run install:ios-test-pods && /,
+  'package validation must prepare generated native projects and the iOS test workspace before consuming them',
 );
 
 assert.equal(

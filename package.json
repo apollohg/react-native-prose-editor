@@ -44,6 +44,7 @@
         "build:rust:android": "bash rust/generate-bindings.sh && bash rust/build-android.sh",
         "build:rust:ios": "bash rust/generate-bindings.sh && bash rust/build-ios.sh",
         "install:example:pods": "cd example/ios && pod install --no-repo-update",
+        "install:ios-test-pods": "cd ios-tests && pod install --deployment",
         "prebuild:example": "npm --prefix example run prebuild",
         "prebuild:example:android": "npm --prefix example run prebuild:android",
         "prebuild:example:ios": "npm --prefix example run prebuild:ios",
@@ -68,7 +69,7 @@
         "test:rust": "cargo test --manifest-path rust/editor-core/Cargo.toml",
         "typecheck": "tsc --noEmit",
         "typecheck:example": "npm --prefix example run typecheck",
-        "validate:package": "npm run prepare:example:native && node scripts/tests/validate-prepared-prose-viewer-cutover.mjs && npm run validate:security -- --release --behavior && node scripts/tests/validate-security-contracts-negative.mjs && node scripts/tests/validate-publish-lifecycle.mjs && bash ./scripts/tests/validate-generated-bindings.sh && bash ./scripts/tests/validate-packed-xcframework.sh && node scripts/tests/validate-packed-package.test.mjs && bash ./scripts/validate-packed-package.sh",
+        "validate:package": "npm run prepare:example:native && npm run install:ios-test-pods && node scripts/tests/validate-prepared-prose-viewer-cutover.mjs && npm run validate:security -- --release --behavior && node scripts/tests/validate-security-contracts-negative.mjs && node scripts/tests/validate-publish-lifecycle.mjs && bash ./scripts/tests/validate-generated-bindings.sh && bash ./scripts/tests/validate-packed-xcframework.sh && node scripts/tests/validate-packed-package.test.mjs && bash ./scripts/validate-packed-package.sh",
         "validate:security": "node scripts/tests/validate-security-contracts.mjs",
         "version": "npm run sync:version"
     },
