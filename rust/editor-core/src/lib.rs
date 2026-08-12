@@ -66,7 +66,11 @@ mod tests {
     #[test]
     fn test_editor_core_version_is_valid_semver() {
         let version = editor_core_version();
-        let parts: Vec<&str> = version.split('.').collect();
+        let core_version = version
+            .split(|character| matches!(character, '-' | '+'))
+            .next()
+            .unwrap();
+        let parts: Vec<&str> = core_version.split('.').collect();
         assert_eq!(
             parts.len(),
             3,

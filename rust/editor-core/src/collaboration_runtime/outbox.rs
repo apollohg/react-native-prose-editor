@@ -933,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn awareness_broadcasts_follow_the_document_updates_they_reference() {
+    fn coalesced_awareness_broadcast_follows_the_document_update_it_references() {
         let mut outbox = CollaborationOutbox::with_ceilings(5, 64);
 
         let first_document = outbox.reserve_document_update(1, 2).unwrap();
@@ -952,7 +952,6 @@ mod tests {
         let expected = [
             OutboundLeasePayload::ProtocolReply(vec![21, 22]),
             OutboundLeasePayload::DocumentUpdate(vec![1, 2]),
-            OutboundLeasePayload::ProtocolReply(vec![11, 12]),
             OutboundLeasePayload::DocumentUpdate(vec![3, 4]),
             OutboundLeasePayload::ProtocolReply(vec![13, 14]),
         ];
