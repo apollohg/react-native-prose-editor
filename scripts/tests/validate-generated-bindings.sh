@@ -27,19 +27,19 @@ cmp -s "$repo_root/ios/editor_coreFFI/editor_coreFFI.h" \
   exit 1
 }
 
-expected_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_editor_v2_[[:alnum:]_]+' \
+expected_function_symbols="$(grep -Eo 'uniffi_editor_core_fn_func_editor_v2_[[:alnum:]_]+' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-expected_checksum_symbols="$(rg -o 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' \
+expected_checksum_symbols="$(grep -Eo 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-expected_viewer_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_viewer_compile' \
+expected_viewer_function_symbols="$(grep -Eo 'uniffi_editor_core_fn_func_viewer_compile' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-expected_viewer_function_checksums="$(rg -o 'uniffi_editor_core_checksum_func_viewer_compile' \
+expected_viewer_function_checksums="$(grep -Eo 'uniffi_editor_core_checksum_func_viewer_compile' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-expected_viewer_method_symbols="$(rg -o 'uniffi_editor_core_fn_method_viewercompileddocument_[[:alnum:]_]+' \
+expected_viewer_method_symbols="$(grep -Eo 'uniffi_editor_core_fn_method_viewercompileddocument_[[:alnum:]_]+' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-expected_viewer_method_checksums="$(rg -o 'uniffi_editor_core_checksum_method_viewercompileddocument_[[:alnum:]_]+' \
+expected_viewer_method_checksums="$(grep -Eo 'uniffi_editor_core_checksum_method_viewercompileddocument_[[:alnum:]_]+' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-expected_viewer_lifecycle_symbols="$(rg -o 'uniffi_editor_core_fn_(clone|free)_viewercompileddocument' \
+expected_viewer_lifecycle_symbols="$(grep -Eo 'uniffi_editor_core_fn_(clone|free)_viewercompileddocument' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
 [[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "35" ]] || {
   echo "ERROR: generated FFI header must expose exactly 35 editor_v2 functions" >&2
@@ -75,13 +75,13 @@ for artifact in \
   "$repo_root/rust/bindings/kotlin/uniffi/editor_core/editor_core.kt" \
   "$repo_root/ios/Generated_editor_core.swift" \
   "$repo_root/ios/editor_coreFFI/editor_coreFFI.h"; do
-  actual_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_editor_v2_[[:alnum:]_]+' "$artifact" | sort -u)"
-  actual_checksum_symbols="$(rg -o 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' "$artifact" | sort -u)"
-  actual_viewer_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_viewer_compile' "$artifact" | sort -u)"
-  actual_viewer_function_checksums="$(rg -o 'uniffi_editor_core_checksum_func_viewer_compile' "$artifact" | sort -u)"
-  actual_viewer_method_symbols="$(rg -o 'uniffi_editor_core_fn_method_viewercompileddocument_[[:alnum:]_]+' "$artifact" | sort -u)"
-  actual_viewer_method_checksums="$(rg -o 'uniffi_editor_core_checksum_method_viewercompileddocument_[[:alnum:]_]+' "$artifact" | sort -u)"
-  actual_viewer_lifecycle_symbols="$(rg -o 'uniffi_editor_core_fn_(clone|free)_viewercompileddocument' "$artifact" | sort -u)"
+  actual_function_symbols="$(grep -Eo 'uniffi_editor_core_fn_func_editor_v2_[[:alnum:]_]+' "$artifact" | sort -u)"
+  actual_checksum_symbols="$(grep -Eo 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' "$artifact" | sort -u)"
+  actual_viewer_function_symbols="$(grep -Eo 'uniffi_editor_core_fn_func_viewer_compile' "$artifact" | sort -u)"
+  actual_viewer_function_checksums="$(grep -Eo 'uniffi_editor_core_checksum_func_viewer_compile' "$artifact" | sort -u)"
+  actual_viewer_method_symbols="$(grep -Eo 'uniffi_editor_core_fn_method_viewercompileddocument_[[:alnum:]_]+' "$artifact" | sort -u)"
+  actual_viewer_method_checksums="$(grep -Eo 'uniffi_editor_core_checksum_method_viewercompileddocument_[[:alnum:]_]+' "$artifact" | sort -u)"
+  actual_viewer_lifecycle_symbols="$(grep -Eo 'uniffi_editor_core_fn_(clone|free)_viewercompileddocument' "$artifact" | sort -u)"
   [[ "$actual_function_symbols" == "$expected_function_symbols" ]] || {
     echo "ERROR: generated function symbols differ in $artifact" >&2
     exit 1
@@ -116,7 +116,7 @@ for obsolete in \
   editor_v2_collaboration_begin_connect \
   editor_v2_collaboration_take_outbound \
   editor_v2_collaboration_tick; do
-  if rg -n "uniffi_editor_core_(fn|checksum)_func_${obsolete}" \
+  if grep -En "uniffi_editor_core_(fn|checksum)_func_${obsolete}" \
     "$repo_root/rust/bindings/swift/editor_core.swift" \
     "$repo_root/rust/bindings/swift/editor_coreFFI.h" \
     "$repo_root/rust/bindings/kotlin/uniffi/editor_core/editor_core.kt" \
@@ -132,7 +132,7 @@ if [[ -e "$repo_root/android/src/main/java/uniffi/editor_core/editor_core.kt" ]]
   exit 1
 fi
 
-if rg -n '[[:blank:]]+$' \
+if grep -En '[[:blank:]]+$' \
   "$repo_root/ios/editor_coreFFI/editor_coreFFI.h" \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h"; then
   echo "ERROR: generated FFI headers contain trailing whitespace" >&2
