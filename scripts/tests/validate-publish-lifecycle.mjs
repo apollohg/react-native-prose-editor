@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
 const publishWorkflow = await readFile(path.join(repoRoot, '.github/workflows/publish.yml'), 'utf8');
+const distTagResolver = path.join(repoRoot, 'scripts/resolve-npm-dist-tag.mjs');
 
 const requireWorkflow = (pattern, message) => {
   assert.match(publishWorkflow, pattern, message);
@@ -48,17 +49,44 @@ requireWorkflow(
 );
 
 const workflowLines = publishWorkflow.split(/\r?\n/);
-const npmPublishRunPattern = /^\s*run:\s*npm\s+publish\s+--ignore-scripts\s*$/;
+const npmTagStepPattern = /^\s*id:\s*npm-dist-tag\s*$/;
+const npmPublishRunPattern =
+  /^\s*run:\s*npm\s+publish\s+--ignore-scripts\s+--tag\s+"\$\{\{\s*steps\.npm-dist-tag\.outputs\.tag\s*\}\}"\s*$/;
 const packageValidateRunPattern = /^\s*run:\s*npm\s+run\s+validate:package\s*$/;
 const packageValidateLineIndex = workflowLines.findIndex((line) => packageValidateRunPattern.test(line));
+const npmTagStepLineIndex = workflowLines.findIndex((line) => npmTagStepPattern.test(line));
 const publishLineIndex = workflowLines.findIndex((line) => npmPublishRunPattern.test(line));
 assert.notEqual(packageValidateLineIndex, -1, 'publish job must validate the generated native consumers');
+assert.notEqual(npmTagStepLineIndex, -1, 'publish job must resolve an explicit npm dist-tag');
 assert.notEqual(
   publishLineIndex,
   -1,
-  'publish job must publish with lifecycle scripts disabled after the explicit release gate',
+  'publish job must use the resolved dist-tag with lifecycle scripts disabled after the explicit release gate',
 );
-assert.ok(packageValidateLineIndex < publishLineIndex, 'native package validation must run before npm publish');
+assert.ok(packageValidateLineIndex < npmTagStepLineIndex, 'native package validation must run before tag resolution');
+assert.ok(npmTagStepLineIndex < publishLineIndex, 'npm dist-tag resolution must run before npm publish');
+
+for (const [version, expectedTag] of [
+  ['1.0.0-alpha', 'alpha'],
+  ['1.0.0-alpha.4', 'alpha'],
+  ['1.0.0-beta.2', 'beta'],
+  ['1.0.0-0', 'next'],
+  ['1.0.0', 'latest'],
+]) {
+  const result = spawnSync(process.execPath, [distTagResolver, version], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), expectedTag, `${version} must publish with the ${expectedTag} tag`);
+}
+
+const packageTagResult = spawnSync(process.execPath, [distTagResolver], {
+  cwd: repoRoot,
+  encoding: 'utf8',
+});
+assert.equal(packageTagResult.status, 0, packageTagResult.stderr);
+assert.equal(packageTagResult.stdout.trim(), 'alpha', 'the current package must publish with the alpha tag');
 
 assert.equal(
   packageJson.scripts?.['prepare:example:native'],

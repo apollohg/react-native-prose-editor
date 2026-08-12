@@ -90,5 +90,10 @@ jobs:
       - name: Validate packed package
         run: npm run validate:package
 
+      - name: Resolve npm dist-tag
+        id: npm-dist-tag
+        shell: bash
+        run: echo "tag=$(node scripts/resolve-npm-dist-tag.mjs)" >> "$GITHUB_OUTPUT"
+
       - name: Publish to npm
-        run: npm publish --ignore-scripts
+        run: npm publish --ignore-scripts --tag "${{ steps.npm-dist-tag.outputs.tag }}"
