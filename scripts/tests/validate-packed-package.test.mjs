@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -80,7 +80,11 @@ function makeFixture(name) {
     "ReactNativeProseEditor.podspec",
     "src/specs",
     "ios",
-    "android",
+    "android/build.gradle",
+    "android/consumer-rules.pro",
+    "android/src/debug",
+    "android/src/main",
+    "android/src/release",
     "rust/android",
     "rust/ios",
     "rust/bindings/kotlin",
@@ -328,8 +332,17 @@ function runDuplicateIosChecksumFixture() {
   );
 }
 
+function runFixtureScopeCheck() {
+  const fixture = makeFixture("fixture-scope");
+  assert.ok(existsSync(join(fixture, "android/src/main")), "fixture must include published Android sources");
+  assert.ok(!existsSync(join(fixture, "android/build")), "fixture must not copy Gradle build outputs");
+  assert.ok(!existsSync(join(fixture, "android/.idea")), "fixture must not copy Android IDE state");
+}
+
 try {
-  if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "native-parser-bounds") {
+  if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "fixture-scope") {
+    runFixtureScopeCheck();
+  } else if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "native-parser-bounds") {
     runNativeParserBoundsFixtures();
   } else if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "wrong-native-checksum") {
     runWrongNativeChecksumFixture();

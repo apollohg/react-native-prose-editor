@@ -16,9 +16,11 @@ requireWorkflow(
   /publish:\s*\n\s*runs-on:\s*macos-[^\s]+/,
   'publish job must run on a macOS runner so it can build iOS package consumers',
 );
-requireWorkflow(
-  /publish:\s*\n(?:.*\n)*?\s+timeout-minutes:\s*(?:6[0-9]|[7-9][0-9]|[1-9][0-9]{2,})\b/,
-  'publish job must allow at least 60 minutes for native build and package-consumer validation',
+const publishTimeout = publishWorkflow.match(/publish:\s*\n(?:.*\n)*?\s+timeout-minutes:\s*([0-9]+)\b/);
+assert.ok(publishTimeout, 'publish job must define a timeout');
+assert.ok(
+  Number(publishTimeout[1]) >= 90,
+  'publish job must allow at least 90 minutes for native build and package-consumer validation',
 );
 requireWorkflow(
   /uses:\s*actions\/setup-java@v5\s*\n\s+with:\s*\n\s+distribution:\s*temurin\s*\n\s+java-version:\s*17\b/,
@@ -46,12 +48,16 @@ requireWorkflow(
 );
 
 const workflowLines = publishWorkflow.split(/\r?\n/);
-const npmPublishRunPattern = /^\s*run:\s*npm\s+publish(?:\s+[^\r\n]*)?$/;
+const npmPublishRunPattern = /^\s*run:\s*npm\s+publish\s+--ignore-scripts\s*$/;
 const packageValidateRunPattern = /^\s*run:\s*npm\s+run\s+validate:package\s*$/;
 const packageValidateLineIndex = workflowLines.findIndex((line) => packageValidateRunPattern.test(line));
 const publishLineIndex = workflowLines.findIndex((line) => npmPublishRunPattern.test(line));
 assert.notEqual(packageValidateLineIndex, -1, 'publish job must validate the generated native consumers');
-assert.notEqual(publishLineIndex, -1, 'publish job must publish the package to npm');
+assert.notEqual(
+  publishLineIndex,
+  -1,
+  'publish job must publish with lifecycle scripts disabled after the explicit release gate',
+);
 assert.ok(packageValidateLineIndex < publishLineIndex, 'native package validation must run before npm publish');
 
 assert.equal(
