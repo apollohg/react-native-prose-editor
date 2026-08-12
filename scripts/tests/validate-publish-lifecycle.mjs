@@ -66,8 +66,8 @@ assert.equal(
 );
 assert.equal(
   packageJson.scripts?.['install:ios-test-pods'],
-  'cd ios-tests && pod install --deployment',
-  'native package validation must install the iOS test workspace from its lockfile',
+  'cd ios-tests && pod install --no-repo-update',
+  'native package validation must install the iOS test workspace without updating spec repositories',
 );
 assert.match(
   packageJson.scripts?.['validate:package'] ?? '',

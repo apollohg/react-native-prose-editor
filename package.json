@@ -44,7 +44,7 @@
         "build:rust:android": "bash rust/generate-bindings.sh && bash rust/build-android.sh",
         "build:rust:ios": "bash rust/generate-bindings.sh && bash rust/build-ios.sh",
         "install:example:pods": "cd example/ios && pod install --no-repo-update",
-        "install:ios-test-pods": "cd ios-tests && pod install --deployment",
+        "install:ios-test-pods": "cd ios-tests && pod install --no-repo-update",
         "prebuild:example": "npm --prefix example run prebuild",
         "prebuild:example:android": "npm --prefix example run prebuild:android",
         "prebuild:example:ios": "npm --prefix example run prebuild:ios",
