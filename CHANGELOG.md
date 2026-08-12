@@ -17,6 +17,15 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
   with stricter custom-schema and content validation.
 - Added task-list editing, native code-block rendering and commands, and
   start/scroll/end toolbar item placement.
+- Added `NativeRichTextEditor.focusPreservingRefs` for external controls that
+  should preserve editor focus, keyboard, and selection.
+- Added `EditorTheme.list.spacingAfter` for spacing after lists, including
+  nested lists.
+- Added `EditorTheme.list.orderedMarker` with decimal, alphabetic, and Roman
+  numbering schemes plus `.` and `)` suffixes. Schemes cycle by nesting depth;
+  the default cycle is `decimal`, `lowerAlpha`, `lowerRoman`.
+- Added `useNativeEditorDocument().documentOrigin` to identify the source of
+  the current document revision.
 
 ### Changed
 
@@ -36,6 +45,8 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Compiled Rust artifacts are no longer tracked in Git. Release validation
   builds them from the shipped source with the pinned toolchain, while
   published packages continue to include the required native binaries.
+- `NativeEditorV2AtomicRenderSnapshot` now contains either full render blocks
+  or an incremental render patch.
 
 ### Fixed
 
@@ -44,6 +55,18 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Hardened native selection and awareness synchronization, bounded image
   loading, task-marker and viewer tap handling, schema admission, and atomic
   rejection of invalid or oversized content.
+- Fixed dropped input and reduced typing latency during fast collaborative
+  editing on iOS and Android, including when local edits overlap remote content
+  or presence changes.
+- Fixed `onContentChange` and `onContentChangeJSON` after native editor changes
+  on iOS and Android.
+- Fixed iOS toolbar group menus so they stay anchored to their parent button,
+  open vertically, toggle closed on a second tap, and switch directly between
+  groups.
+- Fixed `NativeProseViewer` trailing-empty-paragraph collapse so every trailing
+  empty paragraph is removed, including when the entire document is empty.
+- Removed extra bottom space after the final viewer element and corrected
+  spacing at nested list boundaries.
 
 ### Removed / migration
 

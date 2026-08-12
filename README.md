@@ -98,6 +98,8 @@ export function EditorScreen() {
 
 Handle initialization supports empty, HTML, JSON, and collaboration-room documents. Schema, editing policy, and resource limits are fixed when the handle is created. The mounted view accepts controlled `value` or `valueJSON`, toolbar and theme options, event callbacks, and imperative ref methods for formatting and content changes.
 
+Pass `focusPreservingRefs` a native view ref or readonly array of refs for external controls such as chat send buttons. Taps within those views keep the editor focused and preserve its keyboard and selection.
+
 See [Getting Started](https://github.com/apollohg/react-native-prose-editor/wiki/Getting-Started) and the [NativeRichTextEditor reference](https://github.com/apollohg/react-native-prose-editor/wiki/NativeRichTextEditor-Reference) for the complete API.
 
 ## Prose viewer
@@ -122,7 +124,7 @@ import { NativeProseViewer } from '@apollohg/react-native-prose-editor';
 />;
 ```
 
-The viewer measures to its prepared native layout, supports themes, bounded image loading, link and mention events, and font-environment invalidation. UIKit and Android applications can also use the native `ProseViewerView` facades directly.
+The viewer supports themes, bounded image loading, and link and mention events. Trailing empty paragraphs are removed by default; set `collapseTrailingEmptyParagraphs={false}` to retain them. UIKit and Android applications can also use the native `ProseViewerView` facades directly.
 
 ## Collaboration
 

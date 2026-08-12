@@ -148,7 +148,7 @@ export interface EditorListTheme {
     baseIndentMultiplier?: number;
     /** Space between consecutive list items, in layout units. */
     itemSpacing?: number;
-    /** Space after an outermost list before following content, in layout units. */
+    /** Space after a list before following content, including nested lists, in layout units. */
     spacingAfter?: number;
     /** Color of bullets and numbers. Defaults to the resolved text color. */
     markerColor?: string;
