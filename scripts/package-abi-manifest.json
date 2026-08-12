@@ -29,6 +29,7 @@
     { "name": "editor_v2_apply_command", "checksum": 14484 },
     { "name": "editor_v2_apply_input", "checksum": 29912 },
     { "name": "editor_v2_apply_local_api", "checksum": 36451 },
+    { "name": "editor_v2_apply_native_intent", "checksum": 46364 },
     { "name": "editor_v2_collaboration_ack_outbound", "checksum": 21755 },
     { "name": "editor_v2_collaboration_detach", "checksum": 25325 },
     { "name": "editor_v2_collaboration_drive", "checksum": 55434 },
@@ -48,7 +49,10 @@
     { "name": "editor_v2_get_document_html", "checksum": 60959 },
     { "name": "editor_v2_get_document_json", "checksum": 25683 },
     { "name": "editor_v2_get_state", "checksum": 43856 },
+    { "name": "editor_v2_pin_position_epoch", "checksum": 42714 },
     { "name": "editor_v2_redo", "checksum": 48065 },
+    { "name": "editor_v2_release_native_binding", "checksum": 2756 },
+    { "name": "editor_v2_render_native", "checksum": 16234 },
     { "name": "editor_v2_render_update", "checksum": 13282 },
     { "name": "editor_v2_replace_document", "checksum": 31032 },
     { "name": "editor_v2_resolve_scalar_selection", "checksum": 26332 },
@@ -69,8 +73,10 @@
         "methods": [
           { "name": "elements", "checksum": 50589 },
           { "name": "is_empty", "checksum": 2370 },
+          { "name": "preferred_text_block_name", "checksum": 32137 },
           { "name": "retained_bytes_decimal", "checksum": 13333 },
-          { "name": "semantic_key", "checksum": 2241 }
+          { "name": "semantic_key", "checksum": 2241 },
+          { "name": "trailing_empty_text_block_count", "checksum": 11698 }
         ]
       }
     ]

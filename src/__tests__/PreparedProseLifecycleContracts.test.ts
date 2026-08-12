@@ -373,21 +373,44 @@ describe('prepared prose native lifecycle contracts', () => {
     it('ships iOS instrumentation through one file reference and one NativeEditorTests sources membership', () => {
         const projectYml = readSource('ios-tests/project.yml');
         const pbxproj = readSource('ios-tests/NativeEditorTests.xcodeproj/project.pbxproj');
-        const fileReferenceId = 'A3B6C71D4E5F60718293A4D3';
-        const buildFileId = 'A3B6C71D4E5F60718293A4D4';
-        const nativeTestsTarget = pbxproj.slice(
-            pbxproj.indexOf('19C22BD2CB0BC83B9918257D /* NativeEditorTests */ = {'),
-            pbxproj.indexOf('36BE18DD6515FBAF43F806D5 /* NativeEditorTestHost */ = {'),
+        const fileReferenceMatches = [
+            ...pbxproj.matchAll(
+                /([A-F0-9]{24}) \/\* PreparedProseInstrumentation\.swift \*\/ = \{isa = PBXFileReference;[^\n]*path = PreparedProseInstrumentation\.swift;/g
+            ),
+        ];
+        expect(fileReferenceMatches).toHaveLength(1);
+        const fileReferenceId = fileReferenceMatches[0]![1]!;
+        const buildFileMatches = [
+            ...pbxproj.matchAll(
+                new RegExp(
+                    `([A-F0-9]{24}) /\\* PreparedProseInstrumentation\\.swift in Sources \\*/ = \\{isa = PBXBuildFile; fileRef = ${fileReferenceId}`,
+                    'g'
+                )
+            ),
+        ];
+        expect(buildFileMatches).toHaveLength(1);
+        const buildFileId = buildFileMatches[0]![1]!;
+        const nativeTargetSectionStart = pbxproj.indexOf('/* Begin PBXNativeTarget section */');
+        const nativeTestsTargetStart = pbxproj.indexOf(
+            ' /* NativeEditorTests */ = {',
+            nativeTargetSectionStart
         );
+        expect(nativeTestsTargetStart).toBeGreaterThan(-1);
+        const nativeTestsTarget = pbxproj.slice(
+            nativeTestsTargetStart,
+            pbxproj.indexOf('\n\t\t};', nativeTestsTargetStart)
+        );
+        const sourcesBuildPhaseMatches = [
+            ...nativeTestsTarget.matchAll(/([A-F0-9]{24}) \/\* Sources \*\//g),
+        ];
+        expect(sourcesBuildPhaseMatches).toHaveLength(1);
+        const sourcesBuildPhaseId = sourcesBuildPhaseMatches[0]![1]!;
         const sourcesBuildPhase = pbxproj.slice(
-            pbxproj.indexOf('A8B845B3B6EC5F9072D2E478 /* Sources */ = {'),
+            pbxproj.indexOf(`${sourcesBuildPhaseId} /* Sources */ = {`),
             pbxproj.indexOf('/* End PBXSourcesBuildPhase section */'),
         );
 
         expect(projectYml.match(/^\s*- path: \.\.\/ios\/Viewer\/PreparedProseInstrumentation\.swift$/gm)).toHaveLength(1);
-        expect(pbxproj.match(new RegExp(`${fileReferenceId} /\\* PreparedProseInstrumentation\\.swift \\*/ = \\{isa = PBXFileReference;[^\\n]*path = PreparedProseInstrumentation\\.swift;`, 'g'))).toHaveLength(1);
-        expect(pbxproj.match(new RegExp(`${buildFileId} /\\* PreparedProseInstrumentation\\.swift in Sources \\*/ = \\{isa = PBXBuildFile; fileRef = ${fileReferenceId}`, 'g'))).toHaveLength(1);
-        expect(nativeTestsTarget).toContain('A8B845B3B6EC5F9072D2E478 /* Sources */');
         expect(sourcesBuildPhase.match(new RegExp(`${buildFileId} /\\* PreparedProseInstrumentation\\.swift in Sources \\*/,`, 'g'))).toHaveLength(1);
     });
 

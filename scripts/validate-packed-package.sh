@@ -46,7 +46,7 @@ manifest_entries() {
   ruby -rjson -e '
     manifest = JSON.parse(File.read(ARGV.fetch(0)))
     editor_functions = manifest.fetch("functions")
-    abort "package ABI manifest must contain exactly 31 editor_v2 functions" unless editor_functions.length == 31
+    abort "package ABI manifest must contain exactly 35 editor_v2 functions" unless editor_functions.length == 35
     editor_names = editor_functions.map { |entry| entry.fetch("name") }
     abort "package ABI manifest contains duplicate editor function names" unless editor_names.uniq.length == editor_names.length
     abort "package ABI manifest contains a non-v2 editor function" unless editor_names.all? { |name| name.start_with?("editor_v2_") }
@@ -64,7 +64,7 @@ manifest_entries() {
     methods = viewer_object.fetch("methods")
     method_names = methods.map { |entry| entry.fetch("name") }
     abort "package ABI manifest ViewerCompiledDocument methods are duplicate" unless method_names.uniq.length == method_names.length
-    abort "package ABI manifest ViewerCompiledDocument methods are incomplete" unless method_names.sort == %w[elements is_empty retained_bytes_decimal semantic_key]
+    abort "package ABI manifest ViewerCompiledDocument methods are incomplete" unless method_names.sort == %w[elements is_empty preferred_text_block_name retained_bytes_decimal semantic_key trailing_empty_text_block_count]
 
     version = manifest.fetch("version")
     puts ["function", version.fetch("name"), version.fetch("checksum")].join("\t")

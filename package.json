@@ -22,7 +22,8 @@
             "default": "./dist/index.js"
         },
         "./app.plugin": "./app.plugin.js",
-        "./app.plugin.js": "./app.plugin.js"
+        "./app.plugin.js": "./app.plugin.js",
+        "./package.json": "./package.json"
     },
     "private": false,
     "publishConfig": {

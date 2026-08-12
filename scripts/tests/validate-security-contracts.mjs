@@ -314,9 +314,9 @@ assert.doesNotMatch(
 // file's text. It is intentionally part of every security-validation entry.
 assertPinnedCargoBehaviorSpawnFixture({ root, pinnedCargo });
 
-// The production surface is the 31 editor_v2_* UniFFI functions plus
+// The production surface is the 35 editor_v2_* UniFFI functions plus
 // editor_core_version.
-const V2_EXPORT_COUNT = 31;
+const V2_EXPORT_COUNT = 35;
 if (releaseMode) {
     const androidModule = read('android/src/main/java/com/apollohg/editor/NativeEditorModule.kt');
     const iosModule = read('ios/NativeEditorModule.swift');
@@ -369,7 +369,7 @@ if (releaseMode) {
     assert.equal(
         (ffiHeader.match(/uniffi_editor_core_fn_func_editor_v2_/g) ?? []).length,
         V2_EXPORT_COUNT,
-        'the FFI header must expose exactly 31 editor_v2_* symbols'
+        'the FFI header must expose exactly 35 editor_v2_* symbols'
     );
     assert.match(ffiHeader, /uniffi_editor_core_fn_func_editor_core_version/);
     assert.doesNotMatch(ffiHeader, /uniffi_editor_core_fn_func_collaboration_session/);

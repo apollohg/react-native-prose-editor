@@ -41,12 +41,12 @@ expected_viewer_method_checksums="$(rg -o 'uniffi_editor_core_checksum_method_vi
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
 expected_viewer_lifecycle_symbols="$(rg -o 'uniffi_editor_core_fn_(clone|free)_viewercompileddocument' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-[[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "31" ]] || {
-  echo "ERROR: generated FFI header must expose exactly 31 editor_v2 functions" >&2
+[[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "35" ]] || {
+  echo "ERROR: generated FFI header must expose exactly 35 editor_v2 functions" >&2
   exit 1
 }
-[[ "$(printf '%s\n' "$expected_checksum_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "31" ]] || {
-  echo "ERROR: generated FFI header must expose exactly 31 editor_v2 checksums" >&2
+[[ "$(printf '%s\n' "$expected_checksum_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "35" ]] || {
+  echo "ERROR: generated FFI header must expose exactly 35 editor_v2 checksums" >&2
   exit 1
 }
 [[ "$expected_viewer_function_symbols" == "uniffi_editor_core_fn_func_viewer_compile" ]] || {
@@ -57,12 +57,12 @@ expected_viewer_lifecycle_symbols="$(rg -o 'uniffi_editor_core_fn_(clone|free)_v
   echo "ERROR: generated FFI header must expose the viewer_compile checksum" >&2
   exit 1
 }
-[[ "$(printf '%s\n' "$expected_viewer_method_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "4" ]] || {
-  echo "ERROR: generated FFI header must expose exactly four ViewerCompiledDocument methods" >&2
+[[ "$(printf '%s\n' "$expected_viewer_method_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "6" ]] || {
+  echo "ERROR: generated FFI header must expose exactly six ViewerCompiledDocument methods" >&2
   exit 1
 }
-[[ "$(printf '%s\n' "$expected_viewer_method_checksums" | sed '/^$/d' | wc -l | tr -d ' ')" == "4" ]] || {
-  echo "ERROR: generated FFI header must expose exactly four ViewerCompiledDocument checksums" >&2
+[[ "$(printf '%s\n' "$expected_viewer_method_checksums" | sed '/^$/d' | wc -l | tr -d ' ')" == "6" ]] || {
+  echo "ERROR: generated FFI header must expose exactly six ViewerCompiledDocument checksums" >&2
   exit 1
 }
 [[ "$(printf '%s\n' "$expected_viewer_lifecycle_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "2" ]] || {
@@ -139,4 +139,4 @@ if rg -n '[[:blank:]]+$' \
   exit 1
 fi
 
-echo "Generated binding normalization, 31 editor-v2 symbol, viewer ABI, checksum, and copy validation passed."
+echo "Generated binding normalization, 35 editor-v2 symbol, viewer ABI, checksum, and copy validation passed."
