@@ -7,6 +7,7 @@ import android.text.SpannableStringBuilder
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.widget.LinearLayout
 import android.view.MotionEvent
 import android.view.View
@@ -305,6 +306,34 @@ class RichTextEditorViewTest {
         assertEquals(0L, trace?.buildRenderNanos)
         assertEquals(0L, trace?.applyRenderNanos)
         assertEquals("Alpha\nBeta", editText.text?.toString())
+    }
+
+    @Test
+    fun `appearance change forces full render for an empty render patch`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val blocks = JSONArray().put(paragraphRenderBlock("Alpha"))
+        editText.applyTheme(EditorTheme.fromJson("""{"text":{"color":"#112233"}}"""))
+        editText.applyUpdateJSON(renderUpdateJson(blocks), notifyListener = false)
+
+        editText.applyTheme(EditorTheme.fromJson("""{"text":{"color":"#DDEEFF"}}"""))
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                JSONArray(),
+                includeFullRenderBlocks = false,
+                renderPatch = JSONObject()
+                    .put("startIndex", 0)
+                    .put("deleteCount", 0)
+                    .put("renderBlocks", JSONArray())
+            ),
+            notifyListener = false
+        )
+
+        val color = editText.text
+            ?.getSpans(0, 1, ForegroundColorSpan::class.java)
+            ?.firstOrNull()
+            ?.foregroundColor
+        assertEquals(Color.parseColor("#DDEEFF"), color)
+        assertFalse(editText.lastRenderAppliedPatch())
     }
 
     /**

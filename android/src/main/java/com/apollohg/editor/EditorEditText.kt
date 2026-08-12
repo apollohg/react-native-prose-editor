@@ -4153,7 +4153,11 @@ class EditorEditText @JvmOverloads constructor(
         explicitSelectedImageRange = null
         val buildRenderNanos: Long
         val applyRenderNanos: Long
-        val patchTrace = if (!shouldSkipRender && renderPatch != null) {
+        val patchTrace = if (
+            !shouldSkipRender &&
+            renderPatch != null &&
+            lastAppliedRenderAppearanceRevision == renderAppearanceRevision
+        ) {
             applyRenderPatchIfPossible(renderPatch, refreshInputConnectionForExternalUpdate)
         } else {
             null

@@ -5519,7 +5519,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             false
         }
 
-        let patchTrace = renderPatch.map(applyRenderPatchIfPossible)
+        let patchTrace: PatchApplyTrace? = if lastAppliedRenderAppearanceRevision == renderAppearanceRevision {
+            renderPatch.map(applyRenderPatchIfPossible)
+        } else {
+            nil
+        }
         let appliedPatch = patchTrace?.applied == true
         var usedSmallPatchTextMutation = patchTrace?.usedSmallPatchTextMutation ?? false
         var applyRenderReplaceUtf16Length = patchTrace?.applyRenderReplaceUtf16Length ?? 0

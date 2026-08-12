@@ -5768,6 +5768,43 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(paragraphStyle?.minimumLineHeight ?? 0, 30, accuracy: 0.1)
     }
 
+    func testAppearanceChangeForcesFullRenderForEmptyRenderPatch() {
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.applyTheme(EditorTheme(dictionary: [
+            "text": ["color": "#112233"],
+        ]))
+        textView.applyUpdateJSON("""
+        {
+          "renderBlocks": [[
+            {"type":"blockStart","nodeType":"paragraph","depth":0},
+            {"type":"textRun","text":"Alpha","marks":[]},
+            {"type":"blockEnd"}
+          ]]
+        }
+        """, notifyDelegate: false)
+
+        textView.applyTheme(EditorTheme(dictionary: [
+            "text": ["color": "#DDEEFF"],
+        ]))
+        textView.applyUpdateJSON("""
+        {
+          "renderPatch": {
+            "startIndex": 0,
+            "deleteCount": 0,
+            "renderBlocks": []
+          }
+        }
+        """, notifyDelegate: false)
+
+        let color = textView.textStorage.attribute(
+            .foregroundColor,
+            at: 0,
+            effectiveRange: nil
+        ) as? UIColor
+        XCTAssertEqual(color, EditorTheme.color(from: "#DDEEFF"))
+        XCTAssertFalse(textView.lastRenderAppliedPatch())
+    }
+
     func testEditorTextViewMeasuredAutoGrowHeightMatchesSizeThatFits() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
