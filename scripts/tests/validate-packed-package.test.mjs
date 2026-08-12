@@ -10,9 +10,12 @@ const validator = join(repoRoot, "scripts", "validate-packed-package.sh");
 const checksumValidator = join(repoRoot, "scripts", "validate-uniffi-checksum-values.rb");
 const checksumManifest = join(repoRoot, "scripts", "package-abi-manifest.json");
 const validatorSource = readFileSync(validator, "utf8");
+const packageManifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
 const workDir = mkdtempSync(join(tmpdir(), "native-editor-packed-package-fixtures-"));
 const failures = [];
 
+assert.ok(packageManifest.files.includes("android/src/debug"), "package must include Android debug draw instrumentation");
+assert.ok(packageManifest.files.includes("android/src/release"), "package must include Android release draw instrumentation");
 assert.match(
   validatorSource,
   /npm install --ignore-scripts --no-audit --no-fund --offline --package-lock=false --legacy-peer-deps/,
@@ -37,6 +40,16 @@ assert.match(
   validatorSource,
   /iOS packed consumer resolved editor package from repository or extraction staging/,
   "packed iOS consumer must reject a resolved package realpath pointing at the repository or extracted staging tree",
+);
+assert.match(
+  validatorSource,
+  /internal import ReactNativeProseEditor/,
+  "packed iOS consumer probe must match Expo's generated module import access level",
+);
+assert.match(
+  validatorSource,
+  /parsed\.is_a\?\(Array\) \? parsed : parsed\.values/,
+  "npm pack parsing must support both npm 10 arrays and npm 11 package-keyed objects",
 );
 assert.doesNotMatch(
   validatorSource,
@@ -449,9 +462,9 @@ try {
       "linkless pod fixture must remove the relocated framework declaration",
     );
     expectFailure(
-      "CocoaPods installs but cannot link",
+      "CocoaPods installs but cannot compile or link",
       run("--validate-ios-consumer", linklessPod),
-      /^(?=[\s\S]*iOS consumer xcodebuild failed)(?=[\s\S]*(?:Undefined symbols(?: for architecture [^\n]+)?|symbol\(s\) not found))(?=[\s\S]*(?:_?uniffi_editor_core(?:\b|_)|_?editor_core(?:\b|_)|editorV2(?:Create|RenderUpdate|CollaborationDrive|CollaborationLeaseOutbound|CollaborationAckOutbound|CollaborationNackOutbound|CollaborationDetach|CollaborationReattach)\b))[\s\S]*$/,
+      /^(?=[\s\S]*iOS consumer xcodebuild failed)(?=[\s\S]*(?:fatal error: 'react\/renderer\/components\/PreparedProseViewer\/PreparedProseMeasurementsManager\.h' file not found|(?=[\s\S]*(?:Undefined symbols(?: for architecture [^\n]+)?|symbol\(s\) not found))(?=[\s\S]*(?:_?uniffi_editor_core(?:\b|_)|_?editor_core(?:\b|_)|editorV2(?:Create|RenderUpdate|CollaborationDrive|CollaborationLeaseOutbound|CollaborationAckOutbound|CollaborationNackOutbound|CollaborationDetach|CollaborationReattach)\b))))[\s\S]*$/,
     );
 
     const unpackagedAndroid = makeFixture("unpackaged-android");

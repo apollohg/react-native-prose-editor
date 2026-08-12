@@ -322,7 +322,7 @@ validate_ios_consumer() {
   local react_native_dependencies_archive
   local react_native_core_archive
   local hermes_archive
-  local workspace_path resolved_package_json resolved_package_dir
+  local workspace_path packed_editor_package_json resolved_package_json resolved_package_dir
   react_native_dependencies_archive="$(resolve_single_artifact "$repo_root/example/ios/Pods/ReactNativeDependencies-artifacts" 'reactnative-dependencies-*-debug.tar.gz' 'ReactNativeDependencies debug')"
   react_native_core_archive="$(resolve_single_artifact "$repo_root/example/ios/Pods/ReactNativeCore-artifacts" 'reactnative-core-*-debug.tar.gz' 'ReactNativeCore debug')"
   hermes_archive="$(resolve_single_artifact "$repo_root/example/ios/Pods/hermes-engine-artifacts" 'hermes-ios-*-debug.tar.gz' 'Hermes iOS debug')"
@@ -375,10 +375,10 @@ WORKSPACE
 		A00000000000000000000032 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001 /* AppDelegate.swift in Sources */, A00000000000000000000002 /* Probe.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000040 /* PackedConsumer */ = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000050 /* Build configuration list for PBXNativeTarget \"PackedConsumer\" */; buildPhases = (A00000000000000000000032 /* Sources */, A00000000000000000000030 /* Frameworks */, A00000000000000000000031 /* Resources */,); buildRules = (); dependencies = (); name = PackedConsumer; productName = PackedConsumer; productReference = A00000000000000000000013 /* PackedConsumer.app */; productType = "com.apple.product-type.application"; };
 		A00000000000000000000041 /* Project object */ = {isa = PBXProject; attributes = { LastUpgradeCheck = 1700; }; buildConfigurationList = A00000000000000000000051 /* Build configuration list for PBXProject \"PackedConsumer\" */; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = A00000000000000000000021; productRefGroup = A00000000000000000000022 /* Products */; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000040 /* PackedConsumer */,); };
-		A00000000000000000000060 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; SDKROOT = iphoneos; SWIFT_ENABLE_EXPLICIT_MODULES = NO; }; name = Debug; };
-		A00000000000000000000061 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; SDKROOT = iphoneos; SWIFT_ENABLE_EXPLICIT_MODULES = NO; }; name = Release; };
-		A00000000000000000000062 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = dev.nativeeditor.packedconsumer; PRODUCT_NAME = PackedConsumer; SWIFT_ENABLE_EXPLICIT_MODULES = NO; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
-		A00000000000000000000063 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = dev.nativeeditor.packedconsumer; PRODUCT_NAME = PackedConsumer; SWIFT_ENABLE_EXPLICIT_MODULES = NO; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		A00000000000000000000060 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.4; SDKROOT = iphoneos; SWIFT_ENABLE_EXPLICIT_MODULES = NO; }; name = Debug; };
+		A00000000000000000000061 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.4; SDKROOT = iphoneos; SWIFT_ENABLE_EXPLICIT_MODULES = NO; }; name = Release; };
+		A00000000000000000000062 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.4; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = dev.nativeeditor.packedconsumer; PRODUCT_NAME = PackedConsumer; SWIFT_ENABLE_EXPLICIT_MODULES = NO; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		A00000000000000000000063 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.4; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = dev.nativeeditor.packedconsumer; PRODUCT_NAME = PackedConsumer; SWIFT_ENABLE_EXPLICIT_MODULES = NO; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
 		A00000000000000000000050 /* Build configuration list for PBXNativeTarget \"PackedConsumer\" */ = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000062 /* Debug */, A00000000000000000000063 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A00000000000000000000051 /* Build configuration list for PBXProject \"PackedConsumer\" */ = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000060 /* Debug */, A00000000000000000000061 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 	};
@@ -404,11 +404,12 @@ JSON
   ) || fail "iOS packed consumer npm install failed"
   [[ -f "$packed_editor_dir/ReactNativeProseEditor.podspec" ]] || \
     fail "iOS packed consumer dependency is missing the root podspec"
+  packed_editor_package_json="$(cd "$packed_editor_dir" && pwd -P)/package.json"
   resolved_package_json="$(
     cd "$ios_consumer"
     node --no-warnings --print "require.resolve('@apollohg/react-native-prose-editor/package.json')"
   )" || fail "iOS packed consumer cannot resolve @apollohg/react-native-prose-editor"
-  [[ "$resolved_package_json" == "$packed_editor_dir/package.json" ]] || \
+  [[ "$resolved_package_json" == "$packed_editor_package_json" ]] || \
     fail "iOS packed consumer resolved editor package outside consumer node_modules: $resolved_package_json"
   resolved_package_dir="$(cd "$(dirname "$resolved_package_json")" && pwd -P)"
   case "$resolved_package_dir" in
@@ -426,7 +427,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 }
 SWIFT
   cat > "$ios_project/PackedConsumer/Probe.swift" <<'SWIFT'
-import ReactNativeProseEditor
+internal import ReactNativeProseEditor
 
 func packedEditorCoreLinkProbe() {
   _ = editorV2Create(configJson: "{}", snapshotState: nil)
@@ -451,7 +452,7 @@ require File.join(File.dirname(`node --print "require.resolve('react-native/pack
 react_native_root = ENV.fetch('PACKED_REACT_NATIVE_DIR')
 ENV['RCT_USE_RN_DEP'] ||= '1'
 ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1'
-platform :ios, '15.1'
+platform :ios, '16.4'
 project File.join(__dir__, 'PackedConsumer.xcodeproj')
 prepare_react_native_project!
 
@@ -530,10 +531,10 @@ RUBY
     fail "iOS packed consumer did not generate ReactNativeProseEditor build settings"
   grep -Fq '$(PODS_ROOT)/Headers/Private/Yoga' "$editor_pod_xcconfig" || \
     fail "React Native dependency helper did not retain ReactNativeProseEditor's private Yoga compile path"
-  require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/Props.h"
-  require_file "$ios_project/build/generated/ios" "react/renderer/components/ReactNativeProseEditorSpec/EventEmitters.h"
-  require_file "$ios_project/build/generated/ios" "RCTThirdPartyComponentsProvider.mm"
-  provider_source="$ios_project/build/generated/ios/RCTThirdPartyComponentsProvider.mm"
+  require_file "$ios_project/build/generated/ios/ReactCodegen" "react/renderer/components/ReactNativeProseEditorSpec/Props.h"
+  require_file "$ios_project/build/generated/ios/ReactCodegen" "react/renderer/components/ReactNativeProseEditorSpec/EventEmitters.h"
+  require_file "$ios_project/build/generated/ios/ReactCodegen" "RCTThirdPartyComponentsProvider.mm"
+  provider_source="$ios_project/build/generated/ios/ReactCodegen/RCTThirdPartyComponentsProvider.mm"
   grep -Fq '@"PreparedProseViewer": NSClassFromString(@"PREPPreparedProseViewerComponentView")' \
     "$provider_source" || \
     fail "iOS packed consumer codegen is missing the PreparedProseViewer third-party provider entry"
@@ -645,7 +646,7 @@ pack_ios_consumer_tarball() {
     npm_config_cache="$pack_cache_dir" npm_config_logs_dir="$pack_cache_dir/logs" \
       npm pack --ignore-scripts --json --pack-destination "$work_dir" > "$pack_json"
   )
-  tarball_name="$(ruby -rjson -e 'entries = JSON.parse(File.read(ARGV.fetch(0))); abort "npm pack returned no artifact" unless entries.length == 1; puts entries.fetch(0).fetch("filename")' "$pack_json")"
+  tarball_name="$(ruby -rjson -e 'parsed = JSON.parse(File.read(ARGV.fetch(0))); entries = parsed.is_a?(Array) ? parsed : parsed.values; abort "npm pack returned no artifact" unless entries.length == 1 && entries.fetch(0).key?("filename"); puts entries.fetch(0).fetch("filename")' "$pack_json")"
   printf '%s\n' "$work_dir/$tarball_name"
 }
 
@@ -676,6 +677,8 @@ validate_package_entries() {
   ' "$root" || fail "packed package codegen discovery contract failed"
   require_file "$root" "dist/index.js"
   require_file "$root" "dist/index.d.ts"
+  require_file "$root" "android/src/debug/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt"
+  require_file "$root" "android/src/release/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt"
   require_declaration_symbol "$root" "NativeEditorBoundaryError"
   require_declaration_symbol "$root" "NativeCollaborationTransportConfig"
   require_declaration_symbol "$root" "NativeCollaborationTransportEvent"
@@ -787,7 +790,7 @@ pack_json="$work_dir/npm-pack.json"
   cd "$repo_root"
   npm_config_cache="$pack_cache_dir" npm_config_logs_dir="$pack_cache_dir/logs" npm pack --ignore-scripts --json --pack-destination "$work_dir" > "$pack_json"
 )
-tarball_name="$(ruby -rjson -e 'entries = JSON.parse(File.read(ARGV.fetch(0))); abort "npm pack returned no artifact" unless entries.length == 1; puts entries.fetch(0).fetch("filename")' "$pack_json")"
+tarball_name="$(ruby -rjson -e 'parsed = JSON.parse(File.read(ARGV.fetch(0))); entries = parsed.is_a?(Array) ? parsed : parsed.values; abort "npm pack returned no artifact" unless entries.length == 1 && entries.fetch(0).key?("filename"); puts entries.fetch(0).fetch("filename")' "$pack_json")"
 tarball_path="$work_dir/$tarball_name"
 [[ -f "$tarball_path" ]] || fail "npm pack did not create $tarball_name"
 tar -xzf "$tarball_path" -C "$work_dir"
@@ -809,7 +812,8 @@ modulemap_count="$(find "$package_dir" -type f \( -name 'module.modulemap' -o -n
 
 echo "==> Parsing the podspec from the extracted package..."
 podspec_json="$work_dir/podspec.json"
-pod ipc spec "$package_dir/ReactNativeProseEditor.podspec" > "$podspec_json"
+RUBYOPT="${RUBYOPT:+$RUBYOPT }-r$repo_root/example/node_modules/react-native/scripts/react_native_pods.rb" \
+  pod ipc spec "$package_dir/ReactNativeProseEditor.podspec" > "$podspec_json"
 ruby -rjson -e '
   spec = JSON.parse(File.read(ARGV.fetch(0)))
   license = spec.fetch("license")

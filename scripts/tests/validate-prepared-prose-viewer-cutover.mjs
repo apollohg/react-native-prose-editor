@@ -223,16 +223,16 @@ for (const path of [
         `${path} must not import a Swift compatibility header derived from the Fabric header directory`,
     );
 }
-const viewerPerformanceTests = read('ios/Tests/NativePerformanceTests.swift');
+const preparedProseLayout = read('ios/Viewer/PreparedProseLayout.swift');
 assert.match(
-    viewerPerformanceTests,
-    /String\(Double\(width\)\.bitPattern, radix: 16\)/,
-    'viewer measurement cache identity must preserve the exact width bit pattern',
+    preparedProseLayout,
+    /let physicalWidth = widthPoints \* scale[\s\S]*let roundedWidth = physicalWidth\.rounded\(\)[\s\S]*return Int\(roundedWidth\)/,
+    'viewer layout identity must canonicalize width to physical pixels',
 );
-assert.doesNotMatch(
-    viewerPerformanceTests,
-    /String\(width\)/,
-    'viewer measurement cache must not use locale-dependent CGFloat formatting',
+assert.match(
+    preparedProseLayout,
+    /let widthPixels: Int[\s\S]*self\.displayScaleBits = Double\(displayScale\)\.bitPattern/,
+    'viewer layout keys must pair physical width with the exact display-scale bit pattern',
 );
 
 const androidViewerLayout = read('android/src/main/java/com/apollohg/editor/viewer/AndroidProseLayoutEngine.kt');

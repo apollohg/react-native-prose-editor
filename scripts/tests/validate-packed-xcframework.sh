@@ -28,10 +28,20 @@ assert_package_entries_rejected() {
 }
 
 package_fixture="$fixture_root/package entries"
-mkdir -p "$package_fixture/dist" "$package_fixture/ios/Viewer/Fabric"
+mkdir -p \
+  "$package_fixture/dist" \
+  "$package_fixture/ios/Viewer/Fabric" \
+  "$package_fixture/android/src/debug/java/com/apollohg/editor/viewer" \
+  "$package_fixture/android/src/release/java/com/apollohg/editor/viewer"
 cp "$repo_root/package.json" "$package_fixture/package.json"
 cp "$repo_root/expo-module.config.json" "$package_fixture/expo-module.config.json"
 cp "$repo_root/ReactNativeProseEditor.podspec" "$package_fixture/ReactNativeProseEditor.podspec"
+cp \
+  "$repo_root/android/src/debug/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt" \
+  "$package_fixture/android/src/debug/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt"
+cp \
+  "$repo_root/android/src/release/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt" \
+  "$package_fixture/android/src/release/java/com/apollohg/editor/viewer/PreparedProseDrawInstrumentation.kt"
 for viewer_source in \
   "ios/Viewer/CoreTextProseLayoutEngine.swift" \
   "ios/Viewer/PreparedProseDrawingView.swift" \
