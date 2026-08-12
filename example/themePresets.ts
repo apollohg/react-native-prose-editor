@@ -1,4 +1,5 @@
 import type {
+    EditorBlockquoteTheme,
     EditorContentInsets,
     EditorFontWeight,
     EditorHeadingTheme,
@@ -25,17 +26,12 @@ export interface ExampleAppChrome {
     sectionLabelColor: string;
     controlLabelColor: string;
     controlHintColor: string;
-    /** Accent on the screen. Navigation bar tint and bar actions. */
     accentColor: string;
-    /** Structural rule. The navigation bar hairline. */
     separatorColor: string;
-    /** Resting surface of every touchable. >= 1.25:1 against the card, since nothing outlines it. */
     controlSurfaceColor: string;
     controlSurfaceTextColor: string;
-    /** Selected chip. A fill, not a tint: nothing else marks selection. */
     controlSelectedColor: string;
     controlSelectedTextColor: string;
-    /** Colour trigger while its channel sliders are open. */
     controlExpandedColor: string;
     switchTrackColor: string;
     switchTrackActiveColor: string;
@@ -44,14 +40,11 @@ export interface ExampleAppChrome {
     colorValueColor: string;
     channelLabelColor: string;
     channelValueColor: string;
-    /** Unfilled portion of a slider track. Deliberately subtle (~1.9:1). */
     channelTrackColor: string;
     channelRedColor: string;
     channelGreenColor: string;
     channelBlueColor: string;
-    /** The one load-bearing border: a swatch matching the card would vanish. */
     swatchBorderColor: string;
-    /** Removal and rejection affordances. Held at >= 3:1 against the card. */
     destructiveColor: string;
     actionButtonBackgroundColor: string;
     actionButtonTextColor: string;
@@ -59,23 +52,9 @@ export interface ExampleAppChrome {
     outputTextColor: string;
 }
 
-/** `EditorBlockquoteTheme` is not exported from the package index. */
-export interface ExampleBlockquoteTheme {
-    indent: number;
-    borderColor: string;
-    borderWidth: number;
-    markerGap: number;
-}
-
-/** `fontSize` comes from the live base size; `fontFamily` stays inherited because
- * 'System' is not a real Android family. */
-export type ExampleLinkTheme = Omit<Required<EditorLinkTheme>, 'fontSize' | 'fontFamily'>;
-
 export interface ExampleThemePreset {
     id: string;
     label: string;
-    /** Colour strategy plus what this fixture covers. Rendered under the picker. */
-    covers: string;
     statusBarStyle: 'dark' | 'light';
     textColor: string;
     backgroundColor: string;
@@ -84,14 +63,18 @@ export interface ExampleThemePreset {
     contentInsets: Required<EditorContentInsets>;
     appChrome: ExampleAppChrome;
     paragraphSpacingAfter: number;
-    /** Multiplied by the live base font size, because `lineHeight` is in points. */
     lineHeightRatio: number;
     headings: EditorHeadingTheme;
-    blockquote: ExampleBlockquoteTheme;
-    list: Required<EditorListTheme>;
+    blockquote: Required<Omit<EditorBlockquoteTheme, 'text'>>;
+    list: Required<
+        Pick<
+            EditorListTheme,
+            'indent' | 'baseIndentMultiplier' | 'itemSpacing' | 'markerColor' | 'markerScale'
+        >
+    >;
     horizontalRule: Required<EditorHorizontalRuleTheme>;
     mentions: EditorMentionTheme;
-    links: ExampleLinkTheme;
+    links: Required<Omit<EditorLinkTheme, 'fontSize' | 'fontFamily'>>;
     toolbar: Required<EditorToolbarTheme>;
     slider: {
         minimumTrackTintColor: string;
@@ -104,7 +87,7 @@ export interface ExampleEditorThemeOverrides {
     blockquoteBorderColor?: string;
 }
 
-export const DEFAULT_EXAMPLE_THEME_PRESET_ID = 'press';
+export const DEFAULT_EXAMPLE_THEME_PRESET_ID = 'example-1';
 
 interface HeadingScale {
     /** h1 through h6, largest first. */
@@ -136,8 +119,8 @@ function buildHeadingTheme(color: string, scale: HeadingScale): EditorHeadingThe
     };
 }
 
-/* Press: restrained, light, square. Every radius is 0, the falsy-zero fixture. */
-const PRESS_APP_CHROME: ExampleAppChrome = {
+/* Example 1: restrained, light, square. Every radius is 0, the falsy-zero fixture. */
+const EXAMPLE_1_APP_CHROME: ExampleAppChrome = {
     screenBackgroundColor: '#e0e5dc',
     cardBackgroundColor: '#f6f9f4',
     cardSecondaryBackgroundColor: '#fbfdfa',
@@ -172,8 +155,8 @@ const PRESS_APP_CHROME: ExampleAppChrome = {
     outputTextColor: '#d3dacd',
 };
 
-/* Poster: committed. Vermilion chrome around a pale editor, loose geometry. */
-const POSTER_APP_CHROME: ExampleAppChrome = {
+/* Example 2: committed. Vermilion chrome around a pale editor, loose geometry. */
+const EXAMPLE_2_APP_CHROME: ExampleAppChrome = {
     screenBackgroundColor: '#f5e9dc',
     cardBackgroundColor: '#95210d',
     cardSecondaryBackgroundColor: '#ad301c',
@@ -208,8 +191,8 @@ const POSTER_APP_CHROME: ExampleAppChrome = {
     outputTextColor: '#eee3d5',
 };
 
-/* Signal: full palette on a green-black ground. The only native toolbar. */
-const SIGNAL_APP_CHROME: ExampleAppChrome = {
+/* Example 3: full palette on a green-black ground. The only native toolbar. */
+const EXAMPLE_3_APP_CHROME: ExampleAppChrome = {
     screenBackgroundColor: '#09100d',
     cardBackgroundColor: '#141e1a',
     cardSecondaryBackgroundColor: '#1b2722',
@@ -244,8 +227,8 @@ const SIGNAL_APP_CHROME: ExampleAppChrome = {
     outputTextColor: '#bfcfc7',
 };
 
-/* Oxblood: drenched. Every surface carries chroma. */
-const OXBLOOD_APP_CHROME: ExampleAppChrome = {
+/* Example 4: drenched. Every surface carries chroma. */
+const EXAMPLE_4_APP_CHROME: ExampleAppChrome = {
     screenBackgroundColor: '#19030e',
     cardBackgroundColor: '#290a1b',
     cardSecondaryBackgroundColor: '#341023',
@@ -286,19 +269,18 @@ const OXBLOOD_APP_CHROME: ExampleAppChrome = {
  */
 export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
     {
-        id: 'press',
-        label: 'Press',
-        covers: 'Restrained palette, zero radii, flush toolbar. Catches a falsy 0 read as unset.',
+        id: 'example-1',
+        label: 'Example 1',
         statusBarStyle: 'dark',
         backgroundColor: '#f2f5ef',
         textColor: '#181c14',
         placeholderColor: '#83887f',
         editorBorderRadius: 0,
         contentInsets: { top: 12, right: 12, bottom: 12, left: 12 },
-        appChrome: PRESS_APP_CHROME,
+        appChrome: EXAMPLE_1_APP_CHROME,
         paragraphSpacingAfter: 10,
         lineHeightRatio: 1.35,
-        headings: buildHeadingTheme(PRESS_APP_CHROME.titleColor, {
+        headings: buildHeadingTheme(EXAMPLE_1_APP_CHROME.titleColor, {
             sizes: [26, 23, 20, 18, 16, 15],
             spacingRatio: 0.3,
         }),
@@ -375,24 +357,23 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         },
         slider: {
             minimumTrackTintColor: '#2a6431',
-            maximumTrackTintColor: PRESS_APP_CHROME.channelTrackColor,
+            maximumTrackTintColor: EXAMPLE_1_APP_CHROME.channelTrackColor,
             thumbTintColor: '#0f4418',
         },
     },
     {
-        id: 'poster',
-        label: 'Poster',
-        covers: 'Committed palette. Saturated chrome around a pale editor, at the loose end of the geometry range.',
+        id: 'example-2',
+        label: 'Example 2',
         statusBarStyle: 'dark',
         backgroundColor: '#faf0e5',
         textColor: '#2e100b',
         placeholderColor: '#a4685c',
         editorBorderRadius: 24,
         contentInsets: { top: 22, right: 22, bottom: 22, left: 22 },
-        appChrome: POSTER_APP_CHROME,
+        appChrome: EXAMPLE_2_APP_CHROME,
         paragraphSpacingAfter: 22,
         lineHeightRatio: 1.7,
-        headings: buildHeadingTheme(POSTER_APP_CHROME.titleColor, {
+        headings: buildHeadingTheme(EXAMPLE_2_APP_CHROME.titleColor, {
             sizes: [38, 33, 28, 24, 21, 18],
             spacingRatio: 0.5,
         }),
@@ -469,24 +450,23 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         },
         slider: {
             minimumTrackTintColor: '#f8e8d6',
-            maximumTrackTintColor: POSTER_APP_CHROME.channelTrackColor,
+            maximumTrackTintColor: EXAMPLE_2_APP_CHROME.channelTrackColor,
             thumbTintColor: '#fcf4ea',
         },
     },
     {
-        id: 'signal',
-        label: 'Signal',
-        covers: 'Full palette. Four role hues on one dark ground, and the only native toolbar appearance.',
+        id: 'example-3',
+        label: 'Example 3',
         statusBarStyle: 'light',
         backgroundColor: '#0d1612',
-        textColor: '#d5e2db',
+        textColor: '#ffffff',
         placeholderColor: '#5f6d66',
         editorBorderRadius: 12,
         contentInsets: { top: 16, right: 16, bottom: 16, left: 16 },
-        appChrome: SIGNAL_APP_CHROME,
+        appChrome: EXAMPLE_3_APP_CHROME,
         paragraphSpacingAfter: 16,
         lineHeightRatio: 1.5,
-        headings: buildHeadingTheme(SIGNAL_APP_CHROME.titleColor, {
+        headings: buildHeadingTheme('#ffffff', {
             sizes: [32, 28, 24, 20, 18, 16],
             spacingRatio: 0.42,
         }),
@@ -563,24 +543,23 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         },
         slider: {
             minimumTrackTintColor: '#c6952c',
-            maximumTrackTintColor: SIGNAL_APP_CHROME.channelTrackColor,
+            maximumTrackTintColor: EXAMPLE_3_APP_CHROME.channelTrackColor,
             thumbTintColor: '#deaf56',
         },
     },
     {
-        id: 'oxblood',
-        label: 'Oxblood',
-        covers: 'Drenched palette. Every surface carries chroma, so a grey fallback cannot hide.',
+        id: 'example-4',
+        label: 'Example 4',
         statusBarStyle: 'light',
         backgroundColor: '#210715',
-        textColor: '#ecd7e0',
+        textColor: '#ffffff',
         placeholderColor: '#805d6d',
         editorBorderRadius: 26,
         contentInsets: { top: 20, right: 20, bottom: 20, left: 20 },
-        appChrome: OXBLOOD_APP_CHROME,
+        appChrome: EXAMPLE_4_APP_CHROME,
         paragraphSpacingAfter: 20,
         lineHeightRatio: 1.65,
-        headings: buildHeadingTheme(OXBLOOD_APP_CHROME.titleColor, {
+        headings: buildHeadingTheme('#ffffff', {
             sizes: [34, 30, 26, 22, 19, 17],
             spacingRatio: 0.46,
         }),
@@ -657,7 +636,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         },
         slider: {
             minimumTrackTintColor: '#ec79a9',
-            maximumTrackTintColor: OXBLOOD_APP_CHROME.channelTrackColor,
+            maximumTrackTintColor: EXAMPLE_4_APP_CHROME.channelTrackColor,
             thumbTintColor: '#ff99c2',
         },
     },

@@ -28,12 +28,12 @@ The four presets are **coverage fixtures, not recommended themes**. Do not copy 
 
 Each one commits to a different colour strategy _and_ a different point in the numeric range, because a preset set that varies only by hue proves nothing about the half of the theme API that takes numbers.
 
-| Preset  | Strategy     | Covers                                                                                                                         |
-| ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| Press   | Restrained   | Every radius is `0` and the toolbar sits flush. Catches native code reading a falsy `0` as "unset" and substituting a default. |
-| Poster  | Committed    | Saturated chrome wrapped around a pale editor, at the loose end of the geometry range. Proves the two surfaces stay separable. |
-| Signal  | Full palette | Four role hues on one dark ground, and the only preset using `appearance: 'native'` on the toolbar.                            |
-| Oxblood | Drenched     | Every surface carries real chroma (0.047–0.063), so a token silently falling back to a grey default is visible.                |
+| Preset    | Strategy     | Covers                                                                                                                         |
+| --------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Example 1 | Restrained   | Every radius is `0` and the toolbar sits flush. Catches native code reading a falsy `0` as "unset" and substituting a default. |
+| Example 2 | Committed    | Saturated chrome wrapped around a pale editor, at the loose end of the geometry range. Proves the two surfaces stay separable. |
+| Example 3 | Full palette | Four role hues on one dark ground, and the only preset using `appearance: 'native'` on the toolbar.                            |
+| Example 4 | Drenched     | Every surface carries real chroma (0.047–0.063), so a token silently falling back to a grey default is visible.                |
 
 App chrome colours are separate from editor content colours on purpose, so a rendering bug in the package can never be mistaken for app styling. Chrome text tokens are held at 4.5:1 against every background they render on and channel indicators at 3:1; editor content tokens are free to diverge because they are the thing under test.
 
@@ -97,7 +97,7 @@ components/              One file per control or panel
 - The example app depends on the local package via `file:..` and resolves its types from `dist/`, so run the package build after changing `src/`.
 - If you change native code or Rust bindings, rebuild the app after updating the package binaries.
 - If the native build fails after pulling new changes, try running prebuild again.
-- The example screen uses app-level keyboard avoidance on iOS around the outer `ScrollView`. That matches a screen-level form or playground.
+- On iOS, the outer `ScrollView` adjusts its keyboard insets without shrinking its frame, so content can pass beneath the keyboard toolbar while remaining reachable.
 - On Android, the example relies on the activity's `adjustResize` behavior instead of stacking `KeyboardAvoidingView` on top of the native editor insets.
 - The editor still manages its own internal caret visibility and fixed-height scrolling. Screen-level keyboard avoidance and native editor viewport handling are complementary, not interchangeable.
 - Slider-driven theme changes commit on release, not per step. An RGB channel at step 1 over 0-255 would otherwise push up to 255 theme rebuilds across the bridge in one drag.

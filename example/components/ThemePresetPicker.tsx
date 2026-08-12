@@ -20,15 +20,10 @@ function ThemePresetPickerInner({ presets, selectedId, onSelect, chrome }: Theme
         [presets]
     );
 
-    // Presets differ in geometry too, so which one is selected changes what a render proves.
-    const covers = presets.find((preset) => preset.id === selectedId)?.covers;
-
     return (
         <View style={styles.container}>
             <Text style={[sharedStyles.controlHint, { color: chrome.controlHintColor }]}>
-                Each preset covers the whole token surface, colours and geometry both. Picking one
-                reloads the editor and toolbar defaults; they are coverage fixtures, not recommended
-                themes.
+                Picking a theme reloads the editor and toolbar defaults.
             </Text>
 
             <ChoiceRow
@@ -38,12 +33,6 @@ function ThemePresetPickerInner({ presets, selectedId, onSelect, chrome }: Theme
                 chrome={chrome}
                 accessibilityLabel='Theme preset'
             />
-
-            {covers != null ? (
-                <Text style={[sharedStyles.controlHint, { color: chrome.sectionLabelColor }]}>
-                    {covers}
-                </Text>
-            ) : null}
         </View>
     );
 }

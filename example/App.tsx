@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     FlatList,
-    KeyboardAvoidingView,
     Platform,
     ScrollView,
     StyleSheet,
@@ -16,7 +15,6 @@ import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useHeaderHeight } from '@react-navigation/elements';
 import { DefaultTheme, NavigationContainer, type Theme } from '@react-navigation/native';
 import {
     createNativeStackNavigator,
@@ -261,7 +259,6 @@ type HarnessScreenProps = {
 
 function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreenProps) {
     const insets = useSafeAreaInsets();
-    const headerHeight = useHeaderHeight();
     const editorRef = useRef<NativeRichTextEditorRef>(null);
     const [settingsTab, setSettingsTab] = useState<SettingsTab>('editor');
     const [readoutPane, setReadoutPane] = useState<ReadoutPane>('html');
@@ -786,12 +783,7 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
 
     return (
         <View style={[styles.safeArea, { backgroundColor: chrome.screenBackgroundColor }]}>
-            <KeyboardAvoidingView
-                style={styles.keyboardAvoider}
-                enabled={Platform.OS === 'ios'}
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                // The bar is outside this view but inside the window the keyboard is measured against.
-                keyboardVerticalOffset={headerHeight}>
+            <View style={styles.contentViewport}>
                 <ScrollView
                     style={[styles.screen, { backgroundColor: chrome.screenBackgroundColor }]}
                     contentContainerStyle={contentContainerStyle}
@@ -984,7 +976,7 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
                         reserved.
                     </Text>
                 </ScrollView>
-            </KeyboardAvoidingView>
+            </View>
 
             <LinkEditorModal
                 visible={linkRequest != null}
@@ -1423,7 +1415,7 @@ const styles = StyleSheet.create({
     safeArea: {
         flex: 1,
     },
-    keyboardAvoider: {
+    contentViewport: {
         flex: 1,
     },
     screen: {
