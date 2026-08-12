@@ -1839,8 +1839,9 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.nativeToolbarContentOffsetXForTesting, targetOffset, accuracy: 0.1)
     }
 
-    func testAccessoryToolbarNativeDisabledButtonUsesTransparentTintAtFullAlpha() {
+    func testAccessoryToolbarNativeDisabledButtonUsesAdaptiveTintInDarkHost() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        toolbar.tintColor = .black
 
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
@@ -1855,6 +1856,17 @@ final class RichTextEditorViewTests: XCTestCase {
             return XCTFail("Disabled native button should apply an explicit transparent tint")
         }
         XCTAssertEqual(tintColor.cgColor.alpha, 0.46, accuracy: 0.01)
+        let darkTint = tintColor.resolvedColor(
+            with: UITraitCollection(userInterfaceStyle: .dark)
+        )
+        var white: CGFloat = 0
+        var alpha: CGFloat = 0
+        XCTAssertTrue(darkTint.getWhite(&white, alpha: &alpha))
+        XCTAssertGreaterThan(
+            white, 0.9,
+            "Disabled native button tint should adapt to a dark host instead of inheriting black"
+        )
+        XCTAssertEqual(alpha, 0.46, accuracy: 0.01)
         XCTAssertNotEqual(
             tintColor, .systemGray,
             "Disabled native button should use transparent foreground instead of fixed system gray"

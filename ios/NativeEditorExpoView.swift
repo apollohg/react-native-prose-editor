@@ -1785,11 +1785,7 @@ final class EditorAccessoryToolbarView: UIInputView {
     }
 
     private func resolvedNativeDisabledButtonTintColor() -> UIColor {
-        theme?.buttonDisabledColor ?? resolvedNativeButtonTintColor.withAlphaComponent(Self.nativeDisabledButtonOpacity)
-    }
-
-    private var resolvedNativeButtonTintColor: UIColor {
-        theme?.buttonColor ?? tintColor ?? .label
+        theme?.buttonDisabledColor ?? UIColor.label.withAlphaComponent(Self.nativeDisabledButtonOpacity)
     }
 
     private var usesTransparentMentionChrome: Bool {
