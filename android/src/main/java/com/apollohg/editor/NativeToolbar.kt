@@ -471,9 +471,9 @@ internal data class NativeToolbarItem(
 
 internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollView(context) {
     private companion object {
-        private const val NATIVE_CONTAINER_HEIGHT_DP = 64
+        private const val NATIVE_CONTAINER_HEIGHT_DP = 68
         private const val NATIVE_CONTAINER_HORIZONTAL_PADDING_DP = 16
-        private const val NATIVE_CONTAINER_VERTICAL_PADDING_DP = 12
+        private const val NATIVE_CONTAINER_VERTICAL_PADDING_DP = 14
         private const val NATIVE_BUTTON_SIZE_DP = 40
         private const val NATIVE_BUTTON_ICON_SIZE_SP = 24f
         private const val NATIVE_ITEM_SPACING_DP = 8
@@ -1209,15 +1209,12 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     }
 
     private fun resolvedToolbarHeightDp(isNative: Boolean): Float =
-        theme?.height ?: if (isNative) {
-            NATIVE_CONTAINER_HEIGHT_DP.toFloat()
-        } else {
-            60f
-        }
+        if (isNative) NATIVE_CONTAINER_HEIGHT_DP.toFloat() else (theme?.height ?: 60f)
 
     private fun resolvedButtonSizeDp(isNative: Boolean, toolbarHeightDp: Float): Float {
+        if (isNative) return NATIVE_BUTTON_SIZE_DP.toFloat()
         if (theme?.height == null) {
-            return if (isNative) NATIVE_BUTTON_SIZE_DP.toFloat() else 36f
+            return 36f
         }
         // Sizing contract shared with src/EditorToolbar.tsx (resolvedButtonHeight)
         // and ios/NativeEditorExpoView.swift (resolvedButtonSize): an explicit
@@ -1231,12 +1228,9 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
         toolbarHeightDp: Float,
         buttonSizeDp: Float
     ): Float {
+        if (isNative) return NATIVE_CONTAINER_VERTICAL_PADDING_DP.toFloat()
         if (theme?.height == null) {
-            return if (isNative) {
-                NATIVE_CONTAINER_VERTICAL_PADDING_DP.toFloat()
-            } else {
-                12f
-            }
+            return 12f
         }
         return maxOf(0f, (toolbarHeightDp - buttonSizeDp) / 2f)
     }

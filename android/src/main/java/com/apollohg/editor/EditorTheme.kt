@@ -353,7 +353,7 @@ data class EditorToolbarTheme(
 
     fun resolvedHorizontalInset(): Float = horizontalInset ?: if (appearance == EditorToolbarAppearance.NATIVE) 0f else 0f
 
-    fun resolvedBorderRadius(): Float = if (appearance == EditorToolbarAppearance.NATIVE) 32f else (borderRadius ?: 0f)
+    fun resolvedBorderRadius(): Float = if (appearance == EditorToolbarAppearance.NATIVE) 0f else (borderRadius ?: 0f)
 
     fun resolvedBorderWidth(): Float = borderWidth ?: if (appearance == EditorToolbarAppearance.NATIVE) 0f else 1f
 

@@ -466,7 +466,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         appChrome: EXAMPLE_3_APP_CHROME,
         paragraphSpacingAfter: 16,
         lineHeightRatio: 1.5,
-        headings: buildHeadingTheme('#ffffff', {
+        headings: buildHeadingTheme(EXAMPLE_3_APP_CHROME.titleColor, {
             sizes: [32, 28, 24, 20, 18, 16],
             spacingRatio: 0.42,
         }),
@@ -559,7 +559,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         appChrome: EXAMPLE_4_APP_CHROME,
         paragraphSpacingAfter: 20,
         lineHeightRatio: 1.65,
-        headings: buildHeadingTheme('#ffffff', {
+        headings: buildHeadingTheme(EXAMPLE_4_APP_CHROME.titleColor, {
             sizes: [34, 30, 26, 22, 19, 17],
             spacingRatio: 0.46,
         }),

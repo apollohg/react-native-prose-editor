@@ -380,6 +380,7 @@ class NativeToolbarTest {
         assertEquals(44f, theme?.height)
         assertEquals(8f, theme?.resolvedKeyboardOffset())
         assertEquals(0f, theme?.resolvedHorizontalInset())
+        assertEquals(0f, theme?.resolvedBorderRadius())
     }
 
     @Test
@@ -567,23 +568,34 @@ class NativeToolbarTest {
     }
 
     @Test
-    fun `native toolbar appearance uses docked material chrome defaults`() {
+    fun `native toolbar appearance ignores themed height and integrates with the keyboard`() {
         val context = RuntimeEnvironment.getApplication()
         val density = context.resources.displayMetrics.density
         val toolbar = EditorKeyboardToolbarView(context)
 
         toolbar.applyTheme(
             EditorToolbarTheme(
-                appearance = EditorToolbarAppearance.NATIVE
+                appearance = EditorToolbarAppearance.NATIVE,
+                height = 42f
             )
         )
 
         assertEquals(EditorToolbarAppearance.NATIVE, toolbar.appliedAppearance)
         assertEquals(0, toolbar.appliedChromeStrokeWidthPx)
-        assertEquals(32f * density, toolbar.appliedChromeCornerRadiusPx)
+        assertEquals(0f, toolbar.appliedChromeCornerRadiusPx)
         assertEquals(20f * density, toolbar.appliedButtonCornerRadiusPx)
         assertEquals(0f, toolbar.appliedChromeElevationPx)
-        assertTrue(toolbar.clipToOutline)
+        assertFalse(toolbar.clipToOutline)
+
+        val rootRow = toolbar.getChildAt(0)
+        assertEquals((14f * density).toInt(), rootRow.paddingTop)
+        assertEquals((14f * density).toInt(), rootRow.paddingBottom)
+
+        toolbar.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        assertEquals((68f * density).toInt(), toolbar.measuredHeight)
     }
 
     @Test
