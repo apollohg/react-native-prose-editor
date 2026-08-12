@@ -170,7 +170,9 @@ mkdir -p "$OUT_DIR/kotlin"
     --bin uniffi-bindgen -- \
     generate --library "$CDYLIB_PATH" \
     --language kotlin \
+    --no-format \
     --out-dir "$OUT_DIR/kotlin"
+normalize_header "$OUT_DIR/kotlin/uniffi/editor_core/editor_core.kt"
 
 echo "==> Verifying the generated bindings expose the v2 symbols..."
 for symbol in "${V2_SYMBOLS[@]}"; do

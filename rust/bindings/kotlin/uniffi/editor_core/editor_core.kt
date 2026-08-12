@@ -17,20 +17,20 @@ package uniffi.editor_core
 // compile the Rust component. The easiest way to ensure this is to bundle the Kotlin
 // helpers directly inline like we're doing here.
 
-import com.sun.jna.Callback
-import com.sun.jna.IntegerType
 import com.sun.jna.Library
+import com.sun.jna.IntegerType
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.Structure
+import com.sun.jna.Callback
 import com.sun.jna.ptr.*
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 // This is a helper for safely working with byte buffers returned from the Rust code.
 // A rust-owned buffer is represented by its capacity, its current length, and a
@@ -44,41 +44,29 @@ open class RustBuffer : Structure() {
     // Note: `capacity` and `len` are actually `ULong` values, but JVM only supports signed values.
     // When dealing with these fields, make sure to call `toULong()`.
     @JvmField var capacity: Long = 0
-
     @JvmField var len: Long = 0
-
     @JvmField var data: Pointer? = null
 
-    class ByValue :
-        RustBuffer(),
-        Structure.ByValue
+    class ByValue: RustBuffer(), Structure.ByValue
+    class ByReference: RustBuffer(), Structure.ByReference
 
-    class ByReference :
-        RustBuffer(),
-        Structure.ByReference
-
-    internal fun setValue(other: RustBuffer) {
+   internal fun setValue(other: RustBuffer) {
         capacity = other.capacity
         len = other.len
         data = other.data
     }
 
     companion object {
-        internal fun alloc(size: ULong = 0UL) =
-            uniffiRustCall { status ->
-                // Note: need to convert the size to a `Long` value to make this work with JVM.
-                UniffiLib.INSTANCE.ffi_editor_core_rustbuffer_alloc(size.toLong(), status)
-            }.also {
-                if (it.data == null) {
-                    throw RuntimeException("RustBuffer.alloc() returned null data pointer (size=$size)")
-                }
-            }
+        internal fun alloc(size: ULong = 0UL) = uniffiRustCall() { status ->
+            // Note: need to convert the size to a `Long` value to make this work with JVM.
+            UniffiLib.INSTANCE.ffi_editor_core_rustbuffer_alloc(size.toLong(), status)
+        }.also {
+            if(it.data == null) {
+               throw RuntimeException("RustBuffer.alloc() returned null data pointer (size=${size})")
+           }
+        }
 
-        internal fun create(
-            capacity: ULong,
-            len: ULong,
-            data: Pointer?,
-        ): RustBuffer.ByValue {
+        internal fun create(capacity: ULong, len: ULong, data: Pointer?): RustBuffer.ByValue {
             var buf = RustBuffer.ByValue()
             buf.capacity = capacity.toLong()
             buf.len = len.toLong()
@@ -86,10 +74,9 @@ open class RustBuffer : Structure() {
             return buf
         }
 
-        internal fun free(buf: RustBuffer.ByValue) =
-            uniffiRustCall { status ->
-                UniffiLib.INSTANCE.ffi_editor_core_rustbuffer_free(buf, status)
-            }
+        internal fun free(buf: RustBuffer.ByValue) = uniffiRustCall() { status ->
+            UniffiLib.INSTANCE.ffi_editor_core_rustbuffer_free(buf, status)
+        }
     }
 
     @Suppress("TooGenericExceptionThrown")
@@ -142,14 +129,10 @@ class RustBufferByReference : ByReference(16) {
 @Structure.FieldOrder("len", "data")
 internal open class ForeignBytes : Structure() {
     @JvmField var len: Int = 0
-
     @JvmField var data: Pointer? = null
 
-    class ByValue :
-        ForeignBytes(),
-        Structure.ByValue
+    class ByValue : ForeignBytes(), Structure.ByValue
 }
-
 /**
  * The FfiConverter interface handles converter types to and from the FFI
  *
@@ -179,10 +162,7 @@ public interface FfiConverter<KotlinType, FfiType> {
     fun allocationSize(value: KotlinType): ULong
 
     // Write a Kotlin type to a `ByteBuffer`
-    fun write(
-        value: KotlinType,
-        buf: ByteBuffer,
-    )
+    fun write(value: KotlinType, buf: ByteBuffer)
 
     // Lower a value into a `RustBuffer`
     //
@@ -193,10 +173,9 @@ public interface FfiConverter<KotlinType, FfiType> {
     fun lowerIntoRustBuffer(value: KotlinType): RustBuffer.ByValue {
         val rbuf = RustBuffer.alloc(allocationSize(value))
         try {
-            val bbuf =
-                rbuf.data!!.getByteBuffer(0, rbuf.capacity).also {
-                    it.order(ByteOrder.BIG_ENDIAN)
-                }
+            val bbuf = rbuf.data!!.getByteBuffer(0, rbuf.capacity).also {
+                it.order(ByteOrder.BIG_ENDIAN)
+            }
             write(value, bbuf)
             rbuf.writeField("len", bbuf.position().toLong())
             return rbuf
@@ -213,11 +192,11 @@ public interface FfiConverter<KotlinType, FfiType> {
     fun liftFromRustBuffer(rbuf: RustBuffer.ByValue): KotlinType {
         val byteBuf = rbuf.asByteBuffer()!!
         try {
-            val item = read(byteBuf)
-            if (byteBuf.hasRemaining()) {
-                throw RuntimeException("junk remaining in buffer after lifting, something is very wrong!!")
-            }
-            return item
+           val item = read(byteBuf)
+           if (byteBuf.hasRemaining()) {
+               throw RuntimeException("junk remaining in buffer after lifting, something is very wrong!!")
+           }
+           return item
         } finally {
             RustBuffer.free(rbuf)
         }
@@ -229,9 +208,8 @@ public interface FfiConverter<KotlinType, FfiType> {
  *
  * @suppress
  */
-public interface FfiConverterRustBuffer<KotlinType> : FfiConverter<KotlinType, RustBuffer.ByValue> {
+public interface FfiConverterRustBuffer<KotlinType>: FfiConverter<KotlinType, RustBuffer.ByValue> {
     override fun lift(value: RustBuffer.ByValue) = liftFromRustBuffer(value)
-
     override fun lower(value: KotlinType) = lowerIntoRustBuffer(value)
 }
 // A handful of classes and functions to support the generated data structures.
@@ -244,24 +222,24 @@ internal const val UNIFFI_CALL_UNEXPECTED_ERROR = 2.toByte()
 @Structure.FieldOrder("code", "error_buf")
 internal open class UniffiRustCallStatus : Structure() {
     @JvmField var code: Byte = 0
-
     @JvmField var error_buf: RustBuffer.ByValue = RustBuffer.ByValue()
 
-    class ByValue :
-        UniffiRustCallStatus(),
-        Structure.ByValue
+    class ByValue: UniffiRustCallStatus(), Structure.ByValue
 
-    fun isSuccess(): Boolean = code == UNIFFI_CALL_SUCCESS
+    fun isSuccess(): Boolean {
+        return code == UNIFFI_CALL_SUCCESS
+    }
 
-    fun isError(): Boolean = code == UNIFFI_CALL_ERROR
+    fun isError(): Boolean {
+        return code == UNIFFI_CALL_ERROR
+    }
 
-    fun isPanic(): Boolean = code == UNIFFI_CALL_UNEXPECTED_ERROR
+    fun isPanic(): Boolean {
+        return code == UNIFFI_CALL_UNEXPECTED_ERROR
+    }
 
     companion object {
-        fun create(
-            code: Byte,
-            errorBuf: RustBuffer.ByValue,
-        ): UniffiRustCallStatus.ByValue {
+        fun create(code: Byte, errorBuf: RustBuffer.ByValue): UniffiRustCallStatus.ByValue {
             val callStatus = UniffiRustCallStatus.ByValue()
             callStatus.code = code
             callStatus.error_buf = errorBuf
@@ -270,9 +248,7 @@ internal open class UniffiRustCallStatus : Structure() {
     }
 }
 
-class InternalException(
-    message: String,
-) : kotlin.Exception(message)
+class InternalException(message: String) : kotlin.Exception(message)
 
 /**
  * Each top-level error class has a companion object that can lift the error from the call status's rust buffer
@@ -280,7 +256,7 @@ class InternalException(
  * @suppress
  */
 interface UniffiRustCallStatusErrorHandler<E> {
-    fun lift(error_buf: RustBuffer.ByValue): E
+    fun lift(error_buf: RustBuffer.ByValue): E;
 }
 
 // Helpers for calling Rust
@@ -288,10 +264,7 @@ interface UniffiRustCallStatusErrorHandler<E> {
 // synchronize itself
 
 // Call a rust function that returns a Result<>.  Pass in the Error class companion that corresponds to the Err
-private inline fun <U, E : kotlin.Exception> uniffiRustCallWithError(
-    errorHandler: UniffiRustCallStatusErrorHandler<E>,
-    callback: (UniffiRustCallStatus) -> U,
-): U {
+private inline fun <U, E: kotlin.Exception> uniffiRustCallWithError(errorHandler: UniffiRustCallStatusErrorHandler<E>, callback: (UniffiRustCallStatus) -> U): U {
     var status = UniffiRustCallStatus()
     val return_value = callback(status)
     uniffiCheckCallStatus(errorHandler, status)
@@ -299,10 +272,7 @@ private inline fun <U, E : kotlin.Exception> uniffiRustCallWithError(
 }
 
 // Check UniffiRustCallStatus and throw an error if the call wasn't successful
-private fun <E : kotlin.Exception> uniffiCheckCallStatus(
-    errorHandler: UniffiRustCallStatusErrorHandler<E>,
-    status: UniffiRustCallStatus,
-) {
+private fun<E: kotlin.Exception> uniffiCheckCallStatus(errorHandler: UniffiRustCallStatusErrorHandler<E>, status: UniffiRustCallStatus) {
     if (status.isSuccess()) {
         return
     } else if (status.isError()) {
@@ -326,7 +296,7 @@ private fun <E : kotlin.Exception> uniffiCheckCallStatus(
  *
  * @suppress
  */
-object UniffiNullRustCallStatusErrorHandler : UniffiRustCallStatusErrorHandler<InternalException> {
+object UniffiNullRustCallStatusErrorHandler: UniffiRustCallStatusErrorHandler<InternalException> {
     override fun lift(error_buf: RustBuffer.ByValue): InternalException {
         RustBuffer.free(error_buf)
         return InternalException("Unexpected CALL_ERROR")
@@ -334,31 +304,32 @@ object UniffiNullRustCallStatusErrorHandler : UniffiRustCallStatusErrorHandler<I
 }
 
 // Call a rust function that returns a plain value
-private inline fun <U> uniffiRustCall(callback: (UniffiRustCallStatus) -> U): U =
-    uniffiRustCallWithError(UniffiNullRustCallStatusErrorHandler, callback)
+private inline fun <U> uniffiRustCall(callback: (UniffiRustCallStatus) -> U): U {
+    return uniffiRustCallWithError(UniffiNullRustCallStatusErrorHandler, callback)
+}
 
-internal inline fun <T> uniffiTraitInterfaceCall(
+internal inline fun<T> uniffiTraitInterfaceCall(
     callStatus: UniffiRustCallStatus,
     makeCall: () -> T,
     writeReturn: (T) -> Unit,
 ) {
     try {
         writeReturn(makeCall())
-    } catch (e: kotlin.Exception) {
+    } catch(e: kotlin.Exception) {
         callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
         callStatus.error_buf = FfiConverterString.lower(e.toString())
     }
 }
 
-internal inline fun <T, reified E : Throwable> uniffiTraitInterfaceCallWithError(
+internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
     callStatus: UniffiRustCallStatus,
     makeCall: () -> T,
     writeReturn: (T) -> Unit,
-    lowerError: (E) -> RustBuffer.ByValue,
+    lowerError: (E) -> RustBuffer.ByValue
 ) {
     try {
         writeReturn(makeCall())
-    } catch (e: kotlin.Exception) {
+    } catch(e: kotlin.Exception) {
         if (e is E) {
             callStatus.code = UNIFFI_CALL_ERROR
             callStatus.error_buf = lowerError(e)
@@ -368,15 +339,12 @@ internal inline fun <T, reified E : Throwable> uniffiTraitInterfaceCallWithError
         }
     }
 }
-
 // Map handles to objects
 //
 // This is used pass an opaque 64-bit handle representing a foreign object to the Rust code.
-internal class UniffiHandleMap<T : Any> {
+internal class UniffiHandleMap<T: Any> {
     private val map = ConcurrentHashMap<Long, T>()
-    private val counter =
-        java.util.concurrent.atomic
-            .AtomicLong(0)
+    private val counter = java.util.concurrent.atomic.AtomicLong(0)
 
     val size: Int
         get() = map.size
@@ -389,10 +357,14 @@ internal class UniffiHandleMap<T : Any> {
     }
 
     // Get an object from the handle map
-    fun get(handle: Long): T = map.get(handle) ?: throw InternalException("UniffiHandleMap.get: Invalid handle")
+    fun get(handle: Long): T {
+        return map.get(handle) ?: throw InternalException("UniffiHandleMap.get: Invalid handle")
+    }
 
     // Remove an entry from the handlemap and get the Kotlin object back
-    fun remove(handle: Long): T = map.remove(handle) ?: throw InternalException("UniffiHandleMap: Invalid handle")
+    fun remove(handle: Long): T {
+        return map.remove(handle) ?: throw InternalException("UniffiHandleMap: Invalid handle")
+    }
 }
 
 // Contains loading, initialization code,
@@ -406,25 +378,22 @@ private fun findLibraryName(componentName: String): String {
     return "editor_core"
 }
 
-private inline fun <reified Lib : Library> loadIndirect(componentName: String): Lib =
-    Native.load<Lib>(findLibraryName(componentName), Lib::class.java)
+private inline fun <reified Lib : Library> loadIndirect(
+    componentName: String
+): Lib {
+    return Native.load<Lib>(findLibraryName(componentName), Lib::class.java)
+}
 
 // Define FFI callback types
 internal interface UniffiRustFutureContinuationCallback : com.sun.jna.Callback {
-    fun callback(
-        `data`: Long,
-        `pollResult`: Byte,
-    )
+    fun callback(`data`: Long,`pollResult`: Byte,)
 }
-
 internal interface UniffiForeignFutureFree : com.sun.jna.Callback {
-    fun callback(`handle`: Long)
+    fun callback(`handle`: Long,)
 }
-
 internal interface UniffiCallbackInterfaceFree : com.sun.jna.Callback {
-    fun callback(`handle`: Long)
+    fun callback(`handle`: Long,)
 }
-
 @Structure.FieldOrder("handle", "free")
 internal open class UniffiForeignFuture(
     @JvmField internal var `handle`: Long = 0.toLong(),
@@ -433,15 +402,14 @@ internal open class UniffiForeignFuture(
     class UniffiByValue(
         `handle`: Long = 0.toLong(),
         `free`: UniffiForeignFutureFree? = null,
-    ) : UniffiForeignFuture(`handle`, `free`),
-        Structure.ByValue
+    ): UniffiForeignFuture(`handle`,`free`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFuture) {
+   internal fun uniffiSetValue(other: UniffiForeignFuture) {
         `handle` = other.`handle`
         `free` = other.`free`
     }
-}
 
+}
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructU8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
@@ -450,22 +418,17 @@ internal open class UniffiForeignFutureStructU8(
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructU8(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructU8(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructU8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructU8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU8 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructU8.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU8.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructI8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
@@ -474,22 +437,17 @@ internal open class UniffiForeignFutureStructI8(
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructI8(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructI8(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructI8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructI8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI8 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructI8.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI8.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructU16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
@@ -498,22 +456,17 @@ internal open class UniffiForeignFutureStructU16(
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructU16(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructU16(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructU16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructU16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU16 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructU16.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU16.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructI16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
@@ -522,22 +475,17 @@ internal open class UniffiForeignFutureStructI16(
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructI16(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructI16(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructI16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructI16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI16 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructI16.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI16.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructU32(
     @JvmField internal var `returnValue`: Int = 0,
@@ -546,22 +494,17 @@ internal open class UniffiForeignFutureStructU32(
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructU32(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructU32(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructU32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructU32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU32 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructU32.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU32.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructI32(
     @JvmField internal var `returnValue`: Int = 0,
@@ -570,22 +513,17 @@ internal open class UniffiForeignFutureStructI32(
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructI32(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructI32(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructI32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructI32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI32 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructI32.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI32.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructU64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
@@ -594,22 +532,17 @@ internal open class UniffiForeignFutureStructU64(
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructU64(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructU64(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructU64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructU64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU64 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructU64.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU64.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructI64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
@@ -618,22 +551,17 @@ internal open class UniffiForeignFutureStructI64(
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructI64(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructI64(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructI64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructI64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI64 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructI64.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI64.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructF32(
     @JvmField internal var `returnValue`: Float = 0.0f,
@@ -642,22 +570,17 @@ internal open class UniffiForeignFutureStructF32(
     class UniffiByValue(
         `returnValue`: Float = 0.0f,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructF32(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructF32(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructF32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructF32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteF32 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructF32.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructF32.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructF64(
     @JvmField internal var `returnValue`: Double = 0.0,
@@ -666,22 +589,17 @@ internal open class UniffiForeignFutureStructF64(
     class UniffiByValue(
         `returnValue`: Double = 0.0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructF64(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructF64(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructF64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructF64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteF64 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructF64.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructF64.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructPointer(
     @JvmField internal var `returnValue`: Pointer = Pointer.NULL,
@@ -690,22 +608,17 @@ internal open class UniffiForeignFutureStructPointer(
     class UniffiByValue(
         `returnValue`: Pointer = Pointer.NULL,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructPointer(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructPointer(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructPointer) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructPointer) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompletePointer : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructPointer.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructPointer.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureStructRustBuffer(
     @JvmField internal var `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
@@ -714,42 +627,178 @@ internal open class UniffiForeignFutureStructRustBuffer(
     class UniffiByValue(
         `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructRustBuffer(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructRustBuffer(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructRustBuffer) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructRustBuffer) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteRustBuffer : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructRustBuffer.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructRustBuffer.UniffiByValue,)
 }
-
 @Structure.FieldOrder("callStatus")
 internal open class UniffiForeignFutureStructVoid(
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureStructVoid(`callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureStructVoid(`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureStructVoid) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureStructVoid) {
         `callStatus` = other.`callStatus`
     }
+
+}
+internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructVoid.UniffiByValue,)
 }
 
-internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureStructVoid.UniffiByValue,
-    )
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is
@@ -766,93 +815,95 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_editor_core_checksum_func_editor_core_version(): Short
+    fun uniffi_editor_core_checksum_func_editor_core_version(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_apply_command(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_apply_input(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_apply_local_api(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_apply_native_intent(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_detach(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_drive(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_lease_outbound(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_nack_outbound(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_peers(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_reattach(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_receive(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness_selection(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_create(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_destroy(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_doc_to_scalar(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_get_content_snapshot(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_get_document_html(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_get_document_json(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_get_state(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_pin_position_epoch(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_redo(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_release_native_binding(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_render_native(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_render_update(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_replace_document(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_resolve_scalar_selection(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_scalar_to_doc(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_set_selection(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_snapshot_export(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_snapshot_restore(
+): Short
+fun uniffi_editor_core_checksum_func_editor_v2_undo(
+): Short
+fun uniffi_editor_core_checksum_func_viewer_compile(
+): Short
+fun uniffi_editor_core_checksum_method_viewercompileddocument_elements(
+): Short
+fun uniffi_editor_core_checksum_method_viewercompileddocument_is_empty(
+): Short
+fun uniffi_editor_core_checksum_method_viewercompileddocument_preferred_text_block_name(
+): Short
+fun uniffi_editor_core_checksum_method_viewercompileddocument_retained_bytes_decimal(
+): Short
+fun uniffi_editor_core_checksum_method_viewercompileddocument_semantic_key(
+): Short
+fun uniffi_editor_core_checksum_method_viewercompileddocument_trailing_empty_text_block_count(
+): Short
+fun ffi_editor_core_uniffi_contract_version(
+): Int
 
-    fun uniffi_editor_core_checksum_func_editor_v2_apply_command(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_apply_input(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_apply_local_api(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_apply_native_intent(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_detach(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_drive(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_lease_outbound(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_nack_outbound(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_peers(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_reattach(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_receive(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness_selection(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_create(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_destroy(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_doc_to_scalar(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_get_content_snapshot(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_get_document_html(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_get_document_json(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_get_state(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_pin_position_epoch(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_redo(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_release_native_binding(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_render_native(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_render_update(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_replace_document(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_resolve_scalar_selection(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_scalar_to_doc(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_set_selection(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_snapshot_export(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_snapshot_restore(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_undo(): Short
-
-    fun uniffi_editor_core_checksum_func_viewer_compile(): Short
-
-    fun uniffi_editor_core_checksum_method_viewercompileddocument_elements(): Short
-
-    fun uniffi_editor_core_checksum_method_viewercompileddocument_is_empty(): Short
-
-    fun uniffi_editor_core_checksum_method_viewercompileddocument_preferred_text_block_name(): Short
-
-    fun uniffi_editor_core_checksum_method_viewercompileddocument_retained_bytes_decimal(): Short
-
-    fun uniffi_editor_core_checksum_method_viewercompileddocument_semantic_key(): Short
-
-    fun uniffi_editor_core_checksum_method_viewercompileddocument_trailing_empty_text_block_count(): Short
-
-    fun ffi_editor_core_uniffi_contract_version(): Int
 }
 
 // A JNA Library to expose the extern-C FFI definitions.
@@ -899,483 +950,209 @@ internal interface UniffiLib : Library {
     }
 
     // FFI functions
-    fun uniffi_editor_core_fn_clone_viewercompileddocument(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Pointer
+    fun uniffi_editor_core_fn_clone_viewercompileddocument(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): Pointer
+fun uniffi_editor_core_fn_free_viewercompileddocument(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): Unit
+fun uniffi_editor_core_fn_method_viewercompileddocument_elements(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_method_viewercompileddocument_is_empty(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): Byte
+fun uniffi_editor_core_fn_method_viewercompileddocument_preferred_text_block_name(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_method_viewercompileddocument_retained_bytes_decimal(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_method_viewercompileddocument_semantic_key(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_method_viewercompileddocument_trailing_empty_text_block_count(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): Int
+fun uniffi_editor_core_fn_func_editor_core_version(uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_apply_command(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_apply_input(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_apply_local_api(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_apply_native_intent(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(`editorId`: RustBuffer.ByValue,`generation`: RustBuffer.ByValue,`leaseId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_detach(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_drive(`editorId`: RustBuffer.ByValue,`nowMillis`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_lease_outbound(`editorId`: RustBuffer.ByValue,`generation`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_nack_outbound(`editorId`: RustBuffer.ByValue,`generation`: RustBuffer.ByValue,`leaseId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_peers(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_reattach(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_receive(`editorId`: RustBuffer.ByValue,`generation`: RustBuffer.ByValue,`message`: RustBuffer.ByValue,`nowMillis`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness(`editorId`: RustBuffer.ByValue,`awarenessJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness_selection(`editorId`: RustBuffer.ByValue,`selectionJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(`editorId`: RustBuffer.ByValue,`generation`: RustBuffer.ByValue,`code`: RustBuffer.ByValue,`reason`: RustBuffer.ByValue,`nowMillis`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(`editorId`: RustBuffer.ByValue,`generation`: RustBuffer.ByValue,`nowMillis`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_create(`configJson`: RustBuffer.ByValue,`snapshotState`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_destroy(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_doc_to_scalar(`editorId`: RustBuffer.ByValue,`docPos`: Int,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_get_content_snapshot(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_get_document_html(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_get_document_json(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_get_state(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_pin_position_epoch(`editorId`: RustBuffer.ByValue,`ownerId`: RustBuffer.ByValue,`documentRevision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_redo(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_release_native_binding(`editorId`: RustBuffer.ByValue,`ownerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_render_native(`editorId`: RustBuffer.ByValue,`ownerId`: RustBuffer.ByValue,`mirrorScalarAnchor`: RustBuffer.ByValue,`mirrorScalarHead`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_render_update(`editorId`: RustBuffer.ByValue,`mirrorScalarAnchor`: RustBuffer.ByValue,`mirrorScalarHead`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_replace_document(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_resolve_scalar_selection(`editorId`: RustBuffer.ByValue,`scalarAnchor`: Int,`scalarHead`: Int,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_scalar_to_doc(`editorId`: RustBuffer.ByValue,`scalar`: Int,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_set_selection(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_snapshot_export(`editorId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_snapshot_restore(`editorId`: RustBuffer.ByValue,`metadataJson`: RustBuffer.ByValue,`encodedState`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_v2_undo(`editorId`: RustBuffer.ByValue,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_viewer_compile(`request`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun ffi_editor_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun ffi_editor_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun ffi_editor_core_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): Unit
+fun ffi_editor_core_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun ffi_editor_core_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_u8(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_u8(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Byte
+fun ffi_editor_core_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_i8(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_i8(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Byte
+fun ffi_editor_core_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_u16(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_u16(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Short
+fun ffi_editor_core_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_i16(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_i16(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Short
+fun ffi_editor_core_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_u32(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_u32(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Int
+fun ffi_editor_core_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_i32(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_i32(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Int
+fun ffi_editor_core_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_u64(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_u64(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Long
+fun ffi_editor_core_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_i64(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_i64(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Long
+fun ffi_editor_core_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_f32(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_f32(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Float
+fun ffi_editor_core_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_f64(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_f64(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Double
+fun ffi_editor_core_rust_future_poll_pointer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_pointer(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_pointer(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Pointer
+fun ffi_editor_core_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_rust_buffer(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_rust_buffer(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun ffi_editor_core_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+fun ffi_editor_core_rust_future_cancel_void(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_free_void(`handle`: Long,
+): Unit
+fun ffi_editor_core_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Unit
 
-    fun uniffi_editor_core_fn_free_viewercompileddocument(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Unit
-
-    fun uniffi_editor_core_fn_method_viewercompileddocument_elements(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_method_viewercompileddocument_is_empty(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Byte
-
-    fun uniffi_editor_core_fn_method_viewercompileddocument_preferred_text_block_name(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_method_viewercompileddocument_retained_bytes_decimal(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_method_viewercompileddocument_semantic_key(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_method_viewercompileddocument_trailing_empty_text_block_count(
-        `ptr`: Pointer,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Int
-
-    fun uniffi_editor_core_fn_func_editor_core_version(uniffi_out_err: UniffiRustCallStatus): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_apply_command(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_apply_input(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_apply_local_api(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_apply_native_intent(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
-        `editorId`: RustBuffer.ByValue,
-        `generation`: RustBuffer.ByValue,
-        `leaseId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_detach(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_drive(
-        `editorId`: RustBuffer.ByValue,
-        `nowMillis`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_lease_outbound(
-        `editorId`: RustBuffer.ByValue,
-        `generation`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_nack_outbound(
-        `editorId`: RustBuffer.ByValue,
-        `generation`: RustBuffer.ByValue,
-        `leaseId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_peers(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_reattach(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
-        `editorId`: RustBuffer.ByValue,
-        `generation`: RustBuffer.ByValue,
-        `message`: RustBuffer.ByValue,
-        `nowMillis`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness(
-        `editorId`: RustBuffer.ByValue,
-        `awarenessJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness_selection(
-        `editorId`: RustBuffer.ByValue,
-        `selectionJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
-        `editorId`: RustBuffer.ByValue,
-        `generation`: RustBuffer.ByValue,
-        `code`: RustBuffer.ByValue,
-        `reason`: RustBuffer.ByValue,
-        `nowMillis`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
-        `editorId`: RustBuffer.ByValue,
-        `generation`: RustBuffer.ByValue,
-        `nowMillis`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_create(
-        `configJson`: RustBuffer.ByValue,
-        `snapshotState`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_destroy(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_doc_to_scalar(
-        `editorId`: RustBuffer.ByValue,
-        `docPos`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_get_content_snapshot(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_get_document_html(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_get_document_json(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_get_state(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_pin_position_epoch(
-        `editorId`: RustBuffer.ByValue,
-        `ownerId`: RustBuffer.ByValue,
-        `documentRevision`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_redo(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_release_native_binding(
-        `editorId`: RustBuffer.ByValue,
-        `ownerId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_render_native(
-        `editorId`: RustBuffer.ByValue,
-        `ownerId`: RustBuffer.ByValue,
-        `mirrorScalarAnchor`: RustBuffer.ByValue,
-        `mirrorScalarHead`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_render_update(
-        `editorId`: RustBuffer.ByValue,
-        `mirrorScalarAnchor`: RustBuffer.ByValue,
-        `mirrorScalarHead`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_replace_document(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_resolve_scalar_selection(
-        `editorId`: RustBuffer.ByValue,
-        `scalarAnchor`: Int,
-        `scalarHead`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_scalar_to_doc(
-        `editorId`: RustBuffer.ByValue,
-        `scalar`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_set_selection(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_snapshot_export(
-        `editorId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_snapshot_restore(
-        `editorId`: RustBuffer.ByValue,
-        `metadataJson`: RustBuffer.ByValue,
-        `encodedState`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_undo(
-        `editorId`: RustBuffer.ByValue,
-        `requestJson`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_viewer_compile(
-        `request`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun ffi_editor_core_rustbuffer_alloc(
-        `size`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun ffi_editor_core_rustbuffer_from_bytes(
-        `bytes`: ForeignBytes.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun ffi_editor_core_rustbuffer_free(
-        `buf`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Unit
-
-    fun ffi_editor_core_rustbuffer_reserve(
-        `buf`: RustBuffer.ByValue,
-        `additional`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun ffi_editor_core_rust_future_poll_u8(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_u8(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_u8(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_u8(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Byte
-
-    fun ffi_editor_core_rust_future_poll_i8(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_i8(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_i8(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_i8(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Byte
-
-    fun ffi_editor_core_rust_future_poll_u16(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_u16(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_u16(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_u16(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Short
-
-    fun ffi_editor_core_rust_future_poll_i16(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_i16(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_i16(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_i16(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Short
-
-    fun ffi_editor_core_rust_future_poll_u32(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_u32(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_u32(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_u32(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Int
-
-    fun ffi_editor_core_rust_future_poll_i32(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_i32(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_i32(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_i32(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Int
-
-    fun ffi_editor_core_rust_future_poll_u64(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_u64(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_u64(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_u64(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Long
-
-    fun ffi_editor_core_rust_future_poll_i64(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_i64(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_i64(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_i64(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Long
-
-    fun ffi_editor_core_rust_future_poll_f32(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_f32(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_f32(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_f32(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Float
-
-    fun ffi_editor_core_rust_future_poll_f64(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_f64(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_f64(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_f64(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Double
-
-    fun ffi_editor_core_rust_future_poll_pointer(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_pointer(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_pointer(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_pointer(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Pointer
-
-    fun ffi_editor_core_rust_future_poll_rust_buffer(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_rust_buffer(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_rust_buffer(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_rust_buffer(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun ffi_editor_core_rust_future_poll_void(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
-    ): Unit
-
-    fun ffi_editor_core_rust_future_cancel_void(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_free_void(`handle`: Long): Unit
-
-    fun ffi_editor_core_rust_future_complete_void(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Unit
 }
 
 private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
@@ -1387,7 +1164,6 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI contract version mismatch: try cleaning and rebuilding your project")
     }
 }
-
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_core_version() != 41638.toShort()) {
@@ -1532,6 +1308,7 @@ public fun uniffiEnsureInitialized() {
 
 // Public interface members begin here.
 
+
 // Interface implemented by anything that can contain an object reference.
 //
 // Such types expose a `destroy()` method that must be called to cleanly
@@ -1542,15 +1319,11 @@ public fun uniffiEnsureInitialized() {
 // helper method to execute a block and destroy the object at the end.
 interface Disposable {
     fun destroy()
-
     companion object {
         fun destroy(vararg args: Any?) {
             for (arg in args) {
                 when (arg) {
-                    is Disposable -> {
-                        arg.destroy()
-                    }
-
+                    is Disposable -> arg.destroy()
                     is ArrayList<*> -> {
                         for (idx in arg.indices) {
                             val element = arg[idx]
@@ -1559,7 +1332,6 @@ interface Disposable {
                             }
                         }
                     }
-
                     is Map<*, *> -> {
                         for (element in arg.values) {
                             if (element is Disposable) {
@@ -1567,7 +1339,6 @@ interface Disposable {
                             }
                         }
                     }
-
                     is Iterable<*> -> {
                         for (element in arg) {
                             if (element is Disposable) {
@@ -1602,7 +1373,6 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
  * @suppress
  * */
 object NoPointer
-
 /**
  * The cleaner interface for Object finalization code to run.
  * This is the entry point to any implementation that we're using.
@@ -1618,24 +1388,17 @@ interface UniffiCleaner {
         fun clean()
     }
 
-    fun register(
-        value: Any,
-        cleanUpTask: Runnable,
-    ): UniffiCleaner.Cleanable
+    fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable
 
     companion object
 }
 
 // The fallback Jna cleaner, which is available for both Android, and the JVM.
 private class UniffiJnaCleaner : UniffiCleaner {
-    private val cleaner =
-        com.sun.jna.internal.Cleaner
-            .getCleaner()
+    private val cleaner = com.sun.jna.internal.Cleaner.getCleaner()
 
-    override fun register(
-        value: Any,
-        cleanUpTask: Runnable,
-    ): UniffiCleaner.Cleanable = UniffiJnaCleanable(cleaner.register(value, cleanUpTask))
+    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable =
+        UniffiJnaCleanable(cleaner.register(value, cleanUpTask))
 }
 
 private class UniffiJnaCleanable(
@@ -1643,6 +1406,7 @@ private class UniffiJnaCleanable(
 ) : UniffiCleaner.Cleanable {
     override fun clean() = cleanable.clean()
 }
+
 
 // We decide at uniffi binding generation time whether we were
 // using Android or not.
@@ -1662,18 +1426,14 @@ private fun UniffiCleaner.Companion.create(): UniffiCleaner =
     }
 
 private class JavaLangRefCleaner : UniffiCleaner {
-    val cleaner =
-        java.lang.ref.Cleaner
-            .create()
+    val cleaner = java.lang.ref.Cleaner.create()
 
-    override fun register(
-        value: Any,
-        cleanUpTask: Runnable,
-    ): UniffiCleaner.Cleanable = JavaLangRefCleanable(cleaner.register(value, cleanUpTask))
+    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable =
+        JavaLangRefCleanable(cleaner.register(value, cleanUpTask))
 }
 
 private class JavaLangRefCleanable(
-    val cleanable: java.lang.ref.Cleaner.Cleanable,
+    val cleanable: java.lang.ref.Cleaner.Cleanable
 ) : UniffiCleaner.Cleanable {
     override fun clean() = cleanable.clean()
 }
@@ -1681,19 +1441,22 @@ private class JavaLangRefCleanable(
 /**
  * @suppress
  */
-public object FfiConverterUShort : FfiConverter<UShort, Short> {
-    override fun lift(value: Short): UShort = value.toUShort()
+public object FfiConverterUShort: FfiConverter<UShort, Short> {
+    override fun lift(value: Short): UShort {
+        return value.toUShort()
+    }
 
-    override fun read(buf: ByteBuffer): UShort = lift(buf.getShort())
+    override fun read(buf: ByteBuffer): UShort {
+        return lift(buf.getShort())
+    }
 
-    override fun lower(value: UShort): Short = value.toShort()
+    override fun lower(value: UShort): Short {
+        return value.toShort()
+    }
 
     override fun allocationSize(value: UShort) = 2UL
 
-    override fun write(
-        value: UShort,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: UShort, buf: ByteBuffer) {
         buf.putShort(value.toShort())
     }
 }
@@ -1701,19 +1464,22 @@ public object FfiConverterUShort : FfiConverter<UShort, Short> {
 /**
  * @suppress
  */
-public object FfiConverterUInt : FfiConverter<UInt, Int> {
-    override fun lift(value: Int): UInt = value.toUInt()
+public object FfiConverterUInt: FfiConverter<UInt, Int> {
+    override fun lift(value: Int): UInt {
+        return value.toUInt()
+    }
 
-    override fun read(buf: ByteBuffer): UInt = lift(buf.getInt())
+    override fun read(buf: ByteBuffer): UInt {
+        return lift(buf.getInt())
+    }
 
-    override fun lower(value: UInt): Int = value.toInt()
+    override fun lower(value: UInt): Int {
+        return value.toInt()
+    }
 
     override fun allocationSize(value: UInt) = 4UL
 
-    override fun write(
-        value: UInt,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: UInt, buf: ByteBuffer) {
         buf.putInt(value.toInt())
     }
 }
@@ -1721,19 +1487,22 @@ public object FfiConverterUInt : FfiConverter<UInt, Int> {
 /**
  * @suppress
  */
-public object FfiConverterBoolean : FfiConverter<Boolean, Byte> {
-    override fun lift(value: Byte): Boolean = value.toInt() != 0
+public object FfiConverterBoolean: FfiConverter<Boolean, Byte> {
+    override fun lift(value: Byte): Boolean {
+        return value.toInt() != 0
+    }
 
-    override fun read(buf: ByteBuffer): Boolean = lift(buf.get())
+    override fun read(buf: ByteBuffer): Boolean {
+        return lift(buf.get())
+    }
 
-    override fun lower(value: Boolean): Byte = if (value) 1.toByte() else 0.toByte()
+    override fun lower(value: Boolean): Byte {
+        return if (value) 1.toByte() else 0.toByte()
+    }
 
     override fun allocationSize(value: Boolean) = 1UL
 
-    override fun write(
-        value: Boolean,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: Boolean, buf: ByteBuffer) {
         buf.put(lower(value))
     }
 }
@@ -1741,7 +1510,7 @@ public object FfiConverterBoolean : FfiConverter<Boolean, Byte> {
 /**
  * @suppress
  */
-public object FfiConverterString : FfiConverter<String, RustBuffer.ByValue> {
+public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     // Note: we don't inherit from FfiConverterRustBuffer, because we use a
     // special encoding when lowering/lifting.  We can use `RustBuffer.len` to
     // store our length and avoid writing it out to the buffer.
@@ -1788,10 +1557,7 @@ public object FfiConverterString : FfiConverter<String, RustBuffer.ByValue> {
         return sizeForLength + sizeForString
     }
 
-    override fun write(
-        value: String,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: String, buf: ByteBuffer) {
         val byteBuf = toUtf8(value)
         buf.putInt(byteBuf.limit())
         buf.put(byteBuf)
@@ -1801,24 +1567,22 @@ public object FfiConverterString : FfiConverter<String, RustBuffer.ByValue> {
 /**
  * @suppress
  */
-public object FfiConverterByteArray : FfiConverterRustBuffer<ByteArray> {
+public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
     override fun read(buf: ByteBuffer): ByteArray {
         val len = buf.getInt()
         val byteArr = ByteArray(len)
         buf.get(byteArr)
         return byteArr
     }
-
-    override fun allocationSize(value: ByteArray): ULong = 4UL + value.size.toULong()
-
-    override fun write(
-        value: ByteArray,
-        buf: ByteBuffer,
-    ) {
+    override fun allocationSize(value: ByteArray): ULong {
+        return 4UL + value.size.toULong()
+    }
+    override fun write(value: ByteArray, buf: ByteBuffer) {
         buf.putInt(value.size)
         buf.put(value)
     }
 }
+
 
 // This template implements a class for working with a Rust struct via a Pointer/Arc<T>
 // to the live Rust struct on the other side of the FFI.
@@ -1917,7 +1681,9 @@ public object FfiConverterByteArray : FfiConverterRustBuffer<ByteArray> {
 // [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
 //
 
+
 public interface ViewerCompiledDocumentInterface {
+
     fun `elements`(): List<FfiViewerElement>
 
     fun `isEmpty`(): kotlin.Boolean
@@ -1933,10 +1699,9 @@ public interface ViewerCompiledDocumentInterface {
     companion object
 }
 
-open class ViewerCompiledDocument :
-    Disposable,
-    AutoCloseable,
-    ViewerCompiledDocumentInterface {
+open class ViewerCompiledDocument: Disposable, AutoCloseable, ViewerCompiledDocumentInterface
+{
+
     constructor(pointer: Pointer) {
         this.pointer = pointer
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
@@ -1986,7 +1751,7 @@ open class ViewerCompiledDocument :
             if (c == Long.MAX_VALUE) {
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
-        } while (!this.callCounter.compareAndSet(c, c + 1L))
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
         // Now we can safely do the method call without the pointer being freed concurrently.
         try {
             return block(this.uniffiClonePointer())
@@ -2000,9 +1765,7 @@ open class ViewerCompiledDocument :
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(
-        private val pointer: Pointer?,
-    ) : Runnable {
+    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
         override fun run() {
             pointer?.let { ptr ->
                 uniffiRustCall { status ->
@@ -2012,75 +1775,104 @@ open class ViewerCompiledDocument :
         }
     }
 
-    fun uniffiClonePointer(): Pointer =
-        uniffiRustCall { status ->
+    fun uniffiClonePointer(): Pointer {
+        return uniffiRustCall() { status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_clone_viewercompileddocument(pointer!!, status)
         }
+    }
 
-    override fun `elements`(): List<FfiViewerElement> =
-        FfiConverterSequenceTypeFfiViewerElement.lift(
-            callWithPointer {
-                uniffiRustCall { _status ->
-                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_elements(it, _status)
-                }
-            },
-        )
+    override fun `elements`(): List<FfiViewerElement> {
+            return FfiConverterSequenceTypeFfiViewerElement.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_elements(
+        it, _status)
+}
+    }
+    )
+    }
 
-    override fun `isEmpty`(): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithPointer {
-                uniffiRustCall { _status ->
-                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_is_empty(it, _status)
-                }
-            },
-        )
 
-    override fun `preferredTextBlockName`(): kotlin.String =
-        FfiConverterString.lift(
-            callWithPointer {
-                uniffiRustCall { _status ->
-                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_preferred_text_block_name(it, _status)
-                }
-            },
-        )
+    override fun `isEmpty`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_is_empty(
+        it, _status)
+}
+    }
+    )
+    }
 
-    override fun `retainedBytesDecimal`(): kotlin.String =
-        FfiConverterString.lift(
-            callWithPointer {
-                uniffiRustCall { _status ->
-                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_retained_bytes_decimal(it, _status)
-                }
-            },
-        )
 
-    override fun `semanticKey`(): kotlin.String =
-        FfiConverterString.lift(
-            callWithPointer {
-                uniffiRustCall { _status ->
-                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_semantic_key(it, _status)
-                }
-            },
-        )
+    override fun `preferredTextBlockName`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_preferred_text_block_name(
+        it, _status)
+}
+    }
+    )
+    }
 
-    override fun `trailingEmptyTextBlockCount`(): kotlin.UInt =
-        FfiConverterUInt.lift(
-            callWithPointer {
-                uniffiRustCall { _status ->
-                    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_trailing_empty_text_block_count(it, _status)
-                }
-            },
-        )
+
+    override fun `retainedBytesDecimal`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_retained_bytes_decimal(
+        it, _status)
+}
+    }
+    )
+    }
+
+
+    override fun `semanticKey`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_semantic_key(
+        it, _status)
+}
+    }
+    )
+    }
+
+
+    override fun `trailingEmptyTextBlockCount`(): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_method_viewercompileddocument_trailing_empty_text_block_count(
+        it, _status)
+}
+    }
+    )
+    }
+
+
+
+
+
 
     companion object
+
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeViewerCompiledDocument : FfiConverter<ViewerCompiledDocument, Pointer> {
-    override fun lower(value: ViewerCompiledDocument): Pointer = value.uniffiClonePointer()
+public object FfiConverterTypeViewerCompiledDocument: FfiConverter<ViewerCompiledDocument, Pointer> {
 
-    override fun lift(value: Pointer): ViewerCompiledDocument = ViewerCompiledDocument(value)
+    override fun lower(value: ViewerCompiledDocument): Pointer {
+        return value.uniffiClonePointer()
+    }
+
+    override fun lift(value: Pointer): ViewerCompiledDocument {
+        return ViewerCompiledDocument(value)
+    }
 
     override fun read(buf: ByteBuffer): ViewerCompiledDocument {
         // The Rust code always writes pointers as 8 bytes, and will
@@ -2090,17 +1882,16 @@ public object FfiConverterTypeViewerCompiledDocument : FfiConverter<ViewerCompil
 
     override fun allocationSize(value: ViewerCompiledDocument) = 8UL
 
-    override fun write(
-        value: ViewerCompiledDocument,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: ViewerCompiledDocument, buf: ByteBuffer) {
         // The Rust code always expects pointers written as 8 bytes,
         // and will fail to compile if they don't fit.
         buf.putLong(Pointer.nativeValue(lower(value)))
     }
 }
 
-data class FfiError(
+
+
+data class FfiError (
     var `domain`: kotlin.String,
     var `code`: kotlin.String,
     var `message`: kotlin.String,
@@ -2108,17 +1899,18 @@ data class FfiError(
     var `operationIndex`: kotlin.String?,
     var `limit`: kotlin.String?,
     var `actual`: kotlin.String?,
-    var `detailsJson`: kotlin.String?,
+    var `detailsJson`: kotlin.String?
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiError> {
-    override fun read(buf: ByteBuffer): FfiError =
-        FfiError(
+public object FfiConverterTypeFfiError: FfiConverterRustBuffer<FfiError> {
+    override fun read(buf: ByteBuffer): FfiError {
+        return FfiError(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
@@ -2128,297 +1920,298 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiError> {
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiError) =
-        (
+    override fun allocationSize(value: FfiError) = (
             FfiConverterString.allocationSize(value.`domain`) +
-                FfiConverterString.allocationSize(value.`code`) +
-                FfiConverterString.allocationSize(value.`message`) +
-                FfiConverterOptionalString.allocationSize(value.`requestId`) +
-                FfiConverterOptionalString.allocationSize(value.`operationIndex`) +
-                FfiConverterOptionalString.allocationSize(value.`limit`) +
-                FfiConverterOptionalString.allocationSize(value.`actual`) +
-                FfiConverterOptionalString.allocationSize(value.`detailsJson`)
-        )
+            FfiConverterString.allocationSize(value.`code`) +
+            FfiConverterString.allocationSize(value.`message`) +
+            FfiConverterOptionalString.allocationSize(value.`requestId`) +
+            FfiConverterOptionalString.allocationSize(value.`operationIndex`) +
+            FfiConverterOptionalString.allocationSize(value.`limit`) +
+            FfiConverterOptionalString.allocationSize(value.`actual`) +
+            FfiConverterOptionalString.allocationSize(value.`detailsJson`)
+    )
 
-    override fun write(
-        value: FfiError,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterString.write(value.`domain`, buf)
-        FfiConverterString.write(value.`code`, buf)
-        FfiConverterString.write(value.`message`, buf)
-        FfiConverterOptionalString.write(value.`requestId`, buf)
-        FfiConverterOptionalString.write(value.`operationIndex`, buf)
-        FfiConverterOptionalString.write(value.`limit`, buf)
-        FfiConverterOptionalString.write(value.`actual`, buf)
-        FfiConverterOptionalString.write(value.`detailsJson`, buf)
+    override fun write(value: FfiError, buf: ByteBuffer) {
+            FfiConverterString.write(value.`domain`, buf)
+            FfiConverterString.write(value.`code`, buf)
+            FfiConverterString.write(value.`message`, buf)
+            FfiConverterOptionalString.write(value.`requestId`, buf)
+            FfiConverterOptionalString.write(value.`operationIndex`, buf)
+            FfiConverterOptionalString.write(value.`limit`, buf)
+            FfiConverterOptionalString.write(value.`actual`, buf)
+            FfiConverterOptionalString.write(value.`detailsJson`, buf)
     }
 }
 
-data class FfiJsonResult(
+
+
+data class FfiJsonResult (
     var `value`: kotlin.String?,
-    var `error`: FfiError?,
+    var `error`: FfiError?
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiJsonResult : FfiConverterRustBuffer<FfiJsonResult> {
-    override fun read(buf: ByteBuffer): FfiJsonResult =
-        FfiJsonResult(
+public object FfiConverterTypeFfiJsonResult: FfiConverterRustBuffer<FfiJsonResult> {
+    override fun read(buf: ByteBuffer): FfiJsonResult {
+        return FfiJsonResult(
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalTypeFfiError.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiJsonResult) =
-        (
+    override fun allocationSize(value: FfiJsonResult) = (
             FfiConverterOptionalString.allocationSize(value.`value`) +
-                FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
-        )
+            FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
+    )
 
-    override fun write(
-        value: FfiJsonResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterOptionalString.write(value.`value`, buf)
-        FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
+    override fun write(value: FfiJsonResult, buf: ByteBuffer) {
+            FfiConverterOptionalString.write(value.`value`, buf)
+            FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
     }
 }
+
+
 
 /**
  * One active outbound transport lease. The identifier stays canonical
  * decimal text while the y-protocols frame remains binary end-to-end.
  */
-data class FfiOutboundLease(
+data class FfiOutboundLease (
     var `leaseId`: kotlin.String,
-    var `frame`: kotlin.ByteArray,
+    var `frame`: kotlin.ByteArray
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiOutboundLease : FfiConverterRustBuffer<FfiOutboundLease> {
-    override fun read(buf: ByteBuffer): FfiOutboundLease =
-        FfiOutboundLease(
+public object FfiConverterTypeFfiOutboundLease: FfiConverterRustBuffer<FfiOutboundLease> {
+    override fun read(buf: ByteBuffer): FfiOutboundLease {
+        return FfiOutboundLease(
             FfiConverterString.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiOutboundLease) =
-        (
+    override fun allocationSize(value: FfiOutboundLease) = (
             FfiConverterString.allocationSize(value.`leaseId`) +
-                FfiConverterByteArray.allocationSize(value.`frame`)
-        )
+            FfiConverterByteArray.allocationSize(value.`frame`)
+    )
 
-    override fun write(
-        value: FfiOutboundLease,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterString.write(value.`leaseId`, buf)
-        FfiConverterByteArray.write(value.`frame`, buf)
+    override fun write(value: FfiOutboundLease, buf: ByteBuffer) {
+            FfiConverterString.write(value.`leaseId`, buf)
+            FfiConverterByteArray.write(value.`frame`, buf)
     }
 }
+
+
 
 /**
  * Explicit three-way lease result: exactly one of a retained value, a
  * queue-empty marker, or an error is selected. Empty is not encoded as an
  * empty binary frame, which keeps it distinct from valid protocol bytes.
  */
-data class FfiOutboundLeaseResult(
+data class FfiOutboundLeaseResult (
     var `value`: FfiOutboundLease?,
     var `empty`: kotlin.Boolean,
-    var `error`: FfiError?,
+    var `error`: FfiError?
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiOutboundLeaseResult : FfiConverterRustBuffer<FfiOutboundLeaseResult> {
-    override fun read(buf: ByteBuffer): FfiOutboundLeaseResult =
-        FfiOutboundLeaseResult(
+public object FfiConverterTypeFfiOutboundLeaseResult: FfiConverterRustBuffer<FfiOutboundLeaseResult> {
+    override fun read(buf: ByteBuffer): FfiOutboundLeaseResult {
+        return FfiOutboundLeaseResult(
             FfiConverterOptionalTypeFfiOutboundLease.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterOptionalTypeFfiError.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiOutboundLeaseResult) =
-        (
+    override fun allocationSize(value: FfiOutboundLeaseResult) = (
             FfiConverterOptionalTypeFfiOutboundLease.allocationSize(value.`value`) +
-                FfiConverterBoolean.allocationSize(value.`empty`) +
-                FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
-        )
+            FfiConverterBoolean.allocationSize(value.`empty`) +
+            FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
+    )
 
-    override fun write(
-        value: FfiOutboundLeaseResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterOptionalTypeFfiOutboundLease.write(value.`value`, buf)
-        FfiConverterBoolean.write(value.`empty`, buf)
-        FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
+    override fun write(value: FfiOutboundLeaseResult, buf: ByteBuffer) {
+            FfiConverterOptionalTypeFfiOutboundLease.write(value.`value`, buf)
+            FfiConverterBoolean.write(value.`empty`, buf)
+            FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
     }
 }
+
+
 
 /**
  * One exported document snapshot: the five-field manifest as JSON plus the
  * encoded state as direct bytes (never a JSON number array).
  */
-data class FfiSnapshotExport(
+data class FfiSnapshotExport (
     var `metadataJson`: kotlin.String,
-    var `encodedState`: kotlin.ByteArray,
+    var `encodedState`: kotlin.ByteArray
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiSnapshotExport : FfiConverterRustBuffer<FfiSnapshotExport> {
-    override fun read(buf: ByteBuffer): FfiSnapshotExport =
-        FfiSnapshotExport(
+public object FfiConverterTypeFfiSnapshotExport: FfiConverterRustBuffer<FfiSnapshotExport> {
+    override fun read(buf: ByteBuffer): FfiSnapshotExport {
+        return FfiSnapshotExport(
             FfiConverterString.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiSnapshotExport) =
-        (
+    override fun allocationSize(value: FfiSnapshotExport) = (
             FfiConverterString.allocationSize(value.`metadataJson`) +
-                FfiConverterByteArray.allocationSize(value.`encodedState`)
-        )
+            FfiConverterByteArray.allocationSize(value.`encodedState`)
+    )
 
-    override fun write(
-        value: FfiSnapshotExport,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterString.write(value.`metadataJson`, buf)
-        FfiConverterByteArray.write(value.`encodedState`, buf)
+    override fun write(value: FfiSnapshotExport, buf: ByteBuffer) {
+            FfiConverterString.write(value.`metadataJson`, buf)
+            FfiConverterByteArray.write(value.`encodedState`, buf)
     }
 }
 
-data class FfiSnapshotExportResult(
+
+
+data class FfiSnapshotExportResult (
     var `value`: FfiSnapshotExport?,
-    var `error`: FfiError?,
+    var `error`: FfiError?
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiSnapshotExportResult : FfiConverterRustBuffer<FfiSnapshotExportResult> {
-    override fun read(buf: ByteBuffer): FfiSnapshotExportResult =
-        FfiSnapshotExportResult(
+public object FfiConverterTypeFfiSnapshotExportResult: FfiConverterRustBuffer<FfiSnapshotExportResult> {
+    override fun read(buf: ByteBuffer): FfiSnapshotExportResult {
+        return FfiSnapshotExportResult(
             FfiConverterOptionalTypeFfiSnapshotExport.read(buf),
             FfiConverterOptionalTypeFfiError.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiSnapshotExportResult) =
-        (
+    override fun allocationSize(value: FfiSnapshotExportResult) = (
             FfiConverterOptionalTypeFfiSnapshotExport.allocationSize(value.`value`) +
-                FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
-        )
+            FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
+    )
 
-    override fun write(
-        value: FfiSnapshotExportResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterOptionalTypeFfiSnapshotExport.write(value.`value`, buf)
-        FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
+    override fun write(value: FfiSnapshotExportResult, buf: ByteBuffer) {
+            FfiConverterOptionalTypeFfiSnapshotExport.write(value.`value`, buf)
+            FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
     }
 }
 
-data class FfiUnitResult(
+
+
+data class FfiUnitResult (
     var `value`: kotlin.Boolean?,
-    var `error`: FfiError?,
+    var `error`: FfiError?
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiUnitResult : FfiConverterRustBuffer<FfiUnitResult> {
-    override fun read(buf: ByteBuffer): FfiUnitResult =
-        FfiUnitResult(
+public object FfiConverterTypeFfiUnitResult: FfiConverterRustBuffer<FfiUnitResult> {
+    override fun read(buf: ByteBuffer): FfiUnitResult {
+        return FfiUnitResult(
             FfiConverterOptionalBoolean.read(buf),
             FfiConverterOptionalTypeFfiError.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiUnitResult) =
-        (
+    override fun allocationSize(value: FfiUnitResult) = (
             FfiConverterOptionalBoolean.allocationSize(value.`value`) +
-                FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
-        )
+            FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
+    )
 
-    override fun write(
-        value: FfiUnitResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterOptionalBoolean.write(value.`value`, buf)
-        FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
+    override fun write(value: FfiUnitResult, buf: ByteBuffer) {
+            FfiConverterOptionalBoolean.write(value.`value`, buf)
+            FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
     }
 }
 
-data class FfiViewerCompileRequest(
+
+
+data class FfiViewerCompileRequest (
     var `sourceKind`: FfiViewerSourceKind,
     var `source`: kotlin.String,
     var `configJson`: kotlin.String,
     var `imagesEnabled`: kotlin.Boolean,
-    var `mentionPrefix`: kotlin.String?,
+    var `mentionPrefix`: kotlin.String?
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiViewerCompileRequest : FfiConverterRustBuffer<FfiViewerCompileRequest> {
-    override fun read(buf: ByteBuffer): FfiViewerCompileRequest =
-        FfiViewerCompileRequest(
+public object FfiConverterTypeFfiViewerCompileRequest: FfiConverterRustBuffer<FfiViewerCompileRequest> {
+    override fun read(buf: ByteBuffer): FfiViewerCompileRequest {
+        return FfiViewerCompileRequest(
             FfiConverterTypeFfiViewerSourceKind.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterOptionalString.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiViewerCompileRequest) =
-        (
+    override fun allocationSize(value: FfiViewerCompileRequest) = (
             FfiConverterTypeFfiViewerSourceKind.allocationSize(value.`sourceKind`) +
-                FfiConverterString.allocationSize(value.`source`) +
-                FfiConverterString.allocationSize(value.`configJson`) +
-                FfiConverterBoolean.allocationSize(value.`imagesEnabled`) +
-                FfiConverterOptionalString.allocationSize(value.`mentionPrefix`)
-        )
+            FfiConverterString.allocationSize(value.`source`) +
+            FfiConverterString.allocationSize(value.`configJson`) +
+            FfiConverterBoolean.allocationSize(value.`imagesEnabled`) +
+            FfiConverterOptionalString.allocationSize(value.`mentionPrefix`)
+    )
 
-    override fun write(
-        value: FfiViewerCompileRequest,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterTypeFfiViewerSourceKind.write(value.`sourceKind`, buf)
-        FfiConverterString.write(value.`source`, buf)
-        FfiConverterString.write(value.`configJson`, buf)
-        FfiConverterBoolean.write(value.`imagesEnabled`, buf)
-        FfiConverterOptionalString.write(value.`mentionPrefix`, buf)
+    override fun write(value: FfiViewerCompileRequest, buf: ByteBuffer) {
+            FfiConverterTypeFfiViewerSourceKind.write(value.`sourceKind`, buf)
+            FfiConverterString.write(value.`source`, buf)
+            FfiConverterString.write(value.`configJson`, buf)
+            FfiConverterBoolean.write(value.`imagesEnabled`, buf)
+            FfiConverterOptionalString.write(value.`mentionPrefix`, buf)
     }
 }
 
-data class FfiViewerCompileResult(
+
+
+data class FfiViewerCompileResult (
     var `value`: ViewerCompiledDocument?,
-    var `error`: FfiError?,
+    var `error`: FfiError?
 ) : Disposable {
+
     @Suppress("UNNECESSARY_SAFE_CALL") // codegen is much simpler if we unconditionally emit safe calls here
     override fun destroy() {
-        Disposable.destroy(
-            this.`value`,
-            this.`error`,
-        )
+
+    Disposable.destroy(
+        this.`value`,
+        this.`error`
+    )
     }
 
     companion object
@@ -2427,65 +2220,64 @@ data class FfiViewerCompileResult(
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiViewerCompileResult : FfiConverterRustBuffer<FfiViewerCompileResult> {
-    override fun read(buf: ByteBuffer): FfiViewerCompileResult =
-        FfiViewerCompileResult(
+public object FfiConverterTypeFfiViewerCompileResult: FfiConverterRustBuffer<FfiViewerCompileResult> {
+    override fun read(buf: ByteBuffer): FfiViewerCompileResult {
+        return FfiViewerCompileResult(
             FfiConverterOptionalTypeViewerCompiledDocument.read(buf),
             FfiConverterOptionalTypeFfiError.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiViewerCompileResult) =
-        (
+    override fun allocationSize(value: FfiViewerCompileResult) = (
             FfiConverterOptionalTypeViewerCompiledDocument.allocationSize(value.`value`) +
-                FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
-        )
+            FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
+    )
 
-    override fun write(
-        value: FfiViewerCompileResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterOptionalTypeViewerCompiledDocument.write(value.`value`, buf)
-        FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
+    override fun write(value: FfiViewerCompileResult, buf: ByteBuffer) {
+            FfiConverterOptionalTypeViewerCompiledDocument.write(value.`value`, buf)
+            FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
     }
 }
 
-data class FfiViewerMark(
+
+
+data class FfiViewerMark (
     var `markType`: kotlin.String,
-    var `attrsJson`: kotlin.String,
+    var `attrsJson`: kotlin.String
 ) {
+
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiViewerMark : FfiConverterRustBuffer<FfiViewerMark> {
-    override fun read(buf: ByteBuffer): FfiViewerMark =
-        FfiViewerMark(
+public object FfiConverterTypeFfiViewerMark: FfiConverterRustBuffer<FfiViewerMark> {
+    override fun read(buf: ByteBuffer): FfiViewerMark {
+        return FfiViewerMark(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
         )
+    }
 
-    override fun allocationSize(value: FfiViewerMark) =
-        (
+    override fun allocationSize(value: FfiViewerMark) = (
             FfiConverterString.allocationSize(value.`markType`) +
-                FfiConverterString.allocationSize(value.`attrsJson`)
-        )
+            FfiConverterString.allocationSize(value.`attrsJson`)
+    )
 
-    override fun write(
-        value: FfiViewerMark,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterString.write(value.`markType`, buf)
-        FfiConverterString.write(value.`attrsJson`, buf)
+    override fun write(value: FfiViewerMark, buf: ByteBuffer) {
+            FfiConverterString.write(value.`markType`, buf)
+            FfiConverterString.write(value.`attrsJson`, buf)
     }
 }
 
+
+
 sealed class FfiViewerElement {
+
     data class TextRun(
         val `text`: kotlin.String,
-        val `marks`: List<FfiViewerMark>,
-    ) : FfiViewerElement() {
+        val `marks`: List<FfiViewerMark>) : FfiViewerElement() {
         companion object
     }
 
@@ -2493,8 +2285,7 @@ sealed class FfiViewerElement {
         val `nodeType`: kotlin.String,
         val `docPos`: kotlin.UInt,
         val `attrsJson`: kotlin.String,
-        val `label`: kotlin.String,
-    ) : FfiViewerElement() {
+        val `label`: kotlin.String) : FfiViewerElement() {
         companion object
     }
 
@@ -2502,20 +2293,21 @@ sealed class FfiViewerElement {
         val `nodeType`: kotlin.String,
         val `docPos`: kotlin.UInt,
         val `attrsJson`: kotlin.String,
-        val `label`: kotlin.String,
-    ) : FfiViewerElement() {
+        val `label`: kotlin.String) : FfiViewerElement() {
         companion object
     }
 
     data class BlockStart(
         val `nodeType`: kotlin.String,
         val `depth`: kotlin.UShort,
-        val `listContextJson`: kotlin.String?,
-    ) : FfiViewerElement() {
+        val `listContextJson`: kotlin.String?) : FfiViewerElement() {
         companion object
     }
 
     object BlockEnd : FfiViewerElement()
+
+
+
 
     companion object
 }
@@ -2523,114 +2315,89 @@ sealed class FfiViewerElement {
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewerElement> {
-    override fun read(buf: ByteBuffer): FfiViewerElement =
-        when (buf.getInt()) {
-            1 -> {
-                FfiViewerElement.TextRun(
-                    FfiConverterString.read(buf),
-                    FfiConverterSequenceTypeFfiViewerMark.read(buf),
+public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewerElement>{
+    override fun read(buf: ByteBuffer): FfiViewerElement {
+        return when(buf.getInt()) {
+            1 -> FfiViewerElement.TextRun(
+                FfiConverterString.read(buf),
+                FfiConverterSequenceTypeFfiViewerMark.read(buf),
                 )
-            }
-
-            2 -> {
-                FfiViewerElement.InlineAtom(
-                    FfiConverterString.read(buf),
-                    FfiConverterUInt.read(buf),
-                    FfiConverterString.read(buf),
-                    FfiConverterString.read(buf),
+            2 -> FfiViewerElement.InlineAtom(
+                FfiConverterString.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
                 )
-            }
-
-            3 -> {
-                FfiViewerElement.BlockAtom(
-                    FfiConverterString.read(buf),
-                    FfiConverterUInt.read(buf),
-                    FfiConverterString.read(buf),
-                    FfiConverterString.read(buf),
+            3 -> FfiViewerElement.BlockAtom(
+                FfiConverterString.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
                 )
-            }
-
-            4 -> {
-                FfiViewerElement.BlockStart(
-                    FfiConverterString.read(buf),
-                    FfiConverterUShort.read(buf),
-                    FfiConverterOptionalString.read(buf),
+            4 -> FfiViewerElement.BlockStart(
+                FfiConverterString.read(buf),
+                FfiConverterUShort.read(buf),
+                FfiConverterOptionalString.read(buf),
                 )
-            }
-
-            5 -> {
-                FfiViewerElement.BlockEnd
-            }
-
-            else -> {
-                throw RuntimeException("invalid enum value, something is very wrong!!")
-            }
+            5 -> FfiViewerElement.BlockEnd
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
+    }
 
-    override fun allocationSize(value: FfiViewerElement) =
-        when (value) {
-            is FfiViewerElement.TextRun -> {
-                // Add the size for the Int that specifies the variant plus the size needed for all fields
-                (
-                    4UL +
-                        FfiConverterString.allocationSize(value.`text`) +
-                        FfiConverterSequenceTypeFfiViewerMark.allocationSize(value.`marks`)
-                )
-            }
-
-            is FfiViewerElement.InlineAtom -> {
-                // Add the size for the Int that specifies the variant plus the size needed for all fields
-                (
-                    4UL +
-                        FfiConverterString.allocationSize(value.`nodeType`) +
-                        FfiConverterUInt.allocationSize(value.`docPos`) +
-                        FfiConverterString.allocationSize(value.`attrsJson`) +
-                        FfiConverterString.allocationSize(value.`label`)
-                )
-            }
-
-            is FfiViewerElement.BlockAtom -> {
-                // Add the size for the Int that specifies the variant plus the size needed for all fields
-                (
-                    4UL +
-                        FfiConverterString.allocationSize(value.`nodeType`) +
-                        FfiConverterUInt.allocationSize(value.`docPos`) +
-                        FfiConverterString.allocationSize(value.`attrsJson`) +
-                        FfiConverterString.allocationSize(value.`label`)
-                )
-            }
-
-            is FfiViewerElement.BlockStart -> {
-                // Add the size for the Int that specifies the variant plus the size needed for all fields
-                (
-                    4UL +
-                        FfiConverterString.allocationSize(value.`nodeType`) +
-                        FfiConverterUShort.allocationSize(value.`depth`) +
-                        FfiConverterOptionalString.allocationSize(value.`listContextJson`)
-                )
-            }
-
-            is FfiViewerElement.BlockEnd -> {
-                // Add the size for the Int that specifies the variant plus the size needed for all fields
-                (
-                    4UL
-                )
-            }
+    override fun allocationSize(value: FfiViewerElement) = when(value) {
+        is FfiViewerElement.TextRun -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`text`)
+                + FfiConverterSequenceTypeFfiViewerMark.allocationSize(value.`marks`)
+            )
         }
+        is FfiViewerElement.InlineAtom -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeType`)
+                + FfiConverterUInt.allocationSize(value.`docPos`)
+                + FfiConverterString.allocationSize(value.`attrsJson`)
+                + FfiConverterString.allocationSize(value.`label`)
+            )
+        }
+        is FfiViewerElement.BlockAtom -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeType`)
+                + FfiConverterUInt.allocationSize(value.`docPos`)
+                + FfiConverterString.allocationSize(value.`attrsJson`)
+                + FfiConverterString.allocationSize(value.`label`)
+            )
+        }
+        is FfiViewerElement.BlockStart -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeType`)
+                + FfiConverterUShort.allocationSize(value.`depth`)
+                + FfiConverterOptionalString.allocationSize(value.`listContextJson`)
+            )
+        }
+        is FfiViewerElement.BlockEnd -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
 
-    override fun write(
-        value: FfiViewerElement,
-        buf: ByteBuffer,
-    ) {
-        when (value) {
+    override fun write(value: FfiViewerElement, buf: ByteBuffer) {
+        when(value) {
             is FfiViewerElement.TextRun -> {
                 buf.putInt(1)
                 FfiConverterString.write(value.`text`, buf)
                 FfiConverterSequenceTypeFfiViewerMark.write(value.`marks`, buf)
                 Unit
             }
-
             is FfiViewerElement.InlineAtom -> {
                 buf.putInt(2)
                 FfiConverterString.write(value.`nodeType`, buf)
@@ -2639,7 +2406,6 @@ public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewe
                 FfiConverterString.write(value.`label`, buf)
                 Unit
             }
-
             is FfiViewerElement.BlockAtom -> {
                 buf.putInt(3)
                 FfiConverterString.write(value.`nodeType`, buf)
@@ -2648,7 +2414,6 @@ public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewe
                 FfiConverterString.write(value.`label`, buf)
                 Unit
             }
-
             is FfiViewerElement.BlockStart -> {
                 buf.putInt(4)
                 FfiConverterString.write(value.`nodeType`, buf)
@@ -2656,7 +2421,6 @@ public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewe
                 FfiConverterOptionalString.write(value.`listContextJson`, buf)
                 Unit
             }
-
             is FfiViewerElement.BlockEnd -> {
                 buf.putInt(5)
                 Unit
@@ -2665,39 +2429,45 @@ public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewe
     }
 }
 
-enum class FfiViewerSourceKind {
-    JSON,
-    HTML,
-    ;
 
+
+
+
+
+enum class FfiViewerSourceKind {
+
+    JSON,
+    HTML;
     companion object
 }
+
 
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiViewerSourceKind : FfiConverterRustBuffer<FfiViewerSourceKind> {
-    override fun read(buf: ByteBuffer) =
-        try {
-            FfiViewerSourceKind.values()[buf.getInt() - 1]
-        } catch (e: IndexOutOfBoundsException) {
-            throw RuntimeException("invalid enum value, something is very wrong!!", e)
-        }
+public object FfiConverterTypeFfiViewerSourceKind: FfiConverterRustBuffer<FfiViewerSourceKind> {
+    override fun read(buf: ByteBuffer) = try {
+        FfiViewerSourceKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
 
     override fun allocationSize(value: FfiViewerSourceKind) = 4UL
 
-    override fun write(
-        value: FfiViewerSourceKind,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: FfiViewerSourceKind, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
 
+
+
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalUInt : FfiConverterRustBuffer<kotlin.UInt?> {
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
     override fun read(buf: ByteBuffer): kotlin.UInt? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2713,10 +2483,7 @@ public object FfiConverterOptionalUInt : FfiConverterRustBuffer<kotlin.UInt?> {
         }
     }
 
-    override fun write(
-        value: kotlin.UInt?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2726,10 +2493,13 @@ public object FfiConverterOptionalUInt : FfiConverterRustBuffer<kotlin.UInt?> {
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalBoolean : FfiConverterRustBuffer<kotlin.Boolean?> {
+public object FfiConverterOptionalBoolean: FfiConverterRustBuffer<kotlin.Boolean?> {
     override fun read(buf: ByteBuffer): kotlin.Boolean? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2745,10 +2515,7 @@ public object FfiConverterOptionalBoolean : FfiConverterRustBuffer<kotlin.Boolea
         }
     }
 
-    override fun write(
-        value: kotlin.Boolean?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: kotlin.Boolean?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2758,10 +2525,13 @@ public object FfiConverterOptionalBoolean : FfiConverterRustBuffer<kotlin.Boolea
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalString : FfiConverterRustBuffer<kotlin.String?> {
+public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
     override fun read(buf: ByteBuffer): kotlin.String? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2777,10 +2547,7 @@ public object FfiConverterOptionalString : FfiConverterRustBuffer<kotlin.String?
         }
     }
 
-    override fun write(
-        value: kotlin.String?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: kotlin.String?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2790,10 +2557,13 @@ public object FfiConverterOptionalString : FfiConverterRustBuffer<kotlin.String?
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalByteArray : FfiConverterRustBuffer<kotlin.ByteArray?> {
+public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteArray?> {
     override fun read(buf: ByteBuffer): kotlin.ByteArray? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2809,10 +2579,7 @@ public object FfiConverterOptionalByteArray : FfiConverterRustBuffer<kotlin.Byte
         }
     }
 
-    override fun write(
-        value: kotlin.ByteArray?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: kotlin.ByteArray?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2822,10 +2589,13 @@ public object FfiConverterOptionalByteArray : FfiConverterRustBuffer<kotlin.Byte
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalTypeViewerCompiledDocument : FfiConverterRustBuffer<ViewerCompiledDocument?> {
+public object FfiConverterOptionalTypeViewerCompiledDocument: FfiConverterRustBuffer<ViewerCompiledDocument?> {
     override fun read(buf: ByteBuffer): ViewerCompiledDocument? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2841,10 +2611,7 @@ public object FfiConverterOptionalTypeViewerCompiledDocument : FfiConverterRustB
         }
     }
 
-    override fun write(
-        value: ViewerCompiledDocument?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: ViewerCompiledDocument?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2854,10 +2621,13 @@ public object FfiConverterOptionalTypeViewerCompiledDocument : FfiConverterRustB
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalTypeFfiError : FfiConverterRustBuffer<FfiError?> {
+public object FfiConverterOptionalTypeFfiError: FfiConverterRustBuffer<FfiError?> {
     override fun read(buf: ByteBuffer): FfiError? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2873,10 +2643,7 @@ public object FfiConverterOptionalTypeFfiError : FfiConverterRustBuffer<FfiError
         }
     }
 
-    override fun write(
-        value: FfiError?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: FfiError?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2886,10 +2653,13 @@ public object FfiConverterOptionalTypeFfiError : FfiConverterRustBuffer<FfiError
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalTypeFfiOutboundLease : FfiConverterRustBuffer<FfiOutboundLease?> {
+public object FfiConverterOptionalTypeFfiOutboundLease: FfiConverterRustBuffer<FfiOutboundLease?> {
     override fun read(buf: ByteBuffer): FfiOutboundLease? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2905,10 +2675,7 @@ public object FfiConverterOptionalTypeFfiOutboundLease : FfiConverterRustBuffer<
         }
     }
 
-    override fun write(
-        value: FfiOutboundLease?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: FfiOutboundLease?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2918,10 +2685,13 @@ public object FfiConverterOptionalTypeFfiOutboundLease : FfiConverterRustBuffer<
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalTypeFfiSnapshotExport : FfiConverterRustBuffer<FfiSnapshotExport?> {
+public object FfiConverterOptionalTypeFfiSnapshotExport: FfiConverterRustBuffer<FfiSnapshotExport?> {
     override fun read(buf: ByteBuffer): FfiSnapshotExport? {
         if (buf.get().toInt() == 0) {
             return null
@@ -2937,10 +2707,7 @@ public object FfiConverterOptionalTypeFfiSnapshotExport : FfiConverterRustBuffer
         }
     }
 
-    override fun write(
-        value: FfiSnapshotExport?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: FfiSnapshotExport?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -2950,10 +2717,13 @@ public object FfiConverterOptionalTypeFfiSnapshotExport : FfiConverterRustBuffer
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeFfiViewerMark : FfiConverterRustBuffer<List<FfiViewerMark>> {
+public object FfiConverterSequenceTypeFfiViewerMark: FfiConverterRustBuffer<List<FfiViewerMark>> {
     override fun read(buf: ByteBuffer): List<FfiViewerMark> {
         val len = buf.getInt()
         return List<FfiViewerMark>(len) {
@@ -2967,10 +2737,7 @@ public object FfiConverterSequenceTypeFfiViewerMark : FfiConverterRustBuffer<Lis
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<FfiViewerMark>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<FfiViewerMark>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeFfiViewerMark.write(it, buf)
@@ -2978,10 +2745,13 @@ public object FfiConverterSequenceTypeFfiViewerMark : FfiConverterRustBuffer<Lis
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeFfiViewerElement : FfiConverterRustBuffer<List<FfiViewerElement>> {
+public object FfiConverterSequenceTypeFfiViewerElement: FfiConverterRustBuffer<List<FfiViewerElement>> {
     override fun read(buf: ByteBuffer): List<FfiViewerElement> {
         val len = buf.getInt()
         return List<FfiViewerElement>(len) {
@@ -2995,519 +2765,378 @@ public object FfiConverterSequenceTypeFfiViewerElement : FfiConverterRustBuffer<
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<FfiViewerElement>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<FfiViewerElement>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeFfiViewerElement.write(it, buf)
         }
     }
 }
-
-/**
- * Return the crate version string.
- */
-fun `editorCoreVersion`(): kotlin.String =
-    FfiConverterString.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_core_version(_status)
-        },
+        /**
+         * Return the crate version string.
+         */ fun `editorCoreVersion`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_core_version(
+        _status)
+}
     )
+    }
 
-fun `editorV2ApplyCommand`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_command(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2ApplyCommand`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_command(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
     )
+    }
 
-fun `editorV2ApplyInput`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_input(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2ApplyInput`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_input(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
     )
+    }
 
-fun `editorV2ApplyLocalApi`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_local_api(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2ApplyLocalApi`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_local_api(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
     )
+    }
 
-fun `editorV2ApplyNativeIntent`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_native_intent(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2ApplyNativeIntent`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_apply_native_intent(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
     )
+    }
 
-fun `editorV2CollaborationAckOutbound`(
-    `editorId`: kotlin.String,
-    `generation`: kotlin.String,
-    `leaseId`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                FfiConverterString.lower(`leaseId`),
-                _status,
-            )
-        },
+ fun `editorV2CollaborationAckOutbound`(`editorId`: kotlin.String, `generation`: kotlin.String, `leaseId`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`generation`),FfiConverterString.lower(`leaseId`),_status)
+}
     )
+    }
 
-/**
- * Tears down transport state while retaining the editor, document, desired
- * awareness state, and pending outbox entries.
- */
-fun `editorV2CollaborationDetach`(`editorId`: kotlin.String): FfiUnitResult =
-    FfiConverterTypeFfiUnitResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_detach(FfiConverterString.lower(`editorId`), _status)
-        },
-    )
 
-/**
- * Drive initial connection, reconnect eligibility, local-awareness renewal,
- * and remote-peer expiry from one Rust-owned monotonic clock operation.
- */
-fun `editorV2CollaborationDrive`(
-    `editorId`: kotlin.String,
-    `nowMillis`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_drive(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`nowMillis`),
-                _status,
-            )
-        },
+        /**
+         * Tears down transport state while retaining the editor, document, desired
+         * awareness state, and pending outbox entries.
+         */ fun `editorV2CollaborationDetach`(`editorId`: kotlin.String): FfiUnitResult {
+            return FfiConverterTypeFfiUnitResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_detach(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-/**
- * Lease one retained complete outbound frame. Exactly one of value, empty,
- * or error is selected; protocol replies retain priority over document
- * updates unless a frame was already leased.
- */
-fun `editorV2CollaborationLeaseOutbound`(
-    `editorId`: kotlin.String,
-    `generation`: kotlin.String,
-): FfiOutboundLeaseResult =
-    FfiConverterTypeFfiOutboundLeaseResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_lease_outbound(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                _status,
-            )
-        },
-    )
 
-fun `editorV2CollaborationNackOutbound`(
-    `editorId`: kotlin.String,
-    `generation`: kotlin.String,
-    `leaseId`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_nack_outbound(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                FfiConverterString.lower(`leaseId`),
-                _status,
-            )
-        },
+        /**
+         * Drive initial connection, reconnect eligibility, local-awareness renewal,
+         * and remote-peer expiry from one Rust-owned monotonic clock operation.
+         */ fun `editorV2CollaborationDrive`(`editorId`: kotlin.String, `nowMillis`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_drive(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`nowMillis`),_status)
+}
     )
+    }
 
-/**
- * Live awareness peer projections; client ids are decimal strings so full
- * u64 ids survive the JSON round-trip.
- */
-fun `editorV2CollaborationPeers`(`editorId`: kotlin.String): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_peers(FfiConverterString.lower(`editorId`), _status)
-        },
-    )
 
-/**
- * Reopens the transport lifecycle after an explicit detach.
- */
-fun `editorV2CollaborationReattach`(`editorId`: kotlin.String): FfiUnitResult =
-    FfiConverterTypeFfiUnitResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_reattach(FfiConverterString.lower(`editorId`), _status)
-        },
+        /**
+         * Lease one retained complete outbound frame. Exactly one of value, empty,
+         * or error is selected; protocol replies retain priority over document
+         * updates unless a frame was already leased.
+         */ fun `editorV2CollaborationLeaseOutbound`(`editorId`: kotlin.String, `generation`: kotlin.String): FfiOutboundLeaseResult {
+            return FfiConverterTypeFfiOutboundLeaseResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_lease_outbound(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`generation`),_status)
+}
     )
+    }
 
-fun `editorV2CollaborationReceive`(
-    `editorId`: kotlin.String,
-    `generation`: kotlin.String,
-    `message`: kotlin.ByteArray,
-    `nowMillis`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                FfiConverterByteArray.lower(`message`),
-                FfiConverterString.lower(`nowMillis`),
-                _status,
-            )
-        },
+ fun `editorV2CollaborationNackOutbound`(`editorId`: kotlin.String, `generation`: kotlin.String, `leaseId`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_nack_outbound(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`generation`),FfiConverterString.lower(`leaseId`),_status)
+}
     )
+    }
 
-/**
- * Publishes a typed local awareness intent; the literal JSON `null`
- * withdraws it (standard tombstone broadcast). Rust validates the closed
- * shape and owns any published sticky cursor representation.
- */
-fun `editorV2CollaborationSetAwareness`(
-    `editorId`: kotlin.String,
-    `awarenessJson`: kotlin.String,
-): FfiUnitResult =
-    FfiConverterTypeFfiUnitResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`awarenessJson`),
-                _status,
-            )
-        },
-    )
 
-fun `editorV2CollaborationSetAwarenessSelection`(
-    `editorId`: kotlin.String,
-    `selectionJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness_selection(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`selectionJson`),
-                _status,
-            )
-        },
+        /**
+         * Live awareness peer projections; client ids are decimal strings so full
+         * u64 ids survive the JSON round-trip.
+         */ fun `editorV2CollaborationPeers`(`editorId`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_peers(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-/**
- * `reason` carries no classification weight (Rust alone owns retry
- * eligibility); a policy-violation close code (1008) parks the transport
- * `Incompatible`, every other reported close is retryable.
- */
-fun `editorV2CollaborationSocketClose`(
-    `editorId`: kotlin.String,
-    `generation`: kotlin.String,
-    `code`: kotlin.UInt?,
-    `reason`: kotlin.String?,
-    `nowMillis`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                FfiConverterOptionalUInt.lower(`code`),
-                FfiConverterOptionalString.lower(`reason`),
-                FfiConverterString.lower(`nowMillis`),
-                _status,
-            )
-        },
-    )
 
-/**
- * Socket open queues framed Sync Step 1 at protocol priority and returns
- * only the frozen directive; bytes are retrieved through `lease_outbound`.
- */
-fun `editorV2CollaborationSocketOpen`(
-    `editorId`: kotlin.String,
-    `generation`: kotlin.String,
-    `nowMillis`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                FfiConverterString.lower(`nowMillis`),
-                _status,
-            )
-        },
+        /**
+         * Reopens the transport lifecycle after an explicit detach.
+         */ fun `editorV2CollaborationReattach`(`editorId`: kotlin.String): FfiUnitResult {
+            return FfiConverterTypeFfiUnitResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_reattach(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-fun `editorV2Create`(
-    `configJson`: kotlin.String,
-    `snapshotState`: kotlin.ByteArray?,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_create(
-                FfiConverterString.lower(`configJson`),
-                FfiConverterOptionalByteArray.lower(`snapshotState`),
-                _status,
-            )
-        },
+ fun `editorV2CollaborationReceive`(`editorId`: kotlin.String, `generation`: kotlin.String, `message`: kotlin.ByteArray, `nowMillis`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`generation`),FfiConverterByteArray.lower(`message`),FfiConverterString.lower(`nowMillis`),_status)
+}
     )
+    }
 
-fun `editorV2Destroy`(`editorId`: kotlin.String): FfiUnitResult =
-    FfiConverterTypeFfiUnitResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_destroy(FfiConverterString.lower(`editorId`), _status)
-        },
-    )
 
-fun `editorV2DocToScalar`(
-    `editorId`: kotlin.String,
-    `docPos`: kotlin.UInt,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_doc_to_scalar(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterUInt.lower(`docPos`),
-                _status,
-            )
-        },
+        /**
+         * Publishes a typed local awareness intent; the literal JSON `null`
+         * withdraws it (standard tombstone broadcast). Rust validates the closed
+         * shape and owns any published sticky cursor representation.
+         */ fun `editorV2CollaborationSetAwareness`(`editorId`: kotlin.String, `awarenessJson`: kotlin.String): FfiUnitResult {
+            return FfiConverterTypeFfiUnitResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`awarenessJson`),_status)
+}
     )
+    }
 
-fun `editorV2GetContentSnapshot`(`editorId`: kotlin.String): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_content_snapshot(FfiConverterString.lower(`editorId`), _status)
-        },
+ fun `editorV2CollaborationSetAwarenessSelection`(`editorId`: kotlin.String, `selectionJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness_selection(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`selectionJson`),_status)
+}
     )
+    }
 
-fun `editorV2GetDocumentHtml`(`editorId`: kotlin.String): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_document_html(FfiConverterString.lower(`editorId`), _status)
-        },
-    )
 
-fun `editorV2GetDocumentJson`(`editorId`: kotlin.String): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_document_json(FfiConverterString.lower(`editorId`), _status)
-        },
+        /**
+         * `reason` carries no classification weight (Rust alone owns retry
+         * eligibility); a policy-violation close code (1008) parks the transport
+         * `Incompatible`, every other reported close is retryable.
+         */ fun `editorV2CollaborationSocketClose`(`editorId`: kotlin.String, `generation`: kotlin.String, `code`: kotlin.UInt?, `reason`: kotlin.String?, `nowMillis`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`generation`),FfiConverterOptionalUInt.lower(`code`),FfiConverterOptionalString.lower(`reason`),FfiConverterString.lower(`nowMillis`),_status)
+}
     )
+    }
 
-fun `editorV2GetState`(`editorId`: kotlin.String): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_state(FfiConverterString.lower(`editorId`), _status)
-        },
-    )
 
-fun `editorV2PinPositionEpoch`(
-    `editorId`: kotlin.String,
-    `ownerId`: kotlin.String,
-    `documentRevision`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_pin_position_epoch(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`ownerId`),
-                FfiConverterString.lower(`documentRevision`),
-                _status,
-            )
-        },
+        /**
+         * Socket open queues framed Sync Step 1 at protocol priority and returns
+         * only the frozen directive; bytes are retrieved through `lease_outbound`.
+         */ fun `editorV2CollaborationSocketOpen`(`editorId`: kotlin.String, `generation`: kotlin.String, `nowMillis`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`generation`),FfiConverterString.lower(`nowMillis`),_status)
+}
     )
+    }
 
-fun `editorV2Redo`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_redo(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2Create`(`configJson`: kotlin.String, `snapshotState`: kotlin.ByteArray?): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_create(
+        FfiConverterString.lower(`configJson`),FfiConverterOptionalByteArray.lower(`snapshotState`),_status)
+}
     )
+    }
 
-fun `editorV2ReleaseNativeBinding`(
-    `editorId`: kotlin.String,
-    `ownerId`: kotlin.String,
-): FfiUnitResult =
-    FfiConverterTypeFfiUnitResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_release_native_binding(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`ownerId`),
-                _status,
-            )
-        },
+ fun `editorV2Destroy`(`editorId`: kotlin.String): FfiUnitResult {
+            return FfiConverterTypeFfiUnitResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_destroy(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-fun `editorV2RenderNative`(
-    `editorId`: kotlin.String,
-    `ownerId`: kotlin.String,
-    `mirrorScalarAnchor`: kotlin.UInt?,
-    `mirrorScalarHead`: kotlin.UInt?,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_render_native(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`ownerId`),
-                FfiConverterOptionalUInt.lower(`mirrorScalarAnchor`),
-                FfiConverterOptionalUInt.lower(`mirrorScalarHead`),
-                _status,
-            )
-        },
+ fun `editorV2DocToScalar`(`editorId`: kotlin.String, `docPos`: kotlin.UInt): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_doc_to_scalar(
+        FfiConverterString.lower(`editorId`),FfiConverterUInt.lower(`docPos`),_status)
+}
     )
+    }
 
-fun `editorV2RenderUpdate`(
-    `editorId`: kotlin.String,
-    `mirrorScalarAnchor`: kotlin.UInt?,
-    `mirrorScalarHead`: kotlin.UInt?,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_render_update(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterOptionalUInt.lower(`mirrorScalarAnchor`),
-                FfiConverterOptionalUInt.lower(`mirrorScalarHead`),
-                _status,
-            )
-        },
+ fun `editorV2GetContentSnapshot`(`editorId`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_content_snapshot(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-fun `editorV2ReplaceDocument`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_replace_document(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2GetDocumentHtml`(`editorId`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_document_html(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-fun `editorV2ResolveScalarSelection`(
-    `editorId`: kotlin.String,
-    `scalarAnchor`: kotlin.UInt,
-    `scalarHead`: kotlin.UInt,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_resolve_scalar_selection(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterUInt.lower(`scalarAnchor`),
-                FfiConverterUInt.lower(`scalarHead`),
-                _status,
-            )
-        },
+ fun `editorV2GetDocumentJson`(`editorId`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_document_json(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-fun `editorV2ScalarToDoc`(
-    `editorId`: kotlin.String,
-    `scalar`: kotlin.UInt,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_scalar_to_doc(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterUInt.lower(`scalar`),
-                _status,
-            )
-        },
+ fun `editorV2GetState`(`editorId`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_get_state(
+        FfiConverterString.lower(`editorId`),_status)
+}
     )
+    }
 
-fun `editorV2SetSelection`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_set_selection(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2PinPositionEpoch`(`editorId`: kotlin.String, `ownerId`: kotlin.String, `documentRevision`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_pin_position_epoch(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`ownerId`),FfiConverterString.lower(`documentRevision`),_status)
+}
     )
+    }
 
-fun `editorV2SnapshotExport`(`editorId`: kotlin.String): FfiSnapshotExportResult =
-    FfiConverterTypeFfiSnapshotExportResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_snapshot_export(FfiConverterString.lower(`editorId`), _status)
-        },
+ fun `editorV2Redo`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_redo(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
     )
+    }
 
-fun `editorV2SnapshotRestore`(
-    `editorId`: kotlin.String,
-    `metadataJson`: kotlin.String,
-    `encodedState`: kotlin.ByteArray,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_snapshot_restore(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`metadataJson`),
-                FfiConverterByteArray.lower(`encodedState`),
-                _status,
-            )
-        },
+ fun `editorV2ReleaseNativeBinding`(`editorId`: kotlin.String, `ownerId`: kotlin.String): FfiUnitResult {
+            return FfiConverterTypeFfiUnitResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_release_native_binding(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`ownerId`),_status)
+}
     )
+    }
 
-fun `editorV2Undo`(
-    `editorId`: kotlin.String,
-    `requestJson`: kotlin.String,
-): FfiJsonResult =
-    FfiConverterTypeFfiJsonResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_undo(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`requestJson`),
-                _status,
-            )
-        },
+ fun `editorV2RenderNative`(`editorId`: kotlin.String, `ownerId`: kotlin.String, `mirrorScalarAnchor`: kotlin.UInt?, `mirrorScalarHead`: kotlin.UInt?): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_render_native(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`ownerId`),FfiConverterOptionalUInt.lower(`mirrorScalarAnchor`),FfiConverterOptionalUInt.lower(`mirrorScalarHead`),_status)
+}
     )
+    }
 
-fun `viewerCompile`(`request`: FfiViewerCompileRequest): FfiViewerCompileResult =
-    FfiConverterTypeFfiViewerCompileResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_viewer_compile(FfiConverterTypeFfiViewerCompileRequest.lower(`request`), _status)
-        },
+ fun `editorV2RenderUpdate`(`editorId`: kotlin.String, `mirrorScalarAnchor`: kotlin.UInt?, `mirrorScalarHead`: kotlin.UInt?): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_render_update(
+        FfiConverterString.lower(`editorId`),FfiConverterOptionalUInt.lower(`mirrorScalarAnchor`),FfiConverterOptionalUInt.lower(`mirrorScalarHead`),_status)
+}
     )
+    }
+
+ fun `editorV2ReplaceDocument`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_replace_document(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
+    )
+    }
+
+ fun `editorV2ResolveScalarSelection`(`editorId`: kotlin.String, `scalarAnchor`: kotlin.UInt, `scalarHead`: kotlin.UInt): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_resolve_scalar_selection(
+        FfiConverterString.lower(`editorId`),FfiConverterUInt.lower(`scalarAnchor`),FfiConverterUInt.lower(`scalarHead`),_status)
+}
+    )
+    }
+
+ fun `editorV2ScalarToDoc`(`editorId`: kotlin.String, `scalar`: kotlin.UInt): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_scalar_to_doc(
+        FfiConverterString.lower(`editorId`),FfiConverterUInt.lower(`scalar`),_status)
+}
+    )
+    }
+
+ fun `editorV2SetSelection`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_set_selection(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
+    )
+    }
+
+ fun `editorV2SnapshotExport`(`editorId`: kotlin.String): FfiSnapshotExportResult {
+            return FfiConverterTypeFfiSnapshotExportResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_snapshot_export(
+        FfiConverterString.lower(`editorId`),_status)
+}
+    )
+    }
+
+ fun `editorV2SnapshotRestore`(`editorId`: kotlin.String, `metadataJson`: kotlin.String, `encodedState`: kotlin.ByteArray): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_snapshot_restore(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`metadataJson`),FfiConverterByteArray.lower(`encodedState`),_status)
+}
+    )
+    }
+
+ fun `editorV2Undo`(`editorId`: kotlin.String, `requestJson`: kotlin.String): FfiJsonResult {
+            return FfiConverterTypeFfiJsonResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_undo(
+        FfiConverterString.lower(`editorId`),FfiConverterString.lower(`requestJson`),_status)
+}
+    )
+    }
+
+ fun `viewerCompile`(`request`: FfiViewerCompileRequest): FfiViewerCompileResult {
+            return FfiConverterTypeFfiViewerCompileResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_viewer_compile(
+        FfiConverterTypeFfiViewerCompileRequest.lower(`request`),_status)
+}
+    )
+    }
