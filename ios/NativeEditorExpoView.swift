@@ -1,4 +1,4 @@
-public import ExpoModulesCore
+import ExpoModulesCore
 import UIKit
 
 enum NativeEditorDestroyReservationResult: Equatable {
@@ -2574,7 +2574,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         richTextView.textView.imageLoadingPolicyDidChange()
         guard richTextView.editorId != 0 else { return }
         imageLoadOwner.withCurrent {
-            richTextView.textView.applyUpdateJSON(
+            _ = richTextView.textView.applyUpdateJSON(
                 EditorV2Shadow.getCurrentState(id: richTextView.editorId),
                 notifyDelegate: false
             )
@@ -2942,7 +2942,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             // The adapter cache and the payload are paired by the same
             // editor-scoped call above; do not let the view display a render
             // whose revision has not already been adopted for native input.
-            richTextView.textView.applyUpdateJSON(adoptedUpdateJSON)
+            _ = richTextView.textView.applyUpdateJSON(adoptedUpdateJSON)
         }
         return .applied
     }
@@ -3668,7 +3668,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             json: json
         )
         imageLoadOwner.withCurrent {
-            richTextView.textView.applyUpdateJSON(updateJSON)
+            _ = richTextView.textView.applyUpdateJSON(updateJSON)
         }
         emitMentionSelect(trigger: mentions.trigger, suggestion: currentSuggestion, attrs: attrs)
         lastMentionEventJSON = nil
