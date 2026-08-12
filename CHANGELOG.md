@@ -19,8 +19,8 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
   start/scroll/end toolbar item placement.
 - Added `NativeRichTextEditor.focusPreservingRefs` for external controls that
   should preserve editor focus, keyboard, and selection.
-- Added `EditorTheme.list.spacingAfter` for spacing after lists, including
-  nested lists.
+- Added `EditorTheme.list.markerGap` for spacing between markers and item
+  content, plus `spacingAfter` for spacing after lists, including nested lists.
 - Added `EditorTheme.list.orderedMarker` with decimal, alphabetic, and Roman
   numbering schemes plus `.` and `)` suffixes. Schemes cycle by nesting depth;
   the default cycle is `decimal`, `lowerAlpha`, `lowerRoman`.
