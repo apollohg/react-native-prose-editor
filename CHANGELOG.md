@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.0-alpha.1] - 2026-08-14
+
+### Fixed
+
+- Fixed the Android native keyboard toolbar so it animates in sync with the keyboard.
+
 ## [1.0.0-alpha] - 2026-08-01
 
 This is a hard cutover to shared native document, collaboration, and viewer
@@ -482,6 +488,7 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0-alpha.1]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha...1.0.0-alpha.1
 [1.0.0-alpha]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.25...1.0.0-alpha
 [0.5.25]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.24...0.5.25
 [0.5.24]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.23...0.5.24
