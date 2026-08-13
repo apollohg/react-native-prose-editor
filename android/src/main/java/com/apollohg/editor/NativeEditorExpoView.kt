@@ -21,7 +21,6 @@ import android.view.Window
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
@@ -858,6 +857,17 @@ class NativeEditorExpoView(
     val richTextView: RichTextEditorView = RichTextEditorView(context)
     private val keyboardToolbarView = EditorKeyboardToolbarView(context)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val keyboardToolbarImeAnimationController = KeyboardToolbarImeAnimationController(
+        toolbarView = keyboardToolbarView,
+        onTargetImeBottomChanged = { bottom ->
+            currentImeBottom = bottom
+            updateKeyboardToolbarLayout()
+            updateEditorViewportInset()
+        },
+        onImeAnimationSettled = {
+            updateAttachedKeyboardToolbarForInsets()
+        }
+    )
 
     private val onEditorUpdate by EventDispatcher<Map<String, Any>>()
     private val onEditorError by EventDispatcher<Map<String, Any>>()
@@ -1004,11 +1014,13 @@ class NativeEditorExpoView(
         }
         keyboardToolbarView.applyState(toolbarState)
         ViewCompat.setOnApplyWindowInsetsListener(keyboardToolbarView) { _, insets ->
-            currentImeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            updateKeyboardToolbarLayout()
-            updateAttachedKeyboardToolbarForInsets()
+            keyboardToolbarImeAnimationController.onApplyWindowInsets(insets)
             insets
         }
+        ViewCompat.setWindowInsetsAnimationCallback(
+            keyboardToolbarView,
+            keyboardToolbarImeAnimationController.animationCallback
+        )
 
         // Observe EditText focus changes.
         richTextView.editorEditText.setOnFocusChangeListener { _, hasFocus ->
@@ -2395,6 +2407,7 @@ class NativeEditorExpoView(
         lastReadyEditorId = null
         uninstallOutsideTapBlurHandler()
         currentImeBottom = 0
+        keyboardToolbarImeAnimationController.reset()
         keyboardToolbarView.visibility = View.GONE
         detachKeyboardToolbarIfNeeded()
         richTextView.setViewportBottomInsetPx(0)
@@ -3684,6 +3697,7 @@ class NativeEditorExpoView(
         pendingKeyboardToolbarDetachGeneration += 1
         val generation = pendingKeyboardToolbarDetachGeneration
         val parent = keyboardToolbarView.parent as? ViewGroup ?: return
+        keyboardToolbarImeAnimationController.cancel()
         keyboardToolbarView.visibility = View.GONE
         parent.post {
             if (generation != pendingKeyboardToolbarDetachGeneration) return@post
