@@ -250,6 +250,24 @@ function copyTransportConfig(
     };
 }
 
+function copyLocalAwarenessUser(user: LocalAwarenessUser): LocalAwarenessUser {
+    return {
+        userId: user.userId,
+        name: user.name,
+        color: user.color,
+        ...(user.avatarUrl === undefined ? {} : { avatarUrl: user.avatarUrl }),
+        ...(user.extra === undefined ? {} : { extra: user.extra }),
+    };
+}
+
+function localAwarenessDependencyKey(user: LocalAwarenessUser | undefined): string {
+    try {
+        return `json:${JSON.stringify(user ?? null)}`;
+    } catch {
+        return 'invalid';
+    }
+}
+
 function mergeAwarenessPartial(
     base: NativeEditorLocalAwarenessIntent,
     partial: Partial<LocalAwarenessState>
@@ -260,7 +278,10 @@ function mergeAwarenessPartial(
             state.user != null && typeof state.user === 'object'
                 ? (state.user as Record<string, unknown>)
                 : {};
-        state.user = { ...baseUser, ...partial.user };
+        state.user = copyLocalAwarenessUser({
+            ...baseUser,
+            ...partial.user,
+        } as unknown as LocalAwarenessUser);
     }
     const next: NativeEditorLocalAwarenessIntent = {
         state,
@@ -389,7 +410,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.publishAwareness({
             state: {
                 ...(current?.state ?? {}),
-                user: { ...user },
+                user: copyLocalAwarenessUser(user),
             },
             focused: current?.focused ?? false,
         });
@@ -536,7 +557,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
         onError: options.onError,
     };
     const controllerRef = useRef<YjsCollaborationControllerImpl | null>(null);
-    const localAwarenessKey = JSON.stringify(options.localAwareness ?? null);
+    const localAwarenessKey = localAwarenessDependencyKey(options.localAwareness);
     const transportUrl = options.transport?.url ?? null;
     const transportConnect = options.transport?.connect ?? false;
     const transportProtocolAdapterRef = useRef<NativeCollaborationProtocolAdapter | null>(null);

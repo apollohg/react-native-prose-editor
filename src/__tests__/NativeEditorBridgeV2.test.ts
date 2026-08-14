@@ -1439,6 +1439,71 @@ describe('NativeEditorBridge v2', () => {
             expect(snapshotState).toBeNull();
         });
 
+        it('omits undefined optional fields from custom schemas', () => {
+            createNativeEditorDocumentHandle({
+                initialization: { type: 'localEmpty' },
+                schema: {
+                    nodes: [
+                        {
+                            name: 'doc',
+                            content: 'paragraph+',
+                            role: 'doc',
+                            group: undefined,
+                        },
+                        {
+                            name: 'paragraph',
+                            content: '',
+                            role: 'textBlock',
+                            group: 'block',
+                        },
+                    ],
+                    marks: [],
+                },
+            });
+
+            const [configJson] = mockNativeModule.editorV2Create.mock.calls[0];
+            expect(JSON.parse(configJson)).toEqual({
+                schema: {
+                    nodes: [
+                        { name: 'doc', content: 'paragraph+', role: 'doc' },
+                        {
+                            name: 'paragraph',
+                            content: '',
+                            role: 'textBlock',
+                            group: 'block',
+                        },
+                    ],
+                    marks: [],
+                },
+                initialization: { type: 'localEmpty' },
+            });
+        });
+
+        it('omits undefined object fields from local JSON initialization', () => {
+            createNativeEditorDocumentHandle({
+                initialization: {
+                    type: 'localJson',
+                    json: {
+                        type: 'doc',
+                        attrs: { title: undefined, category: 'notes' },
+                        content: [],
+                    },
+                },
+            });
+
+            const [configJson] = mockNativeModule.editorV2Create.mock.calls[0];
+            expect(JSON.parse(configJson)).toEqual({
+                initialization: {
+                    type: 'localJson',
+                    json: {
+                        type: 'doc',
+                        attrs: { category: 'notes' },
+                        content: [],
+                    },
+                },
+            });
+        });
+
         it('creates an exact semantic-depth-1024 local JSON document without stack recursion', () => {
             const maxDepth = HARD_EDITOR_RESOURCE_LIMITS.maxDocumentDepth;
             let deepest: Record<string, unknown> = { type: 'paragraph' };

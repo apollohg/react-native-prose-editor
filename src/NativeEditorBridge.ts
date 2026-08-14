@@ -2357,6 +2357,13 @@ function normalizeV2JsonValue(
             ) {
                 invalidV2JsonValue(label);
             }
+            if (descriptor.value === undefined) {
+                frames.push({
+                    ...frame,
+                    nextKeyIndex: frame.nextKeyIndex + 1,
+                });
+                continue;
+            }
             if (frame.fieldCount > 0) chargeV2JsonBytes(budget, 1, label);
             chargeV2JsonStringBytes(key, budget, label);
             chargeV2JsonBytes(budget, 1, label);

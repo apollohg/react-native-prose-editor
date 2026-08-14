@@ -531,6 +531,29 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(setup.controller.state.documentJson).toEqual(SNAPSHOT_DOC);
     });
 
+    it('omits undefined optional fields from initial local awareness', () => {
+        const setup = setupController({
+            localAwareness: { ...ALICE, avatarUrl: undefined },
+        });
+
+        expect(setup.errors).toEqual([]);
+        expect(awarenessPayload()).toEqual(localAwarenessIntent());
+    });
+
+    it('omits nested undefined fields from local awareness metadata', () => {
+        const setup = setupController({
+            localAwareness: {
+                ...ALICE,
+                extra: { team: 'editor', role: undefined },
+            },
+        });
+
+        expect(setup.errors).toEqual([]);
+        expect(awarenessPayload()).toEqual(
+            localAwarenessIntent({ user: { ...ALICE, extra: { team: 'editor' } } })
+        );
+    });
+
     it('never restates a document position on a focus-only update', () => {
         const setup = setupController({
             handle: createRoomHandle({ withSnapshot: true }),
@@ -613,6 +636,19 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(awarenessPayload()).toMatchObject({
             state: { user: { ...ALICE, name: 'Alice II' } },
         });
+    });
+
+    it('omits undefined optional fields from local awareness updates', () => {
+        const setup = setupController({
+            localAwareness: { ...ALICE, avatarUrl: 'https://example.test/alice.png' },
+        });
+
+        setup.controller.updateLocalAwareness({
+            user: { ...ALICE, avatarUrl: undefined },
+        });
+
+        expect(setup.errors).toEqual([]);
+        expect(awarenessPayload()).toEqual(localAwarenessIntent());
     });
 
     it('normalizes node and all selections to a cursorless awareness intent', () => {
@@ -824,6 +860,24 @@ describe('YjsCollaboration (native-transport controller)', () => {
         expect(configuredTransport()).toMatchObject({ connect: true });
         expect(onStateChange).toHaveBeenCalled();
         expect(result.current.state.status).toBe('connecting');
+    });
+
+    it('reports non-encodable hook awareness without throwing during render', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const errors: Error[] = [];
+
+        expect(() =>
+            renderHook(() =>
+                useYjsCollaboration({
+                    documentId: 'doc-1',
+                    handle,
+                    transport: { url: TRANSPORT_URL, connect: false },
+                    localAwareness: { ...ALICE, extra: { sequence: 1n } },
+                    onError: (error) => errors.push(error),
+                })
+            )
+        ).not.toThrow();
+        expect(errors.length).toBeGreaterThan(0);
     });
 
     it('clears live prop awareness once and lets an explicit user restore it', () => {
