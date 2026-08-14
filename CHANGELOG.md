@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-alpha.2] - 2026-08-14
+
+### Fixed
+
+- Fixed JSON object inputs rejecting optional properties explicitly set to
+  `undefined`, including collaboration awareness, custom schemas, and local
+  document initialization.
+
 ## [1.0.0-alpha.1] - 2026-08-14
 
 ### Fixed
@@ -488,6 +496,7 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0-alpha.2]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.1...1.0.0-alpha.2
 [1.0.0-alpha.1]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha...1.0.0-alpha.1
 [1.0.0-alpha]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.25...1.0.0-alpha
 [0.5.25]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.24...0.5.25
