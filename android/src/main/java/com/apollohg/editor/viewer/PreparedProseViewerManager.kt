@@ -146,6 +146,13 @@ internal class PreparedProseViewerManager :
     override fun setFontEnvironmentRevision(view: PreparedProseDrawingView, value: Int) =
         update(view) { fontEnvironmentRevision = value.coerceAtLeast(0).toLong() }
 
+    override fun onAfterUpdateTransaction(view: PreparedProseDrawingView) {
+        super.onAfterUpdateTransaction(view)
+        val state = states[view] ?: return
+        state.beginSemanticImageGeneration(view)
+        reconcile(view, state)
+    }
+
     override fun measure(
         context: Context,
         localData: ReadableMap?,
@@ -205,8 +212,6 @@ internal class PreparedProseViewerManager :
     private fun update(view: PreparedProseDrawingView, mutation: ViewState.() -> Unit) {
         val state = states.getOrPut(view, ::ViewState)
         state.mutation()
-        state.beginSemanticImageGeneration(view)
-        reconcile(view, state)
     }
 
     private fun installCachedLayout(view: PreparedProseDrawingView) {
