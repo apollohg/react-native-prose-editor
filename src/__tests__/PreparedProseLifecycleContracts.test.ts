@@ -126,6 +126,10 @@ describe('prepared prose native lifecycle contracts', () => {
         const iosProps = methodBody(ios, '- (void)updateProps:');
         const iosState = methodBody(ios, '- (void)updateState:');
         const androidUpdate = android.slice(android.indexOf('private fun update('), android.indexOf('private fun installCachedLayout('));
+        const androidTransaction = android.slice(
+            android.indexOf('override fun onAfterUpdateTransaction('),
+            android.indexOf('override fun measure('),
+        );
         const androidBeginImages = android.slice(
             android.indexOf('fun beginImages('),
             android.indexOf('/** Phase one of Fabric image setup: no artifact is required yet. */'),
@@ -135,8 +139,12 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(iosProps.indexOf('_viewerProps = nextProps;')).toBeLessThan(iosProps.indexOf('[self beginSemanticImageGenerationIfPossible];'));
         expect(iosState.indexOf('_viewerState = nextState;')).toBeLessThan(iosState.indexOf('[self beginSemanticImageGenerationIfPossible];'));
         expect(iosDrawing).toContain('@objc(beginSemanticImageGeneration:)');
-        expect(androidUpdate.indexOf('state.mutation()')).toBeLessThan(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)'));
-        expect(androidUpdate.indexOf('state.beginSemanticImageGeneration(view)')).toBeLessThan(androidUpdate.indexOf('reconcile(view, state)'));
+        expect(androidUpdate).toContain('state.mutation()');
+        expect(androidUpdate).not.toContain('state.beginSemanticImageGeneration(view)');
+        expect(androidUpdate).not.toContain('reconcile(view, state)');
+        expect(androidTransaction.indexOf('state.beginSemanticImageGeneration(view)')).toBeLessThan(
+            androidTransaction.indexOf('reconcile(view, state)'),
+        );
         expect(androidMeasure).toContain('val leaseHandle = FabricLeaseHandleBridge.currentHandle()');
         const androidDeclinesWithoutLease = androidMeasure.slice(
             androidMeasure.indexOf('if (surface != null && leaseHandle <= 0L) {'),
