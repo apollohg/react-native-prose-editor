@@ -38,6 +38,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.widget.AppCompatEditText
+import org.json.JSONObject
 import kotlin.math.roundToInt
 
 /**
@@ -197,6 +198,15 @@ class EditorEditText @JvmOverloads constructor(
         val authorizedTextRevision: Long
     )
 
+    private data class ExternalTextCompositionState(
+        val sessionId: String,
+        var latestText: String,
+        val replacementStartUtf16: Int,
+        val replacementEndUtf16: Int,
+        val startingAuthorizedText: String,
+        val startingAuthorizedRenderedText: CharSequence?
+    )
+
     private interface TransientComposingTextStyleSpan
 
     private class TransientComposingSizeSpan(sizePx: Int) :
@@ -224,6 +234,8 @@ class EditorEditText @JvmOverloads constructor(
 
         /** Called when the editor content is updated after a Rust operation. */
         fun onEditorUpdate(updateJSON: String)
+
+        fun onExternalTextCompositionEnded(resultJson: String) = Unit
     }
 
     /** The editor session public ID (used to look up the [EditorV2Driver] adapter). */
@@ -322,6 +334,9 @@ class EditorEditText @JvmOverloads constructor(
     private var composingReplacementEndUtf16: Int? = null
     private var composingReplacementAuthorizedTextRevision: Long? = null
     private var didInvalidateCompositionReplacementRange = false
+    private var externalTextComposition: ExternalTextCompositionState? = null
+    private val externalCompositionMarker = Any()
+    private val externalTextCompositionTerminalResults = mutableMapOf<String, String>()
     private var nativeTextMutationAfterBlurWindow: NativeTextMutationAfterBlurWindow? = null
     private var nativeTextMutationAdoptionSuppression: NativeTextMutationAdoptionSuppression? = null
     private var lastAuthorizedTextRevision: Long = 0L
@@ -723,6 +738,7 @@ class EditorEditText @JvmOverloads constructor(
         if (!isEditable && isReadOnlyTextMutationKeyEvent(event)) {
             return true
         }
+        if (!commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (handleCompositionKeyEvent(event) { super.dispatchKeyEvent(event) }) {
             return true
         }
@@ -1437,6 +1453,323 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
+    fun beginExternalTextComposition(sessionId: String): String {
+        val driver = v2Driver
+        if (!hasLiveEditor() || !isEditable || driver == null) {
+            return externalCompositionErrorJSON(
+                sessionId,
+                "EXTERNAL_COMPOSITION_UNAVAILABLE",
+                "The native editor is unavailable or not editable"
+            )
+        }
+        if (externalTextCompositionTerminalResults.containsKey(sessionId)) {
+            return externalCompositionEndedErrorJSON(sessionId)
+        }
+        val selection = try {
+            driver.selectionJson()?.let(::JSONObject)
+        } catch (_: Exception) {
+            null
+        }
+        if (selection?.optString("type") != "text") {
+            return externalCompositionErrorJSON(
+                sessionId,
+                "EXTERNAL_COMPOSITION_SELECTION_INCOMPATIBLE",
+                "External composition requires a text selection"
+            )
+        }
+
+        if (externalTextComposition != null) {
+            if (!finishExternalTextComposition("consumer", finalText = null, cancel = false)) {
+                return externalCompositionErrorJSON(
+                    sessionId,
+                    "EXTERNAL_COMPOSITION_COMMIT_FAILED",
+                    "The previous external text composition could not be committed"
+                )
+            }
+            if (externalTextCompositionTerminalResults.containsKey(sessionId)) {
+                return externalCompositionEndedErrorJSON(sessionId)
+            }
+        }
+        if (!prepareForExternalEditorUpdateInternal().ready) {
+            return externalCompositionErrorJSON(
+                sessionId,
+                "EXTERNAL_COMPOSITION_UNAVAILABLE",
+                "Pending native input could not be committed"
+            )
+        }
+
+        captureCompositionReplacementRangeIfNeeded()
+        val (replacementStart, replacementEnd) = compositionReplacementRange()
+            ?: return externalCompositionErrorJSON(
+                sessionId,
+                "EXTERNAL_COMPOSITION_SELECTION_INCOMPATIBLE",
+                "External composition requires a text selection"
+            )
+        externalTextComposition = ExternalTextCompositionState(
+            sessionId = sessionId,
+            latestText = "",
+            replacementStartUtf16 = replacementStart,
+            replacementEndUtf16 = replacementEnd,
+            startingAuthorizedText = lastAuthorizedText,
+            startingAuthorizedRenderedText = lastAuthorizedRenderedText?.let(::SpannableStringBuilder)
+        )
+        return externalCompositionActiveJSON(sessionId)
+    }
+
+    fun updateExternalTextComposition(sessionId: String, text: String): String {
+        val state = externalTextComposition
+        if (state?.sessionId != sessionId) {
+            return externalCompositionEndedErrorJSON(sessionId)
+        }
+        renderExternalTextComposition(text)
+        return externalCompositionActiveJSON(sessionId)
+    }
+
+    fun commitExternalTextComposition(sessionId: String, finalText: String): String {
+        if (externalTextComposition?.sessionId != sessionId) {
+            return externalTextCompositionTerminalResults[sessionId]
+                ?: externalCompositionEndedErrorJSON(sessionId)
+        }
+        finishExternalTextComposition("consumer", finalText, cancel = false)
+        return externalTextCompositionTerminalResults[sessionId]
+            ?: externalCompositionEndedErrorJSON(sessionId)
+    }
+
+    fun cancelExternalTextComposition(sessionId: String, cause: String): String {
+        if (cause !in setOf("consumer", "documentChange", "lifecycle")) {
+            return externalCompositionErrorJSON(
+                sessionId,
+                "EXTERNAL_COMPOSITION_CANCEL_CAUSE_INVALID",
+                "The external composition cancellation cause is invalid"
+            )
+        }
+        if (externalTextComposition?.sessionId != sessionId) {
+            return externalTextCompositionTerminalResults[sessionId]
+                ?: externalCompositionEndedErrorJSON(sessionId)
+        }
+        finishExternalTextComposition(cause, finalText = null, cancel = true)
+        return externalTextCompositionTerminalResults[sessionId]
+            ?: externalCompositionEndedErrorJSON(sessionId)
+    }
+
+    internal fun commitExternalTextCompositionBeforeInteractionIfNeeded(): Boolean =
+        externalTextComposition == null ||
+            finishExternalTextComposition("interaction", finalText = null, cancel = false)
+
+    private fun commitExternalTextCompositionForDocumentChangeIfNeeded(): Boolean =
+        externalTextComposition == null ||
+            finishExternalTextComposition("documentChange", finalText = null, cancel = false)
+
+    private fun cancelExternalTextCompositionForLifecycleIfNeeded() {
+        if (externalTextComposition != null) {
+            finishExternalTextComposition("lifecycle", finalText = null, cancel = true)
+        }
+    }
+
+    private fun renderExternalTextComposition(text: String) {
+        val state = externalTextComposition ?: return
+        val editable = this.text ?: return
+        val visibleStart = state.replacementStartUtf16.coerceIn(0, editable.length)
+        val visibleEnd = if (editable.toString() == state.startingAuthorizedText) {
+            state.replacementEndUtf16
+        } else {
+            visibleStart + state.latestText.length
+        }.coerceIn(visibleStart, editable.length)
+        runWithTransientInputMutationGuard {
+            editable.replace(visibleStart, visibleEnd, text)
+            BaseInputConnection.removeComposingSpans(editable)
+            if (text.isNotEmpty()) {
+                editable.setSpan(
+                    externalCompositionMarker,
+                    visibleStart,
+                    visibleStart + text.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE or Spanned.SPAN_COMPOSING
+                )
+            }
+            Selection.setSelection(editable, visibleStart + text.length)
+            true
+        }
+        state.latestText = text
+        setComposingTextForEditor(text)
+    }
+
+    private fun finishExternalTextComposition(
+        cause: String,
+        finalText: String?,
+        cancel: Boolean
+    ): Boolean {
+        val state = externalTextComposition ?: return true
+        if (finalText != null && finalText != state.latestText) {
+            renderExternalTextComposition(finalText)
+        }
+        if (finalText != null) state.latestText = finalText
+        val authoritativeCancellationUpdate = if (cancel) {
+            v2Driver?.currentStateJson()
+        } else {
+            null
+        }
+        externalTextComposition = null
+        clearCompositionTrackingForEditor()
+
+        if (cancel) {
+            restoreAuthorizedExternalComposition(state, authoritativeCancellationUpdate)
+            emitExternalTextCompositionEnd(
+                state.sessionId,
+                externalCompositionEndedJSON(
+                    state.sessionId,
+                    "cancelled",
+                    cause,
+                    state.latestText
+                )
+            )
+            return true
+        }
+
+        val driver = v2Driver
+        restoreAuthorizedExternalComposition(state)
+        val scalarFrom = PositionBridge.utf16ToScalar(
+            state.replacementStartUtf16,
+            state.startingAuthorizedText
+        )
+        val scalarTo = PositionBridge.utf16ToScalar(
+            state.replacementEndUtf16,
+            state.startingAuthorizedText
+        )
+        val nativeOutcome = (driver as? EditorV2Adapter)?.replaceTextRangeWithNativeOutcome(
+            scalarFrom,
+            scalarTo,
+            state.latestText,
+        )
+        val updateJSON = nativeOutcome?.updateJson
+            ?: if (driver is EditorV2Adapter) null
+            else driver?.replaceTextRange(scalarFrom, scalarTo, state.latestText)
+        if (updateJSON == null) {
+            val recoveryJSON = (driver as? EditorV2Adapter)?.recoverNativeRender()
+                ?: if (driver is EditorV2Adapter) null else driver?.currentStateJson()
+            recoveryJSON?.let {
+                applyUpdateJSON(it, notifyListener = false)
+            }
+            return failExternalTextCompositionCommit(state, cause)
+        }
+
+        applyUpdateJSON(updateJSON, notifyListener = false)
+        val documentChanged = nativeOutcome?.documentChanged
+            ?: (text?.toString() != state.startingAuthorizedText)
+        if (documentChanged) {
+            editorListener?.onEditorUpdate(updateJSON)
+        }
+        emitExternalTextCompositionEnd(
+            state.sessionId,
+            externalCompositionEndedJSON(
+                state.sessionId,
+                "committed",
+                cause,
+                state.latestText
+            )
+        )
+        return true
+    }
+
+    private fun failExternalTextCompositionCommit(
+        state: ExternalTextCompositionState,
+        cause: String
+    ): Boolean {
+        val resultJSON = externalCompositionEndedJSON(
+            state.sessionId,
+            "cancelled",
+            cause,
+            state.latestText,
+            externalCompositionErrorPayload(
+                "EXTERNAL_COMPOSITION_COMMIT_FAILED",
+                "The external text composition could not be committed"
+            )
+        )
+        emitExternalTextCompositionEnd(state.sessionId, resultJSON)
+        return false
+    }
+
+    private fun restoreAuthorizedExternalComposition(
+        state: ExternalTextCompositionState,
+        authoritativeUpdateJSON: String? = null
+    ) {
+        val snapshot = state.startingAuthorizedRenderedText ?: state.startingAuthorizedText
+        runWithTransientInputMutationGuard {
+            beginBatchEdit()
+            try {
+                setText(snapshot)
+                val length = text?.length ?: 0
+                Selection.setSelection(
+                    text,
+                    state.replacementStartUtf16.coerceIn(0, length),
+                    state.replacementEndUtf16.coerceIn(0, length)
+                )
+            } finally {
+                endBatchEdit()
+            }
+            true
+        }
+        authoritativeUpdateJSON?.let {
+            applyUpdateJSON(it, notifyListener = false)
+        }
+    }
+
+    private fun emitExternalTextCompositionEnd(sessionId: String, resultJson: String) {
+        if (externalTextCompositionTerminalResults.putIfAbsent(sessionId, resultJson) != null) return
+        editorListener?.onExternalTextCompositionEnded(resultJson)
+    }
+
+    private fun externalCompositionActiveJSON(sessionId: String): String =
+        JSONObject()
+            .put("version", 1)
+            .put("type", "active")
+            .put("sessionId", sessionId)
+            .toString()
+
+    private fun externalCompositionEndedJSON(
+        sessionId: String,
+        outcome: String,
+        cause: String,
+        text: String,
+        error: JSONObject? = null
+    ): String = JSONObject()
+        .put("version", 1)
+        .put("type", "ended")
+        .put("sessionId", sessionId)
+        .put("outcome", outcome)
+        .put("cause", cause)
+        .put("text", text)
+        .apply { if (error != null) put("error", error) }
+        .toString()
+
+    private fun externalCompositionEndedErrorJSON(sessionId: String): String =
+        externalCompositionErrorJSON(
+            sessionId,
+            "EXTERNAL_COMPOSITION_ENDED",
+            "The external text composition session has ended"
+        )
+
+    private fun externalCompositionErrorJSON(
+        sessionId: String?,
+        code: String,
+        message: String
+    ): String = JSONObject()
+        .put("version", 1)
+        .put("type", "error")
+        .put("sessionId", sessionId ?: JSONObject.NULL)
+        .put("error", externalCompositionErrorPayload(code, message))
+        .toString()
+
+    private fun externalCompositionErrorPayload(code: String, message: String): JSONObject =
+        JSONObject()
+            .put("domain", "lifecycle")
+            .put("code", code)
+            .put("message", message)
+            .put("requestId", JSONObject.NULL)
+            .put("operationIndex", JSONObject.NULL)
+            .put("limit", JSONObject.NULL)
+            .put("actual", JSONObject.NULL)
+            .put("details", JSONObject.NULL)
+
     internal fun authorizedUtf16Range(start: Int, end: Int): Pair<Int, Int> {
         if (start == end) {
             val snapped = PositionBridge.snapToScalarBoundary(
@@ -1636,6 +1969,7 @@ class EditorEditText @JvmOverloads constructor(
 
     private fun discardTransientInputForDestroyedEditorIfNeeded(): Boolean {
         if (!isEditorDestroyedForInput()) return false
+        cancelExternalTextCompositionForLifecycleIfNeeded()
         retireInputConnectionForEditor()
         clearNativeTextMutationAfterBlurWindow()
         clearNativeTextMutationAdoptionSuppression()
@@ -1643,6 +1977,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun discardTransientInputAndRestoreAuthorizedTextForEditor() {
+        cancelExternalTextCompositionForLifecycleIfNeeded()
         retireInputConnectionForEditor()
         clearNativeTextMutationAfterBlurWindow()
         restoreAuthorizedTextSnapshotForEditor()
@@ -1764,6 +2099,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun discardTransientNativeInputForEditorRebind() {
+        cancelExternalTextCompositionForLifecycleIfNeeded()
         retireInputConnectionForEditor()
         nativeTextMutationAfterBlurWindow = null
         clearNativeTextMutationAdoptionSuppression()
@@ -1771,6 +2107,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     internal fun discardTransientNativeInputForExternalRecovery() {
+        cancelExternalTextCompositionForLifecycleIfNeeded()
         retireInputConnectionForEditor()
         nativeTextMutationAfterBlurWindow = null
         restoreAuthorizedTextIfNeeded()
@@ -1790,7 +2127,7 @@ class EditorEditText @JvmOverloads constructor(
      * after a composing commit has already produced and adopted one.
      */
     internal fun hasPendingCompositionForExternalRefresh(): Boolean =
-        activeInputConnection?.hasPendingComposition() == true
+        externalTextComposition != null || activeInputConnection?.hasPendingComposition() == true
 
     fun prepareForExternalEditorUpdateWithResult(): ExternalEditorUpdatePreparation {
         externalUpdatePreparationCaptureDepth += 1
@@ -1816,6 +2153,9 @@ class EditorEditText @JvmOverloads constructor(
             return ExternalEditorUpdatePreparation(ready = false, adoptedUpdateJSON = null)
         }
         if (discardTransientInputForDestroyedEditorIfNeeded()) {
+            return ExternalEditorUpdatePreparation(ready = false, adoptedUpdateJSON = null)
+        }
+        if (!commitExternalTextCompositionForDocumentChangeIfNeeded()) {
             return ExternalEditorUpdatePreparation(ready = false, adoptedUpdateJSON = null)
         }
         val inputConnection = activeInputConnection
@@ -2582,8 +2922,15 @@ class EditorEditText @JvmOverloads constructor(
         return recentSignature == signature
     }
 
+    private fun prepareForToolbarCommandWithExternalOwner(): Boolean {
+        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return false
+        if (externalTextComposition == null) return true
+        return commitExternalTextCompositionBeforeInteractionIfNeeded() &&
+            prepareForExternalEditorUpdate()
+    }
+
     fun performToolbarToggleMark(markName: String) {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
             driver.toggleMark(markName, selection.first, selection.second)?.let { applyUpdateJSON(it) }
@@ -2591,7 +2938,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun performToolbarToggleList(listType: String, isActive: Boolean) {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
             val update = if (isActive) {
@@ -2604,7 +2951,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun performToolbarToggleBlockquote() {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
             driver.toggleBlockquote(selection.first, selection.second)?.let { applyUpdateJSON(it) }
@@ -2612,7 +2959,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun performToolbarToggleHeading(level: Int) {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         if (level !in 1..6) return
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
@@ -2621,7 +2968,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun performToolbarIndentListItem() {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
             driver.indentListItem(selection.first, selection.second)?.let { applyUpdateJSON(it) }
@@ -2629,7 +2976,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun performToolbarOutdentListItem() {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
             driver.outdentListItem(selection.first, selection.second)?.let { applyUpdateJSON(it) }
@@ -2637,7 +2984,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun performToolbarInsertNode(nodeType: String) {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
             driver.insertNode(nodeType, selection.first, selection.second)?.let { applyUpdateJSON(it) }
@@ -2645,14 +2992,14 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun performToolbarUndo() {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         v2Driver?.let { driver ->
             driver.undo()?.let { applyUpdateJSON(it) }
         }
     }
 
     fun performToolbarRedo() {
-        if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
+        if (!prepareForToolbarCommandWithExternalOwner()) return
         v2Driver?.let { driver ->
             driver.redo()?.let { applyUpdateJSON(it) }
         }
@@ -2683,6 +3030,10 @@ class EditorEditText @JvmOverloads constructor(
             id == android.R.id.pasteAsPlainText ||
             id == android.R.id.cut
 
+    private fun prepareForExternalInteractionMutation(): Boolean =
+        commitExternalTextCompositionBeforeInteractionIfNeeded() &&
+            prepareForExternalEditorUpdate()
+
     /**
      * Block accessibility-initiated text mutations (paste, cut, set text) when not editable.
      * Selection and copy actions remain available.
@@ -2711,7 +3062,7 @@ class EditorEditText @JvmOverloads constructor(
             return
         }
         if (discardTransientInputForDestroyedEditorIfNeeded()) return
-        if (!prepareForExternalEditorUpdate()) return
+        if (!prepareForExternalInteractionMutation()) return
 
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             ?: return
@@ -2740,7 +3091,7 @@ class EditorEditText @JvmOverloads constructor(
             return
         }
         if (discardTransientInputForDestroyedEditorIfNeeded()) return
-        if (!prepareForExternalEditorUpdate()) return
+        if (!prepareForExternalInteractionMutation()) return
 
         val currentText = text?.toString() ?: return
         val (selectionStart, selectionEnd) = normalizedUtf16SelectionRange(currentText) ?: return
@@ -2776,7 +3127,7 @@ class EditorEditText @JvmOverloads constructor(
             )
         }
         if (discardTransientInputForDestroyedEditorIfNeeded()) return false
-        if (!prepareForExternalEditorUpdate()) return false
+        if (!prepareForExternalInteractionMutation()) return false
 
         val currentText = text?.toString() ?: return false
         val scalarStart = 0
@@ -2795,6 +3146,21 @@ class EditorEditText @JvmOverloads constructor(
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
         if (isApplyingRustState) return
+        val wasExternallyComposing = externalTextComposition != null
+        if (!commitExternalTextCompositionBeforeInteractionIfNeeded()) return
+        if (wasExternallyComposing) {
+            val editable = text
+            if (editable != null) {
+                val restoredStart = selStart.coerceIn(0, editable.length)
+                val restoredEnd = selEnd.coerceIn(0, editable.length)
+                if (selectionStart != restoredStart || selectionEnd != restoredEnd) {
+                    runWithTransientInputMutationGuard {
+                        Selection.setSelection(editable, restoredStart, restoredEnd)
+                        true
+                    }
+                }
+            }
+        }
         val spannable = text as? Spanned
         if (spannable != null && isExactImageSpanRange(spannable, selStart, selEnd)) {
             explicitSelectedImageRange = ImageSelectionRange(selStart, selEnd)
@@ -4604,8 +4970,13 @@ class EditorEditText @JvmOverloads constructor(
                 if (!withinTouchSlop(event)) return false
                 val upScalar = taskListMarkerScalarHitAt(event.x, event.y) ?: return false
                 if (upScalar != downScalar) return false
+                if (!commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
+                val authoritativeScalar = taskListMarkerScalarHitAt(event.x, event.y) ?: return true
                 requestFocus()
-                toggleTaskItemCheckedAtSelectionScalarInRust(upScalar, upScalar)
+                toggleTaskItemCheckedAtSelectionScalarInRust(
+                    authoritativeScalar,
+                    authoritativeScalar
+                )
                 performClick()
                 return true
             }

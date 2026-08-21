@@ -1978,9 +1978,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     let onToolbarAction = EventDispatcher()
     let onAddonEvent = EventDispatcher()
     let onEditorError = EventDispatcher()
+    let onExternalTextCompositionEnd = EventDispatcher()
     /// Native integration tests capture the exact payload production sends to
     /// Expo without assigning adapter callbacks directly.
     var onEditorErrorForTesting: (([String: Any]) -> Void)?
+    var onExternalTextCompositionEndForTesting: (([String: Any]) -> Void)?
     private var autonomousErrorBindingAdapter: EditorV2Adapter?
     private var autonomousErrorBindingEditorId: String?
     private var autonomousErrorBindingToken: UUID?
@@ -2061,6 +2063,10 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     deinit {
+        richTextView.textView.editorDelegate = nil
+        if let resultJSON = richTextView.textView.discardTransientNativeInputForEditorRebind() {
+            dispatchExternalTextCompositionEnd(resultJSON)
+        }
         clearAutonomousErrorBinding()
         NativeEditorViewRegistry.shared.unregister(editorId: richTextView.editorId, view: self)
         imageLoadOwner.cancelAll()
@@ -2114,6 +2120,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             return
         }
 
+        richTextView.textView.discardTransientNativeInputForEditorRebind()
         clearAutonomousErrorBinding()
         NativeEditorViewRegistry.shared.unregister(editorId: editorId, view: self)
         clearPendingEditorUpdateRetries()
@@ -2154,6 +2161,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             return
         }
         if previousEditorId != id {
+            richTextView.textView.discardTransientNativeInputForEditorRebind()
             clearAutonomousErrorBinding()
             NativeEditorViewRegistry.shared.unregister(editorId: previousEditorId, view: self)
             clearPendingEditorUpdateRetries()
@@ -2588,6 +2596,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func setEditable(_ editable: Bool) {
+        if !editable, richTextView.textView.isEditable {
+            richTextView.textView.cancelExternalTextCompositionForLifecycleIfNeeded()
+        }
         if !editable,
            richTextView.textView.isEditable,
            richTextView.editorId != 0,
@@ -2836,6 +2847,25 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     // MARK: - View Commands
+
+    func beginExternalTextComposition(sessionId: String) -> String {
+        richTextView.textView.beginExternalTextComposition(sessionId: sessionId)
+    }
+
+    func updateExternalTextComposition(sessionId: String, text: String) -> String {
+        richTextView.textView.updateExternalTextComposition(sessionId: sessionId, text: text)
+    }
+
+    func commitExternalTextComposition(sessionId: String, finalText: String) -> String {
+        richTextView.textView.commitExternalTextComposition(
+            sessionId: sessionId,
+            finalText: finalText
+        )
+    }
+
+    func cancelExternalTextComposition(sessionId: String, cause: String) -> String {
+        richTextView.textView.cancelExternalTextComposition(sessionId: sessionId, cause: cause)
+    }
 
     private func reportRejectedEditorUpdateEnvelope(
         _ message: String,
@@ -3188,6 +3218,25 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     // MARK: - EditorTextViewDelegate
+
+    func editorTextView(
+        _ textView: EditorTextView,
+        didEndExternalTextComposition resultJSON: String
+    ) {
+        dispatchExternalTextCompositionEnd(resultJSON)
+    }
+
+    private func dispatchExternalTextCompositionEnd(_ resultJSON: String) {
+        let payload: [String: Any] = [
+            "editorId": String(richTextView.editorId),
+            "resultJson": resultJSON,
+        ]
+        if let onExternalTextCompositionEndForTesting {
+            onExternalTextCompositionEndForTesting(payload)
+        } else {
+            onExternalTextCompositionEnd(payload)
+        }
+    }
 
     func editorTextView(_ textView: EditorTextView, selectionDidChange anchor: UInt32, head: UInt32) {
         let originatingEditorId = textView.editorId

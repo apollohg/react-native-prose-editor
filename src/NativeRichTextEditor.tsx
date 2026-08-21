@@ -3,6 +3,7 @@ import React, {
     useCallback,
     useEffect,
     useImperativeHandle,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -34,8 +35,18 @@ import {
     type ReadonlyActiveState,
     type Selection,
 } from './NativeEditorBridge';
-import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
+import {
+    NativeEditorV2ErrorBase,
+    NativeEditorV2OperationError,
+} from './NativeEditorBoundaryError';
 import { allocateEditorUpdateRevision } from './EditorUpdateRevision';
+import {
+    ExternalTextCompositionManager,
+    createExternalCompositionLifecycleError,
+    type ExternalTextCompositionOptions,
+    type ExternalTextCompositionSession,
+    type NativeExternalTextCompositionHandle,
+} from './ExternalTextComposition';
 import { useNativeEditorDocument } from './useNativeEditor';
 import {
     DEFAULT_EDITOR_TOOLBAR_ITEMS,
@@ -84,7 +95,12 @@ export type {
     NativeRichTextEditorFocusPreservingRefs,
 } from './useFocusPreservingFrames';
 
-interface NativeEditorViewHandle {
+interface NativeExternalTextCompositionEvent {
+    editorId: string;
+    resultJson: string;
+}
+
+interface NativeEditorViewHandle extends NativeExternalTextCompositionHandle {
     focus?: () => void;
     blur?: () => void;
     getCaretRect?: () => Promise<string | null> | string | null;
@@ -117,6 +133,9 @@ interface NativeEditorViewProps {
     editorUpdateRevision?: number;
     onEditorUpdate: (event: NativeSyntheticEvent<NativeUpdateEvent>) => void;
     onEditorError: (event: NativeSyntheticEvent<NativeErrorEvent>) => void;
+    onExternalTextCompositionEnd: (
+        event: NativeSyntheticEvent<NativeExternalTextCompositionEvent>
+    ) => void;
     onSelectionChange: (event: NativeSyntheticEvent<NativeSelectionEvent>) => void;
     onFocusChange: (event: NativeSyntheticEvent<NativeFocusEvent>) => void;
     onContentHeightChange: (event: NativeSyntheticEvent<NativeContentHeightEvent>) => void;
@@ -175,6 +194,21 @@ interface NativeEditorErrorBinding {
     readonly editorId: string;
     readonly generation: number;
     readonly mounted: boolean;
+}
+
+interface ControlledValueDelivery {
+    manager: ExternalTextCompositionManager;
+    key: string | null;
+    value: string | undefined;
+    valueJSON: DocumentJSON | undefined;
+}
+
+interface ExternalCompositionDisposalToken {
+    cancelled: boolean;
+}
+
+function externalCompositionErrorPayload(error: unknown): unknown {
+    return error instanceof NativeEditorV2ErrorBase ? error.error : error;
 }
 
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
@@ -671,6 +705,12 @@ export interface NativeRichTextEditorRef {
     focus(): void;
     /** Programmatically blur the editor. */
     blur(): void;
+    /** Check whether the mounted native editor supports external text composition. */
+    supportsExternalTextComposition(): boolean;
+    /** Begin an external text composition session. */
+    beginExternalTextComposition(
+        options?: ExternalTextCompositionOptions
+    ): Promise<ExternalTextCompositionSession>;
     /** Toggle a formatting mark (e.g. 'bold', 'italic'). */
     toggleMark(markType: string): void;
     /** Apply or update a hyperlink on the current selection. */
@@ -809,10 +849,148 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [serializedValueJson]
         );
 
-        const document = useNativeEditorDocument({
-            handle: documentHandle,
+        const bridge = documentHandle.bridge;
+        const editorId = documentHandle.editorId;
+        const nativeViewRef = useRef<NativeEditorViewHandle | null>(null);
+        const externalCompositionManager = useMemo(
+            () => new ExternalTextCompositionManager(editorId, () => nativeViewRef.current),
+            [editorId]
+        );
+        const managerDisposalsRef = useRef(
+            new Map<ExternalTextCompositionManager, ExternalCompositionDisposalToken>()
+        );
+        useEffect(() => {
+            const pendingDisposal = managerDisposalsRef.current.get(externalCompositionManager);
+            if (pendingDisposal != null) {
+                pendingDisposal.cancelled = true;
+                managerDisposalsRef.current.delete(externalCompositionManager);
+            }
+            return () => {
+                const token: ExternalCompositionDisposalToken = { cancelled: false };
+                managerDisposalsRef.current.set(externalCompositionManager, token);
+                void Promise.resolve().then(() => {
+                    if (
+                        token.cancelled ||
+                        managerDisposalsRef.current.get(externalCompositionManager) !== token
+                    ) {
+                        return;
+                    }
+                    managerDisposalsRef.current.delete(externalCompositionManager);
+                    externalCompositionManager.dispose();
+                });
+            };
+        }, [externalCompositionManager]);
+
+        const controlledValueKey =
+            value != null
+                ? `html:${value}`
+                : serializedValueJson == null
+                  ? null
+                  : `json:${serializedValueJson}`;
+        const currentControlledValue: ControlledValueDelivery = {
+            manager: externalCompositionManager,
+            key: controlledValueKey,
             value,
             valueJSON: controlledValueJSON,
+        };
+        const deliveredControlledValueRef = useRef<ControlledValueDelivery>(
+            currentControlledValue
+        );
+        if (
+            deliveredControlledValueRef.current.manager !== externalCompositionManager ||
+            valueJSONUpdateMode !== 'reset' ||
+            controlledValueKey == null ||
+            deliveredControlledValueRef.current.key === controlledValueKey
+        ) {
+            deliveredControlledValueRef.current = currentControlledValue;
+        }
+        const latestControlledValueRef = useRef({
+            ...currentControlledValue,
+            mode: valueJSONUpdateMode,
+            handle: documentHandle,
+        });
+        latestControlledValueRef.current = {
+            ...currentControlledValue,
+            mode: valueJSONUpdateMode,
+            handle: documentHandle,
+        };
+        const pendingResetCancellationRef = useRef<{
+            manager: ExternalTextCompositionManager;
+        } | null>(null);
+        const blockedControlledResetRef = useRef<{
+            manager: ExternalTextCompositionManager;
+            key: string;
+        } | null>(null);
+        const [, setControlledResetRevision] = useState(0);
+        useLayoutEffect(() => {
+            if (
+                valueJSONUpdateMode !== 'reset' ||
+                controlledValueKey == null ||
+                deliveredControlledValueRef.current.manager !== externalCompositionManager ||
+                deliveredControlledValueRef.current.key === controlledValueKey ||
+                pendingResetCancellationRef.current?.manager === externalCompositionManager ||
+                (blockedControlledResetRef.current?.manager === externalCompositionManager &&
+                    blockedControlledResetRef.current.key === controlledValueKey)
+            ) {
+                return;
+            }
+            const pending = { manager: externalCompositionManager };
+            pendingResetCancellationRef.current = pending;
+            void externalCompositionManager.cancelForDocumentChange().then(
+                () => {
+                    if (pendingResetCancellationRef.current !== pending) return;
+                    pendingResetCancellationRef.current = null;
+                    const latest = latestControlledValueRef.current;
+                    if (
+                        latest.manager !== externalCompositionManager ||
+                        latest.mode !== 'reset' ||
+                        latest.key == null ||
+                        deliveredControlledValueRef.current.key === latest.key ||
+                        latest.handle.isDestroyed ||
+                        managerDisposalsRef.current.has(externalCompositionManager)
+                    ) {
+                        return;
+                    }
+                    blockedControlledResetRef.current = null;
+                    deliveredControlledValueRef.current = {
+                        manager: latest.manager,
+                        key: latest.key,
+                        value: latest.value,
+                        valueJSON: latest.valueJSON,
+                    };
+                    setControlledResetRevision((revision) => revision + 1);
+                },
+                (error: unknown) => {
+                    if (pendingResetCancellationRef.current !== pending) return;
+                    pendingResetCancellationRef.current = null;
+                    const latest = latestControlledValueRef.current;
+                    if (
+                        latest.manager !== externalCompositionManager ||
+                        latest.mode !== 'reset' ||
+                        latest.key == null ||
+                        deliveredControlledValueRef.current.key === latest.key ||
+                        latest.handle.isDestroyed ||
+                        managerDisposalsRef.current.has(externalCompositionManager)
+                    ) {
+                        return;
+                    }
+                    blockedControlledResetRef.current = {
+                        manager: externalCompositionManager,
+                        key: latest.key,
+                    };
+                    latest.handle.bridge._emitAutonomousError(
+                        externalCompositionErrorPayload(error)
+                    );
+                }
+            );
+        }, [controlledValueKey, externalCompositionManager, valueJSONUpdateMode]);
+
+        const deliveredControlledValue = deliveredControlledValueRef.current;
+
+        const document = useNativeEditorDocument({
+            handle: documentHandle,
+            value: deliveredControlledValue.value,
+            valueJSON: deliveredControlledValue.valueJSON,
             valueJSONUpdateMode,
             revisionSignal: documentRevision ?? null,
             onContentChange,
@@ -821,8 +999,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             onLocalCommit,
         });
 
-        const bridge = documentHandle.bridge;
-        const editorId = documentHandle.editorId;
         const nativeErrorBindingRef = useRef<NativeEditorErrorBinding>({
             handle: documentHandle,
             editorId,
@@ -838,17 +1014,26 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             };
         }
         const nativeErrorBinding = nativeErrorBindingRef.current;
-        useEffect(
-            () => () => {
+        useEffect(() => {
+            const currentBinding = nativeErrorBindingRef.current;
+            if (
+                currentBinding !== nativeErrorBinding &&
+                !currentBinding.mounted &&
+                currentBinding.handle === nativeErrorBinding.handle &&
+                currentBinding.editorId === nativeErrorBinding.editorId &&
+                currentBinding.generation === nativeErrorBinding.generation + 1
+            ) {
+                nativeErrorBindingRef.current = nativeErrorBinding;
+            }
+            return () => {
                 if (nativeErrorBindingRef.current !== nativeErrorBinding) return;
                 nativeErrorBindingRef.current = {
                     ...nativeErrorBinding,
                     generation: nativeErrorBinding.generation + 1,
                     mounted: false,
                 };
-            },
-            [nativeErrorBinding]
-        );
+            };
+        }, [nativeErrorBinding]);
 
         const onSelectionChangeRef = useRef(onSelectionChange);
         onSelectionChangeRef.current = onSelectionChange;
@@ -1258,7 +1443,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             });
         }, [commandInsertImage]);
 
-        const nativeViewRef = useRef<NativeEditorViewHandle | null>(null);
         useImperativeHandle(
             ref,
             (): NativeRichTextEditorRef => ({
@@ -1267,6 +1451,22 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 },
                 blur() {
                     nativeViewRef.current?.blur?.();
+                },
+                supportsExternalTextComposition() {
+                    return externalCompositionManager.supports();
+                },
+                beginExternalTextComposition(
+                    options?: ExternalTextCompositionOptions
+                ): Promise<ExternalTextCompositionSession> {
+                    if (!editable) {
+                        return Promise.reject(
+                            createExternalCompositionLifecycleError(
+                                'EXTERNAL_COMPOSITION_UNAVAILABLE',
+                                'The editor view is not editable'
+                            )
+                        );
+                    }
+                    return externalCompositionManager.begin(options);
                 },
                 toggleMark: commandToggleMark,
                 setLink: commandSetLink,
@@ -1314,6 +1514,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 commandInsertText,
                 commandInsertContentHtml,
                 commandInsertContentJson,
+                editable,
+                externalCompositionManager,
             ]
         );
 
@@ -1344,10 +1546,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [applyTypedUpdateState, document, documentHandle]
         );
 
-        const handleEditorError = useCallback(
-            (event: NativeSyntheticEvent<NativeErrorEvent>) => {
-                const payload = event?.nativeEvent;
-                if (!isRecord(payload)) return;
+        const admitNativeBindingEvent = useCallback(
+            (payload: unknown): NativeEditorErrorBinding | null => {
+                if (!isRecord(payload)) return null;
                 const currentBinding = nativeErrorBindingRef.current;
                 if (
                     currentBinding !== nativeErrorBinding ||
@@ -1357,7 +1558,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     currentBinding.editorId !== nativeErrorBinding.editorId ||
                     nativeErrorBinding.handle.isDestroyed
                 ) {
-                    return;
+                    return null;
                 }
                 const presentedEditorId = payload.editorId;
                 if (
@@ -1365,11 +1566,41 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     normalizeNativeEditorV2DecimalId(presentedEditorId) !== presentedEditorId ||
                     presentedEditorId !== nativeErrorBinding.editorId
                 ) {
-                    return;
+                    return null;
                 }
-                nativeErrorBinding.handle.bridge._emitAutonomousError(payload.error);
+                return currentBinding;
             },
             [nativeErrorBinding]
+        );
+
+        const handleEditorError = useCallback(
+            (event: NativeSyntheticEvent<NativeErrorEvent>) => {
+                const payload = event?.nativeEvent;
+                const binding = admitNativeBindingEvent(payload);
+                if (binding == null || !isRecord(payload)) return;
+                binding.handle.bridge._emitAutonomousError(payload.error);
+            },
+            [admitNativeBindingEvent]
+        );
+
+        const handleExternalTextCompositionEnd = useCallback(
+            (event: NativeSyntheticEvent<NativeExternalTextCompositionEvent>) => {
+                const payload = event?.nativeEvent;
+                const binding = admitNativeBindingEvent(payload);
+                if (binding == null || !isRecord(payload)) return;
+                if (typeof payload.resultJson !== 'string') return;
+                try {
+                    externalCompositionManager.handleNativeEnd(
+                        binding.editorId,
+                        payload.resultJson
+                    );
+                } catch (error) {
+                    binding.handle.bridge._emitAutonomousError(
+                        externalCompositionErrorPayload(error)
+                    );
+                }
+            },
+            [admitNativeBindingEvent, externalCompositionManager]
         );
 
         const handleSelectionChange = useCallback(
@@ -1937,6 +2168,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     editorUpdateRevision={currentPushedUpdate?.revision ?? 0}
                     onEditorUpdate={handleEditorUpdate}
                     onEditorError={handleEditorError}
+                    onExternalTextCompositionEnd={handleExternalTextCompositionEnd}
                     onSelectionChange={handleSelectionChange}
                     onFocusChange={handleFocusChange}
                     onContentHeightChange={handleContentHeightChange}

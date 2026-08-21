@@ -120,6 +120,7 @@ class EditorInputConnection(
      */
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         if (!isCurrentInputSessionFor("commitText")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
         if (editorView.isApplyingRustState) {
             editorView.recordImeTraceForTesting(
@@ -158,6 +159,7 @@ class EditorInputConnection(
 
     override fun commitCompletion(text: CompletionInfo?): Boolean {
         if (!isCurrentInputSessionFor("commitCompletion")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
         if (editorView.isApplyingRustState) {
             return super.commitCompletion(text)
@@ -202,6 +204,7 @@ class EditorInputConnection(
 
     override fun commitCorrection(correctionInfo: CorrectionInfo?): Boolean {
         if (!isCurrentInputSessionFor("commitCorrection")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
         if (editorView.isApplyingRustState) {
             return super.commitCorrection(correctionInfo)
@@ -397,6 +400,7 @@ class EditorInputConnection(
      */
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
         if (!isCurrentInputSessionFor("deleteSurroundingText")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
         if (editorView.isApplyingRustState) {
             return super.deleteSurroundingText(beforeLength, afterLength)
@@ -444,6 +448,7 @@ class EditorInputConnection(
 
     override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
         if (!isCurrentInputSessionFor("deleteSurroundingTextInCodePoints")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
         if (editorView.isApplyingRustState) {
             return super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
@@ -624,6 +629,7 @@ class EditorInputConnection(
      */
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
         if (!isCurrentInputSessionFor("setComposingText")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
         if (editorView.editorId == 0L) return super.setComposingText(text, newCursorPosition)
         if (editorView.hasInvalidatedCompositionReplacementRangeForEditor()) {
@@ -654,6 +660,7 @@ class EditorInputConnection(
 
     override fun setComposingRegion(start: Int, end: Int): Boolean {
         if (!isCurrentInputSessionFor("setComposingRegion")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
         if (editorView.editorId == 0L) return super.setComposingRegion(start, end)
         if (editorView.hasInvalidatedCompositionReplacementRangeForEditor()) {
@@ -677,6 +684,7 @@ class EditorInputConnection(
 
     override fun setSelection(start: Int, end: Int): Boolean {
         if (!isCurrentInputSessionFor("setSelection")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) {
             consumeInvalidatedCompositionReplacementRangeAndRestore()
             return true
@@ -701,6 +709,8 @@ class EditorInputConnection(
      * so it can capture the result and send it to Rust.
      */
     override fun finishComposingText(): Boolean {
+        if (!isCurrentInputSessionFor("finishComposingText")) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (applyPendingCompositionCorrectionCommitIfNeeded("finishComposingText")) return true
         return finishComposingTextInternal(blockWhenCompositionWasCancelled = false)
     }
@@ -958,6 +968,7 @@ class EditorInputConnection(
      */
     override fun sendKeyEvent(event: KeyEvent?): Boolean {
         if (!isCurrentInputSession()) return true
+        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (
             event?.action == KeyEvent.ACTION_UP &&
             editorView.hasInvalidatedCompositionReplacementRangeForEditor()

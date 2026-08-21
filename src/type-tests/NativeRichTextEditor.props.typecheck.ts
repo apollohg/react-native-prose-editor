@@ -1,5 +1,10 @@
 import type { NativeEditorDocumentHandle } from '../NativeEditorBridge';
-import type { NativeRichTextEditorFocusPreservingRef, ReadonlyActiveState } from '../index';
+import type {
+    ExternalTextCompositionEndEvent,
+    NativeRichTextEditorFocusPreservingRef,
+    NativeRichTextEditorRef,
+    ReadonlyActiveState,
+} from '../index';
 import type { NativeRichTextEditorProps } from '../NativeRichTextEditor';
 
 declare const documentHandle: NativeEditorDocumentHandle;
@@ -76,3 +81,19 @@ const focusPreservingProps: readonly NativeRichTextEditorProps[] = [
 ];
 
 void focusPreservingProps;
+
+declare const editorRef: NativeRichTextEditorRef;
+
+async function driveExternalComposition(): Promise<void> {
+    if (!editorRef.supportsExternalTextComposition()) return;
+    const session = await editorRef.beginExternalTextComposition({
+        onEnd(event: ExternalTextCompositionEndEvent) {
+            void event.outcome;
+        },
+    });
+    await session.update('on arrival');
+    await session.commit('O/A');
+    await session.cancel();
+}
+
+void driveExternalComposition;

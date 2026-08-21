@@ -633,7 +633,8 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
                 "onContentHeightChange",
                 "onToolbarAction",
                 "onAddonEvent",
-                "onEditorError"
+                "onEditorError",
+                "onExternalTextCompositionEnd"
             )
 
             Prop("editorId") { (view: NativeEditorExpoView, id: String) in
@@ -711,6 +712,22 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
 
             AsyncFunction("applyEditorUpdate") { (view: NativeEditorExpoView, updateJson: String) -> Bool in
                 view.applyEditorUpdate(updateJson)
+            }
+            AsyncFunction("beginExternalTextComposition") {
+                (view: NativeEditorExpoView, sessionId: String) -> String in
+                view.beginExternalTextComposition(sessionId: sessionId)
+            }
+            AsyncFunction("updateExternalTextComposition") {
+                (view: NativeEditorExpoView, sessionId: String, text: String) -> String in
+                view.updateExternalTextComposition(sessionId: sessionId, text: text)
+            }
+            AsyncFunction("commitExternalTextComposition") {
+                (view: NativeEditorExpoView, sessionId: String, text: String) -> String in
+                view.commitExternalTextComposition(sessionId: sessionId, finalText: text)
+            }
+            AsyncFunction("cancelExternalTextComposition") {
+                (view: NativeEditorExpoView, sessionId: String, cause: String) -> String in
+                view.cancelExternalTextComposition(sessionId: sessionId, cause: cause)
             }
             AsyncFunction("focus") { (view: NativeEditorExpoView) in
                 view.focus()

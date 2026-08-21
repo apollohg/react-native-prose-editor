@@ -329,6 +329,15 @@ final class EditorV2Adapter {
         releaseNativeOwner()
     }
 
+    func releaseCurrentNativeOwnerInRustForTesting() -> Bool {
+        guard let ownerId = nativeOwnerId, positionEpoch != nil else { return false }
+        let result = editorV2ReleaseNativeBinding(
+            editorId: editorId,
+            ownerId: String(ownerId)
+        )
+        return result.error == nil && result.value == true
+    }
+
     private func releaseNativeOwner() {
         guard let ownerId = nativeOwnerId else { return }
         nativeOwnerId = nil
@@ -1479,9 +1488,10 @@ final class EditorV2Adapter {
         return nil
     }
 
-    private struct NativeMutationRender {
+    struct NativeMutationRender {
         let updateJSON: String
         let changed: Bool
+        let documentChanged: Bool
     }
 
     private func nativeIntent(_ type: String, anchor: UInt32, head: UInt32) -> [String: Any] {
@@ -1492,7 +1502,10 @@ final class EditorV2Adapter {
         ]
     }
 
-    private func performNativeIntent(_ intent: [String: Any]) -> NativeMutationRender? {
+    private func performNativeIntent(
+        _ intent: [String: Any],
+        reportPositionEpochInvalid: Bool = false
+    ) -> NativeMutationRender? {
         guard !destroyed else { return nil }
         guard let nativeOwnerId else { return nil }
         if positionEpoch == nil {
@@ -1516,6 +1529,9 @@ final class EditorV2Adapter {
             if error.code == "POSITION_EPOCH_INVALID" {
                 debugNotes.append("position-epoch-refresh")
                 _ = refreshInternal(mirrorSelection: nil, strippingViewSelection: false)
+                if reportPositionEpochInvalid {
+                    emit(error)
+                }
             } else {
                 emit(error)
             }
@@ -1536,6 +1552,20 @@ final class EditorV2Adapter {
                 changed = didChange
                 baseDocumentRevision = revision
             }
+            let documentChanged: Bool
+            switch outcome.kind {
+            case .notApplicable:
+                documentChanged = false
+            case .transaction(_, _), .replacement(_, _):
+                guard let data = value.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let didChangeDocument = object["documentChanged"] as? Bool
+                else {
+                    emit(contractError("v2 native intent outcome violates the frozen shape"))
+                    return nil
+                }
+                documentChanged = didChangeDocument
+            }
             guard let update = refreshInternal(
                 mirrorSelection: nil,
                 strippingViewSelection: false
@@ -1547,7 +1577,11 @@ final class EditorV2Adapter {
                 publishCachedCollaborationSelection()
                 notifyCollaborationMutation()
             }
-            return NativeMutationRender(updateJSON: update, changed: changed)
+            return NativeMutationRender(
+                updateJSON: update,
+                changed: changed,
+                documentChanged: documentChanged
+            )
         }
     }
 
@@ -1782,6 +1816,75 @@ final class EditorV2Adapter {
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
             }
         }
+    }
+
+    func replaceTextRangeWithNativeOutcome(
+        from: UInt32,
+        to: UInt32,
+        with text: String
+    ) -> NativeMutationRender? {
+        guard nativeOwnerId != nil else { return nil }
+        if text.isEmpty {
+            guard from < to else {
+                return refreshUnchangedNativeOutcome(
+                    performNativeIntent(
+                        nativeIntent("setSelection", anchor: from, head: from),
+                        reportPositionEpochInvalid: true
+                    )
+                )
+            }
+            return refreshUnchangedNativeOutcome(
+                performNativeIntent(
+                    nativeIntent("deleteRange", anchor: from, head: to),
+                    reportPositionEpochInvalid: true
+                )
+            )
+        }
+        var intent = nativeIntent("replaceSelectionText", anchor: from, head: to)
+        intent["text"] = text
+        return refreshUnchangedNativeOutcome(
+            performNativeIntent(intent, reportPositionEpochInvalid: true)
+        )
+    }
+
+    func insertTextWithNativeOutcome(
+        _ text: String,
+        atScalar scalarPos: UInt32
+    ) -> NativeMutationRender? {
+        guard nativeOwnerId != nil else { return nil }
+        guard !text.isEmpty else {
+            return refreshUnchangedNativeOutcome(
+                performNativeIntent(
+                    nativeIntent("setSelection", anchor: scalarPos, head: scalarPos),
+                    reportPositionEpochInvalid: true
+                )
+            )
+        }
+        var intent = nativeIntent("insertText", anchor: scalarPos, head: scalarPos)
+        intent["text"] = text
+        return refreshUnchangedNativeOutcome(
+            performNativeIntent(intent, reportPositionEpochInvalid: true)
+        )
+    }
+
+    private func refreshUnchangedNativeOutcome(
+        _ outcome: NativeMutationRender?
+    ) -> NativeMutationRender? {
+        guard let outcome else { return nil }
+        guard !outcome.documentChanged else { return outcome }
+        guard let ownerId = nativeOwnerId else { return nil }
+        nativeOwnerId = nil
+        let updateJSON = refreshInternal(
+            mirrorSelection: nil,
+            strippingViewSelection: false
+        )?.updateJSON
+        nativeOwnerId = ownerId
+        guard let updateJSON, pinCurrentPositionEpoch(baseDocumentRevision) else { return nil }
+        return NativeMutationRender(
+            updateJSON: updateJSON,
+            changed: outcome.changed,
+            documentChanged: outcome.documentChanged
+        )
     }
 
     func deleteScalarRange(from: UInt32, to: UInt32) -> String? {

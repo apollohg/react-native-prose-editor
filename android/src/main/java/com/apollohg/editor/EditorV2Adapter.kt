@@ -968,9 +968,16 @@ internal class EditorV2Adapter private constructor(
         return null
     }
 
-    private data class NativeMutationRender(val updateJson: String, val changed: Boolean)
+    internal data class NativeMutationRender(
+        val updateJson: String,
+        val changed: Boolean,
+        val documentChanged: Boolean,
+    )
 
-    private fun performNativeIntent(intent: JSONObject): NativeMutationRender? {
+    private fun performNativeIntent(
+        intent: JSONObject,
+        reportPositionEpochInvalid: Boolean = false,
+    ): NativeMutationRender? {
         if (destroyed) {
             emit(destroyedError())
             return null
@@ -990,6 +997,7 @@ internal class EditorV2Adapter private constructor(
                 if (result.error.code == "POSITION_EPOCH_INVALID") {
                     debugNotes.add("position-epoch-refresh")
                     refreshInternal(null, stripViewSelection = false)
+                    if (reportPositionEpochInvalid) emit(result.error)
                 } else {
                     emit(result.error)
                 }
@@ -1012,13 +1020,23 @@ internal class EditorV2Adapter private constructor(
                         outcome.changed
                     }
                 }
+                val documentChanged = when (outcome) {
+                    MutationOutcome.NotApplicable -> false
+                    is MutationOutcome.Transaction,
+                    is MutationOutcome.Replacement -> try {
+                        JSONObject(result.value).getBoolean("documentChanged")
+                    } catch (error: Exception) {
+                        emit(contractError("v2 native intent outcome violates the frozen shape"))
+                        return null
+                    }
+                }
                 invalidateCachedAtomicState(null)
                 val update = refreshInternal(null, stripViewSelection = false) ?: return null
                 if (changed) {
                     publishCachedCollaborationSelection()
                     notifyCollaborationMutation()
                 }
-                NativeMutationRender(update, changed)
+                NativeMutationRender(update, changed, documentChanged)
             }
         }
     }
@@ -1241,6 +1259,54 @@ internal class EditorV2Adapter private constructor(
                 backend.applyCommand(editorId, requestJson)
             }
         }
+    }
+
+    internal fun replaceTextRangeWithNativeOutcome(
+        scalarFrom: Int,
+        scalarTo: Int,
+        text: String,
+    ): NativeMutationRender? {
+        if (nativeOwnerId == null) return null
+        if (text.isEmpty()) {
+            val clampedFrom = clampScalar(scalarFrom)
+            val clampedTo = clampScalar(scalarTo)
+            if (clampedFrom >= clampedTo) {
+                return refreshUnchangedNativeOutcome(
+                    performNativeIntent(
+                        nativeIntent("setSelection", clampedFrom, clampedFrom),
+                        reportPositionEpochInvalid = true,
+                    )
+                )
+            }
+            return refreshUnchangedNativeOutcome(
+                performNativeIntent(
+                    nativeIntent("deleteRange", clampedFrom, clampedTo),
+                    reportPositionEpochInvalid = true,
+                )
+            )
+        }
+        return refreshUnchangedNativeOutcome(
+            performNativeIntent(
+                nativeIntent("replaceSelectionText", scalarFrom, scalarTo).put("text", text),
+                reportPositionEpochInvalid = true,
+            )
+        )
+    }
+
+    private fun refreshUnchangedNativeOutcome(
+        outcome: NativeMutationRender?,
+    ): NativeMutationRender? {
+        if (outcome == null) return null
+        if (outcome.documentChanged) return outcome
+        val ownerId = nativeOwnerId ?: return null
+        val updateJson = try {
+            nativeOwnerId = null
+            refreshInternal(null, stripViewSelection = false)
+        } finally {
+            nativeOwnerId = ownerId
+        }
+        if (updateJson == null || !pinCurrentPositionEpoch(baseDocumentRevision)) return null
+        return outcome.copy(updateJson = updateJson)
     }
 
     override fun deleteScalarRange(scalarFrom: Int, scalarTo: Int): String? {

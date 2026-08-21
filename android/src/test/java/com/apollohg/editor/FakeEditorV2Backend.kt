@@ -123,10 +123,15 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         return session to null
     }
 
-    private fun transactionOutcome(session: FakeSession, changed: Boolean): String =
+    private fun transactionOutcome(
+        session: FakeSession,
+        changed: Boolean,
+        documentChanged: Boolean = changed,
+    ): String =
         JSONObject()
             .put("type", "transaction")
             .put("changed", changed)
+            .put("documentChanged", documentChanged)
             .put("documentRevision", session.revision.toString())
             .put("stateRevision", session.revision.toString())
             .put("canUndo", session.undoStack.isNotEmpty())
@@ -148,14 +153,22 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         return from to to
     }
 
-    private fun insertAtSelection(session: FakeSession, text: String) {
+    private fun insertAtSelection(session: FakeSession, text: String): Boolean {
         val (from, to) = orderedSelection(session)
+        val changed = session.text.substring(from, to) != text
+        if (!changed) {
+            val caret = from + text.length
+            session.anchor = caret
+            session.head = caret
+            return false
+        }
         pushUndo(session)
         session.text.replace(from, to, text)
         val caret = from + text.length
         session.anchor = caret
         session.head = caret
         session.revision += 1u
+        return true
     }
 
     override fun create(configJson: String, snapshotState: ByteArray?): EditorV2CallResult<String> {
@@ -690,6 +703,8 @@ internal class FakeEditorV2Backend : EditorV2Backend {
             admitWritable(session, requestId)?.let { return EditorV2CallResult.Err(it) }
         }
         val epochText = session.positionEpochTexts.getValue(ownerId)
+        val selectionBeforeAnchor = session.anchor
+        val selectionBeforeHead = session.head
         val collapsed = intent.getInt("anchor") == intent.getInt("head")
         session.anchor = remapEpochOffset(
             intent.getInt("anchor"),
@@ -704,14 +719,28 @@ internal class FakeEditorV2Backend : EditorV2Backend {
             affinityAfter = collapsed,
         )
         val outcome = when (intent.getString("type")) {
-            "setSelection" -> transactionOutcome(session, changed = false)
+            "setSelection" -> transactionOutcome(
+                session,
+                changed = selectionBeforeAnchor != session.anchor || selectionBeforeHead != session.head,
+                documentChanged = false,
+            )
             "insertText" -> {
-                insertAtSelection(session, intent.getString("text"))
-                transactionOutcome(session, changed = true)
+                val documentChanged = insertAtSelection(session, intent.getString("text"))
+                transactionOutcome(
+                    session,
+                    changed = documentChanged ||
+                        selectionBeforeAnchor != session.anchor || selectionBeforeHead != session.head,
+                    documentChanged = documentChanged,
+                )
             }
             "replaceSelectionText" -> {
-                insertAtSelection(session, intent.getString("text"))
-                transactionOutcome(session, changed = true)
+                val documentChanged = insertAtSelection(session, intent.getString("text"))
+                transactionOutcome(
+                    session,
+                    changed = documentChanged ||
+                        selectionBeforeAnchor != session.anchor || selectionBeforeHead != session.head,
+                    documentChanged = documentChanged,
+                )
             }
             "deleteBackward" -> nativeDeleteRange(
                 session,

@@ -16,6 +16,13 @@ export {
     type ImageRequestContext,
 } from './NativeRichTextEditor';
 
+export type {
+    ExternalTextCompositionEndCause,
+    ExternalTextCompositionEndEvent,
+    ExternalTextCompositionOptions,
+    ExternalTextCompositionSession,
+} from './ExternalTextComposition';
+
 export {
     NativeProseViewer,
     type NativeProseViewerProps,

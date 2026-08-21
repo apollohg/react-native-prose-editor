@@ -426,7 +426,8 @@ class NativeEditorModule : Module() {
                 "onContentHeightChange",
                 "onEditorReady",
                 "onToolbarAction",
-                "onAddonEvent"
+                "onAddonEvent",
+                "onExternalTextCompositionEnd"
             )
 
             Prop("editorId") { view: NativeEditorExpoView, id: String? ->
@@ -532,6 +533,19 @@ class NativeEditorModule : Module() {
 
             AsyncFunction("applyEditorResetUpdate") { view: NativeEditorExpoView, updateJson: String ->
                 view.applyEditorResetUpdate(updateJson)
+            }
+
+            AsyncFunction("beginExternalTextComposition") { view: NativeEditorExpoView, sessionId: String ->
+                view.beginExternalTextComposition(sessionId)
+            }
+            AsyncFunction("updateExternalTextComposition") { view: NativeEditorExpoView, sessionId: String, text: String ->
+                view.updateExternalTextComposition(sessionId, text)
+            }
+            AsyncFunction("commitExternalTextComposition") { view: NativeEditorExpoView, sessionId: String, text: String ->
+                view.commitExternalTextComposition(sessionId, text)
+            }
+            AsyncFunction("cancelExternalTextComposition") { view: NativeEditorExpoView, sessionId: String, cause: String ->
+                view.cancelExternalTextComposition(sessionId, cause)
             }
 
         }

@@ -854,6 +854,11 @@ class NativeEditorExpoView(
         val documentRevision: String
     )
 
+    private data class ActiveExternalTextComposition(
+        val sessionId: String,
+        val editorId: String,
+    )
+
     val richTextView: RichTextEditorView = RichTextEditorView(context)
     private val keyboardToolbarView = EditorKeyboardToolbarView(context)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -871,6 +876,7 @@ class NativeEditorExpoView(
 
     private val onEditorUpdate by EventDispatcher<Map<String, Any>>()
     private val onEditorError by EventDispatcher<Map<String, Any>>()
+    private val onExternalTextCompositionEnd by EventDispatcher<Map<String, Any>>()
     private val onSelectionChange by EventDispatcher<Map<String, Any>>()
     private val onFocusChange by EventDispatcher<Map<String, Any>>()
     private val onContentHeightChange by EventDispatcher<Map<String, Any>>()
@@ -891,6 +897,7 @@ class NativeEditorExpoView(
     internal var onContentHeightChangeForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onEditorUpdateForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onEditorErrorForTesting: ((Map<String, Any>) -> Unit)? = null
+    internal var onExternalTextCompositionEndForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onEditorReadyForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onOutsideTapTraceForTesting: ((String) -> Unit)? = null
     internal var onRefreshToolbarStateFromEditorSelectionForTesting: (() -> String?)? = null
@@ -932,6 +939,7 @@ class NativeEditorExpoView(
     @Volatile
     private var remoteCommitRebaseScheduled = false
     private var remoteCommitRebaseEditorId: Long? = null
+    private var activeExternalTextComposition: ActiveExternalTextComposition? = null
     private var toolbarState = NativeToolbarState.empty
     private var showsToolbar = true
     private var toolbarPlacement = ToolbarPlacement.KEYBOARD
@@ -1063,6 +1071,7 @@ class NativeEditorExpoView(
         }
         val previousEditorId = richTextView.editorId
         if (previousEditorId != id) {
+            cancelActiveExternalTextComposition("lifecycle")
             invalidateAutoGrowContentHeightEmission()
             drainPendingEditorUpdateEvents()
             clearEditorErrorBinding("editorRebind")
@@ -1257,11 +1266,41 @@ class NativeEditorExpoView(
     fun setEditable(editable: Boolean) {
         if (richTextView.editorEditText.isEditable == editable) return
         if (!editable) {
+            cancelActiveExternalTextComposition("lifecycle")
             cancelPendingToolbarRefocus()
             clearPendingNativeActionRetry()
         }
         richTextView.editorEditText.isEditable = editable
         updateKeyboardToolbarVisibility()
+    }
+
+    fun beginExternalTextComposition(sessionId: String): String {
+        val resultJson = richTextView.editorEditText.beginExternalTextComposition(sessionId)
+        val started = runCatching {
+            val result = JSONObject(resultJson)
+            result.optString("type") == "active" && result.opt("sessionId") == sessionId
+        }.getOrDefault(false)
+        if (started) {
+            activeExternalTextComposition = ActiveExternalTextComposition(
+                sessionId = sessionId,
+                editorId = eventEditorId(richTextView.editorId),
+            )
+        }
+        return resultJson
+    }
+
+    fun updateExternalTextComposition(sessionId: String, text: String): String =
+        richTextView.editorEditText.updateExternalTextComposition(sessionId, text)
+
+    fun commitExternalTextComposition(sessionId: String, finalText: String): String =
+        richTextView.editorEditText.commitExternalTextComposition(sessionId, finalText)
+
+    fun cancelExternalTextComposition(sessionId: String, cause: String): String =
+        richTextView.editorEditText.cancelExternalTextComposition(sessionId, cause)
+
+    private fun cancelActiveExternalTextComposition(cause: String) {
+        val composition = activeExternalTextComposition ?: return
+        richTextView.editorEditText.cancelExternalTextComposition(composition.sessionId, cause)
     }
 
     fun setAccessibilityLabel(label: String?) {
@@ -2227,6 +2266,7 @@ class NativeEditorExpoView(
         if (richTextView.editorId != editorId && richTextView.editorEditText.editorId != editorId) {
             return
         }
+        cancelActiveExternalTextComposition("lifecycle")
         clearEditorErrorBinding("registryInvalidation")
         cancelPendingEditorUpdateRetry()
         clearPendingViewCommandUpdateRetry()
@@ -2339,6 +2379,12 @@ class NativeEditorExpoView(
         if (handleDestroyedCurrentEditorIfNeeded()) return
         val editorId = richTextView.editorId
         if (editorId == 0L || richTextView.editorEditText.editorId == 0L) return
+        if (activeExternalTextComposition != null) {
+            cancelPendingDetachPreflightRetry()
+            richTextView.deferEditorUnbindOnNextDetach()
+            schedulePendingDetachPreflightRetry(editorId)
+            return
+        }
         if (richTextView.editorEditText.prepareForExternalEditorUpdate()) {
             cancelPendingDetachPreflightRetry()
             richTextView.clearDeferredEditorUnbind()
@@ -2352,7 +2398,11 @@ class NativeEditorExpoView(
         if (pendingDetachPreflightRetryScheduled) return
         if (pendingDetachPreflightRetryAttempts >= MAX_PENDING_UPDATE_RETRY_ATTEMPTS) {
             if (handleDestroyedCurrentEditorIfNeeded()) return
-            richTextView.editorEditText.restoreAuthorizedTextIfNeeded()
+            if (activeExternalTextComposition != null) {
+                cancelActiveExternalTextComposition("lifecycle")
+            } else {
+                richTextView.editorEditText.restoreAuthorizedTextIfNeeded()
+            }
             cancelPendingDetachPreflightRetry()
             richTextView.unbindEditorForDetachedViewIfNeeded()
             return
@@ -2371,6 +2421,10 @@ class NativeEditorExpoView(
                 return@postDelayed
             }
             if (handleDestroyedCurrentEditorIfNeeded()) return@postDelayed
+            if (activeExternalTextComposition != null) {
+                schedulePendingDetachPreflightRetry(editorId)
+                return@postDelayed
+            }
             if (richTextView.editorEditText.prepareForExternalEditorUpdate()) {
                 cancelPendingDetachPreflightRetry()
                 richTextView.unbindEditorForDetachedViewIfNeeded()
@@ -2544,6 +2598,7 @@ class NativeEditorExpoView(
             }
             return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
         }
+        cancelActiveExternalTextComposition("documentChange")
         if (handleDestroyedCurrentEditorIfNeeded()) {
             return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
         }
@@ -2828,6 +2883,24 @@ class NativeEditorExpoView(
             "queue=${pendingEditorUpdateEvents.size} jsonLength=${updateJSON.length}"
         )
         schedulePendingEditorUpdateDispatch()
+    }
+
+    override fun onExternalTextCompositionEnded(resultJson: String) {
+        val sessionId = runCatching {
+            JSONObject(resultJson).opt("sessionId") as? String
+        }.getOrNull()
+        val matchingComposition = activeExternalTextComposition?.takeIf {
+            it.sessionId == sessionId
+        }
+        if (matchingComposition != null) {
+            activeExternalTextComposition = null
+        }
+        val payload = mapOf<String, Any>(
+            "editorId" to (matchingComposition?.editorId ?: eventEditorId(richTextView.editorId)),
+            "resultJson" to resultJson,
+        )
+        onExternalTextCompositionEndForTesting?.invoke(payload)
+            ?: onExternalTextCompositionEnd(payload)
     }
 
     internal fun pendingEditorUpdateEventCountForTesting(): Int =

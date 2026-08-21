@@ -456,52 +456,96 @@ impl<'session> NativeTransactionBridge<'session> {
             }
             intent => {
                 self.admit_writable(request_id)?;
-                let command = lower_native_intent(
-                    intent,
-                    resolved.anchor,
-                    resolved.head,
-                    request_id,
-                    &self.session.engine,
-                )?;
-                let (engine, outbox) = self.session.engine_and_outbox();
-                let mut outbox = outbox;
-                let applied = engine.apply_command_at_selection_with_outbox(
-                    request_id,
-                    command.clone(),
-                    selection,
-                    TransactionOrigin::LocalInput,
-                    outbox.as_deref_mut(),
-                );
-                let result = match applied {
-                    Err(error)
-                        if error.code == "POSITION_INVALID" && resolved.anchor == resolved.head =>
-                    {
-                        engine.apply_command_at_selection_with_outbox(
+                let intent = match intent {
+                    NativeIntentEnvelope::InsertText { anchor, head, text } => apply_input_filter(
+                        self.session.policy.input_filter_regex(),
+                        &text,
+                        request_id,
+                    )?
+                    .map(|text| NativeIntentEnvelope::InsertText { anchor, head, text }),
+                    NativeIntentEnvelope::ReplaceSelectionText { anchor, head, text } => {
+                        apply_input_filter(
+                            self.session.policy.input_filter_regex(),
+                            &text,
                             request_id,
-                            command,
-                            scalar_selection_with_affinity(
-                                resolved.anchor,
-                                resolved.head,
-                                scalar_limit,
-                                Affinity::Before,
-                            ),
+                        )?
+                        .map(|text| {
+                            NativeIntentEnvelope::ReplaceSelectionText { anchor, head, text }
+                        })
+                    }
+                    intent => Some(intent),
+                };
+                match intent {
+                    None => {
+                        let (engine, outbox) = self.session.engine_and_outbox();
+                        let transaction = match lower_input(engine, request_id, None)? {
+                            LoweredInput::Transaction(transaction) => transaction,
+                            LoweredInput::NotApplicable => {
+                                return Err(operation_error(
+                                    OperationError::engine_invariant_failed(
+                                        request_id,
+                                        None,
+                                        "fully filtered native input did not lower to a transaction",
+                                    ),
+                                ));
+                            }
+                        };
+                        let (_, result) = engine
+                            .apply_typed_transaction_with_outbox(transaction, true, outbox)
+                            .map_err(operation_error)?;
+                        typed_outcome(request_id, result)?
+                    }
+                    Some(intent) => {
+                        let command = lower_native_intent(
+                            intent,
+                            resolved.anchor,
+                            resolved.head,
+                            request_id,
+                            &self.session.engine,
+                        )?;
+                        let (engine, outbox) = self.session.engine_and_outbox();
+                        let mut outbox = outbox;
+                        let applied = engine.apply_command_at_selection_with_outbox(
+                            request_id,
+                            command.clone(),
+                            selection,
                             TransactionOrigin::LocalInput,
                             outbox.as_deref_mut(),
-                        )
+                        );
+                        let result = match applied {
+                            Err(error)
+                                if error.code == "POSITION_INVALID"
+                                    && resolved.anchor == resolved.head =>
+                            {
+                                engine.apply_command_at_selection_with_outbox(
+                                    request_id,
+                                    command,
+                                    scalar_selection_with_affinity(
+                                        resolved.anchor,
+                                        resolved.head,
+                                        scalar_limit,
+                                        Affinity::Before,
+                                    ),
+                                    TransactionOrigin::LocalInput,
+                                    outbox.as_deref_mut(),
+                                )
+                            }
+                            result => result,
+                        }
+                        .map_err(operation_error)?;
+                        match result {
+                            Some(result) => NativeBridgeOutcome::Transaction(Box::new(result)),
+                            None => NativeBridgeOutcome::NotApplicable,
+                        }
                     }
-                    result => result,
-                }
-                .map_err(operation_error)?;
-                match result {
-                    Some(result) => NativeBridgeOutcome::Transaction(Box::new(result)),
-                    None => NativeBridgeOutcome::NotApplicable,
                 }
             }
         };
-        if self.session.engine.revision() != document_revision_before {
+        let document_changed = self.session.engine.revision() != document_revision_before;
+        if document_changed {
             self.session.engine.mark_document_origin_native_view();
         }
-        let serialized = serialize_native_outcome(outcome, resolved.fallback);
+        let serialized = serialize_native_outcome(outcome, resolved.fallback, document_changed);
         self.session.retain_native_request_outcome(
             envelope.owner_id,
             request_id,
@@ -834,11 +878,13 @@ fn lower_native_intent(
 pub(crate) fn serialize_native_outcome(
     outcome: NativeBridgeOutcome,
     position_fallback: bool,
+    document_changed: bool,
 ) -> String {
     match outcome {
         NativeBridgeOutcome::Transaction(result) => serde_json::json!({
             "type": "transaction",
             "changed": result.changed,
+            "documentChanged": document_changed,
             "documentRevision": result.document_revision.to_string(),
             "stateRevision": result.state_revision.to_string(),
             "canUndo": result.history_state.can_undo,
@@ -854,6 +900,7 @@ pub(crate) fn serialize_native_outcome(
         NativeBridgeOutcome::Replacement(commit) => serde_json::json!({
             "type": "replacement",
             "changed": commit.changed,
+            "documentChanged": document_changed,
             "documentRevision": commit.document_revision.to_string(),
             "positionFallback": position_fallback,
         })

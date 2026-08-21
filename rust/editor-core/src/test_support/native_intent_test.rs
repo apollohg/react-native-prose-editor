@@ -23,8 +23,9 @@ fn engine(mode: InitializationMode) -> YrsDocumentEngine {
     .unwrap()
 }
 
-fn collaborative_session() -> EditorSession {
-    let config = EditorSessionConfig::local_for_test();
+fn collaborative_session_with_filter(input_filter: Option<&str>) -> EditorSession {
+    let mut config = EditorSessionConfig::local_for_test();
+    config.input_filter = input_filter.map(str::to_string);
     let mut session = EditorSession::new(
         engine(InitializationMode::LocalEmpty),
         SessionPolicy::from_config(&config),
@@ -43,12 +44,286 @@ fn collaborative_session() -> EditorSession {
     session
 }
 
+fn collaborative_session() -> EditorSession {
+    collaborative_session_with_filter(None)
+}
+
 fn scalar(offset: u32) -> RevisionedPosition {
     RevisionedPosition {
         offset,
         kind: EditorOffsetKind::Scalar,
         affinity: Affinity::After,
     }
+}
+
+fn native_intent_request(
+    session: &mut EditorSession,
+    owner_id: u64,
+    request_id: u64,
+    intent: serde_json::Value,
+) -> String {
+    let epoch = session
+        .pin_position_epoch(owner_id, session.engine.revision())
+        .unwrap();
+    serde_json::json!({
+        "version": 1,
+        "requestId": request_id.to_string(),
+        "ownerId": owner_id.to_string(),
+        "positionEpoch": epoch.to_string(),
+        "intent": intent,
+    })
+    .to_string()
+}
+
+#[derive(Debug, PartialEq)]
+struct SessionAudit {
+    document_json: serde_json::Value,
+    encoded_state: Vec<u8>,
+    state_vector: Vec<u8>,
+    document_revision: u64,
+    state_revision: u64,
+    can_undo: bool,
+    can_redo: bool,
+    selection: Option<String>,
+    stored_marks: Option<String>,
+    last_committed_origin: Option<String>,
+    outbox_pending_updates: usize,
+    outbox_pending_bytes: usize,
+    outbox_reserved_messages: usize,
+    outbox_reserved_bytes: usize,
+    last_reserved_upper_bound: Option<usize>,
+}
+
+fn session_audit(session: &EditorSession) -> SessionAudit {
+    let outbox = session.collaboration_outbox().unwrap();
+    SessionAudit {
+        document_json: session.engine.document_json().unwrap(),
+        encoded_state: session.engine.encoded_state().unwrap(),
+        state_vector: session.engine.encode_state_vector_v1(0).unwrap(),
+        document_revision: session.engine.revision(),
+        state_revision: session.engine.state_revision(),
+        can_undo: session.engine.can_undo(),
+        can_redo: session.engine.can_redo(),
+        selection: session
+            .engine
+            .resolved_selection()
+            .map(|selection| format!("{selection:?}")),
+        stored_marks: session
+            .engine
+            .stored_marks()
+            .map(|marks| format!("{marks:?}")),
+        last_committed_origin: session
+            .engine
+            .last_committed_origin()
+            .map(|origin| origin.as_tag().to_string()),
+        outbox_pending_updates: outbox.pending_document_update_count(),
+        outbox_pending_bytes: outbox.pending_document_update_bytes(),
+        outbox_reserved_messages: outbox.reserved_messages(),
+        outbox_reserved_bytes: outbox.reserved_bytes(),
+        last_reserved_upper_bound: outbox.last_reserved_upper_bound_for_test(),
+    }
+}
+
+#[test]
+fn native_insert_text_applies_input_filter_per_character() {
+    let mut session = collaborative_session_with_filter(Some("[0-9]"));
+    let request = native_intent_request(
+        &mut session,
+        31,
+        32,
+        serde_json::json!({
+            "type": "insertText",
+            "anchor": 4,
+            "head": 4,
+            "text": "a1b2",
+        }),
+    );
+
+    let outcome = NativeTransactionBridge::new(&mut session)
+        .submit_native_intent(&request)
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(outcome["documentChanged"], true);
+    assert_eq!(
+        session.engine.document().unwrap().root().text_content(),
+        "abcd12"
+    );
+    assert_eq!(
+        session
+            .collaboration_outbox()
+            .unwrap()
+            .pending_document_update_count(),
+        1,
+    );
+}
+
+#[test]
+fn native_replace_selection_text_applies_input_filter_per_character() {
+    let mut session = collaborative_session_with_filter(Some("[0-9]"));
+    let request = native_intent_request(
+        &mut session,
+        33,
+        34,
+        serde_json::json!({
+            "type": "replaceSelectionText",
+            "anchor": 1,
+            "head": 3,
+            "text": "a1b2",
+        }),
+    );
+
+    let outcome = NativeTransactionBridge::new(&mut session)
+        .submit_native_intent(&request)
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(outcome["documentChanged"], true);
+    assert_eq!(
+        session.engine.document().unwrap().root().text_content(),
+        "a12d"
+    );
+    assert_eq!(
+        session
+            .collaboration_outbox()
+            .unwrap()
+            .pending_document_update_count(),
+        1,
+    );
+}
+
+#[test]
+fn fully_filtered_native_text_intents_are_atomic_unchanged_transactions() {
+    for intent_type in ["insertText", "replaceSelectionText"] {
+        let mut session = collaborative_session_with_filter(Some("[0-9]"));
+        let request = native_intent_request(
+            &mut session,
+            35,
+            36,
+            serde_json::json!({
+                "type": intent_type,
+                "anchor": 1,
+                "head": 3,
+                "text": "abc",
+            }),
+        );
+        let before = session_audit(&session);
+
+        let outcome = NativeTransactionBridge::new(&mut session)
+            .submit_native_intent(&request)
+            .unwrap();
+        let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
+
+        assert_eq!(outcome["type"], "transaction", "{intent_type}");
+        assert_eq!(outcome["changed"], false, "{intent_type}");
+        assert_eq!(outcome["documentChanged"], false, "{intent_type}");
+        assert_eq!(session_audit(&session), before, "{intent_type}");
+    }
+}
+
+#[test]
+fn same_text_native_replacement_reports_selection_change_without_document_change() {
+    let mut session = collaborative_session();
+    let request = native_intent_request(
+        &mut session,
+        41,
+        42,
+        serde_json::json!({
+            "type": "replaceSelectionText",
+            "anchor": 0,
+            "head": 4,
+            "text": "abcd",
+        }),
+    );
+    let revision_before = session.engine.revision();
+    let outbox_before = session
+        .collaboration_outbox()
+        .unwrap()
+        .pending_document_update_count();
+
+    let outcome = NativeTransactionBridge::new(&mut session)
+        .submit_native_intent(&request)
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(outcome["documentChanged"], false);
+    assert_eq!(session.engine.revision(), revision_before);
+    assert_eq!(
+        session
+            .collaboration_outbox()
+            .unwrap()
+            .pending_document_update_count(),
+        outbox_before,
+    );
+}
+
+#[test]
+fn invalid_native_text_intent_filter_is_atomic() {
+    for intent_type in ["insertText", "replaceSelectionText"] {
+        let mut session = collaborative_session_with_filter(Some("[unclosed"));
+        let owner_id = 37;
+        let request_id = 38;
+        let request = native_intent_request(
+            &mut session,
+            owner_id,
+            request_id,
+            serde_json::json!({
+                "type": intent_type,
+                "anchor": 1,
+                "head": 3,
+                "text": "a1b2",
+            }),
+        );
+        let before = session_audit(&session);
+
+        let error = NativeTransactionBridge::new(&mut session)
+            .submit_native_intent(&request)
+            .unwrap_err();
+
+        assert_eq!(error.code, "CONFIG_INVALID", "{intent_type}");
+        assert_eq!(error.request_id, Some(request_id), "{intent_type}");
+        assert_eq!(session_audit(&session), before, "{intent_type}");
+        assert!(
+            session
+                .native_request_outcome(owner_id, request_id)
+                .unwrap()
+                .is_none(),
+            "{intent_type}",
+        );
+    }
+}
+
+#[test]
+fn native_input_filter_does_not_affect_non_text_intents() {
+    let mut session = collaborative_session_with_filter(Some("[unclosed"));
+    let request = native_intent_request(
+        &mut session,
+        39,
+        40,
+        serde_json::json!({
+            "type": "deleteRange",
+            "anchor": 1,
+            "head": 2,
+        }),
+    );
+
+    let outcome = NativeTransactionBridge::new(&mut session)
+        .submit_native_intent(&request)
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(
+        session.engine.document().unwrap().root().text_content(),
+        "acd"
+    );
 }
 
 #[test]

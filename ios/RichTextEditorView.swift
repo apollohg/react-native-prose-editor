@@ -18,6 +18,12 @@ protocol EditorTextViewDelegate: AnyObject {
     ///   - textView: The editor text view.
     ///   - updateJSON: The full EditorUpdate JSON string from Rust.
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String)
+
+    func editorTextView(_ textView: EditorTextView, didEndExternalTextComposition resultJSON: String)
+}
+
+extension EditorTextViewDelegate {
+    func editorTextView(_ textView: EditorTextView, didEndExternalTextComposition resultJSON: String) {}
 }
 
 enum EditorHeightBehavior: String {
@@ -966,6 +972,18 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private var isPreviewingImageResize = false
     var allowImageResizing = true
 
+    override var isEditable: Bool {
+        didSet {
+            if oldValue, !isEditable {
+                _ = finishExternalTextComposition(
+                    cause: "lifecycle",
+                    finalText: nil,
+                    cancel: true
+                )
+            }
+        }
+    }
+
     /// The base font used for unstyled text. Configurable from React props.
     var baseFont: UIFont = .systemFont(ofSize: 16) {
         didSet {
@@ -1125,6 +1143,23 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private var markedTextReplacementUtf16Range: NSRange?
     private var markedTextCompositionText: String?
     private var markedTextCompositionIsExplicitlyEmpty = false
+
+    private struct ExternalTextCompositionState {
+        let sessionId: String
+        let startingAuthorizedText: String
+        let startingAuthorizedAttributedText: NSAttributedString
+        let startingSelectedUtf16Range: NSRange
+        var latestText: String
+    }
+
+    private struct ExternalTextCompositionFinish {
+        let resultJSON: String
+        let adoptedUpdateJSON: String?
+        let succeeded: Bool
+    }
+
+    private var externalTextComposition: ExternalTextCompositionState?
+    private var externalTextCompositionTerminalResults: [String: String] = [:]
 
     private let editorLayoutManager: EditorLayoutManager
 
@@ -1635,6 +1670,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     @discardableResult
     func toggleTaskListMarker(at location: CGPoint) -> Bool {
         guard editorId != 0 else { return false }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return false }
         guard prepareForExternalEditorUpdate() else { return false }
         guard let paragraphStart = taskListMarkerParagraphStart(at: location) else {
             return false
@@ -1650,6 +1686,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     @discardableResult
     private func selectImageAttachment(range: NSRange) -> Bool {
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return false }
         guard isSelectable,
               let start = position(from: beginningOfDocument, offset: range.location),
               let end = position(from: start, offset: range.length),
@@ -2078,9 +2115,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         if let initialUpdateJSON {
             applyUpdateJSON(initialUpdateJSON, notifyDelegate: false)
         } else if let html = initialHTML, !html.isEmpty {
-            _ = EditorV2Shadow.setHtml(id: editorId, html: html)
-            let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
-            applyUpdateJSON(stateJSON, notifyDelegate: false)
+            let updateJSON = EditorV2Shadow.setHtml(id: editorId, html: html)
+            if !applyUpdateJSON(updateJSON, notifyDelegate: false) {
+                let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
+                applyUpdateJSON(stateJSON, notifyDelegate: false)
+            }
         } else {
             // Pull current state from Rust (content may already be loaded via bridge).
             let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
@@ -2116,6 +2155,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             super.insertText(text)
             return
         }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
 
         if text == "\n" {
@@ -2183,6 +2223,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     }
 
     @objc private func handleHardBreakKeyCommand() {
+        guard !isApplyingRustState, editorId != 0, isEditable else { return }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
+        guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
         performInterceptedInput {
             insertNodeInRust("hardBreak")
         }
@@ -2208,6 +2251,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             super.deleteBackward()
             return
         }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
 
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
@@ -2378,6 +2422,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard !isApplyingRustState else { return }
         guard editorId != 0 else { return }
         guard isEditable else { return }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
         guard isCaretInsideList() else { return }
         guard let selection = currentScalarSelection() else { return }
@@ -2430,6 +2475,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             super.replace(range, withText: text)
             return
         }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
 
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
@@ -2456,6 +2502,348 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
     }
 
+    // MARK: - External Text Composition
+
+    func beginExternalTextComposition(sessionId: String) -> String {
+        guard editorId != 0,
+              isEditable,
+              let adapter = EditorV2Registry.adapter(forLegacyId: editorId),
+              !adapter.isDestroyed
+        else {
+            return externalCompositionErrorJSON(
+                sessionId: sessionId,
+                code: "EXTERNAL_COMPOSITION_UNAVAILABLE",
+                message: "The native editor is unavailable or not editable"
+            )
+        }
+        guard externalTextCompositionTerminalResults[sessionId] == nil else {
+            return externalCompositionEndedErrorJSON(sessionId: sessionId)
+        }
+        guard let selectionJSON = adapter.selectionJSON(),
+              let selectionData = selectionJSON.data(using: .utf8),
+              let selection = try? JSONSerialization.jsonObject(with: selectionData) as? [String: Any],
+              selection["type"] as? String == "text"
+        else {
+            return externalCompositionErrorJSON(
+                sessionId: sessionId,
+                code: "EXTERNAL_COMPOSITION_SELECTION_INCOMPATIBLE",
+                message: "External composition requires a text selection"
+            )
+        }
+
+        if externalTextComposition != nil {
+            let finished = finishExternalTextComposition(
+                cause: "consumer",
+                finalText: nil,
+                cancel: false
+            )
+            guard finished?.succeeded == true else {
+                return externalCompositionErrorJSON(
+                    sessionId: sessionId,
+                    code: "EXTERNAL_COMPOSITION_COMMIT_FAILED",
+                    message: "The previous external text composition could not be committed"
+                )
+            }
+        } else if isComposing, !prepareForExternalEditorUpdate() {
+            return externalCompositionErrorJSON(
+                sessionId: sessionId,
+                code: "EXTERNAL_COMPOSITION_UNAVAILABLE",
+                message: "The active input composition could not be committed"
+            )
+        }
+        guard flushPendingNativeTextMutationCommitIfNeeded() else {
+            return externalCompositionErrorJSON(
+                sessionId: sessionId,
+                code: "EXTERNAL_COMPOSITION_UNAVAILABLE",
+                message: "Pending native input could not be committed"
+            )
+        }
+
+        let startingSelection = selectedRange.location == NSNotFound
+            ? NSRange(location: 0, length: 0)
+            : selectedRange
+        captureMarkedTextReplacementRangeIfNeeded()
+        externalTextComposition = ExternalTextCompositionState(
+            sessionId: sessionId,
+            startingAuthorizedText: lastAuthorizedText,
+            startingAuthorizedAttributedText: NSAttributedString(
+                attributedString: lastAuthorizedAttributedTextStorage
+            ),
+            startingSelectedUtf16Range: startingSelection,
+            latestText: ""
+        )
+        isComposing = true
+        return externalCompositionActiveJSON(sessionId: sessionId)
+    }
+
+    func updateExternalTextComposition(sessionId: String, text: String) -> String {
+        guard var state = externalTextComposition, state.sessionId == sessionId else {
+            return externalCompositionEndedErrorJSON(sessionId: sessionId)
+        }
+        performTransientTextMutation {
+            super.setMarkedText(
+                text,
+                selectedRange: NSRange(location: (text as NSString).length, length: 0)
+            )
+        }
+        state.latestText = text
+        externalTextComposition = state
+        refreshMarkedTextCompositionText(fallback: text)
+        return externalCompositionActiveJSON(sessionId: sessionId)
+    }
+
+    func commitExternalTextComposition(sessionId: String, finalText: String) -> String {
+        guard externalTextComposition?.sessionId == sessionId else {
+            return externalTextCompositionTerminalResults[sessionId]
+                ?? externalCompositionEndedErrorJSON(sessionId: sessionId)
+        }
+        return finishExternalTextComposition(
+            cause: "consumer",
+            finalText: finalText,
+            cancel: false
+        )?.resultJSON ?? externalCompositionEndedErrorJSON(sessionId: sessionId)
+    }
+
+    func cancelExternalTextComposition(sessionId: String, cause: String) -> String {
+        guard ["consumer", "documentChange", "lifecycle"].contains(cause) else {
+            return externalCompositionErrorJSON(
+                sessionId: sessionId,
+                code: "EXTERNAL_COMPOSITION_CANCEL_CAUSE_INVALID",
+                message: "The external composition cancellation cause is invalid"
+            )
+        }
+        guard externalTextComposition?.sessionId == sessionId else {
+            return externalTextCompositionTerminalResults[sessionId]
+                ?? externalCompositionEndedErrorJSON(sessionId: sessionId)
+        }
+        return finishExternalTextComposition(
+            cause: cause,
+            finalText: nil,
+            cancel: true
+        )?.resultJSON ?? externalCompositionEndedErrorJSON(sessionId: sessionId)
+    }
+
+    private func finishExternalTextCompositionBeforeInteractionIfNeeded() -> Bool {
+        guard externalTextComposition != nil else { return true }
+        return finishExternalTextComposition(
+            cause: "interaction",
+            finalText: nil,
+            cancel: false
+        )?.succeeded == true
+    }
+
+    private func finishExternalTextComposition(
+        cause: String,
+        finalText: String?,
+        cancel: Bool
+    ) -> ExternalTextCompositionFinish? {
+        guard var state = externalTextComposition else { return nil }
+        if let finalText {
+            if finalText != state.latestText {
+                performTransientTextMutation {
+                    super.setMarkedText(
+                        finalText,
+                        selectedRange: NSRange(
+                            location: (finalText as NSString).length,
+                            length: 0
+                        )
+                    )
+                }
+                refreshMarkedTextCompositionText(fallback: finalText)
+            }
+            state.latestText = finalText
+            externalTextComposition = state
+        }
+
+        let replacementRange = trackedMarkedTextReplacementRange()
+        var authoritativeUpdateJSON: String?
+        if cancel,
+           editorId != 0,
+           let adapter = EditorV2Registry.adapter(forLegacyId: editorId),
+           !adapter.isDestroyed
+        {
+            authoritativeUpdateJSON = adapter.currentStateJSON()
+        }
+        externalTextComposition = nil
+        finishTransientMarkedTextMutation()
+
+        if cancel {
+            restoreAuthorizedExternalComposition(
+                state,
+                authoritativeUpdateJSON: authoritativeUpdateJSON
+            )
+            let resultJSON = externalCompositionEndedJSON(
+                sessionId: state.sessionId,
+                outcome: "cancelled",
+                cause: cause,
+                text: state.latestText
+            )
+            emitExternalTextCompositionEnd(sessionId: state.sessionId, resultJSON: resultJSON)
+            return ExternalTextCompositionFinish(
+                resultJSON: resultJSON,
+                adoptedUpdateJSON: nil,
+                succeeded: true
+            )
+        }
+
+        guard let commit = commitMarkedTextWithNativeOutcome(
+            state.latestText,
+            replacementRange: replacementRange
+        ) else {
+            let currentUpdateJSON: String?
+            if editorId == 0 {
+                currentUpdateJSON = nil
+            } else {
+                currentUpdateJSON = EditorV2Registry.adapter(forLegacyId: editorId)?
+                    .recoverNativeRender()
+            }
+            restoreAuthorizedExternalComposition(
+                state,
+                authoritativeUpdateJSON: currentUpdateJSON
+            )
+            let error = externalCompositionErrorPayload(
+                code: "EXTERNAL_COMPOSITION_COMMIT_FAILED",
+                message: "The external text composition could not be committed"
+            )
+            let resultJSON = externalCompositionEndedJSON(
+                sessionId: state.sessionId,
+                outcome: "cancelled",
+                cause: cause,
+                text: state.latestText,
+                error: error
+            )
+            emitExternalTextCompositionEnd(sessionId: state.sessionId, resultJSON: resultJSON)
+            return ExternalTextCompositionFinish(
+                resultJSON: resultJSON,
+                adoptedUpdateJSON: nil,
+                succeeded: false
+            )
+        }
+
+        let resultJSON = externalCompositionEndedJSON(
+            sessionId: state.sessionId,
+            outcome: "committed",
+            cause: cause,
+            text: state.latestText
+        )
+        emitExternalTextCompositionEnd(sessionId: state.sessionId, resultJSON: resultJSON)
+        return ExternalTextCompositionFinish(
+            resultJSON: resultJSON,
+            adoptedUpdateJSON: commit.updateJSON,
+            succeeded: true
+        )
+    }
+
+    private func restoreAuthorizedExternalComposition(
+        _ state: ExternalTextCompositionState,
+        authoritativeUpdateJSON: String? = nil
+    ) {
+        _ = applyAttributedRender(
+            state.startingAuthorizedAttributedText,
+            usedPatch: false,
+            positionCacheUpdate: .scan
+        )
+        if let authoritativeUpdateJSON {
+            _ = applyUpdateJSON(authoritativeUpdateJSON, notifyDelegate: false)
+        }
+        guard textStorage.string == state.startingAuthorizedText,
+              state.startingSelectedUtf16Range.location >= 0,
+              state.startingSelectedUtf16Range.length >= 0,
+              state.startingSelectedUtf16Range.location
+                + state.startingSelectedUtf16Range.length <= textStorage.length
+        else {
+            return
+        }
+
+        logicalSelectionScalarRange = nil
+        logicalSelectionUtf16Range = nil
+        performTransientTextMutation {
+            selectedRange = state.startingSelectedUtf16Range
+            noteSelectionDidChange()
+        }
+        recordAuthorizedSelectionIfPossible()
+        refreshTypingAttributesForSelection()
+    }
+
+    private func emitExternalTextCompositionEnd(sessionId: String, resultJSON: String) {
+        guard externalTextCompositionTerminalResults[sessionId] == nil else { return }
+        externalTextCompositionTerminalResults[sessionId] = resultJSON
+        editorDelegate?.editorTextView(self, didEndExternalTextComposition: resultJSON)
+    }
+
+    private func externalCompositionActiveJSON(sessionId: String) -> String {
+        externalCompositionResultJSON([
+            "version": 1,
+            "type": "active",
+            "sessionId": sessionId,
+        ])
+    }
+
+    private func externalCompositionEndedJSON(
+        sessionId: String,
+        outcome: String,
+        cause: String,
+        text: String,
+        error: [String: Any]? = nil
+    ) -> String {
+        var payload: [String: Any] = [
+            "version": 1,
+            "type": "ended",
+            "sessionId": sessionId,
+            "outcome": outcome,
+            "cause": cause,
+            "text": text,
+        ]
+        if let error {
+            payload["error"] = error
+        }
+        return externalCompositionResultJSON(payload)
+    }
+
+    private func externalCompositionEndedErrorJSON(sessionId: String) -> String {
+        externalCompositionErrorJSON(
+            sessionId: sessionId,
+            code: "EXTERNAL_COMPOSITION_ENDED",
+            message: "The external text composition session has ended"
+        )
+    }
+
+    private func externalCompositionErrorJSON(
+        sessionId: String?,
+        code: String,
+        message: String
+    ) -> String {
+        externalCompositionResultJSON([
+            "version": 1,
+            "type": "error",
+            "sessionId": sessionId.map { $0 as Any } ?? NSNull(),
+            "error": externalCompositionErrorPayload(code: code, message: message),
+        ])
+    }
+
+    private func externalCompositionErrorPayload(code: String, message: String) -> [String: Any] {
+        [
+            "domain": "lifecycle",
+            "code": code,
+            "message": message,
+            "requestId": NSNull(),
+            "operationIndex": NSNull(),
+            "limit": NSNull(),
+            "actual": NSNull(),
+            "details": NSNull(),
+        ]
+    }
+
+    private func externalCompositionResultJSON(_ payload: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return #"{"version":1,"type":"error","sessionId":null,"error":{"domain":"lifecycle","code":"EXTERNAL_COMPOSITION_RESULT_INVALID","message":"Could not serialize external composition result","requestId":null,"operationIndex":null,"limit":null,"actual":null,"details":null}}"#
+        }
+        return json
+    }
+
     // MARK: - Composition Handling (CJK / IME)
 
     /// Called when the input method sets marked (composing) text.
@@ -2465,6 +2853,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// decoration). The text is NOT sent to Rust during composition.
     override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         ensureInternalTextViewDelegate()
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         if markedText != nil {
             guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
             captureMarkedTextReplacementRangeIfNeeded()
@@ -2506,6 +2895,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// the transient text storage.
     override func unmarkText() {
         ensureInternalTextViewDelegate()
+        if externalTextComposition != nil {
+            guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
+            return
+        }
         let composedText = currentMarkedTextForCommit()
         let replacementRange = trackedMarkedTextReplacementRange()
 
@@ -2685,6 +3078,40 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return adoptedUpdateJSON
     }
 
+    private func commitMarkedTextWithNativeOutcome(
+        _ text: String,
+        replacementRange: (from: UInt32, to: UInt32)?
+    ) -> EditorV2Adapter.NativeMutationRender? {
+        guard editorId != 0,
+              let adapter = EditorV2Registry.adapter(forLegacyId: editorId)
+        else {
+            return nil
+        }
+        var commit: EditorV2Adapter.NativeMutationRender?
+        performInterceptedInput(flushPendingNativeTextMutation: false) {
+            if let replacementRange {
+                if replacementRange.from == replacementRange.to {
+                    commit = adapter.insertTextWithNativeOutcome(
+                        text,
+                        atScalar: replacementRange.from
+                    )
+                } else {
+                    commit = adapter.replaceTextRangeWithNativeOutcome(
+                        from: replacementRange.from,
+                        to: replacementRange.to,
+                        with: text
+                    )
+                }
+            } else {
+                let position = PositionBridge.cursorScalarOffset(in: self)
+                commit = adapter.insertTextWithNativeOutcome(text, atScalar: position)
+            }
+            guard let commit else { return }
+            applyUpdateJSON(commit.updateJSON, notifyDelegate: commit.documentChanged)
+        }
+        return commit
+    }
+
     private func commitActiveMarkedTextBeforeReturn() -> Bool {
         guard markedTextReplacementScalarRange != nil || markedTextRange != nil else {
             return true
@@ -2762,6 +3189,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             super.paste(sender)
             return
         }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard prepareForExternalEditorUpdate() else { return }
 
         Self.inputLog.debug(
@@ -2822,6 +3250,23 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard textView === self else { return }
         ensureInternalTextViewDelegate()
         noteSelectionDidChange()
+        if externalTextComposition != nil {
+            guard !isApplyingRustState else { return }
+            let interactionSelection = selectedRange
+            guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
+            if interactionSelection.location != NSNotFound,
+               interactionSelection.location >= 0,
+               interactionSelection.length >= 0,
+               interactionSelection.location + interactionSelection.length <= textStorage.length
+            {
+                logicalSelectionScalarRange = nil
+                logicalSelectionUtf16Range = nil
+                performTransientTextMutation {
+                    selectedRange = interactionSelection
+                    noteSelectionDidChange()
+                }
+            }
+        }
         guard !isApplyingRustState,
               !isComposing,
               !nativeTextMutationCommitScheduled,
@@ -3632,6 +4077,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private func prepareForToolbarCommand() -> Bool {
         guard editorId != 0 else { return false }
         guard isEditable else { return false }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return false }
         return prepareForExternalEditorUpdate()
     }
 
@@ -3980,7 +4426,19 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         nativeTextMutationAfterBlurDeadline = ProcessInfo.processInfo.systemUptime - 0.001
     }
 
-    func discardTransientNativeInputForEditorRebind() {
+    @discardableResult
+    func cancelExternalTextCompositionForLifecycleIfNeeded() -> String? {
+        finishExternalTextComposition(
+            cause: "lifecycle",
+            finalText: nil,
+            cancel: true
+        )?.resultJSON
+    }
+
+    @discardableResult
+    func discardTransientNativeInputForEditorRebind() -> String? {
+        let externalCompositionResultJSON =
+            cancelExternalTextCompositionForLifecycleIfNeeded()
         resetPendingNativeTextMutationState()
         lastAuthorizedSelectedUtf16Range = nil
         logicalSelectionScalarRange = nil
@@ -3991,6 +4449,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         markedTextCompositionText = nil
         markedTextCompositionIsExplicitlyEmpty = false
         isComposing = false
+        return externalCompositionResultJSON
     }
 
     @discardableResult
@@ -4056,6 +4515,19 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     }
 
     private func prepareActiveCompositionForExternalMutation() -> ActiveCompositionPreparation {
+        if externalTextComposition != nil {
+            guard let finished = finishExternalTextComposition(
+                cause: "documentChange",
+                finalText: nil,
+                cancel: false
+            ) else {
+                return ActiveCompositionPreparation(ready: false, adoptedUpdateJSON: nil)
+            }
+            return ActiveCompositionPreparation(
+                ready: finished.succeeded,
+                adoptedUpdateJSON: finished.adoptedUpdateJSON
+            )
+        }
         guard isComposing else {
             return ActiveCompositionPreparation(ready: true, adoptedUpdateJSON: nil)
         }

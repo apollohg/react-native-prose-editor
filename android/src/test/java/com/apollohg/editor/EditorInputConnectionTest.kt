@@ -14,6 +14,8 @@ import android.text.Selection
 import android.text.InputType
 import android.text.style.AbsoluteSizeSpan
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.CompletionInfo
@@ -38,6 +40,760 @@ import java.time.Duration
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class EditorInputConnectionTest {
+    @Test
+    fun `external composition updates visible text without mutating Rust`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
+            as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(backend, editorId, roomBound = false)!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            this.editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>arrival</p>")
+            ?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        editText.setSelection(0, 7)
+
+        editText.beginExternalTextComposition("speech-1")
+        editText.updateExternalTextComposition("speech-1", "on arrival")
+        editText.updateExternalTextComposition("speech-1", "O/A")
+
+        assertEquals("O/A", editText.text.toString())
+        assertEquals("arrival", backend.sessions.getValue(editorId).text.toString())
+    }
+
+    @Test
+    fun `keyboard input commits external phrase before typing`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
+            as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(backend, editorId, roomBound = false)!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            this.editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>arrival</p>")
+            ?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        editText.setSelection(0, 7)
+        val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
+        editText.beginExternalTextComposition("speech-1")
+        editText.updateExternalTextComposition("speech-1", "O/A")
+
+        assertTrue(inputConnection.commitText("!", 1))
+
+        assertEquals("O/A!", editText.text.toString())
+    }
+
+    @Test
+    fun `external composition commit is exact once and uses final text`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        harness.backend.calls.clear()
+
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+        val resultJson = harness.editText.commitExternalTextComposition("speech-1", "O/A")
+        val duplicate = harness.editText.commitExternalTextComposition("speech-1", "ignored")
+        val lateUpdate = JSONObject(
+            harness.editText.updateExternalTextComposition("speech-1", "ignored")
+        )
+
+        val result = JSONObject(resultJson)
+        assertEquals("O/A", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals("committed", result.getString("outcome"))
+        assertEquals("consumer", result.getString("cause"))
+        assertEquals("O/A", result.getString("text"))
+        assertEquals(resultJson, duplicate)
+        assertEquals("EXTERNAL_COMPOSITION_ENDED", lateUpdate.errorCode())
+        assertEquals(1, harness.backend.calls.count { it == "applyNativeIntent" })
+        assertEquals(listOf(resultJson), listener.externalCompositionEnds)
+        assertEquals(listOf("update", "external"), listener.events)
+    }
+
+    @Test
+    fun `external composition cancel restores authorized text and selection once`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        harness.backend.calls.clear()
+
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "O/A")
+        val resultJson = harness.editText.cancelExternalTextComposition("speech-1", "consumer")
+        val duplicate = harness.editText.cancelExternalTextComposition("speech-1", "consumer")
+
+        val result = JSONObject(resultJson)
+        assertEquals("arrival", harness.editText.text.toString())
+        assertEquals(0, harness.editText.selectionStart)
+        assertEquals(7, harness.editText.selectionEnd)
+        assertEquals("arrival", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals("cancelled", result.getString("outcome"))
+        assertEquals("consumer", result.getString("cause"))
+        assertEquals(resultJson, duplicate)
+        assertEquals(0, harness.backend.calls.count { it == "applyCommand" })
+        assertEquals(listOf(resultJson), listener.externalCompositionEnds)
+    }
+
+    @Test
+    fun `external composition no op final text does not add undo state`() {
+        val harness = realExternalCompositionHarness("arrival")
+        try {
+            val listener = RecordingEditorListener()
+            harness.editText.editorListener = listener
+            harness.editText.setSelection(0, 7)
+            val revisionBefore = harness.adapter.baseDocumentRevision
+            val canUndoBefore = harness.adapter.historyCanUndo()
+            harness.editText.beginExternalTextComposition("speech-1")
+            harness.editText.updateExternalTextComposition("speech-1", "draft")
+            val requestIdBefore = harness.adapter.lastRequestIdForTesting
+
+            val resultJson = harness.editText.commitExternalTextComposition("speech-1", "arrival")
+            val result = JSONObject(resultJson)
+            val duplicate = harness.editText.commitExternalTextComposition("speech-1", "ignored")
+
+            assertEquals("committed", result.getString("outcome"))
+            assertEquals(revisionBefore, harness.adapter.baseDocumentRevision)
+            assertEquals(canUndoBefore, harness.adapter.historyCanUndo())
+            assertEquals("arrival", harness.editText.text.toString())
+            assertEquals(resultJson, duplicate)
+            assertEquals(requestIdBefore?.plus(1u), harness.adapter.lastRequestIdForTesting)
+            assertTrue(listener.receivedUpdates.isEmpty())
+            assertEquals(listOf("external"), listener.events)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `external composition empty final text deletes the selected range`() {
+        val harness = externalCompositionHarness("arrival")
+        harness.editText.setSelection(0, 7)
+
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+        val result = JSONObject(
+            harness.editText.commitExternalTextComposition("speech-1", "")
+        )
+
+        assertEquals("committed", result.getString("outcome"))
+        assertEquals("", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals("", harness.editText.text.toString())
+    }
+
+    @Test
+    fun `external composition replacement preserves Unicode ranges`() {
+        data class Case(val source: String, val start: Int, val end: Int, val expected: String)
+        val cases = listOf(
+            Case("Cafe\u0301", 3, 5, "CafZ"),
+            Case("abc אבג def", 4, 7, "abc Z def")
+        )
+
+        val emoji = realExternalCompositionHarness("A🙂B")
+        try {
+            emoji.editText.setSelection(1, 3)
+            emoji.editText.beginExternalTextComposition("speech-emoji")
+            emoji.editText.updateExternalTextComposition("speech-emoji", "draft")
+            emoji.editText.commitExternalTextComposition("speech-emoji", "Z")
+            assertEquals("AZB", emoji.editText.text.toString())
+            assertEquals("<p>AZB</p>", emoji.adapter.documentHtml())
+        } finally {
+            emoji.adapter.destroy()
+        }
+
+        cases.forEachIndexed { index, case ->
+            val harness = externalCompositionHarness(case.source)
+            harness.editText.setSelection(case.start, case.end)
+            harness.editText.beginExternalTextComposition("speech-$index")
+            harness.editText.updateExternalTextComposition("speech-$index", "draft 🙂")
+            harness.editText.commitExternalTextComposition("speech-$index", "Z")
+
+            assertEquals(case.expected, harness.editText.text.toString())
+            assertEquals(case.expected, harness.backend.sessions.getValue(harness.editorId).text.toString())
+        }
+    }
+
+    @Test
+    fun `external composition rejects unavailable and read only editors`() {
+        val unavailable = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            editorId = 1
+            setText("arrival")
+            setSelection(0, 7)
+        }
+        val readOnly = externalCompositionHarness(
+            initialText = "arrival",
+            configJson = """{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"""
+        )
+        readOnly.editText.setSelection(0, 7)
+        readOnly.editText.isEditable = false
+
+        val unavailableResult = JSONObject(unavailable.beginExternalTextComposition("speech-1"))
+        val readOnlyResult = JSONObject(readOnly.editText.beginExternalTextComposition("speech-2"))
+
+        assertEquals("EXTERNAL_COMPOSITION_UNAVAILABLE", unavailableResult.errorCode())
+        assertEquals("EXTERNAL_COMPOSITION_UNAVAILABLE", readOnlyResult.errorCode())
+        assertEquals("arrival", unavailable.text.toString())
+        assertEquals("arrival", readOnly.editText.text.toString())
+    }
+
+    @Test
+    fun `external composition rejects non text selection without touching the view`() {
+        val harness = realExternalCompositionHarness("arrival")
+        try {
+            val selectionResult = UniffiEditorV2Backend.setSelection(
+                harness.editorId,
+                JSONObject()
+                    .put("version", 1)
+                    .put("requestId", "991101")
+                    .put("baseDocumentRevision", harness.adapter.baseDocumentRevision.toString())
+                    .put("selection", JSONObject().put("type", "all"))
+                    .toString()
+            )
+            assertTrue(selectionResult is EditorV2CallResult.Ok)
+            harness.adapter.refreshFromRustState(null)
+                ?.let { harness.editText.applyUpdateJSON(it, notifyListener = false) }
+            val before = harness.editText.text.toString()
+
+            val result = JSONObject(
+                harness.editText.beginExternalTextComposition("speech-1")
+            )
+
+            assertEquals("EXTERNAL_COMPOSITION_SELECTION_INCOMPATIBLE", result.errorCode())
+            assertEquals(before, harness.editText.text.toString())
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `external composition second session commits first`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+        val second = JSONObject(harness.editText.beginExternalTextComposition("speech-2"))
+
+        assertEquals("active", second.getString("type"))
+        assertEquals("draft", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals(1, listener.externalCompositionEnds.size)
+        assertEquals("consumer", JSONObject(listener.externalCompositionEnds.single()).getString("cause"))
+    }
+
+    @Test
+    fun `external composition repeated active session id cannot mutate twice`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        harness.backend.calls.clear()
+
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+        val repeated = JSONObject(
+            harness.editText.beginExternalTextComposition("speech-1")
+        )
+        val duplicate = harness.editText.commitExternalTextComposition("speech-1", "ignored")
+
+        assertEquals("EXTERNAL_COMPOSITION_ENDED", repeated.errorCode())
+        assertEquals("draft", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals(listener.externalCompositionEnds.single(), duplicate)
+        assertEquals(1, harness.backend.calls.count { it == "applyNativeIntent" })
+        assertEquals(1, listener.externalCompositionEnds.size)
+    }
+
+    @Test
+    fun `external composition toolbar command commits before interaction`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        harness.backend.calls.clear()
+
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+        harness.editText.performToolbarToggleMark("bold")
+
+        assertEquals("draft", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals("interaction", JSONObject(listener.externalCompositionEnds.single()).getString("cause"))
+        assertEquals(2, harness.backend.calls.count { it == "applyNativeIntent" })
+        assertEquals(1, harness.backend.calls.count { it == "applyCommand" })
+    }
+
+    @Test
+    fun `external composition task marker tap recomputes filtered scalar`() {
+        val harness = realExternalCompositionHarness(
+            initialText = "12",
+            configJson = """
+                {
+                  "schema": {
+                    "nodes": [
+                      {"name":"doc","content":"block+","role":"doc"},
+                      {"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},
+                      {"name":"taskList","content":"taskItem+","group":"block","role":"list"},
+                      {"name":"taskItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},
+                      {"name":"text","group":"inline","role":"text"}
+                    ],
+                    "marks": []
+                  },
+                  "initialization": {"type":"localEmpty"},
+                  "policy": {"inputFilter":"[0-9]"}
+                }
+            """.trimIndent()
+        )
+        try {
+            val document = """
+                {
+                  "type": "doc",
+                  "content": [
+                    {"type":"paragraph","content":[{"type":"text","text":"12"}]},
+                    {"type":"taskList","content":[
+                      {"type":"taskItem","attrs":{"checked":false},"content":[
+                        {"type":"paragraph","content":[{"type":"text","text":"Task item"}]}
+                      ]}
+                    ]}
+                  ]
+                }
+            """.trimIndent()
+            harness.adapter.setContentJson(document)
+                ?.let { harness.editText.applyUpdateJSON(it, notifyListener = false) }
+            harness.editText.setSelection(0, 2)
+            val listener = RecordingEditorListener()
+            harness.editText.editorListener = listener
+            val toggles = mutableListOf<Pair<Int, Int>>()
+            harness.editText.onToggleTaskItemCheckedAtSelectionScalarInRustForTesting = { anchor, head ->
+                listener.events.add("toggle")
+                toggles.add(anchor to head)
+            }
+            harness.editText.beginExternalTextComposition("speech-filtered-task")
+            harness.editText.updateExternalTextComposition("speech-filtered-task", "letters")
+            harness.editText.layoutParams = android.view.ViewGroup.LayoutParams(600, 240)
+            val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+            val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+            harness.editText.measure(widthSpec, heightSpec)
+            harness.editText.layout(
+                0,
+                0,
+                harness.editText.measuredWidth,
+                harness.editText.measuredHeight
+            )
+            val textLayout = requireNotNull(harness.editText.layout)
+            val markerIndex = harness.editText.text.toString()
+                .indexOf(LayoutConstants.TASK_LIST_MARKER_UNCHECKED)
+            assertTrue(markerIndex >= 0)
+            val provisionalScalar = PositionBridge.utf16ToScalar(
+                markerIndex,
+                harness.editText.text.toString()
+            )
+            val markerLine = textLayout.getLineForOffset(markerIndex)
+            val tapX = harness.editText.totalPaddingLeft + 1f
+            val tapY = harness.editText.totalPaddingTop +
+                ((textLayout.getLineTop(markerLine) + textLayout.getLineBottom(markerLine)) / 2f)
+
+            val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+            harness.editText.onTouchEvent(down)
+            down.recycle()
+            val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+            harness.editText.onTouchEvent(up)
+            up.recycle()
+
+            val authoritativeText = harness.editText.text.toString()
+            val authoritativeMarker = authoritativeText
+                .indexOf(LayoutConstants.TASK_LIST_MARKER_UNCHECKED)
+            val authoritativeScalar = PositionBridge.utf16ToScalar(
+                authoritativeMarker,
+                authoritativeText
+            )
+            assertTrue(provisionalScalar != authoritativeScalar)
+            assertEquals(listOf(authoritativeScalar to authoritativeScalar), toggles)
+            assertEquals(
+                "interaction",
+                JSONObject(listener.externalCompositionEnds.single()).getString("cause")
+            )
+            assertEquals(listOf("external", "toggle"), listener.events)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `external composition paste commits before interaction route`() {
+        val context = RuntimeEnvironment.getApplication()
+        val harness = externalCompositionHarness("Hello")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(5)
+        var insertion: Pair<String, Int>? = null
+        harness.editText.onInsertTextInRustForTesting = { text, scalar ->
+            listener.events.add("paste")
+            insertion = text to scalar
+        }
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("plain", "X"))
+        harness.editText.beginExternalTextComposition("speech-paste")
+        harness.editText.updateExternalTextComposition("speech-paste", "!")
+
+        assertTrue(harness.editText.onTextContextMenuItem(android.R.id.paste))
+
+        assertEquals("X" to 6, insertion)
+        assertEquals(
+            "interaction",
+            JSONObject(listener.externalCompositionEnds.single()).getString("cause")
+        )
+        assertEquals(listOf("update", "external", "paste"), listener.events)
+    }
+
+    @Test
+    fun `external composition cut commits before interaction route`() {
+        val context = RuntimeEnvironment.getApplication()
+        val harness = realExternalCompositionHarness(
+            initialText = "Hello",
+            configJson = """{"initialization":{"type":"localEmpty"},"policy":{"inputFilter":"[0-9]"}}"""
+        )
+        try {
+            val listener = RecordingEditorListener()
+            harness.editText.editorListener = listener
+            harness.editText.setSelection(0, 5)
+            var deletion: Pair<Int, Int>? = null
+            harness.editText.onDeleteRangeInRustForTesting = { from, to ->
+                listener.events.add("cut")
+                deletion = from to to
+            }
+            harness.editText.beginExternalTextComposition("speech-cut")
+            harness.editText.updateExternalTextComposition("speech-cut", "letters")
+
+            assertTrue(harness.editText.onTextContextMenuItem(android.R.id.cut))
+
+            assertEquals(0 to 5, deletion)
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            assertEquals("Hello", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+            assertEquals(
+                "interaction",
+                JSONObject(listener.externalCompositionEnds.single()).getString("cause")
+            )
+            assertEquals(listOf("external", "cut"), listener.events)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `external composition accessibility set text commits before interaction route`() {
+        val harness = externalCompositionHarness("Hello")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(5)
+        var replacement: Triple<Int, Int, String>? = null
+        harness.editText.onReplaceTextInRustForTesting = { from, to, text ->
+            listener.events.add("setText")
+            replacement = Triple(from, to, text)
+        }
+        val arguments = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                "replacement"
+            )
+        }
+        harness.editText.beginExternalTextComposition("speech-set-text")
+        harness.editText.updateExternalTextComposition("speech-set-text", "!")
+
+        assertTrue(
+            harness.editText.performAccessibilityAction(
+                AccessibilityNodeInfo.ACTION_SET_TEXT,
+                arguments
+            )
+        )
+
+        assertEquals(Triple(0, 6, "replacement"), replacement)
+        assertEquals(
+            "interaction",
+            JSONObject(listener.externalCompositionEnds.single()).getString("cause")
+        )
+        assertEquals(listOf("update", "external", "setText"), listener.events)
+    }
+
+    @Test
+    fun `external composition delete and selection commit before interaction`() {
+        val deleteHarness = externalCompositionHarness("arrival")
+        val deleteListener = RecordingEditorListener()
+        deleteHarness.editText.editorListener = deleteListener
+        deleteHarness.editText.setSelection(0, 7)
+        val deleteConnection = deleteHarness.editText.onCreateInputConnection(EditorInfo())!!
+        deleteHarness.editText.beginExternalTextComposition("speech-delete")
+        deleteHarness.editText.updateExternalTextComposition("speech-delete", "draft")
+
+        assertTrue(deleteConnection.deleteSurroundingText(1, 0))
+
+        assertEquals("draf", deleteHarness.editText.text.toString())
+        assertEquals("interaction", JSONObject(deleteListener.externalCompositionEnds.single()).getString("cause"))
+
+        val selectionHarness = externalCompositionHarness("arrival")
+        val selectionListener = RecordingEditorListener()
+        selectionHarness.editText.editorListener = selectionListener
+        selectionHarness.editText.setSelection(0, 7)
+        val selectionConnection = selectionHarness.editText.onCreateInputConnection(EditorInfo())!!
+        selectionHarness.editText.beginExternalTextComposition("speech-selection")
+        selectionHarness.editText.updateExternalTextComposition("speech-selection", "draft")
+
+        assertTrue(selectionConnection.setSelection(0, 0))
+
+        assertEquals("draft", selectionHarness.editText.text.toString())
+        assertEquals(0, selectionHarness.editText.selectionStart)
+        assertEquals("interaction", JSONObject(selectionListener.externalCompositionEnds.single()).getString("cause"))
+    }
+
+    @Test
+    fun `external composition external update commits for document change`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+
+        assertTrue(harness.editText.prepareForExternalEditorUpdate())
+
+        assertEquals("draft", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals("documentChange", JSONObject(listener.externalCompositionEnds.single()).getString("cause"))
+    }
+
+    @Test
+    fun `external composition remote update applies after document change commit`() {
+        val harness = externalCompositionHarness("arrival", roomBound = true)
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+
+        assertTrue(harness.editText.prepareForExternalEditorUpdate())
+        val session = harness.backend.sessions.getValue(harness.editorId)
+        session.text.append(" remote")
+        session.anchor = session.text.length
+        session.head = session.text.length
+        session.revision += 1u
+        harness.adapter.currentStateJson()
+            ?.let { harness.editText.applyUpdateJSON(it, notifyListener = false) }
+
+        assertEquals("draft remote", harness.editText.text.toString())
+        assertEquals(1, listener.externalCompositionEnds.size)
+        assertEquals("documentChange", JSONObject(listener.externalCompositionEnds.single()).getString("cause"))
+    }
+
+    @Test
+    fun `external composition lifecycle discard cancels without mutation`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        val session = harness.backend.sessions.getValue(harness.editorId)
+        val revisionBefore = session.revision
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+
+        harness.editText.discardTransientNativeInputForEditorRebind()
+
+        assertEquals("arrival", harness.editText.text.toString())
+        assertEquals(0, harness.editText.selectionStart)
+        assertEquals(7, harness.editText.selectionEnd)
+        assertEquals("arrival", session.text.toString())
+        assertEquals(revisionBefore, session.revision)
+        assertEquals("lifecycle", JSONObject(listener.externalCompositionEnds.single()).getString("cause"))
+    }
+
+    @Test
+    fun `external composition cancel adopts current authorized driver state`() {
+        val harness = externalCompositionHarness("abc", roomBound = true)
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(1, 2)
+        val session = harness.backend.sessions.getValue(harness.editorId)
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "X")
+        session.text.insert(0, "Z")
+        session.anchor = 1
+        session.head = 1
+        session.revision += 1u
+        val revisionBeforeCancel = session.revision
+        val undoBefore = session.undoStack.size
+        val outboxBefore = session.outbox.size
+        harness.backend.calls.clear()
+
+        val resultJson = harness.editText.cancelExternalTextComposition("speech-1", "consumer")
+        val result = JSONObject(resultJson)
+
+        assertEquals("cancelled", result.getString("outcome"))
+        assertEquals("Zabc", harness.editText.text.toString())
+        assertEquals("Zabc", session.text.toString())
+        assertEquals(revisionBeforeCancel, session.revision)
+        assertEquals(undoBefore, session.undoStack.size)
+        assertEquals(outboxBefore, session.outbox.size)
+        assertEquals(0, harness.backend.calls.count { it == "applyNativeIntent" })
+        assertEquals(0, harness.backend.calls.count { it == "applyCommand" })
+        assertTrue(listener.receivedUpdates.isEmpty())
+        assertEquals(listOf(resultJson), listener.externalCompositionEnds)
+    }
+
+    @Test
+    fun `external composition input trait discard cancels for lifecycle`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        val session = harness.backend.sessions.getValue(harness.editorId)
+        val revisionBefore = session.revision
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+
+        harness.editText.setKeyboardType("email-address")
+
+        assertEquals("arrival", harness.editText.text.toString())
+        assertEquals(0, harness.editText.selectionStart)
+        assertEquals(7, harness.editText.selectionEnd)
+        assertEquals("arrival", session.text.toString())
+        assertEquals(revisionBefore, session.revision)
+        assertEquals("lifecycle", JSONObject(listener.externalCompositionEnds.single()).getString("cause"))
+    }
+
+    @Test
+    fun `external composition invalid position epoch cancels without local mutation`() {
+        val harness = externalCompositionHarness("abc", roomBound = true)
+        val listener = RecordingEditorListener()
+        val adapterErrors = mutableListOf<EditorV2Error>()
+        harness.adapter.onAutonomousError = { adapterErrors += it }
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(1, 2)
+        val session = harness.backend.sessions.getValue(harness.editorId)
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "X")
+        session.positionEpochs.clear()
+        val revisionBeforeCommit = session.revision
+        val undoBefore = session.undoStack.size
+        val outboxBefore = session.outbox.size
+
+        val resultJson = harness.editText.commitExternalTextComposition("speech-1", "Y")
+        val result = JSONObject(resultJson)
+
+        assertEquals("cancelled", result.getString("outcome"))
+        assertEquals("EXTERNAL_COMPOSITION_COMMIT_FAILED", result.errorCode())
+        assertEquals("abc", harness.editText.text.toString())
+        assertEquals("abc", session.text.toString())
+        assertEquals(revisionBeforeCommit, session.revision)
+        assertEquals(undoBefore, session.undoStack.size)
+        assertEquals(outboxBefore, session.outbox.size)
+        assertTrue(listener.receivedUpdates.isEmpty())
+        assertEquals(listOf(resultJson), listener.externalCompositionEnds)
+        assertEquals(1, adapterErrors.size)
+        assertEquals("POSITION_EPOCH_INVALID", adapterErrors.single().code)
+    }
+
+    @Test
+    fun `external composition maximum length failure is atomic`() {
+        assertRealExternalCompositionPolicyFailure(
+            configJson = """{"initialization":{"type":"localEmpty"},"policy":{"maxLength":3}}""",
+            initialText = "ab",
+            finalText = "long"
+        )
+    }
+
+    @Test
+    fun `external composition input filter failure is atomic`() {
+        assertRealExternalCompositionPolicyFailure(
+            configJson = """{"initialization":{"type":"localEmpty"},"policy":{"inputFilter":"[unclosed"}}""",
+            initialText = "12",
+            finalText = "letters"
+        )
+    }
+
+    @Test
+    fun `external composition valid input filter commits accepted partial text`() {
+        val harness = realExternalCompositionHarness(
+            initialText = "ab",
+            configJson = """{"initialization":{"type":"localEmpty"},"policy":{"inputFilter":"[0-9]"}}"""
+        )
+        try {
+            val listener = RecordingEditorListener()
+            harness.editText.editorListener = listener
+            harness.editText.setSelection(0, 2)
+            harness.editText.beginExternalTextComposition("speech-filter-partial")
+            harness.editText.updateExternalTextComposition("speech-filter-partial", "a1b2")
+
+            val result = JSONObject(
+                harness.editText.commitExternalTextComposition(
+                    "speech-filter-partial",
+                    "a1b2"
+                )
+            )
+
+            assertEquals("committed", result.getString("outcome"))
+            assertEquals("12", harness.editText.text.toString())
+            assertEquals("<p>12</p>", harness.adapter.documentHtml())
+            assertEquals(1, listener.receivedUpdates.size)
+            assertEquals(1, listener.externalCompositionEnds.size)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `external composition valid input filter commits fully filtered no op`() {
+        val harness = realExternalCompositionHarness(
+            initialText = "12",
+            configJson = """{"initialization":{"type":"localEmpty"},"policy":{"inputFilter":"[0-9]"}}"""
+        )
+        try {
+            val listener = RecordingEditorListener()
+            harness.editText.editorListener = listener
+            harness.editText.setSelection(0, 2)
+            val revisionBefore = harness.adapter.baseDocumentRevision
+            val canUndoBefore = harness.adapter.historyCanUndo()
+            harness.editText.beginExternalTextComposition("speech-filter-full")
+            harness.editText.updateExternalTextComposition("speech-filter-full", "letters")
+
+            val result = JSONObject(
+                harness.editText.commitExternalTextComposition(
+                    "speech-filter-full",
+                    "letters"
+                )
+            )
+
+            assertEquals("committed", result.getString("outcome"))
+            assertEquals("12", harness.editText.text.toString())
+            assertEquals("<p>12</p>", harness.adapter.documentHtml())
+            assertEquals(revisionBefore, harness.adapter.baseDocumentRevision)
+            assertEquals(canUndoBefore, harness.adapter.historyCanUndo())
+            assertTrue(listener.receivedUpdates.isEmpty())
+            assertEquals(1, listener.externalCompositionEnds.size)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `external composition invalid cancel cause keeps session active`() {
+        val harness = externalCompositionHarness("arrival")
+        harness.editText.setSelection(0, 7)
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+
+        val invalid = JSONObject(
+            harness.editText.cancelExternalTextComposition("speech-1", "interaction")
+        )
+        val committed = JSONObject(
+            harness.editText.commitExternalTextComposition("speech-1", "final")
+        )
+
+        assertEquals("EXTERNAL_COMPOSITION_CANCEL_CAUSE_INVALID", invalid.errorCode())
+        assertEquals("committed", committed.getString("outcome"))
+        assertEquals("final", harness.editText.text.toString())
+    }
+
     @Test
     fun `editor input traits use rich text defaults`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
@@ -4385,6 +5141,154 @@ class EditorInputConnectionTest {
                     .put("marks", JSONArray())
             )
             .put(JSONObject().put("type", "blockEnd"))
+
+    private data class ExternalCompositionHarness(
+        val backend: FakeEditorV2Backend,
+        val editorId: String,
+        val adapter: EditorV2Adapter,
+        val editText: EditorEditText
+    )
+
+    private fun externalCompositionHarness(
+        initialText: String,
+        configJson: String = """{"initialization":{"type":"localEmpty"}}""",
+        roomBound: Boolean = false
+    ): ExternalCompositionHarness {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(configJson, null) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(backend, editorId, roomBound = roomBound)!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            this.editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>$initialText</p>")
+            ?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        return ExternalCompositionHarness(backend, editorId, adapter, editText)
+    }
+
+    private data class RealExternalCompositionHarness(
+        val editorId: String,
+        val adapter: EditorV2Adapter,
+        val editText: EditorEditText
+    )
+
+    private fun realExternalCompositionHarness(
+        initialText: String,
+        configJson: String = """{"initialization":{"type":"localEmpty"}}""",
+        roomBound: Boolean = false,
+        collaborationWake: (String, CollaborationWakeReason) -> Unit = { _, _ -> }
+    ): RealExternalCompositionHarness {
+        val created = UniffiEditorV2Backend.create(configJson, null) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(
+            UniffiEditorV2Backend,
+            editorId,
+            roomBound = roomBound,
+            collaborationWake = collaborationWake
+        )!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            this.editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>$initialText</p>")
+            ?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        return RealExternalCompositionHarness(editorId, adapter, editText)
+    }
+
+    private fun assertRealExternalCompositionPolicyFailure(
+        configJson: String,
+        initialText: String,
+        finalText: String
+    ) {
+        val collaborationWakes = mutableListOf<CollaborationWakeReason>()
+        val harness = realExternalCompositionHarness(
+            initialText,
+            configJson,
+            roomBound = true,
+            collaborationWake = { _, reason -> collaborationWakes.add(reason) }
+        )
+        try {
+            val listener = RecordingEditorListener()
+            harness.editText.editorListener = listener
+            harness.editText.setSelection(0, initialText.length)
+            val revisionBefore = harness.adapter.baseDocumentRevision
+            val canUndoBefore = harness.adapter.historyCanUndo()
+            val canRedoBefore = harness.adapter.historyCanRedo()
+            collaborationWakes.clear()
+
+            harness.editText.beginExternalTextComposition("speech-policy")
+            harness.editText.updateExternalTextComposition("speech-policy", finalText)
+            assertTrue(collaborationWakes.isEmpty())
+            val resultJson = harness.editText.commitExternalTextComposition(
+                "speech-policy",
+                finalText
+            )
+            val duplicate = harness.editText.commitExternalTextComposition(
+                "speech-policy",
+                "ignored"
+            )
+            val result = JSONObject(resultJson)
+
+            assertEquals("cancelled", result.getString("outcome"))
+            assertEquals("EXTERNAL_COMPOSITION_COMMIT_FAILED", result.errorCode())
+            assertExternalCompositionErrorShape(result)
+            assertEquals("<p>$initialText</p>", harness.adapter.documentHtml())
+            assertEquals(initialText, harness.editText.text.toString())
+            assertEquals(revisionBefore, harness.adapter.baseDocumentRevision)
+            assertEquals(canUndoBefore, harness.adapter.historyCanUndo())
+            assertEquals(canRedoBefore, harness.adapter.historyCanRedo())
+            assertTrue(collaborationWakes.isEmpty())
+            assertEquals(resultJson, duplicate)
+            assertEquals(listOf(resultJson), listener.externalCompositionEnds)
+            assertTrue(listener.receivedUpdates.isEmpty())
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    private fun assertExternalCompositionErrorShape(result: JSONObject) {
+        val error = result.getJSONObject("error")
+        assertEquals(
+            setOf(
+                "domain",
+                "code",
+                "message",
+                "requestId",
+                "operationIndex",
+                "limit",
+                "actual",
+                "details"
+            ),
+            error.keys().asSequence().toSet()
+        )
+        assertEquals("lifecycle", error.getString("domain"))
+        assertTrue(error.getString("message").isNotEmpty())
+        listOf("requestId", "operationIndex", "limit", "actual", "details").forEach {
+            assertTrue(error.isNull(it))
+        }
+    }
+
+    private class RecordingEditorListener : EditorEditText.EditorListener {
+        val externalCompositionEnds = mutableListOf<String>()
+        val receivedUpdates = mutableListOf<String>()
+        val events = mutableListOf<String>()
+
+        override fun onSelectionChanged(anchor: Int, head: Int) = Unit
+
+        override fun onEditorUpdate(updateJSON: String) {
+            receivedUpdates.add(updateJSON)
+            events.add("update")
+        }
+
+        override fun onExternalTextCompositionEnded(resultJson: String) {
+            externalCompositionEnds.add(resultJson)
+            events.add("external")
+        }
+    }
+
+    private fun JSONObject.errorCode(): String =
+        getJSONObject("error").getString("code")
 
     private fun withDefaultInputMethod(context: Context, inputMethodId: String, block: () -> Unit) {
         val previous = Settings.Secure.getString(
