@@ -1095,8 +1095,16 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         } | null>(null);
         const revisionScopeEditorIdRef = useRef(editorId);
         const latestRevisionScopeEditorIdRef = useRef<string | null>(editorId);
+        const pendingFocusedRebindRef = useRef<string | null>(null);
         const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
         if (didRebindRevisionScope) {
+            pendingFocusedRebindRef.current = null;
+            if (isFocusedRef.current && document.isReady) {
+                pendingFocusedRebindRef.current = editorId;
+            } else if (isFocusedRef.current) {
+                isFocusedRef.current = false;
+                setIsFocused(false);
+            }
             pushedUpdateBindingGenerationRef.current += 1;
             revisionScopeEditorIdRef.current = editorId;
             latestRevisionScopeEditorIdRef.current = null;
@@ -1104,8 +1112,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             selectionRef.current = { type: 'text', anchor: 0, head: 0 };
             activeStateRef.current = EMPTY_ACTIVE_STATE;
             activeStateKeyRef.current = null;
-            isFocusedRef.current = false;
-            setIsFocused(false);
             toolbarItemsSerializationCacheRef.current = null;
             setActiveState(EMPTY_ACTIVE_STATE);
             setPushedUpdate(null);
@@ -1135,6 +1141,13 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             latestRevisionRef.current = documentHandle.bridge.getState().documentRevision;
             latestRevisionScopeEditorIdRef.current = editorId;
         }, [documentHandle, editorId]);
+
+        useLayoutEffect(() => {
+            if (pendingFocusedRebindRef.current !== editorId || !document.isReady) return;
+            pendingFocusedRebindRef.current = null;
+            setActiveEditorToolbarFrameOwnerForEditor(toolbarFrameOwnerId, true);
+            onFocusRef.current?.();
+        }, [document.isReady, editorId, toolbarFrameOwnerId]);
 
         useEffect(
             () => () => {

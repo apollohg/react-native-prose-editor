@@ -430,13 +430,39 @@ export function useNativeEditorDocument(
         return handle.bridge.getState().canRedo;
     }, [handle]);
 
+    let renderedEngineView = engineView;
+    if (engineView.editorId !== editorId) {
+        if (handle.isDestroyed) {
+            renderedEngineView = {
+                editorId,
+                ready: false,
+                documentState: null,
+                documentRevision: null,
+                documentOrigin: null,
+                historyState: DEFAULT_V2_HISTORY_STATE,
+                contentKey: null,
+            };
+        } else {
+            const state = handle.bridge.getState();
+            renderedEngineView = {
+                editorId,
+                ready: state.documentState !== 'AwaitRemote',
+                documentState: state.documentState,
+                documentRevision: state.documentRevision,
+                documentOrigin: state.documentOrigin,
+                historyState: { canUndo: state.canUndo, canRedo: state.canRedo },
+                contentKey: null,
+            };
+        }
+        readyRef.current = { editorId, ready: renderedEngineView.ready };
+    }
+
     return {
-        isReady: engineView.editorId === editorId && engineView.ready,
-        documentState: engineView.editorId === editorId ? engineView.documentState : null,
-        documentRevision: engineView.editorId === editorId ? engineView.documentRevision : null,
-        documentOrigin: engineView.editorId === editorId ? engineView.documentOrigin : null,
-        historyState:
-            engineView.editorId === editorId ? engineView.historyState : DEFAULT_V2_HISTORY_STATE,
+        isReady: renderedEngineView.ready,
+        documentState: renderedEngineView.documentState,
+        documentRevision: renderedEngineView.documentRevision,
+        documentOrigin: renderedEngineView.documentOrigin,
+        historyState: renderedEngineView.historyState,
         refresh: refreshFromEngine,
         getContent,
         getContentJson,

@@ -80,11 +80,11 @@ describe('useNativeEditorDocument', () => {
         const firstBRender = renders.find((rendered) => rendered.editorId === handleB.editorId);
         expect(firstBRender).toEqual({
             editorId: handleB.editorId,
-            isReady: false,
-            documentRevision: null,
+            isReady: true,
+            documentRevision: handleB.bridge.getState().documentRevision,
             historyState: { canUndo: false, canRedo: false },
             canUndo: false,
-            content: '',
+            content: '<p>beta</p>',
         });
 
         handleA.bridge.replaceDocument({

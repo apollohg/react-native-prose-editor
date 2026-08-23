@@ -1939,27 +1939,83 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
-    it('drops a pending pushed update when the same editor component rebinds to another handle', () => {
+    it('keeps the focused native view mounted when rebinding to another ready handle', () => {
         const handleA = createV2LocalHandle(V2_INITIAL_DOC);
         const handleB = createV2LocalHandle(V2_DOC_B);
         const ref = createRef<NativeRichTextEditorRef>();
+        const onReboundFocus = jest.fn();
         const { getByTestId, rerender } = render(
             <NativeRichTextEditor ref={ref} documentHandle={handleA} />
         );
+
+        const nativeView = getByTestId('native-editor-view');
+
+        act(() => {
+            nativeView.props.onFocusChange({
+                nativeEvent: { editorId: handleA.editorId, isFocused: true },
+            });
+        });
 
         act(() => {
             ref.current!.toggleMark('bold');
         });
         expect(getByTestId('native-editor-view').props.editorUpdateEditorId).toBe(handleA.editorId);
 
-        rerender(<NativeRichTextEditor ref={ref} documentHandle={handleB} />);
+        rerender(
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handleB}
+                onFocus={onReboundFocus}
+            />
+        );
 
         const view = getByTestId('native-editor-view');
+        expect(view).toBe(nativeView);
+        expect(onReboundFocus).toHaveBeenCalledTimes(1);
         expect(view.props.editorId).toBe(handleB.editorId);
         expect(view.props.editorUpdateJson).toBeUndefined();
         expect(view.props.editorUpdateEditorId).toBeUndefined();
         handleA.destroy();
         handleB.destroy();
+    });
+
+    it('does not carry focus through a rebind while the room is awaiting remote state', () => {
+        const localHandle = createV2LocalHandle(V2_INITIAL_DOC);
+        const roomHandle = createV2RoomHandle();
+        const { controller } = setupV2Controller(roomHandle);
+        const onRoomFocus = jest.fn();
+        const { getByTestId, queryByTestId, rerender } = render(
+            <NativeRichTextEditor documentHandle={localHandle} />
+        );
+
+        act(() => {
+            getByTestId('native-editor-view').props.onFocusChange({
+                nativeEvent: { editorId: localHandle.editorId, isFocused: true },
+            });
+        });
+        rerender(
+            <NativeRichTextEditor documentHandle={roomHandle} onFocus={onRoomFocus} />
+        );
+        expect(queryByTestId('native-editor-view')).toBeNull();
+
+        act(() => {
+            controller.connect();
+            v2Runtime.transportOpen(roomHandle.editorId);
+            v2Runtime.pushRemoteDoc(roomHandle.editorId, V2_SERVER_DOC);
+            v2Runtime.transportReceive(roomHandle.editorId, V2_FAKE_STEP2_FRAME);
+        });
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={roomHandle}
+                documentRevision={controller.state.documentRevision}
+                onFocus={onRoomFocus}
+            />
+        );
+
+        expect(queryByTestId('native-editor-view')).not.toBeNull();
+        expect(onRoomFocus).not.toHaveBeenCalled();
+        localHandle.destroy();
+        roomHandle.destroy();
     });
 
     it('clears A interaction state before B publishes its authoritative snapshot', () => {
