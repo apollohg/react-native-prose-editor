@@ -1645,7 +1645,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private var coreReportedDocumentIsEmpty: Bool?
 
     private func refreshPlaceholderVisibility() {
-        placeholderLabel.isHidden = placeholder.isEmpty || !isRenderedContentEmpty()
+        let hasProvisionalText = externalTextComposition?.latestText.isEmpty == false
+        placeholderLabel.isHidden = placeholder.isEmpty
+            || hasProvisionalText
+            || !isRenderedContentEmpty()
     }
 
     @discardableResult
@@ -2590,6 +2593,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         state.latestText = text
         externalTextComposition = state
         refreshMarkedTextCompositionText(fallback: text)
+        refreshPlaceholderVisibility()
         return externalCompositionActiveJSON(sessionId: sessionId)
     }
 

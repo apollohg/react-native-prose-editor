@@ -64,6 +64,27 @@ class EditorInputConnectionTest {
     }
 
     @Test
+    fun `external composition updates placeholder from provisional text`() {
+        val harness = externalCompositionHarness("")
+        harness.editText.placeholderText = "Type here"
+
+        assertTrue(harness.editText.shouldDisplayPlaceholderForTesting())
+
+        harness.editText.beginExternalTextComposition("placeholder")
+        harness.editText.updateExternalTextComposition("placeholder", "draft")
+        assertFalse(harness.editText.shouldDisplayPlaceholderForTesting())
+
+        harness.editText.updateExternalTextComposition("placeholder", "")
+        assertTrue(harness.editText.shouldDisplayPlaceholderForTesting())
+
+        harness.editText.updateExternalTextComposition("placeholder", "draft")
+        assertFalse(harness.editText.shouldDisplayPlaceholderForTesting())
+
+        harness.editText.cancelExternalTextComposition("placeholder", "consumer")
+        assertTrue(harness.editText.shouldDisplayPlaceholderForTesting())
+    }
+
+    @Test
     fun `keyboard input commits external phrase before typing`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)

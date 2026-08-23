@@ -892,7 +892,9 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun shouldDisplayPlaceholder(): Boolean {
-        return placeholderText.isNotEmpty() && isRenderedContentEmpty()
+        return placeholderText.isNotEmpty() &&
+            externalTextComposition?.latestText.isNullOrEmpty() &&
+            isRenderedContentEmpty()
     }
 
     fun shouldDisplayPlaceholderForTesting(): Boolean = shouldDisplayPlaceholder()
@@ -1591,6 +1593,7 @@ class EditorEditText @JvmOverloads constructor(
         }
         state.latestText = text
         setComposingTextForEditor(text)
+        invalidate()
     }
 
     private fun finishExternalTextComposition(

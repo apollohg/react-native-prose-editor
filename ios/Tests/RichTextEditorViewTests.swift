@@ -5497,6 +5497,29 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertFalse(EditorV2Shadow.getHtml(id: editorId).contains("O/A"))
     }
 
+    func testExternalTextCompositionUpdatesPlaceholderFromProvisionalText() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.placeholder = "Type here"
+        textView.bindEditor(id: editorId, initialHTML: "<p></p>")
+
+        XCTAssertTrue(textView.isPlaceholderVisibleForTesting())
+
+        _ = textView.beginExternalTextComposition(sessionId: "placeholder")
+        _ = textView.updateExternalTextComposition(sessionId: "placeholder", text: "draft")
+        XCTAssertFalse(textView.isPlaceholderVisibleForTesting())
+
+        _ = textView.updateExternalTextComposition(sessionId: "placeholder", text: "")
+        XCTAssertTrue(textView.isPlaceholderVisibleForTesting())
+
+        _ = textView.updateExternalTextComposition(sessionId: "placeholder", text: "draft")
+        XCTAssertFalse(textView.isPlaceholderVisibleForTesting())
+
+        _ = textView.cancelExternalTextComposition(sessionId: "placeholder", cause: "consumer")
+        XCTAssertTrue(textView.isPlaceholderVisibleForTesting())
+    }
+
     func testExternalTextCompositionExpoEventCarriesBoundEditorIdentity() throws {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
