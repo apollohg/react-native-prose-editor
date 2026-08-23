@@ -17,6 +17,13 @@
   undo, collaboration reconciliation, error, interruption, and lifecycle
   behavior.
 
+### Fixed
+
+- Ready-to-ready document handle rebinding now preserves the mounted native
+  editor, focus, keyboard, and current replacement document content without a
+  transient loading state. Handles awaiting a remote document still use the
+  loading state and do not inherit focus.
+
 ## [1.0.0-alpha.3] - 2026-08-15
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "name": "native-editor-example",
-  "version": "1.0.0-alpha.4",
+  "version": "1.0.0-alpha.5",
   "private": true,
   "main": "expo/AppEntry",
   "scripts": {
