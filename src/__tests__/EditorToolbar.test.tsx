@@ -323,6 +323,43 @@ describe('EditorToolbar', () => {
             expect(getByLabelText('Pinned Heading')).toBeTruthy();
         });
 
+        it('preserves the outer horizontal inset for pinned placements', () => {
+            const { UNSAFE_getAllByType } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'action',
+                        key: 'start',
+                        label: 'Start',
+                        icon: { type: 'glyph', text: 'S' },
+                        placement: 'start',
+                    },
+                    {
+                        type: 'action',
+                        key: 'end',
+                        label: 'End',
+                        icon: { type: 'glyph', text: 'E' },
+                        placement: 'end',
+                    },
+                ],
+                onToolbarAction: jest.fn(),
+            });
+
+            const fixedSections = UNSAFE_getAllByType(View).filter(
+                (view) => StyleSheet.flatten(view.props.style)?.flexShrink === 0
+            );
+            const sectionContaining = (label: string) =>
+                fixedSections.find(
+                    (section) => section.findAllByProps({ accessibilityLabel: label }).length > 0
+                );
+
+            expect(StyleSheet.flatten(sectionContaining('Start')?.props.style)).toEqual(
+                expect.objectContaining({ paddingStart: 12 })
+            );
+            expect(StyleSheet.flatten(sectionContaining('End')?.props.style)).toEqual(
+                expect.objectContaining({ paddingEnd: 12 })
+            );
+        });
+
         it('renders only the configured toolbar items and preserves order', () => {
             const onToggleMark = jest.fn();
             const onInsertNodeType = jest.fn();

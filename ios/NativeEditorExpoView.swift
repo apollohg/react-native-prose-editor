@@ -795,6 +795,7 @@ final class EditorAccessoryToolbarView: UIInputView {
     private static let baseHeight: CGFloat = 50
     private static let mentionRowHeight: CGFloat = 52
     private static let contentSpacing: CGFloat = 6
+    private static let contentHorizontalInset: CGFloat = 12
     private static let defaultHorizontalInset: CGFloat = 0
     private static let defaultKeyboardOffset: CGFloat = 0
     private static let chromeTransitionDuration: TimeInterval = 0.18
@@ -1268,6 +1269,13 @@ final class EditorAccessoryToolbarView: UIInputView {
         startPinnedStackView.axis = .horizontal
         startPinnedStackView.alignment = .center
         startPinnedStackView.spacing = 6
+        startPinnedStackView.directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: 0,
+            leading: Self.contentHorizontalInset,
+            bottom: 0,
+            trailing: 0
+        )
+        startPinnedStackView.isLayoutMarginsRelativeArrangement = true
         startPinnedStackView.setContentHuggingPriority(.required, for: .horizontal)
         startPinnedStackView.setContentCompressionResistancePriority(.required, for: .horizontal)
         bodyStackView.addArrangedSubview(startPinnedStackView)
@@ -1286,6 +1294,13 @@ final class EditorAccessoryToolbarView: UIInputView {
         endPinnedStackView.axis = .horizontal
         endPinnedStackView.alignment = .center
         endPinnedStackView.spacing = 6
+        endPinnedStackView.directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: 0,
+            leading: 0,
+            bottom: 0,
+            trailing: Self.contentHorizontalInset
+        )
+        endPinnedStackView.isLayoutMarginsRelativeArrangement = true
         endPinnedStackView.setContentHuggingPriority(.required, for: .horizontal)
         endPinnedStackView.setContentCompressionResistancePriority(.required, for: .horizontal)
         bodyStackView.addArrangedSubview(endPinnedStackView)
@@ -1357,14 +1372,26 @@ final class EditorAccessoryToolbarView: UIInputView {
             mentionHeight,
 
             mentionStackView.topAnchor.constraint(equalTo: mentionScrollView.contentLayoutGuide.topAnchor),
-            mentionStackView.leadingAnchor.constraint(equalTo: mentionScrollView.contentLayoutGuide.leadingAnchor, constant: 12),
-            mentionStackView.trailingAnchor.constraint(equalTo: mentionScrollView.contentLayoutGuide.trailingAnchor, constant: -12),
+            mentionStackView.leadingAnchor.constraint(
+                equalTo: mentionScrollView.contentLayoutGuide.leadingAnchor,
+                constant: Self.contentHorizontalInset
+            ),
+            mentionStackView.trailingAnchor.constraint(
+                equalTo: mentionScrollView.contentLayoutGuide.trailingAnchor,
+                constant: -Self.contentHorizontalInset
+            ),
             mentionStackView.bottomAnchor.constraint(equalTo: mentionScrollView.contentLayoutGuide.bottomAnchor),
             mentionStackView.heightAnchor.constraint(equalTo: mentionScrollView.frameLayoutGuide.heightAnchor),
 
             stackView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 6),
-            stackView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 12),
-            stackView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -12),
+            stackView.leadingAnchor.constraint(
+                equalTo: scrollView.contentLayoutGuide.leadingAnchor,
+                constant: Self.contentHorizontalInset
+            ),
+            stackView.trailingAnchor.constraint(
+                equalTo: scrollView.contentLayoutGuide.trailingAnchor,
+                constant: -Self.contentHorizontalInset
+            ),
             stackView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -6),
             stackView.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor, constant: -12),
             scrollViewHeight,

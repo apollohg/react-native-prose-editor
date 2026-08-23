@@ -2173,6 +2173,47 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testPinnedPlacementsPreserveOuterHorizontalInsets() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        let host = Self.attachToFixedWidthHost(toolbar, width: 320)
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.setItemsJSONForTesting(Self.placementToolbarFixtureJSON)
+        host.layoutIfNeeded()
+
+        func descendant(withLabel label: String, in view: UIView) -> UIView? {
+            if view.accessibilityLabel == label {
+                return view
+            }
+            return view.subviews.lazy.compactMap {
+                descendant(withLabel: label, in: $0)
+            }.first
+        }
+
+        guard let startButton = descendant(withLabel: "Start", in: toolbar),
+              let endButton = descendant(withLabel: "End", in: toolbar),
+              let startSection = startButton.superview,
+              let endSection = endButton.superview
+        else {
+            XCTFail("expected both pinned toolbar buttons")
+            return
+        }
+
+        XCTAssertEqual(
+            startButton.frame.minX,
+            startSection.bounds.minX + 12,
+            accuracy: 0.1,
+            "start-pinned items should include the standard 12-point leading inset"
+        )
+        XCTAssertEqual(
+            endButton.frame.maxX,
+            endSection.bounds.maxX - 12,
+            accuracy: 0.1,
+            "end-pinned items should include the standard 12-point trailing inset"
+        )
+    }
+
     /// `bodyStackView` lays the scrolling middle out between the two pinned
     /// stacks. Arranged subviews cannot overlap by construction, but the middle
     /// can still be starved to zero width if a pinned stack claims the row (see

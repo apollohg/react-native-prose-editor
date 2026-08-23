@@ -1496,7 +1496,9 @@ export function EditorToolbar({
             ]}>
             <View style={styles.toolbarRow}>
                 {startItems.length > 0 ? (
-                    <View style={styles.fixedSection}>{renderToolbarItems(startItems)}</View>
+                    <View style={[styles.fixedSection, styles.startFixedSection]}>
+                        {renderToolbarItems(startItems)}
+                    </View>
                 ) : null}
                 {shouldRenderMentionSuggestions && mentionState != null ? (
                     <ScrollView
@@ -1607,7 +1609,9 @@ export function EditorToolbar({
                     </ScrollView>
                 )}
                 {endItems.length > 0 ? (
-                    <View style={styles.fixedSection}>{renderToolbarItems(endItems)}</View>
+                    <View style={[styles.fixedSection, styles.endFixedSection]}>
+                        {renderToolbarItems(endItems)}
+                    </View>
                 ) : null}
             </View>
             {!shouldRenderMentionSuggestions && menuState != null && menuGroup != null ? (
@@ -1753,6 +1757,12 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         flexShrink: 0,
+    },
+    startFixedSection: {
+        paddingStart: TOOLBAR_PADDING_H,
+    },
+    endFixedSection: {
+        paddingEnd: TOOLBAR_PADDING_H,
     },
     scrollSection: {
         flex: 1,
