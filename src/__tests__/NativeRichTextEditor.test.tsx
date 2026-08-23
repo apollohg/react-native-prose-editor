@@ -1958,6 +1958,9 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             ref.current!.toggleMark('bold');
+            nativeView.props.onSelectionChange({
+                nativeEvent: { editorId: handleA.editorId, anchor: 4, head: 4 },
+            });
         });
         expect(getByTestId('native-editor-view').props.editorUpdateEditorId).toBe(handleA.editorId);
 
@@ -1973,8 +1976,25 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(view).toBe(nativeView);
         expect(onReboundFocus).toHaveBeenCalledTimes(1);
         expect(view.props.editorId).toBe(handleB.editorId);
-        expect(view.props.editorUpdateJson).toBeUndefined();
-        expect(view.props.editorUpdateEditorId).toBeUndefined();
+        const selectionRequest = JSON.parse(
+            mockNativeModule.editorV2SetSelection.mock.calls.at(-1)![1] as string
+        );
+        expect(selectionRequest).toMatchObject({
+            baseDocumentRevision: handleB.bridge.getState().documentRevision,
+            selection: {
+                type: 'text',
+                anchor: { offset: 4, kind: 'scalar', affinity: 'after' },
+                head: { offset: 4, kind: 'scalar', affinity: 'after' },
+            },
+        });
+        expect(view.props.editorUpdateEditorId).toBe(handleB.editorId);
+        expect(JSON.parse(view.props.editorUpdateJson as string).selection).toEqual({
+            type: 'text',
+            anchor: 5,
+            anchorScalar: 4,
+            head: 5,
+            headScalar: 4,
+        });
         handleA.destroy();
         handleB.destroy();
     });
@@ -2018,7 +2038,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         roomHandle.destroy();
     });
 
-    it('clears A interaction state before B publishes its authoritative snapshot', () => {
+    it('clears A formatting state while carrying its focused selection into B', () => {
         const handleA = createV2LocalHandle(fakeDocForText('alpha'));
         const handleB = createV2LocalHandle({
             type: 'doc',
@@ -2086,8 +2106,10 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         });
         expect(onRequestLink.mock.calls.at(-1)![0].selection).toEqual({
             type: 'text',
-            anchor: 0,
-            head: 0,
+            anchor: 3,
+            anchorScalar: 2,
+            head: 3,
+            headScalar: 2,
         });
         expect(onFocus).toHaveBeenCalledTimes(2);
 

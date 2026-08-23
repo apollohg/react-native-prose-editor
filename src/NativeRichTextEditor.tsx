@@ -1065,6 +1065,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
         const activeStateKeyRef = useRef<string | null>(null);
         const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
+        const scalarSelectionRef = useRef({ anchor: 0, head: 0 });
         const isFocusedRef = useRef(false);
         const toolbarFrameOwnerIdRef = useRef<number | null>(null);
         if (toolbarFrameOwnerIdRef.current == null) {
@@ -1095,12 +1096,19 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         } | null>(null);
         const revisionScopeEditorIdRef = useRef(editorId);
         const latestRevisionScopeEditorIdRef = useRef<string | null>(editorId);
-        const pendingFocusedRebindRef = useRef<string | null>(null);
+        const pendingFocusedRebindRef = useRef<{
+            editorId: string;
+            anchor: number;
+            head: number;
+        } | null>(null);
         const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
         if (didRebindRevisionScope) {
             pendingFocusedRebindRef.current = null;
             if (isFocusedRef.current && document.isReady) {
-                pendingFocusedRebindRef.current = editorId;
+                pendingFocusedRebindRef.current = {
+                    editorId,
+                    ...scalarSelectionRef.current,
+                };
             } else if (isFocusedRef.current) {
                 isFocusedRef.current = false;
                 setIsFocused(false);
@@ -1142,13 +1150,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             latestRevisionScopeEditorIdRef.current = editorId;
         }, [documentHandle, editorId]);
 
-        useLayoutEffect(() => {
-            if (pendingFocusedRebindRef.current !== editorId || !document.isReady) return;
-            pendingFocusedRebindRef.current = null;
-            setActiveEditorToolbarFrameOwnerForEditor(toolbarFrameOwnerId, true);
-            onFocusRef.current?.();
-        }, [document.isReady, editorId, toolbarFrameOwnerId]);
-
         useEffect(
             () => () => {
                 setActiveEditorToolbarFrameOwnerForEditor(toolbarFrameOwnerId, false);
@@ -1164,6 +1165,16 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             ) => {
                 if (!isCurrent()) return false;
                 selectionRef.current = update.selection;
+                if (
+                    update.selection.type === 'text' &&
+                    update.selection.anchorScalar != null &&
+                    update.selection.headScalar != null
+                ) {
+                    scalarSelectionRef.current = {
+                        anchor: update.selection.anchorScalar,
+                        head: update.selection.headScalar,
+                    };
+                }
                 if (!isCurrent()) return false;
                 const nextActiveState = update.activeState;
                 activeStateRef.current = nextActiveState;
@@ -1252,6 +1263,41 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 editorId: sourceEditorId,
             });
         }, [applyTypedUpdateState, bridge, documentHandle]);
+
+        useLayoutEffect(() => {
+            const pending = pendingFocusedRebindRef.current;
+            if (pending?.editorId !== editorId || !document.isReady) return;
+            pendingFocusedRebindRef.current = null;
+
+            const snapshot = bridge.renderUpdate();
+            const anchor = Math.min(pending.anchor, snapshot.scalarLength);
+            const head = Math.min(pending.head, snapshot.scalarLength);
+            const collapsed = anchor === head;
+            const setSelection = (affinity: NativeEditorV2PositionAffinity) =>
+                bridge.setSelection({
+                    baseDocumentRevision: snapshot.documentVersion,
+                    selection: {
+                        type: 'text',
+                        anchor: { offset: anchor, kind: 'scalar', affinity },
+                        head: { offset: head, kind: 'scalar', affinity },
+                    },
+                });
+
+            try {
+                try {
+                    setSelection(collapsed ? 'after' : 'before');
+                } catch (error) {
+                    if (!collapsed || !isPositionInvalidError(error)) throw error;
+                    setSelection('before');
+                }
+                pushEngineUpdateToView();
+            } catch (error) {
+                if (!isPositionInvalidError(error)) throw error;
+            }
+
+            setActiveEditorToolbarFrameOwnerForEditor(toolbarFrameOwnerId, true);
+            onFocusRef.current?.();
+        }, [bridge, document.isReady, editorId, pushEngineUpdateToView, toolbarFrameOwnerId]);
 
         // A pending update is owned by the handle that produced its snapshot.
         // Drop it when this component rebinds, so no old session state reaches
@@ -1620,6 +1666,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             (event: NativeSyntheticEvent<NativeSelectionEvent>) => {
                 if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
                 const { anchor, head, stateJson } = event.nativeEvent;
+                scalarSelectionRef.current = { anchor, head };
                 let selection: Selection = { type: 'text', anchor, head };
                 const parsed = applyUpdateState(stateJson);
                 const parsedSelection = parseSelectionFromUpdate(parsed?.selection);
