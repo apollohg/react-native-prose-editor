@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.0-alpha.4] - 2026-08-23
+
+### Added
+
+- Added external text composition sessions to `NativeRichTextEditorRef` on iOS
+  and Android, including capability detection and provisional update, commit,
+  cancel, and terminal-event APIs.
+- Added provisional text presentation that can be revised without changing the
+  document, undo history, collaboration state, or content callbacks until the
+  session commits.
+
+### Changed
+
+- External composition commits now follow normal editor selection, policy,
+  undo, collaboration reconciliation, error, interruption, and lifecycle
+  behavior.
+
 ## [1.0.0-alpha.3] - 2026-08-15
 
 ### Fixed
@@ -503,6 +520,7 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0-alpha.4]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.3...1.0.0-alpha.4
 [1.0.0-alpha.3]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.2...1.0.0-alpha.3
 [1.0.0-alpha.2]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.1...1.0.0-alpha.2
 [1.0.0-alpha.1]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha...1.0.0-alpha.1
