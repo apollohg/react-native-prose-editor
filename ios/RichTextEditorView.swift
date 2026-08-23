@@ -928,6 +928,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         let selectionHead: UInt32?
         let authorizedSelectionUtf16Range: NSRange?
         let rawSelectionUtf16Range: NSRange?
+        let acceptedSpaceCaretUtf16Offset: Int?
         let selectionRevision: UInt64
         let capturedWhileFirstResponder: Bool
         let capturedWhileEditable: Bool
@@ -4132,19 +4133,34 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         let replacementLength = currentEnd - prefix
         guard replacementLength >= 0 else { return nil }
-        let replacementText = current.substring(
+        let rawReplacementText = current.substring(
             with: NSRange(location: prefix, length: replacementLength)
         )
 
         let rawSelectionUtf16Range = selectedUtf16Range()
         let authorizedSelectionUtf16Range = lastAuthorizedSelectedUtf16Range
-        let targetSelectionUtf16Range = targetSelectionUtf16RangeForNativeTextMutation(
-            rawSelectionUtf16Range: rawSelectionUtf16Range,
-            authorizedSelectionUtf16Range: authorizedSelectionUtf16Range,
+        let preservesAcceptedSpace = shouldPreserveAcceptedAutocorrectSpace(
+            authorizedText: authorized,
             replacementStartUtf16: prefix,
             authorizedEndUtf16: authorizedEnd,
             currentEndUtf16: currentEnd,
-            currentTextUtf16Length: current.length
+            replacementText: rawReplacementText,
+            rawSelectionUtf16Range: rawSelectionUtf16Range,
+            authorizedSelectionUtf16Range: authorizedSelectionUtf16Range
+        )
+        let replacementText = preservesAcceptedSpace
+            ? rawReplacementText + " "
+            : rawReplacementText
+        let selectionRangeForMapping = preservesAcceptedSpace
+            ? NSRange(location: currentEnd + 1, length: 0)
+            : rawSelectionUtf16Range
+        let targetSelectionUtf16Range = targetSelectionUtf16RangeForNativeTextMutation(
+            rawSelectionUtf16Range: selectionRangeForMapping,
+            authorizedSelectionUtf16Range: authorizedSelectionUtf16Range,
+            replacementStartUtf16: prefix,
+            authorizedEndUtf16: authorizedEnd,
+            currentEndUtf16: currentEnd + (preservesAcceptedSpace ? 1 : 0),
+            currentTextUtf16Length: current.length + (preservesAcceptedSpace ? 1 : 0)
         )
         let authorizedReplacementUtf16Range = NSRange(
             location: prefix,
@@ -4172,12 +4188,52 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             selectionHead: selectedScalarRange?.to,
             authorizedSelectionUtf16Range: authorizedSelectionUtf16Range,
             rawSelectionUtf16Range: rawSelectionUtf16Range,
+            acceptedSpaceCaretUtf16Offset: preservesAcceptedSpace ? currentEnd : nil,
             selectionRevision: selectionRevision,
             capturedWhileFirstResponder: isFirstResponder || capturedAfterBlur,
             capturedWhileEditable: isEditable,
             capturedAfterBlur: capturedAfterBlur,
             inputGeneration: nativeTextMutationGeneration
         )
+    }
+
+    private func shouldPreserveAcceptedAutocorrectSpace(
+        authorizedText: NSString,
+        replacementStartUtf16: Int,
+        authorizedEndUtf16: Int,
+        currentEndUtf16: Int,
+        replacementText: String,
+        rawSelectionUtf16Range: NSRange?,
+        authorizedSelectionUtf16Range: NSRange?
+    ) -> Bool {
+        guard authorizedEndUtf16 > replacementStartUtf16,
+              authorizedText.character(at: authorizedEndUtf16 - 1) == 0x20,
+              !replacementText.isEmpty,
+              let replacementLastCharacter = replacementText.last,
+              replacementLastCharacter.isLetter || replacementLastCharacter.isNumber,
+              let rawSelectionUtf16Range,
+              rawSelectionUtf16Range.length == 0,
+              rawSelectionUtf16Range.location == currentEndUtf16,
+              let authorizedSelectionUtf16Range,
+              authorizedSelectionUtf16Range.length == 0,
+              authorizedSelectionUtf16Range.location == authorizedEndUtf16
+        else {
+            return false
+        }
+
+        let correctedText = authorizedText.substring(
+            with: NSRange(
+                location: replacementStartUtf16,
+                length: authorizedEndUtf16 - replacementStartUtf16 - 1
+            )
+        )
+        guard !correctedText.isEmpty,
+              correctedText != replacementText,
+              let correctedLastCharacter = correctedText.last
+        else {
+            return false
+        }
+        return correctedLastCharacter.isLetter || correctedLastCharacter.isNumber
     }
 
     private func nativeTextMutationWithCurrentSelection(
@@ -4219,8 +4275,19 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             mutation.replacementText,
             inUtf16Range: mutation.authorizedReplacementUtf16Range
         )
+        let selectionRangeForConversion: NSRange?
+        if let currentSelectionUtf16Range,
+           currentSelectionUtf16Range.length == 0,
+           currentSelectionUtf16Range.location == mutation.acceptedSpaceCaretUtf16Offset {
+            selectionRangeForConversion = NSRange(
+                location: currentSelectionUtf16Range.location + 1,
+                length: 0
+            )
+        } else {
+            selectionRangeForConversion = currentSelectionUtf16Range
+        }
         let selectedScalarRange = shouldUseCurrentSelection
-            ? currentSelectionUtf16Range.map {
+            ? selectionRangeForConversion.map {
                 scalarRange(forUtf16Range: $0, in: selectionConversionStorage)
             }
             : nil
@@ -4237,6 +4304,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             rawSelectionUtf16Range: shouldUseCurrentSelection
                 ? currentSelectionUtf16Range
                 : mutation.rawSelectionUtf16Range,
+            acceptedSpaceCaretUtf16Offset: mutation.acceptedSpaceCaretUtf16Offset,
             selectionRevision: shouldUseCurrentSelection
                 ? selectionRevision
                 : mutation.selectionRevision,

@@ -10323,6 +10323,28 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertEqual(view.textView.textStorage.string, "the ")
     }
 
+    func testStagingAutocorrectPreservesAcceptedSpaceWhenNativeReplacementConsumesIt() {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        for character in "teh " {
+            view.textView.insertText(String(character))
+        }
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 4),
+            with: "the"
+        )
+        setCollapsedCaret(in: view.textView, utf16Offset: 3)
+
+        view.textView.insertText("n")
+
+        XCTAssertEqual(v2DocumentText(adapter), "the n")
+        XCTAssertEqual(view.textView.textStorage.string, "the n")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 5, length: 0))
+    }
+
     func testStagingTypingAppliesRenderPatchWithoutFullRerender() {
         let (view, adapter, window) = makeBoundView(html: "<p>Hello world, this is a long paragraph.</p>")
         defer { view.removeFromSuperview(); window.isHidden = true }
