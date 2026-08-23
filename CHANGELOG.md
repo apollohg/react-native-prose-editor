@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.0-alpha.5] - 2026-08-23
+
+### Fixed
+
+- Ready-to-ready document handle rebinding now preserves the mounted native
+  editor, focus, keyboard, and current replacement document content without a
+  transient loading state. Handles awaiting a remote document still use the
+  loading state and do not inherit focus.
+
 ## [1.0.0-alpha.4] - 2026-08-23
 
 ### Added
@@ -16,13 +25,6 @@
 - External composition commits now follow normal editor selection, policy,
   undo, collaboration reconciliation, error, interruption, and lifecycle
   behavior.
-
-### Fixed
-
-- Ready-to-ready document handle rebinding now preserves the mounted native
-  editor, focus, keyboard, and current replacement document content without a
-  transient loading state. Handles awaiting a remote document still use the
-  loading state and do not inherit focus.
 
 ## [1.0.0-alpha.3] - 2026-08-15
 
@@ -527,6 +529,7 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0-alpha.5]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.4...1.0.0-alpha.5
 [1.0.0-alpha.4]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.3...1.0.0-alpha.4
 [1.0.0-alpha.3]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.2...1.0.0-alpha.3
 [1.0.0-alpha.2]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.1...1.0.0-alpha.2
