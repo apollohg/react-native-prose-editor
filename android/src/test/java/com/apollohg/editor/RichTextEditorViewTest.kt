@@ -8,6 +8,7 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
+import android.text.style.LeadingMarginSpan
 import android.widget.LinearLayout
 import android.view.MotionEvent
 import android.view.View
@@ -173,6 +174,70 @@ class RichTextEditorViewTest {
         }
     }
 
+    private enum class ListRenderState { INITIAL, NESTED_EMPTY, PARENT_EMPTY }
+
+    private fun nestedListRenderBlock(state: ListRenderState): JSONArray = JSONArray().apply {
+        fun blockStart(nodeType: String, depth: Int): JSONObject = JSONObject()
+            .put("type", "blockStart")
+            .put("nodeType", nodeType)
+            .put("depth", depth)
+
+        fun textRun(text: String): JSONObject = JSONObject()
+            .put("type", "textRun")
+            .put("text", text)
+            .put("marks", JSONArray())
+
+        fun listItemStart(depth: Int, index: Int, total: Int): JSONObject =
+            blockStart("listItem", depth).put(
+                "listContext",
+                JSONObject()
+                    .put("ordered", false)
+                    .put("index", index)
+                    .put("total", total)
+                    .put("start", 1)
+                    .put("isFirst", index == 1)
+                    .put("isLast", index == total)
+            )
+
+        fun paragraph(depth: Int, text: String) {
+            put(blockStart("paragraph", depth))
+            put(textRun(text))
+            put(JSONObject().put("type", "blockEnd"))
+        }
+
+        val rootTotal = if (state == ListRenderState.PARENT_EMPTY) 3 else 2
+        put(listItemStart(depth = 0, index = 1, total = rootTotal))
+        paragraph(depth = 1, text = "First")
+        put(JSONObject().put("type", "blockEnd"))
+
+        put(listItemStart(depth = 0, index = 2, total = rootTotal))
+        paragraph(depth = 1, text = "Second")
+        val nestedTotal = if (state == ListRenderState.NESTED_EMPTY) 2 else 1
+        put(listItemStart(depth = 1, index = 1, total = nestedTotal))
+        paragraph(depth = 2, text = "Nested")
+        put(JSONObject().put("type", "blockEnd"))
+        if (state == ListRenderState.NESTED_EMPTY) {
+            put(listItemStart(depth = 1, index = 2, total = nestedTotal))
+            paragraph(depth = 2, text = "\u200B")
+            put(JSONObject().put("type", "blockEnd"))
+        }
+        put(JSONObject().put("type", "blockEnd"))
+
+        if (state == ListRenderState.PARENT_EMPTY) {
+            put(listItemStart(depth = 0, index = 3, total = rootTotal))
+            paragraph(depth = 1, text = "\u200B")
+            put(JSONObject().put("type", "blockEnd"))
+        }
+    }
+
+    private fun blockquoteRenderBlock(text: String): JSONArray = JSONArray().apply {
+        put(JSONObject().put("type", "blockStart").put("nodeType", "blockquote").put("depth", 0))
+        put(JSONObject().put("type", "blockStart").put("nodeType", "paragraph").put("depth", 1))
+        put(JSONObject().put("type", "textRun").put("text", text).put("marks", JSONArray()))
+        put(JSONObject().put("type", "blockEnd"))
+        put(JSONObject().put("type", "blockEnd"))
+    }
+
     private fun renderUpdateJson(
         blocks: JSONArray,
         includeFullRenderBlocks: Boolean = true,
@@ -278,6 +343,135 @@ class RichTextEditorViewTest {
 
         assertEquals("Extra\nUpdated\nBeta", editText.text?.toString())
         assertTrue(editText.lastRenderAppliedPatch())
+    }
+
+    @Test
+    fun `nested list return patches preserve list and blockquote layout`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val initialBlocks = JSONArray().apply {
+            put(blockquoteRenderBlock("Quoted"))
+            put(nestedListRenderBlock(ListRenderState.INITIAL))
+            put(paragraphRenderBlock("After"))
+        }
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+
+        fun leftOf(text: String): Float {
+            val content = editText.text as Spanned
+            val offset = content.toString().indexOf(text)
+            val layout = StaticLayout.Builder
+                .obtain(content, 0, content.length, TextPaint().apply { textSize = 16f }, 800)
+                .setIncludePad(false)
+                .build()
+            return layout.getPrimaryHorizontal(offset)
+        }
+
+        fun leadingMarginCount(text: String): Int {
+            val content = editText.text as Spanned
+            val offset = content.toString().indexOf(text)
+            return content.getSpans(offset, offset + 1, LeadingMarginSpan::class.java).size
+        }
+
+        fun quoteSpanEnd(): Int {
+            val content = editText.text as Spanned
+            return content.getSpanEnd(content.getSpans(0, content.length, BlockquoteSpan::class.java).single())
+        }
+
+        fun applyListPatch(state: ListRenderState) {
+            val renderPatch = JSONObject()
+                .put("startIndex", 1)
+                .put("deleteCount", 1)
+                .put("renderBlocks", JSONArray().put(nestedListRenderBlock(state)))
+            editText.applyUpdateJSON(
+                renderUpdateJson(
+                    JSONArray(),
+                    includeFullRenderBlocks = false,
+                    renderPatch = renderPatch
+                ),
+                notifyListener = false
+            )
+            assertTrue(editText.lastRenderAppliedPatch())
+        }
+
+        val expectedText = "Quoted\n• First\n• Second\n• Nested\n• \u200B\nAfter"
+        val initialQuoteLeft = leftOf("Quoted")
+        val initialRootLeft = leftOf("First")
+        val initialSecondLeft = leftOf("Second")
+        val initialNestedLeft = leftOf("Nested")
+        val initialAfterLeft = leftOf("After")
+        val initialRootMargins = leadingMarginCount("First")
+        val initialNestedMargins = leadingMarginCount("Nested")
+
+        applyListPatch(ListRenderState.NESTED_EMPTY)
+
+        assertEquals(expectedText, editText.text.toString())
+        assertEquals(initialQuoteLeft, leftOf("Quoted"), 0.01f)
+        assertEquals(initialRootLeft, leftOf("First"), 0.01f)
+        assertEquals(initialSecondLeft, leftOf("Second"), 0.01f)
+        assertEquals(initialNestedLeft, leftOf("Nested"), 0.01f)
+        assertEquals(initialNestedLeft, leftOf("\u200B"), 0.01f)
+        assertEquals(initialAfterLeft, leftOf("After"), 0.01f)
+        assertEquals(initialRootMargins, leadingMarginCount("First"))
+        assertEquals(initialNestedMargins, leadingMarginCount("Nested"))
+        assertEquals(editText.text.toString().indexOf("• First"), quoteSpanEnd())
+
+        applyListPatch(ListRenderState.PARENT_EMPTY)
+
+        assertEquals(expectedText, editText.text.toString())
+        assertEquals(initialQuoteLeft, leftOf("Quoted"), 0.01f)
+        assertEquals(initialRootLeft, leftOf("First"), 0.01f)
+        assertEquals(initialSecondLeft, leftOf("Second"), 0.01f)
+        assertEquals(initialNestedLeft, leftOf("Nested"), 0.01f)
+        assertEquals(initialRootLeft, leftOf("\u200B"), 0.01f)
+        assertEquals(initialAfterLeft, leftOf("After"), 0.01f)
+        assertEquals(initialRootMargins, leadingMarginCount("First"))
+        assertEquals(initialNestedMargins, leadingMarginCount("Nested"))
+        assertEquals(editText.text.toString().indexOf("• First"), quoteSpanEnd())
+    }
+
+    @Test
+    fun `terminal list patch preserves preceding blockquote span`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val initialBlocks = JSONArray().apply {
+            put(blockquoteRenderBlock("Quoted"))
+            put(nestedListRenderBlock(ListRenderState.INITIAL))
+        }
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+
+        fun leftOf(text: String): Float {
+            val content = editText.text as Spanned
+            val offset = content.toString().indexOf(text)
+            val layout = StaticLayout.Builder
+                .obtain(content, 0, content.length, TextPaint().apply { textSize = 16f }, 800)
+                .setIncludePad(false)
+                .build()
+            return layout.getPrimaryHorizontal(offset)
+        }
+
+        val initialRootLeft = leftOf("First")
+        val initialNestedLeft = leftOf("Nested")
+
+        fun applyListPatch(state: ListRenderState) {
+            val renderPatch = JSONObject()
+                .put("startIndex", 1)
+                .put("deleteCount", 1)
+                .put("renderBlocks", JSONArray().put(nestedListRenderBlock(state)))
+            editText.applyUpdateJSON(
+                renderUpdateJson(
+                    JSONArray(),
+                    includeFullRenderBlocks = false,
+                    renderPatch = renderPatch
+                ),
+                notifyListener = false
+            )
+        }
+
+        applyListPatch(ListRenderState.NESTED_EMPTY)
+        applyListPatch(ListRenderState.PARENT_EMPTY)
+
+        val content = editText.text as Spanned
+        assertEquals(1, content.getSpans(0, content.length, BlockquoteSpan::class.java).size)
+        assertEquals(initialRootLeft, leftOf("First"), 0.01f)
+        assertEquals(initialNestedLeft, leftOf("Nested"), 0.01f)
     }
 
     @Test

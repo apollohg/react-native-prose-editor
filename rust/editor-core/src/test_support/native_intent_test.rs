@@ -6,8 +6,8 @@ use crate::session::{
 };
 use crate::yrs_engine::{
     Affinity, EditingLimits, EditorOffsetKind, InitializationMode, ReplacementHistory,
-    RevisionedPosition, SelectionInput, TransactionOrigin, TypedCommand, YrsDocumentEngine,
-    YrsEngineConfig,
+    ResolvedSelection, RevisionedPosition, SelectionInput, TransactionOrigin, TypedCommand,
+    YrsDocumentEngine, YrsEngineConfig,
 };
 
 fn engine(mode: InitializationMode) -> YrsDocumentEngine {
@@ -423,6 +423,66 @@ fn split_block_uses_the_pinned_multi_paragraph_scalar() {
     assert_eq!(
         session.engine.document_html().unwrap(),
         "<p>Alpha</p><p>Beta</p><p></p><p>Gamma</p>",
+    );
+}
+
+#[test]
+fn repeated_split_after_deleting_a_lists_trailing_paragraph_creates_blank_lines() {
+    let config = EditorSessionConfig::local_for_test();
+    let mut session = EditorSession::new(
+        engine(InitializationMode::LocalEmpty),
+        SessionPolicy::from_config(&config),
+        DocumentState::LocalReady,
+        CollaborationLimits::default(),
+    )
+    .unwrap();
+    session
+        .replace_document_json(
+            1,
+            r#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"paragraph","content":[{"type":"text","text":"quote"}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"one"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"two"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]}]},{"type":"paragraph"}]}"#,
+            ReplacementHistory::ResetAndClear,
+        )
+        .unwrap();
+    let trailing_paragraph = session.engine.position_map().unwrap().total_scalars();
+    let delete = native_intent_request(
+        &mut session,
+        20,
+        2,
+        serde_json::json!({
+            "type": "deleteBackward",
+            "anchor": trailing_paragraph,
+            "head": trailing_paragraph,
+        }),
+    );
+    NativeTransactionBridge::new(&mut session)
+        .submit_native_intent(&delete)
+        .unwrap();
+
+    for request_id in 3..=6 {
+        let ResolvedSelection::Text { anchor, head } = session.engine.resolved_selection().unwrap()
+        else {
+            panic!("the caret must remain a text selection");
+        };
+        assert_eq!(anchor.scalar, head.scalar);
+        let scalar = head.scalar;
+        let split = native_intent_request(
+            &mut session,
+            20,
+            request_id,
+            serde_json::json!({
+                "type": "splitBlock",
+                "anchor": scalar,
+                "head": scalar,
+            }),
+        );
+        NativeTransactionBridge::new(&mut session)
+            .submit_native_intent(&split)
+            .unwrap();
+    }
+
+    assert_eq!(
+        session.engine.document_html().unwrap(),
+        "<blockquote><p>quote</p></blockquote><ul><li><p>one</p></li><li><p>two</p><ul><li><p>nested</p></li></ul></li></ul><p></p><p></p>",
     );
 }
 

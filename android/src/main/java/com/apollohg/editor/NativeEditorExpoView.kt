@@ -1263,6 +1263,12 @@ class NativeEditorExpoView(
         richTextView.editorEditText.setKeyboardType(keyboardType)
     }
 
+    fun setAndroidInputOptionsJson(optionsJson: String?) {
+        val options = optionsJson?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val privateImeOptions = options?.opt("privateImeOptions") as? String
+        richTextView.editorEditText.setPrivateImeOptionsForEditor(privateImeOptions)
+    }
+
     fun setEditable(editable: Boolean) {
         if (richTextView.editorEditText.isEditable == editable) return
         if (!editable) {

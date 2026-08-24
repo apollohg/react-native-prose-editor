@@ -53,7 +53,7 @@ jest.mock('../schemas', () => {
 });
 
 import React, { createRef, StrictMode } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { render, act, fireEvent } from '@testing-library/react-native';
 
 import {
@@ -741,6 +741,59 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             JSON.stringify(remoteSelections)
         );
         handle.destroy();
+    });
+
+    it('serializes Android input options for the native view', () => {
+        const platformSpy = jest.replaceProperty(Platform, 'OS', 'android');
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        try {
+            const { getByTestId, rerender } = render(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    androidInputOptions={{ privateImeOptions: 'nm' }}
+                />
+            );
+
+            expect(getByTestId('native-editor-view').props.androidInputOptionsJson).toBe(
+                JSON.stringify({ privateImeOptions: 'nm' })
+            );
+
+            rerender(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    androidInputOptions={{ privateImeOptions: 'com.example.option' }}
+                />
+            );
+            expect(getByTestId('native-editor-view').props.androidInputOptionsJson).toBe(
+                JSON.stringify({ privateImeOptions: 'com.example.option' })
+            );
+
+            rerender(<NativeRichTextEditor documentHandle={handle} />);
+            expect(getByTestId('native-editor-view').props.androidInputOptionsJson).toBeUndefined();
+        } finally {
+            platformSpy.restore();
+            handle.destroy();
+        }
+    });
+
+    it('does not forward Android input options on iOS', () => {
+        const platformSpy = jest.replaceProperty(Platform, 'OS', 'ios');
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        try {
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    androidInputOptions={{ privateImeOptions: 'nm' }}
+                />
+            );
+
+            expect(getByTestId('native-editor-view').props).not.toHaveProperty(
+                'androidInputOptionsJson'
+            );
+        } finally {
+            platformSpy.restore();
+            handle.destroy();
+        }
     });
 
     it('forwards focus and blur ref calls to the native view', () => {

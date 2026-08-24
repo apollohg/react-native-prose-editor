@@ -573,7 +573,9 @@ class EditorInputConnection(
         }
         val didDeleteVisibleText = editorView.text?.toString() != beforeText
         if (didDeleteVisibleText && deleteRange != null) {
-            editorView.authorizeCurrentVisibleTextForPendingImeOperationForEditor()
+            editorView.authorizeCurrentVisibleTextForPendingImeOperationForEditor(
+                logicalCursorAfter = deleteRange.scalarStart
+            )
             editorView.runWithDeferredRustUpdateApplication {
                 editorView.deleteScalarRangeForPendingImeOperationForEditor(
                     deleteRange.scalarStart,
@@ -614,6 +616,21 @@ class EditorInputConnection(
             rawDeleteEnd,
             text
         )
+        val logicalSelection = editorView.currentLogicalScalarSelectionForInput()
+        if (logicalSelection != null) {
+            val logicalStart = minOf(logicalSelection.first, logicalSelection.second)
+            val logicalEnd = maxOf(logicalSelection.first, logicalSelection.second)
+            if (logicalStart != logicalEnd) {
+                return SurroundingDeleteRange(logicalStart, logicalEnd)
+            }
+            val deletedBefore = text.codePointCount(deleteStart, normalizedStart)
+            val deletedAfter = text.codePointCount(normalizedEnd, deleteEnd)
+            val scalarStart = (logicalStart - deletedBefore).coerceAtLeast(0)
+            val scalarEnd = logicalEnd + deletedAfter
+            if (scalarStart < scalarEnd) {
+                return SurroundingDeleteRange(scalarStart, scalarEnd)
+            }
+        }
         val scalarStart = PositionBridge.utf16ToScalar(deleteStart, text)
         val scalarEnd = PositionBridge.utf16ToScalar(deleteEnd, text)
         if (scalarStart >= scalarEnd) return null

@@ -15,11 +15,13 @@
 //! block, and offset 3 is the start of the second.
 
 use crate::boundary::ResourceLimits;
+use crate::position::PositionMap;
+use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
 use crate::tiptap_schema;
 use crate::yrs_engine::{
     Affinity, EditingLimits, EditorOffsetKind, HistoryPolicy, InitializationMode,
-    RevisionedPosition, SelectionInput, SelectionIntent, TransactionOrigin, TypedCommand,
-    TypedTransaction, YrsDocumentEngine, YrsEngineConfig,
+    ResolvedSelection, RevisionedPosition, SelectionInput, SelectionIntent, TransactionOrigin,
+    TypedCommand, TypedTransaction, TypedTransactionResult, YrsDocumentEngine, YrsEngineConfig,
 };
 
 fn engine() -> YrsDocumentEngine {
@@ -56,11 +58,11 @@ fn toggle_mark(engine: &mut YrsDocumentEngine, request_id: u64, mark_type: &str)
 }
 
 /// Press Return.
-fn press_return(engine: &mut YrsDocumentEngine, request_id: u64) {
+fn press_return(engine: &mut YrsDocumentEngine, request_id: u64) -> TypedTransactionResult {
     engine
         .apply_command(request_id, TypedCommand::SplitBlock)
         .unwrap_or_else(|error| panic!("Return must apply: {error:?}"))
-        .unwrap_or_else(|| panic!("Return must not be a no-op"));
+        .unwrap_or_else(|| panic!("Return must not be a no-op"))
 }
 
 /// Press Backspace, surfacing a rejection as a readable failure rather than an
@@ -679,8 +681,48 @@ fn return_on_an_empty_nested_item_outdents_to_the_parent_list() {
     let mut engine = engine();
     two_item_list(&mut engine);
     indent_item(&mut engine, 5);
-    press_return(&mut engine, 6);
-    press_return(&mut engine, 7);
+    let nested_empty = press_return(&mut engine, 6);
+    let nested_document_json = document(&engine);
+    let parent_empty = press_return(&mut engine, 7);
+
+    let ResolvedSelection::Text {
+        head: nested_head, ..
+    } = nested_empty.selection
+    else {
+        panic!("the first Return must leave a text selection");
+    };
+    let ResolvedSelection::Text {
+        head: parent_head, ..
+    } = parent_empty.selection
+    else {
+        panic!("the second Return must leave a text selection");
+    };
+    let schema = tiptap_schema();
+    let nested_document =
+        from_prosemirror_json(&nested_document_json, &schema, UnknownTypeMode::Error)
+            .expect("the nested empty list document must parse");
+    assert_eq!(
+        crate::command_planner::outdented_list_item_position(
+            &nested_document,
+            &nested_document,
+            nested_head.document,
+            &schema,
+        ),
+        None,
+        "a structural no-op must not invent an outdent selection destination"
+    );
+    let final_document = from_prosemirror_json(&document(&engine), &schema, UnknownTypeMode::Error)
+        .expect("the final list document must parse");
+    let final_map = PositionMap::build(&final_document, &schema);
+    let expected_document = final_map.scalar_to_doc(nested_head.scalar, &final_document);
+    assert_eq!(
+        parent_head.document, expected_document,
+        "outdenting the empty bullet must move the document selection with it"
+    );
+    assert_eq!(
+        parent_head.scalar, nested_head.scalar,
+        "outdenting the empty bullet must keep the caret after its render placeholder: nested={nested_head:?}, parent={parent_head:?}"
+    );
 
     assert_eq!(
         document(&engine),

@@ -150,6 +150,13 @@ class EditorEditText @JvmOverloads constructor(
         val endExclusive: Int
     )
 
+    private data class ParagraphSpanSnapshot(
+        val span: Any,
+        val start: Int,
+        val end: Int,
+        val flags: Int
+    )
+
     private data class PatchApplyTrace(
         val applied: Boolean,
         val eligibilityNanos: Long,
@@ -160,6 +167,14 @@ class EditorEditText @JvmOverloads constructor(
     private data class ImageSelectionRange(
         val start: Int,
         val end: Int
+    )
+
+    private data class LogicalSelectionSnapshot(
+        val scalarAnchor: Int,
+        val scalarHead: Int,
+        val utf16Anchor: Int,
+        val utf16Head: Int,
+        val documentVersion: String?
     )
 
     private data class ImageSpanHit(
@@ -350,6 +365,7 @@ class EditorEditText @JvmOverloads constructor(
     private var imeTraceSequence: Long = 0L
     private var lastImeTraceUptimeMs: Long = 0L
     private var currentRenderBlocksJson: org.json.JSONArray? = null
+    private var logicalSelectionSnapshot: LogicalSelectionSnapshot? = null
     private var restartImageLoadsOnAttach = false
     private var renderAppearanceRevision: Long = 1L
     private var lastAppliedRenderAppearanceRevision: Long = 0L
@@ -604,6 +620,12 @@ class EditorEditText @JvmOverloads constructor(
         if (nativeKeyboardType == next) return
         nativeKeyboardType = next
         applyInputTraits()
+    }
+
+    fun setPrivateImeOptionsForEditor(value: String?) {
+        if (privateImeOptions == value) return
+        privateImeOptions = value
+        restartInputForEditorIfFocused("privateImeOptions")
     }
 
     private fun applyInputTraits() {
@@ -1314,7 +1336,9 @@ class EditorEditText @JvmOverloads constructor(
             startUtf16 = selectionRange.first,
             endUtf16 = selectionRange.second,
             committedText = text,
-            newCursorPosition = newCursorPosition
+            newCursorPosition = newCursorPosition,
+            logicalCursorAfter = requestedCursor
+                ?: scalarStart + text.codePointCount(0, text.length)
         )
         if (didApplyOptimisticVisibleText) {
             recordImeTraceForTesting(
@@ -1343,7 +1367,8 @@ class EditorEditText @JvmOverloads constructor(
         startUtf16: Int,
         endUtf16: Int,
         committedText: String,
-        newCursorPosition: Int
+        newCursorPosition: Int,
+        logicalCursorAfter: Int
     ): Boolean {
         if (newCursorPosition != 1) return false
         if (startUtf16 != endUtf16) return false
@@ -1366,6 +1391,12 @@ class EditorEditText @JvmOverloads constructor(
             editable.replace(startUtf16, endUtf16, committedText)
             val insertedEnd = startUtf16 + committedText.length
             applyOptimisticInlineSpans(editable, startUtf16, insertedEnd, inlineSpans)
+            rememberLogicalSelection(
+                scalarAnchor = logicalCursorAfter,
+                scalarHead = logicalCursorAfter,
+                utf16Anchor = insertedEnd,
+                utf16Head = insertedEnd
+            )
             Selection.setSelection(editable, insertedEnd, insertedEnd)
             didApply = true
             true
@@ -2567,11 +2598,14 @@ class EditorEditText @JvmOverloads constructor(
 
         val currentText = text?.toString() ?: ""
         val (start, end) = selectionRange
+        val logicalSelection = currentLogicalScalarSelection()
 
         if (start != end) {
             // Range selection: delete the range.
             val (scalarStart, scalarEnd) = normalizedScalarSelectionRange(currentText) ?: return
             deleteRangeInRust(scalarStart, scalarEnd)
+        } else if (logicalSelection != null && logicalSelection.first == logicalSelection.second) {
+            deleteBackwardAtSelectionScalarInRust(logicalSelection.first, logicalSelection.second)
         } else if (start > 0) {
             if (currentText.getOrNull(start - 1) == EMPTY_BLOCK_PLACEHOLDER) {
                 val scalarCursor = PositionBridge.utf16ToScalar(start, currentText)
@@ -2667,13 +2701,12 @@ class EditorEditText @JvmOverloads constructor(
         }
         if (discardTransientInputForDestroyedEditorIfNeeded()) return
 
-        if (start != end) {
+        val (scalarStart, scalarEnd) = normalizedScalarSelectionRange(currentText) ?: return
+        if (scalarStart != scalarEnd) {
             // Range selection: atomic delete-and-split via Rust.
-            val (scalarStart, scalarEnd) = normalizedScalarSelectionRange(currentText) ?: return
             deleteAndSplitInRust(scalarStart, scalarEnd)
         } else {
-            val scalarPos = PositionBridge.utf16ToScalar(start, currentText)
-            splitBlockInRust(scalarPos)
+            splitBlockInRust(scalarEnd)
         }
     }
 
@@ -3181,7 +3214,9 @@ class EditorEditText @JvmOverloads constructor(
 
         val currentText = text?.toString() ?: ""
         if (currentText != lastAuthorizedText) return
-        val (scalarAnchor, scalarHead) = rawScalarSelection(currentText) ?: return
+        val (scalarAnchor, scalarHead) = currentLogicalScalarSelection()
+            ?: rawScalarSelection(currentText)
+            ?: return
 
         v2Driver?.let { driver ->
             val sync = driver.syncSelection(scalarAnchor, scalarHead)
@@ -3262,9 +3297,20 @@ class EditorEditText @JvmOverloads constructor(
         clearNativeTextMutationAfterBlurWindow()
     }
 
-    internal fun authorizeCurrentVisibleTextForPendingImeOperationForEditor() {
+    internal fun authorizeCurrentVisibleTextForPendingImeOperationForEditor(
+        logicalCursorAfter: Int? = null
+    ) {
         pendingOptimisticRenderText = null
         authorizeCurrentVisibleTextForDeferredRustUpdate()
+        if (logicalCursorAfter != null) {
+            rememberLogicalSelection(
+                scalarAnchor = logicalCursorAfter,
+                scalarHead = logicalCursorAfter,
+                utf16Anchor = selectionStart,
+                utf16Head = selectionEnd,
+                documentVersion = null
+            )
+        }
         recordImeTraceForTesting(
             "authorizePendingImeVisibleText",
             "textLength=${lastAuthorizedText.length}"
@@ -3858,9 +3904,13 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     internal fun currentScalarSelection(): Pair<Int, Int>? {
+        currentLogicalScalarSelection()?.let { return it }
         val currentText = text?.toString() ?: return null
         return normalizedScalarSelectionRange(currentText)
     }
+
+    internal fun currentLogicalScalarSelectionForInput(): Pair<Int, Int>? =
+        currentLogicalScalarSelection()
 
     internal fun cursorCapsModeForEditor(reqModes: Int, baseCapsMode: Int): Int {
         val sentenceCapsMode = InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -4029,6 +4079,9 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun normalizedScalarSelectionRange(currentText: String): Pair<Int, Int>? {
+        currentLogicalScalarSelection()?.let { (anchor, head) ->
+            return minOf(anchor, head) to maxOf(anchor, head)
+        }
         val (start, end) = normalizedUtf16SelectionRange(currentText) ?: return null
         val (snappedStart, snappedEnd) = if (start == end) {
             val snapped = PositionBridge.snapToScalarBoundary(
@@ -4042,6 +4095,35 @@ class EditorEditText @JvmOverloads constructor(
         }
         return PositionBridge.utf16ToScalar(snappedStart, currentText) to
             PositionBridge.utf16ToScalar(snappedEnd, currentText)
+    }
+
+    private fun currentLogicalScalarSelection(): Pair<Int, Int>? {
+        val snapshot = logicalSelectionSnapshot ?: return null
+        if (selectionStart == snapshot.utf16Anchor && selectionEnd == snapshot.utf16Head) {
+            return snapshot.scalarAnchor to snapshot.scalarHead
+        }
+        recordImeTraceForTesting(
+            "logicalSelectionInvalidated",
+            "scalar=${snapshot.scalarAnchor}..${snapshot.scalarHead} projected=${snapshot.utf16Anchor}..${snapshot.utf16Head} physical=$selectionStart..$selectionEnd revision=${snapshot.documentVersion ?: "pending"}"
+        )
+        logicalSelectionSnapshot = null
+        return null
+    }
+
+    private fun rememberLogicalSelection(
+        scalarAnchor: Int,
+        scalarHead: Int,
+        utf16Anchor: Int,
+        utf16Head: Int,
+        documentVersion: String? = logicalSelectionSnapshot?.documentVersion
+    ) {
+        logicalSelectionSnapshot = LogicalSelectionSnapshot(
+            scalarAnchor = scalarAnchor,
+            scalarHead = scalarHead,
+            utf16Anchor = utf16Anchor,
+            utf16Head = utf16Head,
+            documentVersion = documentVersion
+        )
     }
 
     private fun rawScalarSelection(currentText: String): Pair<Int, Int>? {
@@ -4213,6 +4295,8 @@ class EditorEditText @JvmOverloads constructor(
     private fun applyRenderedSpannable(
         spannable: CharSequence,
         replaceRange: RenderReplaceRange? = null,
+        replacedTopLevelStartIndex: Int? = null,
+        replacedTopLevelDeleteCount: Int = 0,
         usedPatch: Boolean,
         preserveInputConnectionForExternalUpdate: Boolean = false
     ) {
@@ -4222,11 +4306,28 @@ class EditorEditText @JvmOverloads constructor(
         val hadCompositionTracking = hasCompositionTrackingForEditor()
         var shouldRestartInput = false
         val mode = if (replaceRange != null) "replace" else "setText"
+        val precedingParagraphSpans = replaceRange
+            ?.let { paragraphSpansEndingAt(it.start) }
+            .orEmpty()
         isApplyingRustState = true
         beginBatchEdit()
         try {
             if (replaceRange != null) {
+                if (replacedTopLevelStartIndex != null) {
+                    removeParagraphSpansOwnedByTopLevelRange(
+                        replacedTopLevelStartIndex,
+                        replacedTopLevelDeleteCount
+                    )
+                }
                 editableText.replace(replaceRange.start, replaceRange.endExclusive, spannable)
+                precedingParagraphSpans.forEach { snapshot ->
+                    editableText.setSpan(
+                        snapshot.span,
+                        snapshot.start,
+                        snapshot.end,
+                        snapshot.flags
+                    )
+                }
             } else {
                 setText(spannable)
             }
@@ -4255,6 +4356,56 @@ class EditorEditText @JvmOverloads constructor(
         )
         invalidateRenderedContent()
         restartInputAfterCompositionInvalidationIfNeeded(shouldRestartInput)
+    }
+
+    private fun paragraphSpansEndingAt(offset: Int): List<ParagraphSpanSnapshot> =
+        editableText
+            .getSpans(0, editableText.length, Any::class.java)
+            .filter { span ->
+                editableText.getSpanEnd(span) == offset &&
+                    editableText.getSpanFlags(span) and Spanned.SPAN_PARAGRAPH == Spanned.SPAN_PARAGRAPH
+            }
+            .map { span ->
+                ParagraphSpanSnapshot(
+                    span = span,
+                    start = editableText.getSpanStart(span),
+                    end = editableText.getSpanEnd(span),
+                    flags = editableText.getSpanFlags(span)
+                )
+            }
+
+    private fun removeParagraphSpansOwnedByTopLevelRange(startIndex: Int, deleteCount: Int) {
+        if (deleteCount <= 0) return
+        val endIndex = startIndex + deleteCount
+        val topLevelAnnotations = editableText
+            .getSpans(0, editableText.length, Annotation::class.java)
+            .asSequence()
+            .filter { it.key == RenderBridge.NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION }
+            .mapNotNull { annotation ->
+                val index = annotation.value.toIntOrNull() ?: return@mapNotNull null
+                Triple(
+                    editableText.getSpanStart(annotation),
+                    editableText.getSpanEnd(annotation),
+                    index
+                )
+            }
+            .sortedBy { it.first }
+            .toList()
+
+        editableText
+            .getSpans(0, editableText.length, Any::class.java)
+            .filter { span ->
+                editableText.getSpanFlags(span) and Spanned.SPAN_PARAGRAPH == Spanned.SPAN_PARAGRAPH
+            }
+            .filter { span ->
+                val spanStart = editableText.getSpanStart(span)
+                val spanEnd = editableText.getSpanEnd(span)
+                val ownerIndex = topLevelAnnotations.firstOrNull { annotation ->
+                    annotation.first < spanEnd && annotation.second > spanStart
+                }?.third
+                ownerIndex != null && ownerIndex >= startIndex && ownerIndex < endIndex
+            }
+            .forEach(editableText::removeSpan)
     }
 
     private fun invalidateRenderedContent() {
@@ -4451,6 +4602,8 @@ class EditorEditText @JvmOverloads constructor(
         applyRenderedSpannable(
             spannable = patchedSpannable,
             replaceRange = replaceRange,
+            replacedTopLevelStartIndex = patch.startIndex,
+            replacedTopLevelDeleteCount = patch.deleteCount,
             usedPatch = true,
             preserveInputConnectionForExternalUpdate = preserveInputConnectionForExternalUpdate
         )
@@ -4601,7 +4754,12 @@ class EditorEditText @JvmOverloads constructor(
         val selectionStartedAt = System.nanoTime()
         val selection = update.optJSONObject("selection")
         if (selection != null) {
-            applySelectionFromJSON(selection)
+            applySelectionFromJSON(
+                selection,
+                update.optString("documentVersion", "").takeIf { it.isNotEmpty() }
+            )
+        } else {
+            logicalSelectionSnapshot = null
         }
         val selectionNanos = System.nanoTime() - selectionStartedAt
 
@@ -5192,7 +5350,10 @@ class EditorEditText @JvmOverloads constructor(
      * We convert doc→scalar via the v2 driver ([EditorV2Driver.scalarPositionForDoc])
      * before converting to UTF-16.
      */
-    private fun applySelectionFromJSON(selection: org.json.JSONObject) {
+    private fun applySelectionFromJSON(
+        selection: org.json.JSONObject,
+        documentVersion: String?
+    ) {
         val type = selection.optString("type", "") ?: return
         if (isEditorDestroyedForInput()) {
             recordImeTraceForTesting("applySelectionFromJSONSkipped", "reason=destroyed type=$type")
@@ -5228,8 +5389,16 @@ class EditorEditText @JvmOverloads constructor(
                         anchorUtf16.coerceIn(0, len),
                         headUtf16.coerceIn(0, len)
                     )
+                    rememberLogicalSelection(
+                        scalarAnchor = scalarAnchor,
+                        scalarHead = scalarHead,
+                        utf16Anchor = selectionStart,
+                        utf16Head = selectionEnd,
+                        documentVersion = documentVersion
+                    )
                 }
                 "node" -> {
+                    logicalSelectionSnapshot = null
                     val docPos = exactV2ScalarInt(selection.opt("pos") as? Number) ?: return
                     // Convert doc position to scalar offset.
                     val nodeSelectionDriver = v2Driver ?: return
@@ -5242,6 +5411,7 @@ class EditorEditText @JvmOverloads constructor(
                     setSelection(clamped, endClamped)
                 }
                 "all" -> {
+                    logicalSelectionSnapshot = null
                     selectAll()
                 }
             }

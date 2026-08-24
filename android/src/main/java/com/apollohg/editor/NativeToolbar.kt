@@ -9,6 +9,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import androidx.appcompat.R as AppCompatR
@@ -469,7 +470,7 @@ internal data class NativeToolbarItem(
     }
 }
 
-internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollView(context) {
+internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context) {
     private companion object {
         private const val NATIVE_CONTAINER_HEIGHT_DP = 68
         private const val NATIVE_CONTAINER_HORIZONTAL_PADDING_DP = 16
@@ -526,12 +527,9 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
         get() = mentionSuggestions.isNotEmpty()
 
     init {
-        isHorizontalScrollBarEnabled = false
-        overScrollMode = OVER_SCROLL_NEVER
         setBackgroundColor(Color.TRANSPARENT)
         clipToPadding = false
         clipChildren = false
-        isFillViewport = true
 
         rootRow.orientation = LinearLayout.HORIZONTAL
         rootRow.gravity = Gravity.CENTER_VERTICAL

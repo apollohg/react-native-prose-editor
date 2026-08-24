@@ -248,3 +248,38 @@ fn unchanged_multi_paragraph_boundary_resolves_to_the_same_scalar() {
     assert_eq!(resolved.anchor, 10);
     assert_eq!(resolved.head, 10);
 }
+
+#[test]
+fn unchanged_nested_list_boundaries_resolve_to_the_exact_scalar() {
+    let config = EditorSessionConfig::local_for_test();
+    let mut session = EditorSession::new(
+        engine(InitializationMode::LocalEmpty),
+        SessionPolicy::from_config(&config),
+        DocumentState::LocalReady,
+        CollaborationLimits::default(),
+    )
+    .unwrap();
+    session
+        .replace_document_json(
+            1,
+            r#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"paragraph","content":[{"type":"text","text":"Quote"}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"First"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"Nested"}]}]}]}]}]},{"type":"paragraph"}]}"#,
+            ReplacementHistory::ResetAndClear,
+        )
+        .unwrap();
+    let scalar_limit = session.engine.position_map().unwrap().total_scalars();
+    let epoch = session
+        .pin_position_epoch(18, session.engine.revision())
+        .unwrap();
+
+    for scalar in 0..=scalar_limit {
+        let resolved = session
+            .resolve_epoch_range(18, epoch, scalar, scalar)
+            .unwrap();
+        assert_eq!(
+            (resolved.anchor, resolved.head),
+            (scalar, scalar),
+            "unchanged scalar {scalar} drifted"
+        );
+        assert!(!resolved.fallback);
+    }
+}

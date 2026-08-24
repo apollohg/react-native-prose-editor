@@ -334,13 +334,13 @@ impl MutationCompiler {
                 .ok()
                 .and_then(|len| len.checked_sub(move_index))
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
-            if moved_count == 0 {
-                // Return-at-EOL: the boundary is the very end of the block,
-                // so there is no suffix to move — the preview's right
-                // wrapper (a sibling block, or a sibling list item when the
-                // split block lives inside a list item) is entirely new.
-                // Rejoin the mid-text split tail with an empty text cut and
-                // no within-block suffix.
+            let moved_start = usize::try_from(move_index)
+                .map_err(|_| invalid_action_range(self.request_id, operation_index))?;
+            let suffix_is_empty = block_target.storage_children[moved_start..]
+                .iter()
+                .all(|child| matches!(child, StorageChildKind::Text { scalar_len: 0, .. }));
+            if moved_count == 0 || suffix_is_empty {
+                // Zero-length Yrs text children do not make a semantic suffix.
                 return self.finish_split_with_created_right(
                     operation_index,
                     after,
@@ -360,8 +360,6 @@ impl MutationCompiler {
                 signature: block_target.signature.clone(),
                 operation_index,
             });
-            let moved_start = usize::try_from(move_index)
-                .map_err(|_| invalid_action_range(self.request_id, operation_index))?;
             let moved_ids = block_target.storage_children[moved_start..]
                 .iter()
                 .filter_map(|child| match child {

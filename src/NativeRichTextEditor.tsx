@@ -118,6 +118,7 @@ interface NativeEditorViewProps {
     autoCapitalize?: NativeRichTextEditorAutoCapitalize;
     autoCorrect?: boolean;
     keyboardType?: NativeRichTextEditorKeyboardType;
+    androidInputOptionsJson?: string;
     showToolbar: boolean;
     toolbarPlacement: NativeRichTextEditorToolbarPlacement;
     heightBehavior: NativeRichTextEditorHeightBehavior;
@@ -552,6 +553,12 @@ export type NativeRichTextEditorKeyboardType =
     | 'visible-password'
     | 'ascii-capable-number-pad';
 
+/** Android-specific options passed to the active input method. */
+export interface NativeRichTextEditorAndroidInputOptions {
+    /** Private options interpreted by the selected Android IME. */
+    privateImeOptions?: string;
+}
+
 /**
  * One remote collaborator's caret or selection, drawn as a native overlay.
  * `useYjsCollaboration` builds these from awareness and passes them through
@@ -634,6 +641,8 @@ export interface NativeRichTextEditorProps {
     autoCorrect?: boolean;
     /** Controls the native keyboard layout. Defaults to the platform default keyboard. */
     keyboardType?: NativeRichTextEditorKeyboardType;
+    /** Android-specific input-method options. Ignored on other platforms. */
+    androidInputOptions?: NativeRichTextEditorAndroidInputOptions;
     /** Controls whether the editor scrolls internally or grows with content. */
     heightBehavior?: NativeRichTextEditorHeightBehavior;
     /** Whether to show the formatting toolbar. Defaults to true. */
@@ -805,6 +814,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             autoCapitalize,
             autoCorrect,
             keyboardType,
+            androidInputOptions,
             heightBehavior = 'autoGrow',
             showToolbar = true,
             toolbarPlacement = 'keyboard',
@@ -2125,6 +2135,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const imageLoadingPolicyJson = useSerializedValue(imageLoadingPolicy, (value) =>
             serializeEditorImageLoadingPolicy(value)
         );
+        const androidInputOptionsJson = useSerializedValue(androidInputOptions, (value) =>
+            JSON.stringify(value)
+        );
         const remoteSelectionsJson = useSerializedValue(remoteSelections, (selections) =>
             serializeRemoteSelections(selections)
         );
@@ -2213,6 +2226,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     autoCapitalize={autoCapitalize}
                     autoCorrect={autoCorrect}
                     keyboardType={keyboardType}
+                    {...(Platform.OS === 'android' ? { androidInputOptionsJson } : {})}
                     showToolbar={showToolbar}
                     toolbarPlacement={toolbarPlacement}
                     heightBehavior={heightBehavior}

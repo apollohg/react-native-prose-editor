@@ -39,6 +39,22 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NativeEditorExpoViewTest {
     @Test
+    fun `Android input options report and clear private IME options`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+
+        view.setAndroidInputOptionsJson("""{"privateImeOptions":"nm"}""")
+        val configuredEditorInfo = EditorInfo()
+        assertNotNull(view.richTextView.editorEditText.onCreateInputConnection(configuredEditorInfo))
+        assertEquals("nm", configuredEditorInfo.privateImeOptions)
+
+        view.setAndroidInputOptionsJson(null)
+        val clearedEditorInfo = EditorInfo()
+        assertNotNull(view.richTextView.editorEditText.onCreateInputConnection(clearedEditorInfo))
+        assertNull(clearedEditorInfo.privateImeOptions)
+    }
+
+    @Test
     fun `bound adapter failure emits one complete Expo error record`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)

@@ -8,6 +8,7 @@ export {
     type NativeRichTextEditorValueJSONUpdateMode,
     type NativeRichTextEditorAutoCapitalize,
     type NativeRichTextEditorKeyboardType,
+    type NativeRichTextEditorAndroidInputOptions,
     type NativeRichTextEditorFocusPreservingElement,
     type NativeRichTextEditorFocusPreservingRef,
     type NativeRichTextEditorFocusPreservingRefs,

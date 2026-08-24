@@ -807,15 +807,78 @@ fn plan_empty_split_action(
                         .node_at(&resolved.node_path[..depth - 1])
                         .and_then(|node| schema.node(node.node_type()))
                         .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem));
-                return Some(SemanticCommandPlan::one(if nested {
-                    SemanticOperation::OutdentListItem { pos: position }
-                } else {
-                    SemanticOperation::UnwrapFromList { pos: position }
-                }));
+                if nested {
+                    let operation = SemanticOperation::OutdentListItem { pos: position };
+                    let after =
+                        apply_operations(document, schema, std::slice::from_ref(&operation))
+                            .ok()?;
+                    let selection_after =
+                        outdented_list_item_position(document, &after, position, schema)?;
+                    return Some(SemanticCommandPlan {
+                        operations: vec![operation],
+                        selection_after: Some(Selection::cursor(selection_after)),
+                        history: SemanticCommandHistory::InputBoundary,
+                    });
+                }
+                return Some(SemanticCommandPlan::one(
+                    SemanticOperation::UnwrapFromList { pos: position },
+                ));
             }
         }
     }
     plan_empty_blockquote_exit(document, schema, position)
+}
+
+pub(crate) fn outdented_list_item_position(
+    before: &Document,
+    after: &Document,
+    position: u32,
+    schema: &Schema,
+) -> Option<u32> {
+    if before == after {
+        return None;
+    }
+    let resolved = before.resolve(position).ok()?;
+    let mut node = before.root();
+    let mut item_depth = None;
+    for (depth, index) in resolved.node_path.iter().copied().enumerate() {
+        node = node.child(usize::try_from(index).ok()?)?;
+        if schema
+            .node(node.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
+        {
+            item_depth = Some(depth);
+        }
+    }
+
+    let item_depth = item_depth?;
+    let nested_list_path = &resolved.node_path[..item_depth];
+    let parent_item_path = nested_list_path.get(..nested_list_path.len().checked_sub(1)?)?;
+    let parent_list_path = parent_item_path.get(..parent_item_path.len().checked_sub(1)?)?;
+    let parent_item_index = *parent_item_path.last()?;
+
+    let mut destination_path = parent_list_path.to_vec();
+    destination_path.push(parent_item_index.checked_add(1)?);
+    destination_path.extend_from_slice(resolved.node_path.get(item_depth.checked_add(1)?..)?);
+    let destination_content_start = node_start_at_path(after, &destination_path)?.checked_add(1)?;
+    destination_content_start.checked_add(resolved.parent_offset)
+}
+
+fn node_start_at_path(document: &Document, path: &[u32]) -> Option<u32> {
+    let mut node = document.root();
+    let mut content_start = 0u32;
+    let mut node_start = 0u32;
+    for index in path.iter().copied() {
+        let content = node.content()?;
+        let index = usize::try_from(index).ok()?;
+        node_start = content_start;
+        for sibling in content.iter().take(index) {
+            node_start = node_start.checked_add(sibling.node_size())?;
+        }
+        node = content.child(index)?;
+        content_start = node_start.checked_add(1)?;
+    }
+    Some(node_start)
 }
 
 fn preferred_split_operation(

@@ -457,6 +457,9 @@ class NativeEditorModule : Module() {
             Prop("keyboardType") { view: NativeEditorExpoView, keyboardType: String? ->
                 view.setKeyboardType(keyboardType)
             }
+            Prop("androidInputOptionsJson") { view: NativeEditorExpoView, optionsJson: String? ->
+                view.setAndroidInputOptionsJson(optionsJson)
+            }
             Prop("showToolbar") { view: NativeEditorExpoView, showToolbar: Boolean ->
                 view.setShowToolbar(showToolbar)
             }

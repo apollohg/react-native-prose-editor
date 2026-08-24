@@ -784,12 +784,20 @@ impl EditorSession {
         } else {
             crate::yrs_engine::Affinity::Before
         };
-        let (anchor_boundary, _) =
+        let (anchor_boundary, epoch_revision) =
             self.position_epochs
                 .boundary(owner_id, epoch_id, self.engine.client_id(), anchor)?;
-        let (head_boundary, _) =
+        let (head_boundary, head_epoch_revision) =
             self.position_epochs
                 .boundary(owner_id, epoch_id, self.engine.client_id(), head)?;
+        debug_assert_eq!(epoch_revision, head_epoch_revision);
+        if epoch_revision == self.engine.revision() {
+            return Ok(crate::position_epoch::ResolvedEpochRange {
+                anchor,
+                head,
+                fallback: false,
+            });
+        }
         let (resolved_anchor, anchor_fallback) = self
             .engine
             .resolve_position_epoch_boundary(anchor_boundary, affinity, anchor)

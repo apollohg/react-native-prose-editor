@@ -1,9 +1,12 @@
 package com.apollohg.editor
 
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.os.Looper
 import android.view.View
+import android.widget.HorizontalScrollView
+import android.widget.LinearLayout
 import androidx.appcompat.R as AppCompatR
 import androidx.appcompat.view.ContextThemeWrapper
 import com.google.android.material.R as MaterialR
@@ -317,6 +320,49 @@ class NativeToolbarTest {
     }
 
     @Test
+    fun `native toolbar pins end placement inside the viewport when middle content overflows`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+        fun actionItem(key: String, placement: ToolbarItemPlacement? = null) = NativeToolbarItem(
+            type = ToolbarItemKind.action,
+            key = key,
+            label = key,
+            icon = NativeToolbarIcon(glyphText = key),
+            placement = placement
+        )
+        toolbar.setItems(
+            listOf(
+                actionItem("one"),
+                actionItem("two"),
+                actionItem("three"),
+                actionItem("four"),
+                actionItem("five"),
+                actionItem("six"),
+                actionItem("end", ToolbarItemPlacement.end)
+            )
+        )
+
+        val width = 240
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(64, View.MeasureSpec.EXACTLY)
+        toolbar.measure(widthSpec, heightSpec)
+        toolbar.layout(0, 0, width, 64)
+
+        val endButton = requireNotNull(toolbar.buttonAtForTesting(6))
+        val endBounds = Rect(0, 0, endButton.width, endButton.height)
+        toolbar.offsetDescendantRectToMyCoords(endButton, endBounds)
+        val rootRow = toolbar.getChildAt(0) as LinearLayout
+        val centerScrollView = rootRow.getChildAt(1) as HorizontalScrollView
+        val endMargin = (endButton.layoutParams as LinearLayout.LayoutParams).marginEnd
+
+        assertTrue(
+            "middle content must overflow its viewport for this regression",
+            centerScrollView.getChildAt(0).width > centerScrollView.width
+        )
+        assertEquals(width - rootRow.paddingRight - endMargin, endBounds.right)
+    }
+
+    @Test
     fun `native toolbar preserves horizontal scroll offset when expanding grouped buttons`() {
         val context = RuntimeEnvironment.getApplication()
         val toolbar = EditorKeyboardToolbarView(context)
@@ -352,15 +398,17 @@ class NativeToolbarTest {
         toolbar.measure(widthSpec, heightSpec)
         toolbar.layout(0, 0, 140, 64)
 
-        toolbar.scrollTo(48, 0)
-        assertEquals(48, toolbar.scrollX)
+        val rootRow = toolbar.getChildAt(0) as LinearLayout
+        val centerScrollView = rootRow.getChildAt(1) as HorizontalScrollView
+        centerScrollView.scrollTo(48, 0)
+        assertEquals(48, centerScrollView.scrollX)
 
         requireNotNull(toolbar.buttonAtForTesting(3)).performClick()
         shadowOf(Looper.getMainLooper()).idle()
         toolbar.measure(widthSpec, heightSpec)
         toolbar.layout(0, 0, 140, 64)
 
-        assertEquals(48, toolbar.scrollX)
+        assertEquals(48, centerScrollView.scrollX)
     }
 
     @Test

@@ -842,6 +842,24 @@ class EditorInputConnectionTest {
     }
 
     @Test
+    fun `private IME option changes restart focused input only when value changes`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        assertTrue(editText.requestFocus())
+        fun restartCount() = editText.imeTraceSnapshotForTesting().count {
+            it.contains("restartInput:source=privateImeOptions")
+        }
+
+        editText.setPrivateImeOptionsForEditor("nm")
+        assertEquals(1, restartCount())
+
+        editText.setPrivateImeOptionsForEditor("nm")
+        assertEquals(1, restartCount())
+
+        editText.setPrivateImeOptionsForEditor(null)
+        assertEquals(2, restartCount())
+    }
+
+    @Test
     fun `cursor caps mode treats rendered empty block start as sentence start`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.applyUpdateJSON(renderBlocksUpdateJson("Hello", "\u200B"), notifyListener = false)
@@ -4528,6 +4546,132 @@ class EditorInputConnectionTest {
         editText.handleTextCommit("there")
 
         assertEquals(Triple(6, 11, "there"), replacement)
+    }
+
+    @Test
+    fun `text commit uses exact Rust selection when its Android projection is ambiguous`() {
+        val harness = externalCompositionHarness("a")
+        try {
+            val update = JSONObject(renderUpdateJson("a"))
+                .put("scalarLength", 13)
+                .put(
+                    "selection",
+                    JSONObject()
+                        .put("type", "text")
+                        .put("anchor", 14)
+                        .put("head", 14)
+                        .put("anchorScalar", 13)
+                        .put("headScalar", 13)
+                )
+            harness.editText.applyUpdateJSON(update.toString(), notifyListener = false)
+            assertEquals(1, harness.editText.selectionStart)
+
+            var insertion: Pair<String, Int>? = null
+            harness.editText.onInsertTextInRustForTesting = { text, scalar ->
+                insertion = text to scalar
+            }
+
+            harness.editText.handleTextCommit("x")
+
+            assertEquals("x" to 13, insertion)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `optimistic commit advances Rust caret before a deferred backspace`() {
+        val harness = externalCompositionHarness("a")
+        try {
+            val update = JSONObject(renderUpdateJson("a"))
+                .put("scalarLength", 13)
+                .put(
+                    "selection",
+                    JSONObject()
+                        .put("type", "text")
+                        .put("anchor", 14)
+                        .put("head", 14)
+                        .put("anchorScalar", 13)
+                        .put("headScalar", 13)
+                )
+            harness.editText.applyUpdateJSON(update.toString(), notifyListener = false)
+            harness.editText.onInsertTextInRustForTesting = { _, _ -> }
+
+            harness.editText.handleTextCommit("x")
+            assertEquals("ax", harness.editText.text.toString())
+
+            var backwardSelection: Pair<Int, Int>? = null
+            harness.editText.onDeleteBackwardAtSelectionScalarInRustForTesting = { anchor, head ->
+                backwardSelection = anchor to head
+            }
+            harness.editText.handleBackspace()
+
+            assertEquals(14 to 14, backwardSelection)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `deferred surrounding delete uses the optimistic Rust caret`() {
+        val harness = externalCompositionHarness("a")
+        try {
+            val update = JSONObject(renderUpdateJson("a"))
+                .put("scalarLength", 13)
+                .put(
+                    "selection",
+                    JSONObject()
+                        .put("type", "text")
+                        .put("anchor", 14)
+                        .put("head", 14)
+                        .put("anchorScalar", 13)
+                        .put("headScalar", 13)
+                )
+            harness.editText.applyUpdateJSON(update.toString(), notifyListener = false)
+            harness.editText.onInsertTextInRustForTesting = { _, _ -> }
+            val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+            assertTrue(inputConnection.commitText("x", 1))
+            var deletedRange: Pair<Int, Int>? = null
+            harness.editText.onDeleteRangeInRustForTesting = { from, to ->
+                deletedRange = from to to
+            }
+            assertTrue(inputConnection.deleteSurroundingText(1, 0))
+
+            assertEquals(13 to 14, deletedRange)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `explicit Android caret move replaces the previous Rust selection`() {
+        val harness = externalCompositionHarness("a")
+        try {
+            val update = JSONObject(renderUpdateJson("a"))
+                .put("scalarLength", 13)
+                .put(
+                    "selection",
+                    JSONObject()
+                        .put("type", "text")
+                        .put("anchor", 14)
+                        .put("head", 14)
+                        .put("anchorScalar", 13)
+                        .put("headScalar", 13)
+                )
+            harness.editText.applyUpdateJSON(update.toString(), notifyListener = false)
+
+            harness.editText.setSelection(0)
+            var insertion: Pair<String, Int>? = null
+            harness.editText.onInsertTextInRustForTesting = { text, scalar ->
+                insertion = text to scalar
+            }
+            harness.editText.handleTextCommit("x")
+
+            assertEquals("x" to 0, insertion)
+        } finally {
+            harness.adapter.destroy()
+        }
     }
 
     @Test

@@ -3042,7 +3042,14 @@ fn compile_transaction_impl(
                         )?;
                     }
                 }
-                operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
+                let mapped_pos = crate::command_planner::outdented_list_item_position(
+                    &preview,
+                    &next,
+                    pos,
+                    context.schema,
+                )
+                .unwrap_or_else(|| step_map.map_pos(pos));
+                operation_result = Some(Selection::cursor(mapped_pos));
                 composed_map = composed_map.compose(&step_map);
                 operation_changed = next != *preview;
                 preview = Cow::Owned(next);
