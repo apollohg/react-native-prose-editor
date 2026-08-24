@@ -12,6 +12,7 @@ consumer_dir="$work_dir/consumer"
 pack_cache_dir="$work_dir/npm-cache"
 cocoapods_cache_dir="$work_dir/cocoapods-cache"
 cocoapods_home_dir="$work_dir/cocoapods-home"
+consumer_gradle_home="${GRADLE_USER_HOME:-$work_dir/gradle-home}"
 export NODE_COMPILE_CACHE="$work_dir/node-compile-cache"
 
 fail() {
@@ -623,7 +624,7 @@ KOTLIN
     cd "$android_consumer/android"
     PACKED_EDITOR_ANDROID_DIR="$root/android" \
       NODE_PATH="$example_node_modules" \
-      GRADLE_USER_HOME="$work_dir/gradle-home" \
+      GRADLE_USER_HOME="$consumer_gradle_home" \
       ./gradlew app:assembleDebug -x lint -x test --no-daemon
   ) || fail "Android consumer assembleDebug failed"
   apk="$android_consumer/android/app/build/outputs/apk/debug/app-debug.apk"
@@ -718,6 +719,57 @@ validate_package_entries() {
     fail "packed npm package contains removed NativeProseViewerExpoView.swift"
 }
 
+extract_package_tarball() {
+  local tarball_path="$1"
+  tarball_path="$(cd "$(dirname "$tarball_path")" && pwd -P)/$(basename "$tarball_path")"
+  [[ -f "$tarball_path" ]] || fail "packed npm tarball is missing: $tarball_path"
+  tar -xzf "$tarball_path" -C "$work_dir"
+  [[ -d "$package_dir" ]] || fail "npm tarball does not contain the canonical package/ root"
+}
+
+validate_packed_package_root() {
+  local root="$1"
+  local ffi_header_count modulemap_count
+
+  validate_package_entries "$root"
+  validate_abi_root "$root"
+  validate_xcframework "$root/ios/EditorCore.xcframework"
+  for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+    validate_android_library "$root/rust/android/$abi/libeditor_core.so" "$abi"
+  done
+
+  ffi_header_count="$(find "$root" -type f -name 'editor_coreFFI.h' | wc -l | tr -d '[:space:]')"
+  modulemap_count="$(find "$root" -type f \( -name 'module.modulemap' -o -name 'editor_coreFFI.modulemap' \) | wc -l | tr -d '[:space:]')"
+  [[ "$ffi_header_count" == "1" ]] || fail "packed npm package must contain exactly one editor_coreFFI.h (found $ffi_header_count)"
+  [[ "$modulemap_count" == "1" ]] || fail "packed npm package must contain exactly one UniFFI modulemap (found $modulemap_count)"
+}
+
+validate_packed_podspec() {
+  local root="$1"
+  local podspec_json="$work_dir/podspec.json"
+
+  echo "==> Parsing the podspec from the extracted package..."
+  RUBYOPT="${RUBYOPT:+$RUBYOPT }-r$repo_root/example/node_modules/react-native/scripts/react_native_pods.rb" \
+    pod ipc spec "$root/ReactNativeProseEditor.podspec" > "$podspec_json"
+  ruby -rjson -e '
+    spec = JSON.parse(File.read(ARGV.fetch(0)))
+    license = spec.fetch("license")
+    abort "podspec license type must be Apache-2.0" unless license.fetch("type") == "Apache-2.0"
+    abort "podspec license file must resolve to LICENSE" unless license.fetch("file") == "LICENSE"
+    abort "podspec must vend exactly ios/EditorCore.xcframework" unless Array(spec.fetch("vendored_frameworks")) == ["ios/EditorCore.xcframework"]
+    private_headers = Array(spec.fetch("private_header_files"))
+    required_private_headers = [
+      "ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.h",
+      "common/cpp/react/renderer/components/PreparedProseViewer/**/*.h",
+    ]
+    abort "podspec must keep every Fabric implementation header private" unless required_private_headers.all? { |path| private_headers.include?(path) }
+    source_files = Array(spec.fetch("source_files"))
+    abort "podspec must compile Fabric implementation C++ sources" unless source_files.include?("common/cpp/**/*.{h,cpp}")
+    abort "podspec must preserve the Fabric compiler header directory" unless spec.fetch("header_dir") == "react/renderer/components/PreparedProseViewer"
+    abort "podspec public Swift module must agree with the Expo pod-name import" unless spec.fetch("name") == "ReactNativeProseEditor" && spec.fetch("module_name") == spec.fetch("name")
+  ' "$podspec_json" || fail "packed podspec does not unconditionally vend EditorCore.xcframework"
+}
+
 case "${1:-}" in
   --validate-package-entries)
     [[ "$#" == "2" ]] || fail "usage: $0 --validate-package-entries PATH"
@@ -768,6 +820,24 @@ case "${1:-}" in
     echo "Android packed consumer compiles and packages all ABI libraries."
     exit 0
     ;;
+  --validate-android-tarball)
+    [[ "$#" == "2" ]] || fail "usage: $0 --validate-android-tarball TARBALL"
+    require_command tar; require_command ruby; require_command unzip
+    extract_package_tarball "$2"
+    validate_android_consumer "$package_dir"
+    echo "Android packed tarball consumer compiles and packages all ABI libraries."
+    exit 0
+    ;;
+  --validate-packed-tarball)
+    [[ "$#" == "2" ]] || fail "usage: $0 --validate-packed-tarball TARBALL"
+    require_command tar; require_command ruby; require_command pod; require_command plutil
+    require_command lipo; require_command file; require_command nm
+    extract_package_tarball "$2"
+    validate_packed_package_root "$package_dir"
+    validate_packed_podspec "$package_dir"
+    echo "Packed npm artifact contents and exact native ABI validation passed."
+    exit 0
+    ;;
   "") ;;
   *) fail "unknown argument: $1" ;;
 esac
@@ -793,44 +863,12 @@ pack_json="$work_dir/npm-pack.json"
 tarball_name="$(ruby -rjson -e 'parsed = JSON.parse(File.read(ARGV.fetch(0))); entries = parsed.is_a?(Array) ? parsed : parsed.values; abort "npm pack returned no artifact" unless entries.length == 1 && entries.fetch(0).key?("filename"); puts entries.fetch(0).fetch("filename")' "$pack_json")"
 tarball_path="$work_dir/$tarball_name"
 [[ -f "$tarball_path" ]] || fail "npm pack did not create $tarball_name"
-tar -xzf "$tarball_path" -C "$work_dir"
-[[ -d "$package_dir" ]] || fail "npm tarball does not contain the canonical package/ root"
+extract_package_tarball "$tarball_path"
 
-validate_package_entries "$package_dir"
+validate_packed_package_root "$package_dir"
 validate_abi_root "$repo_root"
-validate_abi_root "$package_dir"
 validate_copies "$repo_root" "$package_dir"
-validate_xcframework "$package_dir/ios/EditorCore.xcframework"
-for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-  validate_android_library "$package_dir/rust/android/$abi/libeditor_core.so" "$abi"
-done
-
-ffi_header_count="$(find "$package_dir" -type f -name 'editor_coreFFI.h' | wc -l | tr -d '[:space:]')"
-modulemap_count="$(find "$package_dir" -type f \( -name 'module.modulemap' -o -name 'editor_coreFFI.modulemap' \) | wc -l | tr -d '[:space:]')"
-[[ "$ffi_header_count" == "1" ]] || fail "packed npm package must contain exactly one editor_coreFFI.h (found $ffi_header_count)"
-[[ "$modulemap_count" == "1" ]] || fail "packed npm package must contain exactly one UniFFI modulemap (found $modulemap_count)"
-
-echo "==> Parsing the podspec from the extracted package..."
-podspec_json="$work_dir/podspec.json"
-RUBYOPT="${RUBYOPT:+$RUBYOPT }-r$repo_root/example/node_modules/react-native/scripts/react_native_pods.rb" \
-  pod ipc spec "$package_dir/ReactNativeProseEditor.podspec" > "$podspec_json"
-ruby -rjson -e '
-  spec = JSON.parse(File.read(ARGV.fetch(0)))
-  license = spec.fetch("license")
-  abort "podspec license type must be Apache-2.0" unless license.fetch("type") == "Apache-2.0"
-  abort "podspec license file must resolve to LICENSE" unless license.fetch("file") == "LICENSE"
-  abort "podspec must vend exactly ios/EditorCore.xcframework" unless Array(spec.fetch("vendored_frameworks")) == ["ios/EditorCore.xcframework"]
-  private_headers = Array(spec.fetch("private_header_files"))
-  required_private_headers = [
-    "ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.h",
-    "common/cpp/react/renderer/components/PreparedProseViewer/**/*.h",
-  ]
-  abort "podspec must keep every Fabric implementation header private" unless required_private_headers.all? { |path| private_headers.include?(path) }
-  source_files = Array(spec.fetch("source_files"))
-  abort "podspec must compile Fabric implementation C++ sources" unless source_files.include?("common/cpp/**/*.{h,cpp}")
-  abort "podspec must preserve the Fabric compiler header directory" unless spec.fetch("header_dir") == "react/renderer/components/PreparedProseViewer"
-  abort "podspec public Swift module must agree with the Expo pod-name import" unless spec.fetch("name") == "ReactNativeProseEditor" && spec.fetch("module_name") == spec.fetch("name")
-' "$podspec_json" || fail "packed podspec does not unconditionally vend EditorCore.xcframework"
+validate_packed_podspec "$package_dir"
 
 validate_ios_consumer "$package_dir" "$tarball_path"
 validate_android_consumer "$package_dir"

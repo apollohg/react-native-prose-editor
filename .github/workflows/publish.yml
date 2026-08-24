@@ -1,99 +1,570 @@
 name: Publish
 
 on:
-  release:
-    types:
-      - published
-  workflow_dispatch:
+    release:
+        types:
+            - published
+    workflow_dispatch:
 
 permissions:
-  id-token: write
-  contents: read
+    contents: read
+
+env:
+    RELEASE_ARTIFACT_NAME: release-package-${{ github.run_id }}
 
 jobs:
-  publish:
-    runs-on: macos-latest
-    timeout-minutes: 120
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+    build-package:
+        runs-on: macos-latest
+        timeout-minutes: 30
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-          cache: npm
-          package-manager-cache: false
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
 
-      - name: Setup Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 17
+            - name: Setup Java
+              uses: actions/setup-java@v5
+              with:
+                  distribution: temurin
+                  java-version: 17
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.95.0
-        with:
-          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios, aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@1.95.0
+              with:
+                  targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios, aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
-      - name: Install cargo-ndk
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install cargo-ndk --version 4.1.2 --locked
+            - name: Cache Cargo
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      ~/.cargo/bin/cargo-ndk
+                      rust/editor-core/target
+                  key: cargo-release-${{ runner.os }}-rust-1.95.0-ndk-4.1.2-android-27.1.12297006-${{ hashFiles('rust/editor-core/Cargo.lock') }}
+                  restore-keys: cargo-release-${{ runner.os }}-rust-1.95.0-
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+            - name: Install cargo-ndk
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  if ! cargo ndk --version >/dev/null 2>&1; then
+                    cargo install cargo-ndk --version 4.1.2 --locked
+                  fi
 
-      - name: Setup Android NDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          sdkmanager --install 'ndk;27.1.12297006'
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v4
 
-      - name: Install root dependencies
-        run: npm ci
+            - name: Setup Android NDK
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  sdkmanager --install 'ndk;27.1.12297006'
+                  echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
 
-      - name: Install example dependencies
-        run: npm --prefix example ci
+            - name: Install dependencies
+              run: npm ci
 
-      # The compiled core is a build output, not a tracked file. It is built
-      # here from the pinned toolchain so the published binary provably comes
-      # from the source in this commit. Package validation generates the
-      # example projects and installs CocoaPods after these frameworks exist.
-      - name: Build editor-core for all shipping targets
-        run: npm run build:rust
+            - name: Build editor-core for all shipping targets
+              run: npm run build:rust
 
-      - name: Verify generated bindings are current
-        run: git diff --exit-code -- rust/bindings ios/Generated_editor_core.swift ios/editor_coreFFI
+            - name: Verify generated bindings are current
+              run: git diff --exit-code -- rust/bindings ios/Generated_editor_core.swift ios/editor_coreFFI
 
-      - name: Typecheck package
-        run: npm run typecheck
+            - name: Build package
+              run: npm run build
 
-      - name: Build package
-        run: npm run build
+            - name: Pack release artifact
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  mkdir -p release-artifact
+                  npm pack --ignore-scripts --pack-destination release-artifact
+                  test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
 
-      - name: Typecheck example
-        run: npm run typecheck:example
+            - name: Upload release artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  retention-days: 2
+                  if-no-files-found: error
+                  path: |
+                      release-artifact/*.tgz
+                      scripts/resolve-npm-dist-tag.mjs
+                      dist
+                      rust/bindings
+                      rust/ios
+                      rust/android
+                      ios/Generated_editor_core.swift
+                      ios/editor_coreFFI
+                      ios/EditorCore.xcframework
 
-      - name: Run Rust tests
-        run: npm run test:rust
+    package-contracts:
+        needs: build-package
+        runs-on: macos-latest
+        timeout-minutes: 20
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
 
-      - name: Run JavaScript tests
-        run: npm test
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
 
-      # Exact ABI manifest, native checksum values, byte-identical bindings,
-      # and real CocoaPods/Xcode and Gradle/APK consumer builds against the
-      # packed tarball. This is the gate that proves the artifact ships intact.
-      - name: Validate packed package
-        run: npm run validate:package
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@1.95.0
 
-      - name: Resolve npm dist-tag
-        id: npm-dist-tag
-        shell: bash
-        run: echo "tag=$(node scripts/resolve-npm-dist-tag.mjs)" >> "$GITHUB_OUTPUT"
+            - name: Cache Cargo
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      rust/editor-core/target
+                  key: cargo-contracts-${{ runner.os }}-rust-1.95.0-${{ hashFiles('rust/editor-core/Cargo.lock') }}
+                  restore-keys: cargo-contracts-${{ runner.os }}-rust-1.95.0-
 
-      - name: Publish to npm
-        run: npm publish --ignore-scripts --tag "${{ steps.npm-dist-tag.outputs.tag }}"
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Resolve release tarball
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
+                  tarball="$(find release-artifact -maxdepth 1 -type f -name '*.tgz' -print)"
+                  echo "RELEASE_TARBALL=$(cd "$(dirname "$tarball")" && pwd -P)/$(basename "$tarball")" >> "$GITHUB_ENV"
+
+            - name: Typecheck package and example
+              run: |
+                  npm run typecheck
+                  npm run typecheck:example
+
+            - name: Run Rust tests
+              run: npm run test:rust
+
+            - name: Run JavaScript tests
+              run: npm test
+
+            - name: Validate source and release contracts
+              run: |
+                  node scripts/tests/validate-prepared-prose-viewer-cutover.mjs
+                  npm run validate:security -- --release
+                  node scripts/tests/validate-publish-lifecycle.mjs
+                  bash ./scripts/tests/validate-generated-bindings.sh
+
+            - name: Validate native artifact fixtures
+              run: |
+                  bash ./scripts/tests/validate-packed-xcframework.sh
+                  VALIDATE_PACKED_PACKAGE_GROUP=static node scripts/tests/validate-packed-package.test.mjs
+
+            - name: Validate exact packed artifact
+              run: npm run validate:package:contracts
+
+    security-rust-typescript:
+        needs: build-package
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@1.95.0
+
+            - name: Cache Cargo
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      rust/editor-core/target
+                  key: cargo-security-${{ runner.os }}-rust-1.95.0-${{ hashFiles('rust/editor-core/Cargo.lock') }}
+                  restore-keys: cargo-security-${{ runner.os }}-rust-1.95.0-
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Validate Rust and TypeScript security behavior
+              run: npm run validate:security -- --release --behavior
+              env:
+                  SECURITY_BEHAVIOR_TARGETS: rust,typescript
+
+    security-ios:
+        needs: build-package
+        runs-on: macos-latest
+        timeout-minutes: 25
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
+
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Install iOS test dependencies
+              run: npm run install:ios-test-pods
+
+            - name: Validate iOS security behavior
+              run: npm run validate:security -- --release --behavior
+              env:
+                  SECURITY_BEHAVIOR_TARGETS: ios
+
+    security-android:
+        needs: build-package
+        runs-on: ubuntu-latest
+        timeout-minutes: 25
+        env:
+            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/security
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
+
+            - name: Setup Java
+              uses: actions/setup-java@v5
+              with:
+                  distribution: temurin
+                  java-version: 17
+
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v4
+
+            - name: Setup Android NDK
+              run: sdkmanager --install 'ndk;27.1.12297006'
+
+            - name: Cache Gradle
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ${{ env.GRADLE_USER_HOME }}/caches
+                      ${{ env.GRADLE_USER_HOME }}/wrapper
+                  key: gradle-security-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
+                  restore-keys: gradle-security-${{ runner.os }}-
+
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Validate Android security behavior
+              run: npm run validate:security -- --release --behavior
+              env:
+                  SECURITY_BEHAVIOR_TARGETS: android
+
+            - name: Reject invalid Android security fixture
+              run: node scripts/tests/validate-security-contracts-negative.mjs
+
+    ios-consumer-positive:
+        needs: build-package
+        runs-on: macos-latest
+        timeout-minutes: 25
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
+
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Resolve release tarball
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
+                  tarball="$(find release-artifact -maxdepth 1 -type f -name '*.tgz' -print)"
+                  echo "RELEASE_TARBALL=$(cd "$(dirname "$tarball")" && pwd -P)/$(basename "$tarball")" >> "$GITHUB_ENV"
+
+            - name: Prepare iOS consumer dependencies
+              run: |
+                  npm run prebuild:example:ios
+                  npm run install:example:pods
+
+            - name: Validate positive iOS consumer
+              run: npm run validate:package:ios:positive
+
+    ios-consumer-negative:
+        needs: build-package
+        runs-on: macos-latest
+        timeout-minutes: 25
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
+
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Prepare iOS consumer dependencies
+              run: |
+                  npm run prebuild:example:ios
+                  npm run install:example:pods
+
+            - name: Validate negative iOS consumer
+              run: npm run validate:package:ios:negative
+
+    android-consumer-positive:
+        needs: build-package
+        runs-on: ubuntu-latest
+        timeout-minutes: 25
+        env:
+            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/packed-consumer
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
+
+            - name: Setup Java
+              uses: actions/setup-java@v5
+              with:
+                  distribution: temurin
+                  java-version: 17
+
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v4
+
+            - name: Setup Android NDK
+              run: sdkmanager --install 'ndk;27.1.12297006'
+
+            - name: Cache Gradle
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ${{ env.GRADLE_USER_HOME }}/caches
+                      ${{ env.GRADLE_USER_HOME }}/wrapper
+                  key: gradle-packed-consumer-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
+                  restore-keys: gradle-packed-consumer-${{ runner.os }}-
+
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Resolve release tarball
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
+                  tarball="$(find release-artifact -maxdepth 1 -type f -name '*.tgz' -print)"
+                  echo "RELEASE_TARBALL=$(cd "$(dirname "$tarball")" && pwd -P)/$(basename "$tarball")" >> "$GITHUB_ENV"
+
+            - name: Prepare Android consumer dependencies
+              run: npm run prebuild:example:android
+
+            - name: Validate positive Android consumer
+              run: npm run validate:package:android:positive
+
+    android-consumer-negative:
+        needs: build-package
+        runs-on: ubuntu-latest
+        timeout-minutes: 25
+        env:
+            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/packed-consumer
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
+
+            - name: Setup Java
+              uses: actions/setup-java@v5
+              with:
+                  distribution: temurin
+                  java-version: 17
+
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v4
+
+            - name: Setup Android NDK
+              run: sdkmanager --install 'ndk;27.1.12297006'
+
+            - name: Cache Gradle
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ${{ env.GRADLE_USER_HOME }}/caches
+                      ${{ env.GRADLE_USER_HOME }}/wrapper
+                  key: gradle-packed-consumer-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
+                  restore-keys: gradle-packed-consumer-${{ runner.os }}-
+
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Prepare Android consumer dependencies
+              run: npm run prebuild:example:android
+
+            - name: Validate negative Android consumer
+              run: npm run validate:package:android:negative
+
+    publish:
+        needs:
+            - build-package
+            - package-contracts
+            - security-rust-typescript
+            - security-ios
+            - security-android
+            - ios-consumer-positive
+            - ios-consumer-negative
+            - android-consumer-positive
+            - android-consumer-negative
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  registry-url: https://registry.npmjs.org
+                  package-manager-cache: false
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Resolve release tarball
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
+                  tarball="$(find release-artifact -maxdepth 1 -type f -name '*.tgz' -print)"
+                  echo "RELEASE_TARBALL=$(cd "$(dirname "$tarball")" && pwd -P)/$(basename "$tarball")" >> "$GITHUB_ENV"
+
+            - name: Resolve npm dist-tag
+              id: npm-dist-tag
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  version="$(tar -xOf "$RELEASE_TARBALL" package/package.json | node --input-type=module -e 'let input = ""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).version));')"
+                  echo "tag=$(node scripts/resolve-npm-dist-tag.mjs "$version")" >> "$GITHUB_OUTPUT"
+
+            - name: Publish to npm
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  tarball="$RELEASE_TARBALL"
+                  npm publish "$tarball" --ignore-scripts --tag "${{ steps.npm-dist-tag.outputs.tag }}"

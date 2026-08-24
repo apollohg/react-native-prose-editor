@@ -70,6 +70,11 @@
         "typecheck": "tsc --noEmit",
         "typecheck:example": "npm --prefix example run typecheck",
         "validate:package": "npm run prepare:example:native && npm run install:ios-test-pods && node scripts/tests/validate-prepared-prose-viewer-cutover.mjs && npm run validate:security -- --release --behavior && node scripts/tests/validate-security-contracts-negative.mjs && node scripts/tests/validate-publish-lifecycle.mjs && bash ./scripts/tests/validate-generated-bindings.sh && bash ./scripts/tests/validate-packed-xcframework.sh && node scripts/tests/validate-packed-package.test.mjs && bash ./scripts/validate-packed-package.sh",
+        "validate:package:contracts": "bash ./scripts/validate-packed-package.sh --validate-packed-tarball \"$RELEASE_TARBALL\"",
+        "validate:package:ios:positive": "bash ./scripts/validate-packed-package.sh --validate-ios-consumer . \"$RELEASE_TARBALL\"",
+        "validate:package:ios:negative": "VALIDATE_PACKED_PACKAGE_GROUP=ios-consumer node scripts/tests/validate-packed-package.test.mjs",
+        "validate:package:android:positive": "bash ./scripts/validate-packed-package.sh --validate-android-tarball \"$RELEASE_TARBALL\"",
+        "validate:package:android:negative": "VALIDATE_PACKED_PACKAGE_GROUP=android-consumer node scripts/tests/validate-packed-package.test.mjs",
         "validate:security": "node scripts/tests/validate-security-contracts.mjs",
         "version": "npm run sync:version"
     },

@@ -13,6 +13,12 @@ const validatorSource = readFileSync(validator, "utf8");
 const packageManifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
 const workDir = mkdtempSync(join(tmpdir(), "native-editor-packed-package-fixtures-"));
 const failures = [];
+const fixtureGroup = process.env.VALIDATE_PACKED_PACKAGE_GROUP ?? "all";
+
+assert.ok(
+  new Set(["all", "static", "ios-consumer", "android-consumer"]).has(fixtureGroup),
+  `unknown packed-package fixture group: ${fixtureGroup}`,
+);
 
 assert.ok(packageManifest.files.includes("android/src/debug"), "package must include Android debug draw instrumentation");
 assert.ok(packageManifest.files.includes("android/src/release"), "package must include Android release draw instrumentation");
@@ -339,6 +345,44 @@ function runFixtureScopeCheck() {
   assert.ok(!existsSync(join(fixture, "android/.idea")), "fixture must not copy Android IDE state");
 }
 
+function runIosConsumerFixture() {
+  const linklessPod = makeFixture("linkless-pod");
+  const linklessPodspec = join(linklessPod, "ReactNativeProseEditor.podspec");
+  replace(
+    linklessPodspec,
+    "s.vendored_frameworks = 'ios/EditorCore.xcframework'",
+    "# fixture intentionally omits the linked ios/EditorCore.xcframework",
+  );
+  const linklessPodspecSource = readFileSync(linklessPodspec, "utf8");
+  assert.ok(
+    linklessPodspecSource.includes("# fixture intentionally omits the linked ios/EditorCore.xcframework"),
+    "linkless pod fixture must replace the relocated root-podspec framework declaration",
+  );
+  assert.ok(
+    !linklessPodspecSource.includes("s.vendored_frameworks = 'ios/EditorCore.xcframework'"),
+    "linkless pod fixture must remove the relocated framework declaration",
+  );
+  expectFailure(
+    "CocoaPods installs but cannot compile or link",
+    run("--validate-ios-consumer", linklessPod),
+    /^(?=[\s\S]*iOS consumer xcodebuild failed)(?=[\s\S]*(?:fatal error: 'react\/renderer\/components\/PreparedProseViewer\/PreparedProseMeasurementsManager\.h' file not found|(?=[\s\S]*(?:Undefined symbols(?: for architecture [^\n]+)?|symbol\(s\) not found))(?=[\s\S]*(?:_?uniffi_editor_core(?:\b|_)|_?editor_core(?:\b|_)|editorV2(?:Create|RenderUpdate|CollaborationDrive|CollaborationLeaseOutbound|CollaborationAckOutbound|CollaborationNackOutbound|CollaborationDetach|CollaborationReattach)\b))))[\s\S]*$/,
+  );
+}
+
+function runAndroidConsumerFixture() {
+  const unpackagedAndroid = makeFixture("unpackaged-android");
+  replace(
+    join(unpackagedAndroid, "android/build.gradle"),
+    '"${project.projectDir}/../rust/android"',
+    '"${project.projectDir}/../rust/android-disabled"',
+  );
+  expectFailure(
+    "Gradle compiles Kotlin but omits native packaging",
+    run("--validate-android-consumer", unpackagedAndroid),
+    /Android consumer package is missing libeditor_core\.so for arm64-v8a/,
+  );
+}
+
 try {
   if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "fixture-scope") {
     runFixtureScopeCheck();
@@ -348,6 +392,10 @@ try {
     runWrongNativeChecksumFixture();
   } else if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "duplicate-ios-checksum") {
     runDuplicateIosChecksumFixture();
+  } else if (fixtureGroup === "ios-consumer") {
+    runIosConsumerFixture();
+  } else if (fixtureGroup === "android-consumer") {
+    runAndroidConsumerFixture();
   } else {
     const baseline = makeFixture("baseline");
     expectPass("baseline ABI", run("--validate-abi-root", baseline));
@@ -458,41 +506,12 @@ try {
       /copy mismatch: rust\/android\/arm64-v8a\/libeditor_core\.so/,
     );
 
-    const linklessPod = makeFixture("linkless-pod");
-    const linklessPodspec = join(linklessPod, "ReactNativeProseEditor.podspec");
-    replace(
-      linklessPodspec,
-      "s.vendored_frameworks = 'ios/EditorCore.xcframework'",
-      "# fixture intentionally omits the linked ios/EditorCore.xcframework",
-    );
-    const linklessPodspecSource = readFileSync(linklessPodspec, "utf8");
-    assert.ok(
-      linklessPodspecSource.includes("# fixture intentionally omits the linked ios/EditorCore.xcframework"),
-      "linkless pod fixture must replace the relocated root-podspec framework declaration",
-    );
-    assert.ok(
-      !linklessPodspecSource.includes("s.vendored_frameworks = 'ios/EditorCore.xcframework'"),
-      "linkless pod fixture must remove the relocated framework declaration",
-    );
-    expectFailure(
-      "CocoaPods installs but cannot compile or link",
-      run("--validate-ios-consumer", linklessPod),
-      /^(?=[\s\S]*iOS consumer xcodebuild failed)(?=[\s\S]*(?:fatal error: 'react\/renderer\/components\/PreparedProseViewer\/PreparedProseMeasurementsManager\.h' file not found|(?=[\s\S]*(?:Undefined symbols(?: for architecture [^\n]+)?|symbol\(s\) not found))(?=[\s\S]*(?:_?uniffi_editor_core(?:\b|_)|_?editor_core(?:\b|_)|editorV2(?:Create|RenderUpdate|CollaborationDrive|CollaborationLeaseOutbound|CollaborationAckOutbound|CollaborationNackOutbound|CollaborationDetach|CollaborationReattach)\b))))[\s\S]*$/,
-    );
-
-    const unpackagedAndroid = makeFixture("unpackaged-android");
-    replace(
-      join(unpackagedAndroid, "android/build.gradle"),
-      '"${project.projectDir}/../rust/android"',
-      '"${project.projectDir}/../rust/android-disabled"',
-    );
-    expectFailure(
-      "Gradle compiles Kotlin but omits native packaging",
-      run("--validate-android-consumer", unpackagedAndroid),
-      /Android consumer package is missing libeditor_core\.so for arm64-v8a/,
-    );
     runWrongNativeChecksumFixture();
     runDuplicateIosChecksumFixture();
+    if (fixtureGroup === "all") {
+      runIosConsumerFixture();
+      runAndroidConsumerFixture();
+    }
   }
 } finally {
   rmSync(workDir, { recursive: true, force: true });
@@ -502,4 +521,4 @@ if (failures.length > 0) {
   throw new Error(`validate-packed-package negative fixture failures:\n\n${failures.join("\n\n")}`);
 }
 
-console.log("Packed-package negative fixtures passed.");
+console.log(`Packed-package ${fixtureGroup} negative fixtures passed.`);

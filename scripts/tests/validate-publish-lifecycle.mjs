@@ -7,64 +7,117 @@ import { spawnSync } from 'node:child_process';
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
 const publishWorkflow = await readFile(path.join(repoRoot, '.github/workflows/publish.yml'), 'utf8');
+const packedFixtureSource = await readFile(
+  path.join(repoRoot, 'scripts/tests/validate-packed-package.test.mjs'),
+  'utf8',
+);
+const packedValidatorSource = await readFile(
+  path.join(repoRoot, 'scripts/validate-packed-package.sh'),
+  'utf8',
+);
 const distTagResolver = path.join(repoRoot, 'scripts/resolve-npm-dist-tag.mjs');
 
-const requireWorkflow = (pattern, message) => {
-  assert.match(publishWorkflow, pattern, message);
+const jobsSource = publishWorkflow.slice(publishWorkflow.search(/^jobs:\s*$/m));
+const jobIndent = jobsSource.match(/^(\s+)[a-z0-9-]+:\s*$/m)?.[1];
+assert.ok(jobIndent, 'publish workflow must contain jobs');
+const jobHeaders = [
+  ...jobsSource.matchAll(new RegExp(`^${jobIndent}([a-z0-9-]+):\\s*$`, 'gm')),
+];
+const requireJob = (jobName) => {
+  const index = jobHeaders.findIndex((match) => match[1] === jobName);
+  assert.notEqual(index, -1, `publish workflow must define ${jobName}`);
+  const start = jobHeaders[index].index;
+  const end = jobHeaders[index + 1]?.index ?? publishWorkflow.length;
+  return jobsSource.slice(start, end);
 };
 
-requireWorkflow(
-  /publish:\s*\n\s*runs-on:\s*macos-[^\s]+/,
-  'publish job must run on a macOS runner so it can build iOS package consumers',
-);
-const publishTimeout = publishWorkflow.match(/publish:\s*\n(?:.*\n)*?\s+timeout-minutes:\s*([0-9]+)\b/);
-assert.ok(publishTimeout, 'publish job must define a timeout');
-assert.ok(
-  Number(publishTimeout[1]) >= 90,
-  'publish job must allow at least 90 minutes for native build and package-consumer validation',
-);
-requireWorkflow(
-  /uses:\s*actions\/setup-java@v5\s*\n\s+with:\s*\n\s+distribution:\s*temurin\s*\n\s+java-version:\s*17\b/,
-  'publish job must install Temurin Java 17 for Android package consumers',
-);
-requireWorkflow(
-  /uses:\s*dtolnay\/rust-toolchain@1\.95\.0\s*\n\s+with:\s*\n\s+targets:\s*aarch64-apple-ios,\s*aarch64-apple-ios-sim,\s*x86_64-apple-ios,\s*aarch64-linux-android,\s*armv7-linux-androideabi,\s*i686-linux-android,\s*x86_64-linux-android\b/,
-  'publish job must install Rust 1.95.0 with every iOS and Android build target',
-);
-requireWorkflow(
-  /cargo install cargo-ndk --version 4\.1\.2 --locked/,
-  'publish job must install the pinned cargo-ndk version',
-);
-requireWorkflow(
-  /uses:\s*android-actions\/setup-android@v4/,
-  'publish job must configure the Android SDK',
-);
-requireWorkflow(
-  /sdkmanager --install ["']ndk;27\.1\.12297006["']/,
-  'publish job must install Android NDK 27.1.12297006',
-);
-requireWorkflow(
-  /ANDROID_NDK_HOME=\$\{ANDROID_HOME\}\/ndk\/27\.1\.12297006/,
-  'publish job must export ANDROID_NDK_HOME for cargo-ndk',
+assert.match(
+  publishWorkflow,
+  /^permissions:\s*\n\s+contents:\s*read\s*$/m,
+  'workflow-level permissions must be read-only',
 );
 
-const workflowLines = publishWorkflow.split(/\r?\n/);
-const npmTagStepPattern = /^\s*id:\s*npm-dist-tag\s*$/;
-const npmPublishRunPattern =
-  /^\s*run:\s*npm\s+publish\s+--ignore-scripts\s+--tag\s+"\$\{\{\s*steps\.npm-dist-tag\.outputs\.tag\s*\}\}"\s*$/;
-const packageValidateRunPattern = /^\s*run:\s*npm\s+run\s+validate:package\s*$/;
-const packageValidateLineIndex = workflowLines.findIndex((line) => packageValidateRunPattern.test(line));
-const npmTagStepLineIndex = workflowLines.findIndex((line) => npmTagStepPattern.test(line));
-const publishLineIndex = workflowLines.findIndex((line) => npmPublishRunPattern.test(line));
-assert.notEqual(packageValidateLineIndex, -1, 'publish job must validate the generated native consumers');
-assert.notEqual(npmTagStepLineIndex, -1, 'publish job must resolve an explicit npm dist-tag');
-assert.notEqual(
-  publishLineIndex,
-  -1,
-  'publish job must use the resolved dist-tag with lifecycle scripts disabled after the explicit release gate',
+const buildJob = requireJob('build-package');
+assert.match(buildJob, /runs-on:\s*macos-[^\s]+/);
+assert.match(buildJob, /cargo install cargo-ndk --version 4\.1\.2 --locked/);
+assert.match(buildJob, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
+assert.match(buildJob, /actions\/upload-artifact@v4/);
+assert.match(buildJob, /release-artifact\/\*\.tgz/);
+
+for (const jobName of [
+  'package-contracts',
+  'security-rust-typescript',
+  'security-ios',
+  'security-android',
+  'ios-consumer-positive',
+  'ios-consumer-negative',
+  'android-consumer-positive',
+  'android-consumer-negative',
+]) {
+  const job = requireJob(jobName);
+  assert.match(
+    job,
+    /actions\/download-artifact@v4/,
+    `${jobName} must download the release artifact`,
+  );
+}
+
+for (const jobName of [
+  'security-android',
+  'android-consumer-positive',
+  'android-consumer-negative',
+]) {
+  const job = requireJob(jobName);
+  assert.match(job, /android-actions\/setup-android@v4/);
+  assert.match(job, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
+}
+
+const publishJob = requireJob('publish');
+for (const dependency of [
+  'build-package',
+  'package-contracts',
+  'security-rust-typescript',
+  'security-ios',
+  'security-android',
+  'ios-consumer-positive',
+  'ios-consumer-negative',
+  'android-consumer-positive',
+  'android-consumer-negative',
+]) {
+  assert.match(
+    publishJob,
+    new RegExp(`- ${dependency}\\b`),
+    `publish must require ${dependency}`,
+  );
+}
+assert.match(publishJob, /id-token:\s*write/);
+assert.match(publishJob, /actions\/download-artifact@v4/);
+assert.match(publishJob, /npm publish "\$tarball" --ignore-scripts --tag/);
+assert.doesNotMatch(publishJob, /npm run (?:build|validate:package|build:rust)/);
+
+assert.match(packedFixtureSource, /VALIDATE_PACKED_PACKAGE_GROUP/);
+assert.match(packedFixtureSource, /ios-consumer/);
+assert.match(packedFixtureSource, /android-consumer/);
+assert.match(packedValidatorSource, /--validate-packed-tarball/);
+assert.match(packedValidatorSource, /--validate-android-tarball/);
+for (const script of [
+  'validate:package:contracts',
+  'validate:package:ios:positive',
+  'validate:package:ios:negative',
+  'validate:package:android:positive',
+  'validate:package:android:negative',
+]) {
+  assert.equal(
+    typeof packageJson.scripts?.[script],
+    'string',
+    `package.json must define ${script}`,
+  );
+}
+assert.match(
+  packageJson.scripts['validate:package:android:positive'],
+  /--validate-android-tarball \"\$RELEASE_TARBALL\"/,
+  'positive Android validation must consume the exact release tarball',
 );
-assert.ok(packageValidateLineIndex < npmTagStepLineIndex, 'native package validation must run before tag resolution');
-assert.ok(npmTagStepLineIndex < publishLineIndex, 'npm dist-tag resolution must run before npm publish');
 
 for (const [version, expectedTag] of [
   ['1.0.0-alpha', 'alpha'],
