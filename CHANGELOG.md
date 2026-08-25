@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.0.0-alpha.6] - 2026-08-25
+
+### Added
+
+- Added `EditorToolbarTheme` button sizing, icon colors, and idle, active, and
+  disabled background colors, plus matching per-item `buttonStyle` overrides
+  across the React, Android, and iOS toolbars.
+- Added `androidInputOptions.privateImeOptions` for passing IME-specific options
+  to the focused Android editor.
+
+### Changed
+
+- Release validation now builds the package once and runs package contracts,
+  security behavior, and native consumer validation in parallel jobs against
+  the same packed artifact.
+
+### Fixed
+
+- Stabilized Android list and block editing around Return, Backspace, blank
+  paragraphs, nested-list outdenting, and blockquote boundaries without
+  shifting indentation, dropping content, or losing adjacent block styling.
+- Kept Android's rendered selection synchronized with the Rust-owned caret
+  through optimistic and deferred input, ambiguous native projections,
+  generated separators, spellcheck composition, and replacement actions.
+- Fixed Android list `spacingAfter`, paragraph spacing, incremental list and
+  blockquote span preservation, and caret placement when tapping inside a list
+  item's leading margin.
+- Restored Android's native long-press magnifier and insertion controls without
+  exposing the formatting accessibility hint as a tooltip.
+- Focused Android auto-grow editors now scroll ancestor containers for every
+  coalesced caret movement and keep the caret above the keyboard toolbar using
+  the toolbar's actual on-screen occlusion.
+- Kept end-placed native toolbar items visible when middle toolbar content
+  overflows.
+
 ## [1.0.0-alpha.5] - 2026-08-23
 
 ### Fixed
@@ -529,6 +564,7 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0-alpha.6]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.5...1.0.0-alpha.6
 [1.0.0-alpha.5]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.4...1.0.0-alpha.5
 [1.0.0-alpha.4]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.3...1.0.0-alpha.4
 [1.0.0-alpha.3]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.2...1.0.0-alpha.3
