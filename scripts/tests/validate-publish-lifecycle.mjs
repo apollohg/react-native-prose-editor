@@ -119,6 +119,20 @@ assert.match(
   'positive Android validation must consume the exact release tarball',
 );
 
+for (const dependency of [
+  '@expo/vector-icons',
+  'expo',
+  'expo-modules-core',
+  'react',
+  'react-native',
+]) {
+  assert.equal(
+    typeof packageJson.devDependencies?.[dependency],
+    'string',
+    `clean package builds must install ${dependency}`,
+  );
+}
+
 for (const [version, expectedTag] of [
   ['1.0.0-alpha', 'alpha'],
   ['1.0.0-alpha.4', 'alpha'],
