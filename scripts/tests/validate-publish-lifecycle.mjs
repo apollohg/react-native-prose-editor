@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process';
 
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
+const babelConfigSource = await readFile(path.join(repoRoot, 'babel.config.js'), 'utf8');
+const jestConfigSource = await readFile(path.join(repoRoot, 'jest.config.cjs'), 'utf8');
 const publishWorkflow = await readFile(path.join(repoRoot, '.github/workflows/publish.yml'), 'utf8');
 const packedFixtureSource = await readFile(
   path.join(repoRoot, 'scripts/tests/validate-packed-package.test.mjs'),
@@ -121,6 +123,7 @@ assert.match(
 
 for (const dependency of [
   '@expo/vector-icons',
+  'babel-preset-expo',
   'expo',
   'expo-modules-core',
   'react',
@@ -132,6 +135,17 @@ for (const dependency of [
     `clean package builds must install ${dependency}`,
   );
 }
+assert.match(babelConfigSource, /require\.resolve\(['"]babel-preset-expo['"]\)/);
+assert.doesNotMatch(
+  babelConfigSource,
+  /example\/node_modules/,
+  'root tests must not depend on an example app install',
+);
+assert.doesNotMatch(
+  jestConfigSource,
+  /EXAMPLE_MODULES/,
+  'Jest must resolve runtime modules from the root install',
+);
 
 for (const [version, expectedTag] of [
   ['1.0.0-alpha', 'alpha'],

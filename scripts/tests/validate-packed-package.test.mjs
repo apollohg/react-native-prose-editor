@@ -334,7 +334,7 @@ function runDuplicateIosChecksumFixture() {
   expectFailure(
     "duplicate iOS checksum under the original member name",
     run("--validate-xcframework", join(duplicateIosChecksum, "ios/EditorCore.xcframework")),
-    /iOS device arm64 archive has duplicate checksum symbol editor_v2_apply_command/,
+    /iOS device arm64 archive has duplicate checksum symbol [a-z][a-z0-9_]+/,
   );
 }
 

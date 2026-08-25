@@ -1,8 +1,8 @@
 const path = require('path');
 
-const EXAMPLE_MODULES = path.join(__dirname, 'example', 'node_modules');
-const REACT_NATIVE = path.join(EXAMPLE_MODULES, 'react-native');
-const EXPO_MODULES_CORE = path.join(EXAMPLE_MODULES, 'expo', 'node_modules', 'expo-modules-core');
+const ROOT_MODULES = path.join(__dirname, 'node_modules');
+const REACT_NATIVE = path.join(ROOT_MODULES, 'react-native');
+const EXPO_MODULES_CORE = path.join(ROOT_MODULES, 'expo-modules-core');
 
 module.exports = {
     haste: {
@@ -14,9 +14,9 @@ module.exports = {
     testEnvironment: require.resolve('@react-native/jest-preset/jest/react-native-env.js'),
     testMatch: ['<rootDir>/src/__tests__/**/*.test.ts', '<rootDir>/src/__tests__/**/*.test.tsx'],
     moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
-    moduleDirectories: ['node_modules', EXAMPLE_MODULES],
+    moduleDirectories: ['node_modules'],
     moduleNameMapper: {
-        '^react$': path.join(EXAMPLE_MODULES, 'react'),
+        '^react$': path.join(ROOT_MODULES, 'react'),
         '^react-native$': REACT_NATIVE,
         '^react-native/(.*)$': path.join(REACT_NATIVE, '$1'),
         '^expo-modules-core$': EXPO_MODULES_CORE,
