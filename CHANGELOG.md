@@ -34,6 +34,8 @@
   the toolbar's actual on-screen occlusion.
 - Kept end-placed native toolbar items visible when middle toolbar content
   overflows.
+- Clipped Android toolbar touch feedback to each button's configured rounded
+  shape.
 
 ## [1.0.0-alpha.5] - 2026-08-23
 

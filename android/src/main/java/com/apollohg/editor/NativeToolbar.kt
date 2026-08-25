@@ -1,10 +1,11 @@
 package com.apollohg.editor
 
 import android.content.Context
-import android.os.Build
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -763,9 +764,6 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
                 translationZ = 0f
                 stateListAnimator = null
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                button.foreground = resolveDrawableAttr(android.R.attr.selectableItemBackgroundBorderless)
-            }
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1055,6 +1053,7 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         buttonBackgroundColors[button] = backgroundColor
         buttonCornerRadii[button] = buttonCornerRadiusPx
         button.background = drawable
+        ensureButtonRipple(button, buttonCornerRadiusPx)
         button.setTextColor(textColor)
         button.alpha = if (enabled || appearance == EditorToolbarAppearance.NATIVE) 1f else 0.7f
         button.refreshDrawableState()
@@ -1147,15 +1146,24 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         return null
     }
 
-    private fun resolveDrawableAttr(attr: Int) =
-        TypedValue().let { typedValue ->
-            val themedContext = currentThemedContext()
-            if (!themedContext.theme.resolveAttribute(attr, typedValue, true) || typedValue.resourceId == 0) {
-                null
-            } else {
-                AppCompatResources.getDrawable(themedContext, typedValue.resourceId)
-            }
+    private fun ensureButtonRipple(button: AppCompatButton, cornerRadiusPx: Float) {
+        val existingMask = (button.foreground as? RippleDrawable)
+            ?.findDrawableByLayerId(android.R.id.mask) as? GradientDrawable
+        if (existingMask != null) {
+            existingMask.cornerRadius = cornerRadiusPx
+            return
         }
+        val mask = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = cornerRadiusPx
+            setColor(Color.WHITE)
+        }
+        button.foreground = RippleDrawable(
+            ColorStateList.valueOf(resolveColorAttr(android.R.attr.colorControlHighlight)),
+            null,
+            mask
+        )
+    }
 
     private fun resolveSeparatorColor(): Int =
         theme?.separatorColor

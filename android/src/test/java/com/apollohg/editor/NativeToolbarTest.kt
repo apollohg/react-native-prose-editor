@@ -3,6 +3,8 @@ package com.apollohg.editor
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Looper
 import android.view.View
 import android.widget.HorizontalScrollView
@@ -678,6 +680,22 @@ class NativeToolbarTest {
         assertEquals(20f * density, toolbar.appliedChromeCornerRadiusPx)
         assertEquals((2f * density).toInt().coerceAtLeast(1), toolbar.appliedChromeStrokeWidthPx)
         assertEquals(14f * density, toolbar.appliedButtonCornerRadiusPx)
+    }
+
+    @Test
+    fun `rounded toolbar buttons mask their ripple to the configured border radius`() {
+        val context = RuntimeEnvironment.getApplication()
+        val density = context.resources.displayMetrics.density
+        val toolbar = EditorKeyboardToolbarView(context)
+
+        toolbar.applyTheme(EditorToolbarTheme(buttonBorderRadius = 20f))
+
+        val button = requireNotNull(toolbar.buttonAtForTesting(0))
+        assertTrue(button.foreground is RippleDrawable)
+        val ripple = button.foreground as RippleDrawable
+        val mask = ripple.findDrawableByLayerId(android.R.id.mask)
+        assertTrue(mask is GradientDrawable)
+        assertEquals(20f * density, (mask as GradientDrawable).cornerRadius, 0.01f)
     }
 
     @Test
