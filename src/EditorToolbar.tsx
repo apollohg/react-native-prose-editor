@@ -109,9 +109,11 @@ export type EditorToolbarIcon =
 export interface EditorToolbarButtonStyle {
     iconSize?: number;
     color?: string;
+    backgroundColor?: string;
     activeColor?: string;
     disabledColor?: string;
     activeBackgroundColor?: string;
+    disabledBackgroundColor?: string;
     borderRadius?: number;
 }
 
@@ -1387,19 +1389,30 @@ export function EditorToolbar({
         const defaultColor = button.buttonStyle?.color ?? theme?.buttonColor ?? DEFAULT_COLOR;
         const disabledColor =
             button.buttonStyle?.disabledColor ?? theme?.buttonDisabledColor ?? DISABLED_COLOR;
+        const backgroundColor =
+            button.buttonStyle?.backgroundColor ?? theme?.buttonBackgroundColor ?? 'transparent';
+        const activeBackgroundColor =
+            button.buttonStyle?.activeBackgroundColor ??
+            theme?.buttonActiveBackgroundColor ??
+            ACTIVE_BG;
+        const disabledBackgroundColor =
+            button.buttonStyle?.disabledBackgroundColor ??
+            theme?.buttonDisabledBackgroundColor ??
+            (button.isActive ? activeBackgroundColor : backgroundColor);
         const requestedIconSize = button.buttonStyle?.iconSize ?? theme?.buttonIconSize;
         return {
             color: button.isDisabled ? disabledColor : button.isActive ? activeColor : defaultColor,
+            backgroundColor: button.isDisabled
+                ? disabledBackgroundColor
+                : button.isActive
+                  ? activeBackgroundColor
+                  : backgroundColor,
             iconSize:
                 requestedIconSize != null &&
                 Number.isFinite(requestedIconSize) &&
                 requestedIconSize > 0
                     ? Math.min(requestedIconSize, resolvedButtonHeight)
                     : undefined,
-            activeBackgroundColor:
-                button.buttonStyle?.activeBackgroundColor ??
-                theme?.buttonActiveBackgroundColor ??
-                ACTIVE_BG,
             borderRadius: Math.max(
                 0,
                 button.buttonStyle?.borderRadius ?? theme?.buttonBorderRadius ?? BUTTON_RADIUS
@@ -1448,9 +1461,7 @@ export function EditorToolbar({
                         {
                             height: resolvedButtonHeight,
                             borderRadius: visuals.borderRadius,
-                        },
-                        button.isActive && {
-                            backgroundColor: visuals.activeBackgroundColor,
+                            backgroundColor: visuals.backgroundColor,
                         },
                     ]}
                     activeOpacity={0.5}
@@ -1695,8 +1706,8 @@ export function EditorToolbar({
                                         disabled={button.isDisabled}
                                         style={({ pressed }) => [
                                             styles.menuItem,
-                                            button.isActive && {
-                                                backgroundColor: visuals.activeBackgroundColor,
+                                            {
+                                                backgroundColor: visuals.backgroundColor,
                                             },
                                             pressed &&
                                                 !button.isDisabled && {

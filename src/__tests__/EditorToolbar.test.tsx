@@ -555,9 +555,11 @@ describe('EditorToolbar', () => {
                 theme: {
                     buttonIconSize: 18,
                     buttonColor: '#101010',
+                    buttonBackgroundColor: '#050505',
                     buttonActiveColor: '#202020',
                     buttonDisabledColor: '#303030',
                     buttonActiveBackgroundColor: '#404040',
+                    buttonDisabledBackgroundColor: '#505050',
                     buttonBorderRadius: 5,
                 },
                 toolbarItems: [
@@ -572,7 +574,11 @@ describe('EditorToolbar', () => {
                         key: 'idle',
                         label: 'Idle',
                         icon: { type: 'glyph', text: 'I' },
-                        buttonStyle: { iconSize: 24, color: '#111111' },
+                        buttonStyle: {
+                            iconSize: 24,
+                            color: '#111111',
+                            backgroundColor: '#121212',
+                        },
                     },
                     {
                         type: 'action',
@@ -595,12 +601,23 @@ describe('EditorToolbar', () => {
                     },
                     {
                         type: 'action',
+                        key: 'global-disabled',
+                        label: 'Global Disabled',
+                        icon: { type: 'glyph', text: 'E' },
+                        isActive: true,
+                        isDisabled: true,
+                    },
+                    {
+                        type: 'action',
                         key: 'disabled',
                         label: 'Disabled',
                         icon: { type: 'glyph', text: 'D' },
                         isActive: true,
                         isDisabled: true,
-                        buttonStyle: { disabledColor: '#444444' },
+                        buttonStyle: {
+                            disabledColor: '#444444',
+                            disabledBackgroundColor: '#555555',
+                        },
                     },
                 ],
                 onToolbarAction: jest.fn(),
@@ -615,7 +632,11 @@ describe('EditorToolbar', () => {
                 fontSize: 24,
             });
             expect(StyleSheet.flatten(getByLabelText('Global').props.style)).toMatchObject({
+                backgroundColor: '#050505',
                 borderRadius: 5,
+            });
+            expect(StyleSheet.flatten(getByLabelText('Idle').props.style)).toMatchObject({
+                backgroundColor: '#121212',
             });
             expect(StyleSheet.flatten(getByText('T').props.style)).toMatchObject({
                 color: '#202020',
@@ -636,6 +657,14 @@ describe('EditorToolbar', () => {
             expect(StyleSheet.flatten(getByText('D').props.style)).toMatchObject({
                 color: '#444444',
                 fontSize: 18,
+            });
+            expect(StyleSheet.flatten(getByLabelText('Global Disabled').props.style)).toMatchObject(
+                {
+                    backgroundColor: '#505050',
+                }
+            );
+            expect(StyleSheet.flatten(getByLabelText('Disabled').props.style)).toMatchObject({
+                backgroundColor: '#555555',
             });
         });
     });

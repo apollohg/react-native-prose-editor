@@ -93,9 +93,11 @@ export const TOOLBAR_COLOR_FIELDS: Array<{ key: ToolbarColorKey; label: string }
     { key: 'borderColor', label: 'Border' },
     { key: 'separatorColor', label: 'Separator' },
     { key: 'buttonColor', label: 'Button' },
+    { key: 'buttonBackgroundColor', label: 'Button Fill' },
     { key: 'buttonActiveColor', label: 'Button Active' },
     { key: 'buttonDisabledColor', label: 'Button Disabled' },
     { key: 'buttonActiveBackgroundColor', label: 'Active Fill' },
+    { key: 'buttonDisabledBackgroundColor', label: 'Disabled Fill' },
 ];
 
 /** A labelled choice list rendered as a chip row. */

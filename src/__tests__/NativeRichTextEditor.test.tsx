@@ -748,9 +748,11 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const buttonStyle = {
             iconSize: 22,
             color: '#111111',
+            backgroundColor: '#121212',
             activeColor: '#222222',
             disabledColor: '#333333',
             activeBackgroundColor: '#444444',
+            disabledBackgroundColor: '#555555',
             borderRadius: 9,
         };
         const { getByTestId } = render(

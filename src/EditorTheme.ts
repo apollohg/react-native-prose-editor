@@ -236,6 +236,8 @@ export interface EditorToolbarTheme {
     separatorColor?: string;
     /** Icon color of an idle button. */
     buttonColor?: string;
+    /** Fill drawn behind an idle button. */
+    buttonBackgroundColor?: string;
     /** Icon size for toolbar buttons, in layout units. */
     buttonIconSize?: number;
     /** Icon color of a button whose mark or node is active at the selection. */
@@ -244,6 +246,8 @@ export interface EditorToolbarTheme {
     buttonDisabledColor?: string;
     /** Fill drawn behind an active button. */
     buttonActiveBackgroundColor?: string;
+    /** Fill drawn behind a disabled button. */
+    buttonDisabledBackgroundColor?: string;
     /** Button corner radius, in layout units. */
     buttonBorderRadius?: number;
 }

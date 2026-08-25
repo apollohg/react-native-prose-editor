@@ -334,9 +334,11 @@ enum class EditorToolbarAppearance {
 data class EditorToolbarButtonStyle(
     val iconSize: Float? = null,
     val color: Int? = null,
+    val backgroundColor: Int? = null,
     val activeColor: Int? = null,
     val disabledColor: Int? = null,
     val activeBackgroundColor: Int? = null,
+    val disabledBackgroundColor: Int? = null,
     val borderRadius: Float? = null
 ) {
     companion object {
@@ -345,10 +347,14 @@ data class EditorToolbarButtonStyle(
             return EditorToolbarButtonStyle(
                 iconSize = json.optNullableFloat("iconSize"),
                 color = parseColor(json.optNullableString("color")),
+                backgroundColor = parseColor(json.optNullableString("backgroundColor")),
                 activeColor = parseColor(json.optNullableString("activeColor")),
                 disabledColor = parseColor(json.optNullableString("disabledColor")),
                 activeBackgroundColor = parseColor(
                     json.optNullableString("activeBackgroundColor")
+                ),
+                disabledBackgroundColor = parseColor(
+                    json.optNullableString("disabledBackgroundColor")
                 ),
                 borderRadius = json.optNullableFloat("borderRadius")
             )
@@ -369,10 +375,12 @@ data class EditorToolbarTheme(
     val horizontalInset: Float? = null,
     val separatorColor: Int? = null,
     val buttonColor: Int? = null,
+    val buttonBackgroundColor: Int? = null,
     val buttonIconSize: Float? = null,
     val buttonActiveColor: Int? = null,
     val buttonDisabledColor: Int? = null,
     val buttonActiveBackgroundColor: Int? = null,
+    val buttonDisabledBackgroundColor: Int? = null,
     val buttonBorderRadius: Float? = null
 ) {
     fun resolvedKeyboardOffset(): Float = keyboardOffset ?: if (appearance == EditorToolbarAppearance.NATIVE) 8f else 0f
@@ -402,10 +410,12 @@ data class EditorToolbarTheme(
                 horizontalInset = json.optNullableFloat("horizontalInset"),
                 separatorColor = parseColor(json.optNullableString("separatorColor")),
                 buttonColor = parseColor(json.optNullableString("buttonColor")),
+                buttonBackgroundColor = parseColor(json.optNullableString("buttonBackgroundColor")),
                 buttonIconSize = json.optNullableFloat("buttonIconSize"),
                 buttonActiveColor = parseColor(json.optNullableString("buttonActiveColor")),
                 buttonDisabledColor = parseColor(json.optNullableString("buttonDisabledColor")),
                 buttonActiveBackgroundColor = parseColor(json.optNullableString("buttonActiveBackgroundColor")),
+                buttonDisabledBackgroundColor = parseColor(json.optNullableString("buttonDisabledBackgroundColor")),
                 buttonBorderRadius = json.optNullableFloat("buttonBorderRadius")
             )
         }

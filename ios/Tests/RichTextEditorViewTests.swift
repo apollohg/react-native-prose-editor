@@ -1469,9 +1469,24 @@ final class RichTextEditorViewTests: XCTestCase {
         [
           {
             "type": "action",
+            "key": "global-idle",
+            "label": "Global Idle",
+            "icon": { "type": "glyph", "text": "G" }
+          },
+          {
+            "type": "action",
             "key": "idle",
             "label": "Idle",
-            "icon": { "type": "glyph", "text": "I" }
+            "icon": { "type": "glyph", "text": "I" },
+            "buttonStyle": { "backgroundColor": "#121212" }
+          },
+          {
+            "type": "action",
+            "key": "global-disabled",
+            "label": "Global Disabled",
+            "icon": { "type": "glyph", "text": "E" },
+            "isActive": true,
+            "isDisabled": true
           },
           {
             "type": "action",
@@ -1480,7 +1495,10 @@ final class RichTextEditorViewTests: XCTestCase {
             "icon": { "type": "glyph", "text": "D" },
             "isActive": true,
             "isDisabled": true,
-            "buttonStyle": { "disabledColor": "#444444" }
+            "buttonStyle": {
+              "disabledColor": "#444444",
+              "disabledBackgroundColor": "#555555"
+            }
           },
           {
             "type": "action",
@@ -1504,32 +1522,63 @@ final class RichTextEditorViewTests: XCTestCase {
           }
         ]
         """)
-        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+        let theme = EditorToolbarTheme(dictionary: [
             "appearance": "native",
             "buttonIconSize": 18,
             "buttonColor": "#111111",
+            "buttonBackgroundColor": "#050505",
             "buttonActiveColor": "#222222",
             "buttonDisabledColor": "#333333",
             "buttonActiveBackgroundColor": "#777777",
+            "buttonDisabledBackgroundColor": "#888888",
             "buttonBorderRadius": 9,
-        ]))
+        ])
+        let buttonStyle = EditorToolbarButtonStyle(dictionary: [
+            "backgroundColor": "#121212",
+            "disabledBackgroundColor": "#555555",
+        ])
+
+        XCTAssertEqual(theme.buttonBackgroundColor, EditorTheme.color(from: "#050505"))
+        XCTAssertEqual(theme.buttonDisabledBackgroundColor, EditorTheme.color(from: "#888888"))
+        XCTAssertEqual(buttonStyle.backgroundColor, EditorTheme.color(from: "#121212"))
+        XCTAssertEqual(buttonStyle.disabledBackgroundColor, EditorTheme.color(from: "#555555"))
+
+        toolbar.apply(theme: theme)
 
         XCTAssertEqual(toolbar.buttonTintColorForTesting(0), EditorTheme.color(from: "#111111"))
-        XCTAssertEqual(toolbar.buttonFontSizeForTesting(0) ?? -1, 18, accuracy: 0.1)
-        XCTAssertEqual(toolbar.buttonCornerRadiusForTesting(0) ?? -1, 9, accuracy: 0.1)
-        XCTAssertEqual(toolbar.buttonTintColorForTesting(1), EditorTheme.color(from: "#444444"))
-        XCTAssertEqual(toolbar.buttonTintColorForTesting(2), EditorTheme.color(from: "#222222"))
+        XCTAssertEqual(
+            toolbar.buttonBackgroundColorForTesting(0),
+            EditorTheme.color(from: "#050505")
+        )
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(1), EditorTheme.color(from: "#111111"))
+        XCTAssertEqual(toolbar.buttonFontSizeForTesting(1) ?? -1, 18, accuracy: 0.1)
+        XCTAssertEqual(
+            toolbar.buttonBackgroundColorForTesting(1),
+            EditorTheme.color(from: "#121212")
+        )
+        XCTAssertEqual(toolbar.buttonCornerRadiusForTesting(1) ?? -1, 9, accuracy: 0.1)
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(2), EditorTheme.color(from: "#333333"))
         XCTAssertEqual(
             toolbar.buttonBackgroundColorForTesting(2),
-            EditorTheme.color(from: "#777777")
+            EditorTheme.color(from: "#888888")
         )
-        XCTAssertEqual(toolbar.buttonTintColorForTesting(3), EditorTheme.color(from: "#555555"))
-        XCTAssertEqual(toolbar.buttonFontSizeForTesting(3) ?? -1, 26, accuracy: 0.1)
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(3), EditorTheme.color(from: "#444444"))
         XCTAssertEqual(
             toolbar.buttonBackgroundColorForTesting(3),
+            EditorTheme.color(from: "#555555")
+        )
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(4), EditorTheme.color(from: "#222222"))
+        XCTAssertEqual(
+            toolbar.buttonBackgroundColorForTesting(4),
+            EditorTheme.color(from: "#777777")
+        )
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(5), EditorTheme.color(from: "#555555"))
+        XCTAssertEqual(toolbar.buttonFontSizeForTesting(5) ?? -1, 26, accuracy: 0.1)
+        XCTAssertEqual(
+            toolbar.buttonBackgroundColorForTesting(5),
             EditorTheme.color(from: "#666666")
         )
-        XCTAssertEqual(toolbar.buttonCornerRadiusForTesting(3) ?? -1, 12, accuracy: 0.1)
+        XCTAssertEqual(toolbar.buttonCornerRadiusForTesting(5) ?? -1, 12, accuracy: 0.1)
     }
 
     /// A configured `UIButton` resolves its own selected-state background, so

@@ -1769,30 +1769,37 @@ final class EditorAccessoryToolbarView: UIInputView {
         button.setTitleColor(tintColor, for: .disabled)
         button.tintAdjustmentMode = enabled ? .automatic : .normal
         button.alpha = enabled || resolvedAppearance == .native ? 1 : 0.7
+        let inactiveBackgroundColor = buttonStyle?.backgroundColor
+            ?? theme?.buttonBackgroundColor
+            ?? .clear
         let activeBackgroundColor = buttonStyle?.activeBackgroundColor
             ?? theme?.buttonActiveBackgroundColor
             ?? (resolvedAppearance == .native
                 ? UIColor.white.withAlphaComponent(0.18)
                 : UIColor.systemBlue.withAlphaComponent(0.12))
+        let disabledBackgroundColor = buttonStyle?.disabledBackgroundColor
+            ?? theme?.buttonDisabledBackgroundColor
+            ?? (active ? activeBackgroundColor : inactiveBackgroundColor)
+        let backgroundColor: UIColor
+        if !enabled {
+            backgroundColor = disabledBackgroundColor
+        } else if active {
+            backgroundColor = activeBackgroundColor
+        } else {
+            backgroundColor = inactiveBackgroundColor
+        }
         let cornerRadius = resolvedButtonBorderRadius(for: item)
         button.layer.cornerRadius = cornerRadius
-        applyActiveBackground(
+        applyButtonBackground(
             to: button,
-            color: active ? activeBackgroundColor : .clear,
+            color: backgroundColor,
             cornerRadius: cornerRadius
         )
         applyButtonIconStyle(to: button, item: item)
     }
 
-    /// Paint the active-state background from exactly one source.
-    ///
-    /// `makeButton` gives every button a `UIButton.Configuration`, and
-    /// `apply(state:)` sets `isSelected`. A configured button resolves its own
-    /// selected-state background, so also filling `backgroundColor` stacks a
-    /// second shape behind the first — two offset rounded rects reading as a
-    /// double halo. Owning `configuration.background` outright replaces the
-    /// resolved one, and clearing `backgroundColor` leaves nothing underneath.
-    private func applyActiveBackground(
+    /// Own the configured background to avoid stacking it with UIButton state fills.
+    private func applyButtonBackground(
         to button: UIButton,
         color: UIColor,
         cornerRadius: CGFloat

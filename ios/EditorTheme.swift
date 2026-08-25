@@ -294,17 +294,21 @@ enum EditorToolbarAppearance: String {
 struct EditorToolbarButtonStyle {
     var iconSize: CGFloat?
     var color: UIColor?
+    var backgroundColor: UIColor?
     var activeColor: UIColor?
     var disabledColor: UIColor?
     var activeBackgroundColor: UIColor?
+    var disabledBackgroundColor: UIColor?
     var borderRadius: CGFloat?
 
     init(dictionary: [String: Any]) {
         iconSize = EditorTheme.cgFloat(dictionary["iconSize"])
         color = EditorTheme.color(from: dictionary["color"])
+        backgroundColor = EditorTheme.color(from: dictionary["backgroundColor"])
         activeColor = EditorTheme.color(from: dictionary["activeColor"])
         disabledColor = EditorTheme.color(from: dictionary["disabledColor"])
         activeBackgroundColor = EditorTheme.color(from: dictionary["activeBackgroundColor"])
+        disabledBackgroundColor = EditorTheme.color(from: dictionary["disabledBackgroundColor"])
         borderRadius = EditorTheme.cgFloat(dictionary["borderRadius"])
     }
 }
@@ -322,10 +326,12 @@ struct EditorToolbarTheme {
     var horizontalInset: CGFloat?
     var separatorColor: UIColor?
     var buttonColor: UIColor?
+    var buttonBackgroundColor: UIColor?
     var buttonIconSize: CGFloat?
     var buttonActiveColor: UIColor?
     var buttonDisabledColor: UIColor?
     var buttonActiveBackgroundColor: UIColor?
+    var buttonDisabledBackgroundColor: UIColor?
     var buttonBorderRadius: CGFloat?
 
     init(dictionary: [String: Any]) {
@@ -341,10 +347,12 @@ struct EditorToolbarTheme {
         horizontalInset = EditorTheme.cgFloat(dictionary["horizontalInset"])
         separatorColor = EditorTheme.color(from: dictionary["separatorColor"])
         buttonColor = EditorTheme.color(from: dictionary["buttonColor"])
+        buttonBackgroundColor = EditorTheme.color(from: dictionary["buttonBackgroundColor"])
         buttonIconSize = EditorTheme.cgFloat(dictionary["buttonIconSize"])
         buttonActiveColor = EditorTheme.color(from: dictionary["buttonActiveColor"])
         buttonDisabledColor = EditorTheme.color(from: dictionary["buttonDisabledColor"])
         buttonActiveBackgroundColor = EditorTheme.color(from: dictionary["buttonActiveBackgroundColor"])
+        buttonDisabledBackgroundColor = EditorTheme.color(from: dictionary["buttonDisabledBackgroundColor"])
         buttonBorderRadius = EditorTheme.cgFloat(dictionary["buttonBorderRadius"])
     }
 

@@ -549,7 +549,7 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         centerScrollView.isHorizontalScrollBarEnabled = false
         centerScrollView.overScrollMode = OVER_SCROLL_NEVER
         centerScrollView.clipToPadding = false
-        centerScrollView.clipChildren = false
+        centerScrollView.clipChildren = true
         contentRow.orientation = LinearLayout.HORIZONTAL
         contentRow.gravity = Gravity.START or Gravity.CENTER_VERTICAL
         contentRow.clipToPadding = false
@@ -1012,26 +1012,33 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
                     android.R.attr.textColorSecondary
                 )
         }
-        val backgroundColor = if (!active) {
-            Color.TRANSPARENT
-        } else {
-            buttonStyle?.activeBackgroundColor
-                ?: theme?.buttonActiveBackgroundColor
-                ?: if (appearance == EditorToolbarAppearance.NATIVE) {
-                    resolveColorAttr(
-                        MaterialR.attr.colorSecondaryContainer,
-                        MaterialR.attr.colorPrimaryContainer,
-                        MaterialR.attr.colorSurfaceVariant,
-                        android.R.attr.colorAccent
-                    )
-                } else {
-                    resolveColorAttr(
-                        MaterialR.attr.colorPrimaryContainer,
-                        MaterialR.attr.colorSecondaryContainer,
-                        MaterialR.attr.colorSurfaceVariant,
-                        android.R.attr.colorAccent
-                    )
-                }
+        val inactiveBackgroundColor = buttonStyle?.backgroundColor
+            ?: theme?.buttonBackgroundColor
+            ?: Color.TRANSPARENT
+        val activeBackgroundColor = buttonStyle?.activeBackgroundColor
+            ?: theme?.buttonActiveBackgroundColor
+            ?: if (appearance == EditorToolbarAppearance.NATIVE) {
+                resolveColorAttr(
+                    MaterialR.attr.colorSecondaryContainer,
+                    MaterialR.attr.colorPrimaryContainer,
+                    MaterialR.attr.colorSurfaceVariant,
+                    android.R.attr.colorAccent
+                )
+            } else {
+                resolveColorAttr(
+                    MaterialR.attr.colorPrimaryContainer,
+                    MaterialR.attr.colorSecondaryContainer,
+                    MaterialR.attr.colorSurfaceVariant,
+                    android.R.attr.colorAccent
+                )
+            }
+        val disabledBackgroundColor = buttonStyle?.disabledBackgroundColor
+            ?: theme?.buttonDisabledBackgroundColor
+            ?: if (active) activeBackgroundColor else inactiveBackgroundColor
+        val backgroundColor = when {
+            !enabled -> disabledBackgroundColor
+            active -> activeBackgroundColor
+            else -> inactiveBackgroundColor
         }
         val defaultCornerRadius = theme?.resolvedButtonBorderRadius() ?: 6f
         val buttonCornerRadiusDp = (buttonStyle?.borderRadius ?: defaultCornerRadius)

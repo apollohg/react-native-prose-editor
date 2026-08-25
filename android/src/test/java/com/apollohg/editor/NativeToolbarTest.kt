@@ -359,6 +359,11 @@ class NativeToolbarTest {
             "middle content must overflow its viewport for this regression",
             centerScrollView.getChildAt(0).width > centerScrollView.width
         )
+        assertTrue(
+            "middle content must be clipped before the transparent pinned region",
+            centerScrollView.clipChildren
+        )
+        assertEquals(Color.TRANSPARENT, toolbar.buttonBackgroundColorAtForTesting(6))
         assertEquals(width - rootRow.paddingRight - endMargin, endBounds.right)
     }
 
@@ -441,13 +446,25 @@ class NativeToolbarTest {
             """
             [
               {
+                "type":"action","key":"global-idle","label":"Global Idle",
+                "icon":{"type":"glyph","text":"G"}
+              },
+              {
                 "type":"action","key":"idle","label":"Idle",
-                "icon":{"type":"glyph","text":"I"}
+                "icon":{"type":"glyph","text":"I"},
+                "buttonStyle":{"backgroundColor":"#121212"}
+              },
+              {
+                "type":"action","key":"global-disabled","label":"Global Disabled",
+                "icon":{"type":"glyph","text":"E"},"isActive":true,"isDisabled":true
               },
               {
                 "type":"action","key":"disabled","label":"Disabled",
                 "icon":{"type":"glyph","text":"D"},"isActive":true,"isDisabled":true,
-                "buttonStyle":{"disabledColor":"#444444"}
+                "buttonStyle":{
+                  "disabledColor":"#444444",
+                  "disabledBackgroundColor":"#555555"
+                }
               },
               {
                 "type":"action","key":"global-active","label":"Global Active",
@@ -473,9 +490,11 @@ class NativeToolbarTest {
                   "appearance":"native",
                   "buttonIconSize":18,
                   "buttonColor":"#111111",
+                  "buttonBackgroundColor":"#050505",
                   "buttonActiveColor":"#222222",
                   "buttonDisabledColor":"#333333",
                   "buttonActiveBackgroundColor":"#777777",
+                  "buttonDisabledBackgroundColor":"#888888",
                   "buttonBorderRadius":9
                 }
                 """.trimIndent()
@@ -486,23 +505,37 @@ class NativeToolbarTest {
         toolbar.applyTheme(theme)
         toolbar.applyState(NativeToolbarState.empty)
 
-        val idle = requireNotNull(toolbar.buttonAtForTesting(0))
-        val disabled = requireNotNull(toolbar.buttonAtForTesting(1))
-        val globalActive = requireNotNull(toolbar.buttonAtForTesting(2))
-        val active = requireNotNull(toolbar.buttonAtForTesting(3))
+        val globalIdle = requireNotNull(toolbar.buttonAtForTesting(0))
+        val idle = requireNotNull(toolbar.buttonAtForTesting(1))
+        val globalDisabled = requireNotNull(toolbar.buttonAtForTesting(2))
+        val disabled = requireNotNull(toolbar.buttonAtForTesting(3))
+        val globalActive = requireNotNull(toolbar.buttonAtForTesting(4))
+        val active = requireNotNull(toolbar.buttonAtForTesting(5))
+        assertEquals(Color.parseColor("#111111"), globalIdle.currentTextColor)
+        assertEquals(
+            Color.parseColor("#050505"),
+            toolbar.buttonBackgroundColorAtForTesting(0)
+        )
         assertEquals(Color.parseColor("#111111"), idle.currentTextColor)
         assertEquals(18f * scaledDensity, idle.textSize, 0.01f)
-        assertEquals(9f * density, toolbar.buttonCornerRadiusAtForTesting(0) ?: -1f, 0.01f)
+        assertEquals(Color.parseColor("#121212"), toolbar.buttonBackgroundColorAtForTesting(1))
+        assertEquals(9f * density, toolbar.buttonCornerRadiusAtForTesting(1) ?: -1f, 0.01f)
+        assertEquals(Color.parseColor("#333333"), globalDisabled.currentTextColor)
+        assertEquals(
+            Color.parseColor("#888888"),
+            toolbar.buttonBackgroundColorAtForTesting(2)
+        )
         assertEquals(Color.parseColor("#444444"), disabled.currentTextColor)
+        assertEquals(Color.parseColor("#555555"), toolbar.buttonBackgroundColorAtForTesting(3))
         assertEquals(Color.parseColor("#222222"), globalActive.currentTextColor)
         assertEquals(
             Color.parseColor("#777777"),
-            toolbar.buttonBackgroundColorAtForTesting(2)
+            toolbar.buttonBackgroundColorAtForTesting(4)
         )
         assertEquals(Color.parseColor("#555555"), active.currentTextColor)
         assertEquals(26f * scaledDensity, active.textSize, 0.01f)
-        assertEquals(Color.parseColor("#666666"), toolbar.buttonBackgroundColorAtForTesting(3))
-        assertEquals(12f * density, toolbar.buttonCornerRadiusAtForTesting(3) ?: -1f, 0.01f)
+        assertEquals(Color.parseColor("#666666"), toolbar.buttonBackgroundColorAtForTesting(5))
+        assertEquals(12f * density, toolbar.buttonCornerRadiusAtForTesting(5) ?: -1f, 0.01f)
     }
 
     @Test
