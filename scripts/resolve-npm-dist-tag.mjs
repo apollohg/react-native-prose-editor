@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
 
-const packageJsonUrl = new URL('../package.json', import.meta.url);
-const packageVersion = JSON.parse(readFileSync(packageJsonUrl, 'utf8')).version;
-const version = process.argv[2] ?? packageVersion;
+const version =
+  process.argv[2] ?? JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const semver =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-([0-9A-Za-z-]+)(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const match = semver.exec(version);

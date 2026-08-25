@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -168,6 +168,22 @@ const packageTagResult = spawnSync(process.execPath, [distTagResolver], {
 });
 assert.equal(packageTagResult.status, 0, packageTagResult.stderr);
 assert.equal(packageTagResult.stdout.trim(), 'alpha', 'the current package must publish with the alpha tag');
+
+const artifactOnlyResolver = await mkdtemp(path.join(tmpdir(), 'native-editor-dist-tag-'));
+try {
+  const artifactScripts = path.join(artifactOnlyResolver, 'scripts');
+  const artifactResolver = path.join(artifactScripts, 'resolve-npm-dist-tag.mjs');
+  await mkdir(artifactScripts);
+  await copyFile(distTagResolver, artifactResolver);
+  const result = spawnSync(process.execPath, [artifactResolver, '1.0.0-beta.2'], {
+    cwd: artifactOnlyResolver,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'beta');
+} finally {
+  await rm(artifactOnlyResolver, { recursive: true, force: true });
+}
 
 assert.equal(
   packageJson.scripts?.['prepare:example:native'],
