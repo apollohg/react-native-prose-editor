@@ -20,6 +20,8 @@ import android.view.ViewTreeObserver
 import android.view.Window
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
+import android.widget.ScrollView
+import androidx.core.widget.NestedScrollView
 import androidx.core.view.ViewCompat
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
@@ -3830,14 +3832,14 @@ class NativeEditorExpoView(
 
     private fun updateEditorViewportInset(forceMeasureToolbar: Boolean = false) {
         val shouldReserveToolbarSpace =
-            heightBehavior == EditorHeightBehavior.FIXED &&
-                showsToolbar &&
+            showsToolbar &&
                 toolbarPlacement == ToolbarPlacement.KEYBOARD &&
                 richTextView.editorEditText.isEditable &&
                 richTextView.editorEditText.hasFocus() &&
                 currentImeBottom > 0
 
         if (!shouldReserveToolbarSpace) {
+            richTextView.setViewportBottomOcclusionTopOnScreenPx(null)
             richTextView.setViewportBottomInsetPx(0)
             return
         }
@@ -3854,7 +3856,64 @@ class NativeEditorExpoView(
             keyboardToolbarView.measure(widthSpec, heightSpec)
         }
         val toolbarHeight = keyboardToolbarView.measuredHeight.coerceAtLeast(keyboardToolbarView.height)
-        richTextView.setViewportBottomInsetPx(toolbarHeight.coerceAtLeast(0))
+        val keyboardOffsetPx = ((toolbarTheme?.resolvedKeyboardOffset() ?: 0f) * density).toInt()
+        val toolbarTopOnScreenPx = resolveToolbarTopOnScreenPx(
+            toolbarHeight = toolbarHeight,
+            keyboardOffsetPx = keyboardOffsetPx
+        )
+        richTextView.setViewportBottomOcclusionTopOnScreenPx(toolbarTopOnScreenPx)
+        richTextView.setViewportBottomInsetPx(
+            resolveToolbarViewportInsetPx(
+                toolbarHeight = toolbarHeight,
+                keyboardOffsetPx = keyboardOffsetPx,
+                toolbarTopOnScreenPx = toolbarTopOnScreenPx
+            )
+        )
+    }
+
+    private fun resolveToolbarTopOnScreenPx(
+        toolbarHeight: Int,
+        keyboardOffsetPx: Int
+    ): Int? {
+        val host = resolveActivity(context)?.findViewById<ViewGroup>(android.R.id.content)
+            ?: return null
+        if (host.height <= 0) return null
+        val hostLocation = IntArray(2)
+        host.getLocationOnScreen(hostLocation)
+        return hostLocation[1] + host.height - currentImeBottom - keyboardOffsetPx - toolbarHeight
+    }
+
+    private fun resolveToolbarViewportInsetPx(
+        toolbarHeight: Int,
+        keyboardOffsetPx: Int,
+        toolbarTopOnScreenPx: Int?
+    ): Int {
+        val fallbackInset = (toolbarHeight + keyboardOffsetPx).coerceAtLeast(0)
+        val toolbarTop = toolbarTopOnScreenPx ?: return fallbackInset
+        var foundScrollViewport = false
+        var viewportInset = 0
+
+        fun includeScrollViewport(view: View) {
+            if (view.height <= 0) return
+            val location = IntArray(2)
+            view.getLocationOnScreen(location)
+            foundScrollViewport = true
+            viewportInset = maxOf(viewportInset, location[1] + view.height - toolbarTop)
+        }
+
+        if (heightBehavior == EditorHeightBehavior.FIXED) {
+            includeScrollViewport(richTextView.editorScrollView)
+        } else {
+            var ancestor = parent
+            while (ancestor is View) {
+                if (ancestor is ScrollView || ancestor is NestedScrollView) {
+                    includeScrollViewport(ancestor)
+                }
+                ancestor = ancestor.parent
+            }
+        }
+
+        return if (foundScrollViewport) viewportInset.coerceAtLeast(0) else fallbackInset
     }
 
     private fun handleListToggle(listType: String) {

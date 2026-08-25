@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.Window
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
+import android.widget.ScrollView
 import expo.modules.core.ModuleRegistry
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.ModulesProvider
@@ -3186,6 +3187,97 @@ class NativeEditorExpoViewTest {
         shadowOf(Looper.getMainLooper()).idle()
 
         assertTrue(view.richTextView.viewportBottomInsetPxForTesting() > 1)
+
+        NativeEditorViewRegistry.unregister(editorId, view)
+    }
+
+    @Test
+    fun `keyboard toolbar provides caret clearance to auto grow editor`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val host = FrameLayout(activity)
+        activity.setContentView(host)
+        val expoContext = testExpoContext(activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        val editorId = 778896L
+
+        view.onContentHeightChangeForTesting = {}
+        view.onAddonEventForTesting = {}
+        view.onFocusChangeForTesting = {}
+        view.setHeightBehavior("autoGrow")
+        host.addView(view, FrameLayout.LayoutParams(360, FrameLayout.LayoutParams.WRAP_CONTENT))
+        view.measure(
+            android.view.View.MeasureSpec.makeMeasureSpec(360, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED)
+        )
+        view.layout(0, 0, 360, view.measuredHeight)
+        view.richTextView.setEditorIdWhileDetached(editorId)
+        editText.applyUpdateJSON(renderUpdateJson(""), notifyListener = false)
+        editText.editorId = editorId
+        view.setAttachedToNativeWindowForTesting(true)
+        view.setThemeJson("""{"toolbar":{"height":60,"keyboardOffset":12}}""")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(editText.requestFocus())
+        view.setCurrentImeBottomForTesting(160)
+
+        view.updateAttachedKeyboardToolbarForInsetsForTesting()
+
+        val minimumClearance = (72f * view.resources.displayMetrics.density).toInt()
+        val actualClearance = view.richTextView.viewportBottomInsetPxForTesting()
+        assertTrue(
+            "expected toolbar clearance >= $minimumClearance but was $actualClearance",
+            actualClearance >= minimumClearance
+        )
+
+        NativeEditorViewRegistry.unregister(editorId, view)
+    }
+
+    @Test
+    fun `keyboard toolbar clearance includes occluded outer scroll viewport`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val host = activity.findViewById<FrameLayout>(android.R.id.content)
+        val outerScrollView = ScrollView(activity)
+        val outerContent = FrameLayout(activity)
+        val expoContext = testExpoContext(activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        val editorId = 778897L
+        val width = 360
+        val hostHeight = 900
+        val scrollViewportHeight = 700
+        val imeBottom = 400
+
+        view.onContentHeightChangeForTesting = {}
+        view.onAddonEventForTesting = {}
+        view.onFocusChangeForTesting = {}
+        view.setHeightBehavior("autoGrow")
+        outerScrollView.addView(outerContent, FrameLayout.LayoutParams(width, 1400))
+        outerContent.addView(view, FrameLayout.LayoutParams(width, 480))
+        host.addView(outerScrollView, FrameLayout.LayoutParams(width, scrollViewportHeight))
+        host.measure(
+            android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(hostHeight, android.view.View.MeasureSpec.EXACTLY)
+        )
+        host.layout(0, 0, width, hostHeight)
+        view.richTextView.setEditorIdWhileDetached(editorId)
+        editText.applyUpdateJSON(renderUpdateJson(""), notifyListener = false)
+        editText.editorId = editorId
+        view.setAttachedToNativeWindowForTesting(true)
+        view.setThemeJson("""{"toolbar":{"height":60,"keyboardOffset":0}}""")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(editText.requestFocus())
+        view.setCurrentImeBottomForTesting(imeBottom)
+
+        view.updateAttachedKeyboardToolbarForInsetsForTesting()
+
+        val toolbarHeight = (60f * view.resources.displayMetrics.density).toInt()
+        val viewportBehindKeyboard = scrollViewportHeight - (hostHeight - imeBottom)
+        val minimumClearance = toolbarHeight + viewportBehindKeyboard
+        val actualClearance = view.richTextView.viewportBottomInsetPxForTesting()
+        assertTrue(
+            "expected occluded viewport clearance >= $minimumClearance but was $actualClearance",
+            actualClearance >= minimumClearance
+        )
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }

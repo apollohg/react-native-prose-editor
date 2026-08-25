@@ -3,6 +3,7 @@ package com.apollohg.editor
 import android.graphics.Color
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.text.SpannableStringBuilder
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -37,6 +38,59 @@ class RichTextEditorViewTest {
             disallowInterceptRequested = disallowIntercept
             super.requestDisallowInterceptTouchEvent(disallowIntercept)
         }
+    }
+
+    private class CaretVisibilityParent(context: android.content.Context) : FrameLayout(context) {
+        val requestedRectangles = mutableListOf<Rect>()
+        var verticallyScrollable = false
+
+        override fun canScrollVertically(direction: Int): Boolean = verticallyScrollable
+
+        override fun requestChildRectangleOnScreen(
+            child: View,
+            rectangle: Rect,
+            immediate: Boolean
+        ): Boolean {
+            requestedRectangles += Rect(rectangle)
+            return true
+        }
+    }
+
+    private data class CaretVisibilityFixture(
+        val parent: CaretVisibilityParent,
+        val editText: EditorEditText
+    )
+
+    private fun autoGrowCaretVisibilityFixture(
+        editorFocused: Boolean = true,
+        bottomClearance: Int = 0
+    ): CaretVisibilityFixture {
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java)
+            .setup()
+            .get()
+        val parent = CaretVisibilityParent(activity).apply {
+            isFocusableInTouchMode = !editorFocused
+        }
+        activity.setContentView(parent)
+        val editText = EditorEditText(activity).apply {
+            setHeightBehavior(EditorHeightBehavior.AUTO_GROW)
+            setViewportBottomInsetPx(bottomClearance)
+            setText("First line\nSecond line\nThird line")
+        }
+        parent.addView(
+            editText,
+            FrameLayout.LayoutParams(600, ViewGroup.LayoutParams.WRAP_CONTENT)
+        )
+        parent.measure(
+            View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(900, View.MeasureSpec.EXACTLY)
+        )
+        parent.layout(0, 0, 600, 900)
+        assertTrue(if (editorFocused) editText.requestFocus() else parent.requestFocus())
+        editText.setSelection(0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        parent.requestedRectangles.clear()
+        return CaretVisibilityFixture(parent, editText)
     }
 
     private fun exampleTheme(markerScale: Float = 2f): EditorTheme? =
@@ -2194,6 +2248,92 @@ class RichTextEditorViewTest {
             "Pre-layout fallback height should not exceed the measured spacer layout height",
             richTextEditorView.editorEditText.resolveAutoGrowHeight() <= richTextEditorView.measuredHeight
         )
+    }
+
+    @Test
+    fun `focused auto grow editor requests ancestor visibility when the caret moves`() {
+        val (parent, editText) = autoGrowCaretVisibilityFixture()
+
+        editText.setSelection(editText.text?.length ?: 0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(1, parent.requestedRectangles.size)
+        assertTrue(parent.requestedRectangles.single().height() > 0)
+    }
+
+    @Test
+    fun `unfocused auto grow editor does not request ancestor visibility`() {
+        val (parent, editText) = autoGrowCaretVisibilityFixture(editorFocused = false)
+
+        editText.setSelection(editText.text?.length ?: 0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertTrue(parent.requestedRectangles.isEmpty())
+    }
+
+    @Test
+    fun `auto grow caret visibility requests coalesce to the latest selection`() {
+        val (parent, editText) = autoGrowCaretVisibilityFixture()
+
+        editText.setSelection(5)
+        editText.setSelection(editText.text?.length ?: 0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(1, parent.requestedRectangles.size)
+    }
+
+    @Test
+    fun `auto grow caret visibility clears the keyboard toolbar`() {
+        val toolbarClearance = 120
+        val (parent, editText) = autoGrowCaretVisibilityFixture(
+            bottomClearance = toolbarClearance
+        )
+
+        editText.setSelection(editText.text?.length ?: 0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val requestedRectangle = parent.requestedRectangles.single()
+        assertTrue(requestedRectangle.height() >= editText.lineHeight + toolbarClearance)
+    }
+
+    @Test
+    fun `caret visibility recalculates ancestor occlusion for each movement`() {
+        val fallbackClearance = 120
+        val occlusionTop = 500
+        val (parent, editText) = autoGrowCaretVisibilityFixture(
+            bottomClearance = fallbackClearance
+        )
+        parent.verticallyScrollable = true
+        editText.setViewportBottomOcclusionTopOnScreenPx(occlusionTop)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        parent.requestedRectangles.clear()
+        parent.layout(0, 0, parent.width, 800)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        parent.requestedRectangles.clear()
+
+        editText.setSelection(editText.text?.length ?: 0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val parentLocation = IntArray(2)
+        parent.getLocationOnScreen(parentLocation)
+        val ancestorOcclusion = parentLocation[1] + parent.height - occlusionTop
+        val requestedRectangle = parent.requestedRectangles.single()
+        val textLayout = checkNotNull(editText.layout)
+        val line = textLayout.getLineForOffset(editText.selectionEnd)
+        val caretLineHeight = textLayout.getLineBottom(line) - textLayout.getLineTop(line)
+        assertEquals(caretLineHeight + ancestorOcclusion, requestedRectangle.height())
+    }
+
+    @Test
+    fun `focused Rust applied caret movement requests auto grow ancestor visibility`() {
+        val (parent, editText) = autoGrowCaretVisibilityFixture()
+
+        editText.isApplyingRustState = true
+        editText.setSelection(editText.text?.length ?: 0)
+        editText.isApplyingRustState = false
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(1, parent.requestedRectangles.size)
     }
 
     @Test

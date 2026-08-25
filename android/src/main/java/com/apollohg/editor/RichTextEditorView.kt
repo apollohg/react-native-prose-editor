@@ -178,6 +178,10 @@ class RichTextEditorView @JvmOverloads constructor(
         requestLayout()
     }
 
+    fun setViewportBottomOcclusionTopOnScreenPx(topPx: Int?) {
+        editorEditText.setViewportBottomOcclusionTopOnScreenPx(topPx)
+    }
+
     internal fun viewportBottomInsetPxForTesting(): Int = viewportBottomInsetPx
 
     fun setRemoteSelections(selections: List<RemoteSelectionDecoration>) {

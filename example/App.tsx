@@ -9,6 +9,7 @@ import {
     type NativeScrollEvent,
     type NativeSyntheticEvent,
     type ViewToken,
+    KeyboardAvoidingView,
 } from 'react-native';
 import { requireNativeModule } from 'expo';
 import { StatusBar } from 'expo-status-bar';
@@ -783,7 +784,10 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
 
     return (
         <View style={[styles.safeArea, { backgroundColor: chrome.screenBackgroundColor }]}>
-            <View style={styles.contentViewport}>
+            <KeyboardAvoidingView
+                style={styles.contentViewport}
+                contentContainerStyle={{ flexGrow: 1 }}
+                behavior={'padding'}>
                 <ScrollView
                     style={[styles.screen, { backgroundColor: chrome.screenBackgroundColor }]}
                     contentContainerStyle={contentContainerStyle}
@@ -976,7 +980,7 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
                         reserved.
                     </Text>
                 </ScrollView>
-            </View>
+            </KeyboardAvoidingView>
 
             <LinkEditorModal
                 visible={linkRequest != null}

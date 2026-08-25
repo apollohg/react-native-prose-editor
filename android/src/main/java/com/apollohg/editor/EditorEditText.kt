@@ -37,6 +37,7 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -331,6 +332,9 @@ class EditorEditText @JvmOverloads constructor(
 
     private var contentInsets: EditorContentInsets? = null
     private var viewportBottomInsetPx: Int = 0
+    private var viewportBottomOcclusionTopOnScreenPx: Int? = null
+    private val caretVisibilityLocationOnScreen = IntArray(2)
+    private var caretVisibilityRequestPosted = false
 
     /**
      * The plain text from the last Rust-authorized render.
@@ -1103,6 +1107,12 @@ class EditorEditText @JvmOverloads constructor(
         ensureSelectionVisible()
     }
 
+    fun setViewportBottomOcclusionTopOnScreenPx(topPx: Int?) {
+        if (viewportBottomOcclusionTopOnScreenPx == topPx) return
+        viewportBottomOcclusionTopOnScreenPx = topPx
+        ensureSelectionVisible()
+    }
+
     private fun updateEffectivePadding() {
         val density = resources.displayMetrics.density
         val left = ((contentInsets?.left ?: 0f) * density).toInt()
@@ -1253,26 +1263,54 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun ensureSelectionVisible() {
-        if (heightBehavior != EditorHeightBehavior.FIXED) return
+        if (!hasFocus()) return
         if (!isLaidOut || width <= 0 || height <= 0) return
-        val selectionOffset = selectionEnd.takeIf { it >= 0 } ?: return
+        if (selectionEnd < 0 || caretVisibilityRequestPosted) return
 
-        post {
-            if (!isLaidOut || layout == null) return@post
-            bringPointIntoView(selectionOffset)
+        caretVisibilityRequestPosted = true
+        val posted = post {
+            caretVisibilityRequestPosted = false
+            if (!hasFocus() || !isLaidOut || layout == null) return@post
+            val selectionOffset = selectionEnd.takeIf { it >= 0 } ?: return@post
+            if (heightBehavior == EditorHeightBehavior.FIXED) {
+                bringPointIntoView(selectionOffset)
+            }
 
             val textLayout = layout ?: return@post
             val clampedOffset = selectionOffset.coerceAtMost(textLayout.text.length)
             val line = textLayout.getLineForOffset(clampedOffset)
             val caretLeft = textLayout.getPrimaryHorizontal(clampedOffset).toInt()
+            val viewportBottomClearance = resolveViewportBottomClearancePx()
             val rect = Rect(
                 caretLeft + totalPaddingLeft,
                 textLayout.getLineTop(line) + totalPaddingTop,
                 caretLeft + totalPaddingLeft + 1,
-                textLayout.getLineBottom(line) + totalPaddingTop
+                textLayout.getLineBottom(line) + totalPaddingTop + viewportBottomClearance
             )
             requestRectangleOnScreen(rect)
         }
+        if (!posted) {
+            caretVisibilityRequestPosted = false
+        }
+    }
+
+    private fun resolveViewportBottomClearancePx(): Int {
+        val occlusionTop = viewportBottomOcclusionTopOnScreenPx ?: return viewportBottomInsetPx
+        var ancestor = parent
+        var foundScrollableAncestor = false
+        var clearance = 0
+        while (ancestor is View) {
+            if (ancestor.canScrollVertically(-1) || ancestor.canScrollVertically(1)) {
+                ancestor.getLocationOnScreen(caretVisibilityLocationOnScreen)
+                foundScrollableAncestor = true
+                clearance = maxOf(
+                    clearance,
+                    caretVisibilityLocationOnScreen[1] + ancestor.height - occlusionTop
+                )
+            }
+            ancestor = ancestor.parent
+        }
+        return if (foundScrollableAncestor) clearance.coerceAtLeast(0) else viewportBottomInsetPx
     }
 
     internal fun caretRect(): RectF? {
@@ -3212,6 +3250,7 @@ class EditorEditText @JvmOverloads constructor(
             setSelection(canonicalOffset)
             return
         }
+        ensureSelectionVisible()
         if (isApplyingRustState) return
         val wasExternallyComposing = externalTextComposition != null
         if (!commitExternalTextCompositionBeforeInteractionIfNeeded()) return
@@ -3232,7 +3271,6 @@ class EditorEditText @JvmOverloads constructor(
         if (spannable != null && isExactImageSpanRange(spannable, selStart, selEnd)) {
             explicitSelectedImageRange = ImageSelectionRange(selStart, selEnd)
         }
-        ensureSelectionVisible()
         onSelectionOrContentMayChange?.invoke()
 
         syncCurrentSelectionToRust()
