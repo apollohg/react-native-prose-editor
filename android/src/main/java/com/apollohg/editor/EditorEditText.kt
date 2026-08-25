@@ -3,9 +3,13 @@ package com.apollohg.editor
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.ColorFilter
+import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -33,11 +37,13 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.widget.AppCompatEditText
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
@@ -497,69 +503,69 @@ class EditorEditText @JvmOverloads constructor(
         background = null
         linksClickable = false
 
-        // Suppress the platform caret and draw our own. Android's Editor anchors
-        // the native caret to getLineBottom(line), which a ParagraphSpacerSpan
-        // inflates — stretching the caret into the inter-block gap. Our caret is
-        // clipped to the glyph height via [CaretGeometry]. See [drawCustomCaret].
-        isCursorVisible = false
+        isCursorVisible = true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            textCursorDrawable = GlyphHeightCursorDrawable()
+        }
 
         updateEffectivePadding()
     }
 
-
-    private var caretBlinkVisible = true
-    private val caretPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val legacyCursorClipPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     private val caretWidthPx: Float by lazy { maxOf(MIN_CARET_WIDTH_PX, resources.displayMetrics.density) }
     private val caretColor: Int by lazy { resolveCaretColor() }
-    private val caretBlinkRunnable = object : Runnable {
-        override fun run() {
-            caretBlinkVisible = !caretBlinkVisible
-            invalidate()
-            postDelayed(this, CARET_BLINK_INTERVAL_MS)
-        }
+    private var editorAccessibilityHint: CharSequence? = null
+
+    fun setEditorAccessibilityHint(hint: CharSequence?) {
+        editorAccessibilityHint = hint
     }
 
-    /**
-     * Reset the caret to solid-on and (re)schedule the blink. Called whenever the
-     * caret could appear or move (focus, window focus, selection change) so it
-     * behaves like the platform caret: solid immediately after a move, then blinks.
-     */
-    private fun restartCaretBlink() {
-        removeCallbacks(caretBlinkRunnable)
-        caretBlinkVisible = true
-        if (CaretGeometry.shouldRender(isFocused, hasWindowFocus(), selectionStart, selectionEnd)) {
-            postDelayed(caretBlinkRunnable, CARET_BLINK_INTERVAL_MS)
-        }
-        invalidate()
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        AccessibilityNodeInfoCompat.wrap(info).tooltipText = editorAccessibilityHint
     }
 
-    private fun stopCaretBlink() {
-        removeCallbacks(caretBlinkRunnable)
-        caretBlinkVisible = false
-        invalidate()
-    }
-
-    private fun drawCustomCaret(canvas: android.graphics.Canvas) {
-        if (!caretBlinkVisible) return
-        if (!CaretGeometry.shouldRender(isFocused, hasWindowFocus(), selectionStart, selectionEnd)) return
-        val rect = customCaretDrawRect() ?: return
-        caretPaint.color = caretColor
-        canvas.drawRect(rect.left, rect.top, rect.right, rect.bottom, caretPaint)
-    }
-
-    /**
-     * The caret rectangle in canvas (content) coordinates — clipped to the glyph
-     * height via [CaretGeometry]. No scroll offset is applied: at onDraw time the
-     * framework canvas is already in scrolled content space, exactly like the text
-     * Layout it paints. (This differs from [caretRect], which reports view-relative
-     * coordinates to JS.)
-     */
-    internal fun customCaretDrawRect(): RectF? {
+    internal fun nativeCursorDrawRect(): RectF? {
         val textLayout = layout ?: return null
         val offset = selectionEnd.coerceIn(0, textLayout.text.length)
         val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint)
-        val left = totalPaddingLeft + textLayout.getPrimaryHorizontal(offset)
-        return RectF(left, totalPaddingTop + bounds.top, left + caretWidthPx, totalPaddingTop + bounds.bottom)
+        val left = textLayout.getPrimaryHorizontal(offset)
+        return RectF(left, bounds.top, left + caretWidthPx, bounds.bottom)
+    }
+
+    private inner class GlyphHeightCursorDrawable : Drawable() {
+        private val cursorPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        private var cursorAlpha = 255
+        private var cursorColorFilter: ColorFilter? = null
+
+        override fun draw(canvas: Canvas) {
+            val rect = nativeCursorDrawRect() ?: return
+            val textLayout = layout ?: return
+            val offset = selectionEnd.coerceIn(0, textLayout.text.length)
+            val line = textLayout.getLineForOffset(offset)
+            val hasEditorBounds =
+                bounds.top == textLayout.getLineTop(line) &&
+                    bounds.bottom == textLayout.getLineBottom(line, false)
+            val top = if (hasEditorBounds) rect.top else bounds.top.toFloat()
+            val bottom = if (hasEditorBounds) rect.bottom else bounds.bottom.toFloat()
+            cursorPaint.color = caretColor
+            cursorPaint.alpha = cursorAlpha
+            cursorPaint.colorFilter = cursorColorFilter
+            canvas.drawRect(bounds.left.toFloat(), top, bounds.right.toFloat(), bottom, cursorPaint)
+        }
+
+        override fun setAlpha(alpha: Int) {
+            cursorAlpha = alpha
+        }
+
+        override fun setColorFilter(colorFilter: ColorFilter?) {
+            cursorColorFilter = colorFilter
+        }
+
+        @Deprecated("Deprecated in Android")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+        override fun getIntrinsicWidth(): Int = caretWidthPx.roundToInt()
     }
 
     /**
@@ -819,7 +825,7 @@ class EditorEditText @JvmOverloads constructor(
 
     override fun onDraw(canvas: android.graphics.Canvas) {
         super.onDraw(canvas)
-        drawCustomCaret(canvas)
+        clipLegacyNativeCursorTail(canvas)
 
         val placeholderLayout =
             buildPlaceholderLayout(width - compoundPaddingLeft - compoundPaddingRight) ?: return
@@ -830,6 +836,27 @@ class EditorEditText @JvmOverloads constructor(
         placeholderLayout.draw(canvas)
         canvas.restoreToCount(saveCount)
         paint.color = previousColor
+    }
+
+    private fun clipLegacyNativeCursorTail(canvas: Canvas) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return
+        if (!CaretGeometry.shouldRender(isFocused, hasWindowFocus(), selectionStart, selectionEnd)) return
+        val textLayout = layout ?: return
+        val offset = selectionEnd.coerceIn(0, textLayout.text.length)
+        val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint)
+        val lineBottom = textLayout.getLineBottom(textLayout.getLineForOffset(offset)).toFloat()
+        if (bounds.bottom >= lineBottom) return
+
+        val centerX = totalPaddingLeft + textLayout.getPrimaryHorizontal(offset)
+        val halfWidth = maxOf(caretWidthPx, 2f * resources.displayMetrics.density)
+        legacyCursorClipPaint.color = baseBackgroundColor
+        canvas.drawRect(
+            centerX - halfWidth,
+            totalPaddingTop + bounds.bottom,
+            centerX + halfWidth,
+            totalPaddingTop + lineBottom,
+            legacyCursorClipPaint
+        )
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -3181,6 +3208,10 @@ class EditorEditText @JvmOverloads constructor(
      */
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
+        canonicalListCaretOffset(selStart, selEnd)?.let { canonicalOffset ->
+            setSelection(canonicalOffset)
+            return
+        }
         if (isApplyingRustState) return
         val wasExternallyComposing = externalTextComposition != null
         if (!commitExternalTextCompositionBeforeInteractionIfNeeded()) return
@@ -3203,10 +3234,22 @@ class EditorEditText @JvmOverloads constructor(
         }
         ensureSelectionVisible()
         onSelectionOrContentMayChange?.invoke()
-        // Keep the custom caret solid at its new position, then resume blinking.
-        restartCaretBlink()
 
         syncCurrentSelectionToRust()
+    }
+
+    private fun canonicalListCaretOffset(selStart: Int, selEnd: Int): Int? {
+        if (selStart != selEnd) return null
+        val content = text as? Spanned ?: return null
+        if (selStart !in 0 until content.length) return null
+        return content
+            .getSpans(selStart, selStart + 1, Annotation::class.java)
+            .firstOrNull { annotation ->
+                annotation.key == RenderBridge.NATIVE_LIST_MARKER_ANNOTATION &&
+                    content.getSpanStart(annotation) <= selStart &&
+                    content.getSpanEnd(annotation) > selStart
+            }
+            ?.let(content::getSpanEnd)
     }
 
     private fun syncCurrentSelectionToRust() {
@@ -3319,6 +3362,57 @@ class EditorEditText @JvmOverloads constructor(
 
     internal fun deleteScalarRangeForPendingImeOperationForEditor(scalarFrom: Int, scalarTo: Int) {
         deleteRangeInRust(scalarFrom, scalarTo)
+    }
+
+    internal fun handleStructuralBackspace() {
+        if (!isEditable || isApplyingRustState) return
+        if (editorId == 0L) {
+            handleBackspace()
+            return
+        }
+        if (discardTransientInputForDestroyedEditorIfNeeded()) return
+        val currentText = text?.toString() ?: return
+        val (anchor, head) = currentLogicalScalarSelection()
+            ?: normalizedScalarSelectionRange(currentText)
+            ?: return
+        onDeleteBackwardAtSelectionScalarInRustForTesting?.let { callback ->
+            callback(anchor, head)
+            return
+        }
+        v2Driver?.let { driver ->
+            val updateJSON = driver.deleteBackwardAtSelection(anchor, head)
+            applyNonOptimisticRustUpdate(driver, updateJSON)
+        }
+    }
+
+    internal fun handleStructuralDelete(
+        utf16From: Int,
+        utf16To: Int,
+        scalarFrom: Int,
+        scalarTo: Int
+    ) {
+        if (!isEditable || isApplyingRustState || scalarFrom >= scalarTo) return
+        if (editorId == 0L) {
+            text?.delete(utf16From, utf16To)
+            return
+        }
+        if (discardTransientInputForDestroyedEditorIfNeeded()) return
+        onDeleteRangeInRustForTesting?.let { callback ->
+            callback(scalarFrom, scalarTo)
+            return
+        }
+        v2Driver?.let { driver ->
+            val updateJSON = driver.deleteScalarRange(scalarFrom, scalarTo)
+            applyNonOptimisticRustUpdate(driver, updateJSON)
+        }
+    }
+
+    private fun applyNonOptimisticRustUpdate(driver: EditorV2Driver, updateJSON: String?) {
+        if (driver is EditorV2Adapter) {
+            driver.recoverNativeRender()?.let { applyRustUpdateJSON(it) }
+            return
+        }
+        updateJSON?.let { applyRustUpdateJSON(it) }
     }
 
     internal fun applyVisibleCompositionCommitForPendingImeOperationForEditor(
@@ -3912,6 +4006,52 @@ class EditorEditText @JvmOverloads constructor(
     internal fun currentLogicalScalarSelectionForInput(): Pair<Int, Int>? =
         currentLogicalScalarSelection()
 
+    internal fun renderedRangeContainsGeneratedStructure(start: Int, endExclusive: Int): Boolean {
+        if (start >= endExclusive) return false
+        val content = text as? Spanned ?: return false
+        return content.getSpans(start, endExclusive, Annotation::class.java).any { annotation ->
+            isGeneratedStructureAnnotation(annotation)
+        }
+    }
+
+    internal fun compositionContentRangeForEditor(start: Int, end: Int): Pair<Int, Int>? {
+        val content = text as? Spanned ?: return null
+        var contentStart = minOf(start, end).coerceIn(0, content.length)
+        var contentEnd = maxOf(start, end).coerceIn(0, content.length)
+        val generatedSpans = content
+            .getSpans(0, content.length, Annotation::class.java)
+            .filter(::isGeneratedStructureAnnotation)
+
+        var changed: Boolean
+        do {
+            changed = false
+            generatedSpans.forEach { annotation ->
+                val spanStart = content.getSpanStart(annotation)
+                val spanEnd = content.getSpanEnd(annotation)
+                if (spanStart <= contentStart && spanEnd > contentStart && spanEnd <= contentEnd) {
+                    contentStart = spanEnd
+                    changed = true
+                }
+                if (spanStart >= contentStart && spanStart < contentEnd && spanEnd >= contentEnd) {
+                    contentEnd = spanStart
+                    changed = true
+                }
+            }
+        } while (changed)
+
+        val containsInteriorStructure = generatedSpans.any { annotation ->
+            content.getSpanStart(annotation) < contentEnd &&
+                content.getSpanEnd(annotation) > contentStart
+        }
+        if (containsInteriorStructure) return null
+        return contentStart to contentEnd
+    }
+
+    private fun isGeneratedStructureAnnotation(annotation: Annotation): Boolean =
+        annotation.key == RenderBridge.NATIVE_INTER_BLOCK_SEPARATOR_ANNOTATION ||
+            annotation.key == RenderBridge.NATIVE_LIST_MARKER_ANNOTATION ||
+            annotation.key == RenderBridge.NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION
+
     internal fun cursorCapsModeForEditor(reqModes: Int, baseCapsMode: Int): Int {
         val sentenceCapsMode = InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         if ((reqModes and sentenceCapsMode) != sentenceCapsMode) return baseCapsMode
@@ -4309,6 +4449,9 @@ class EditorEditText @JvmOverloads constructor(
         val precedingParagraphSpans = replaceRange
             ?.let { paragraphSpansEndingAt(it.start) }
             .orEmpty()
+        val followingParagraphSpans = replaceRange
+            ?.let { paragraphSpansStartingAt(it.endExclusive) }
+            .orEmpty()
         isApplyingRustState = true
         beginBatchEdit()
         try {
@@ -4325,6 +4468,15 @@ class EditorEditText @JvmOverloads constructor(
                         snapshot.span,
                         snapshot.start,
                         snapshot.end,
+                        snapshot.flags
+                    )
+                }
+                val replacementDelta = spannable.length - (replaceRange.endExclusive - replaceRange.start)
+                followingParagraphSpans.forEach { snapshot ->
+                    editableText.setSpan(
+                        snapshot.span,
+                        snapshot.start + replacementDelta,
+                        snapshot.end + replacementDelta,
                         snapshot.flags
                     )
                 }
@@ -4363,6 +4515,22 @@ class EditorEditText @JvmOverloads constructor(
             .getSpans(0, editableText.length, Any::class.java)
             .filter { span ->
                 editableText.getSpanEnd(span) == offset &&
+                    editableText.getSpanFlags(span) and Spanned.SPAN_PARAGRAPH == Spanned.SPAN_PARAGRAPH
+            }
+            .map { span ->
+                ParagraphSpanSnapshot(
+                    span = span,
+                    start = editableText.getSpanStart(span),
+                    end = editableText.getSpanEnd(span),
+                    flags = editableText.getSpanFlags(span)
+                )
+            }
+
+    private fun paragraphSpansStartingAt(offset: Int): List<ParagraphSpanSnapshot> =
+        editableText
+            .getSpans(0, editableText.length, Any::class.java)
+            .filter { span ->
+                editableText.getSpanStart(span) == offset &&
                     editableText.getSpanFlags(span) and Spanned.SPAN_PARAGRAPH == Spanned.SPAN_PARAGRAPH
             }
             .map { span ->
@@ -5220,22 +5388,14 @@ class EditorEditText @JvmOverloads constructor(
         super.onFocusChanged(focused, direction, previouslyFocusedRect)
         if (focused) {
             clearNativeTextMutationAfterBlurWindow()
-            restartCaretBlink()
         } else {
             beginNativeTextMutationAfterBlurWindow()
             clearExplicitSelectedImageRange()
-            stopCaretBlink()
         }
-    }
-
-    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
-        super.onWindowFocusChanged(hasWindowFocus)
-        if (hasWindowFocus) restartCaretBlink() else stopCaretBlink()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        restartCaretBlink()
         if (restartImageLoadsOnAttach) {
             restartImageLoadsOnAttach = false
             rebuildLatestRenderForImages()
@@ -5245,7 +5405,6 @@ class EditorEditText @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         restartImageLoadsOnAttach = hasRenderedImageSpans()
         cancelPendingImageLoads()
-        removeCallbacks(caretBlinkRunnable)
         super.onDetachedFromWindow()
     }
 
@@ -5482,8 +5641,6 @@ class EditorEditText @JvmOverloads constructor(
         private const val RECENT_HANDLED_HARDWARE_KEY_DOWN_WINDOW_MS = 750L
         private const val LOG_TAG = "NativeEditor"
 
-        // Platform caret blink half-period (Editor.BLINK).
-        private const val CARET_BLINK_INTERVAL_MS = 500L
         private const val MIN_CARET_WIDTH_PX = 2f
         private const val MARKER_TAP_HORIZONTAL_SLOP_DP = 8f
     }

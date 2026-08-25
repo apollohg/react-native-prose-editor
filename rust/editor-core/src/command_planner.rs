@@ -316,6 +316,7 @@ fn marker_backspace_action(
         let item_boundary = node_delete_start(document, &resolved.node_path[..=depth])?;
         let paragraph_boundary =
             node_delete_start(document, &resolved.node_path)?.checked_sub(2)?;
+        let joined_text_boundary = paragraph_boundary.checked_sub(1)?;
         return Some(SemanticCommandPlan {
             operations: vec![
                 SemanticOperation::JoinBlocks { pos: item_boundary },
@@ -323,7 +324,7 @@ fn marker_backspace_action(
                     pos: paragraph_boundary,
                 },
             ],
-            selection_after: None,
+            selection_after: Some(Selection::cursor(joined_text_boundary)),
             history: SemanticCommandHistory::InputBoundary,
         });
     }
@@ -339,6 +340,89 @@ fn marker_backspace_action(
     Some(SemanticCommandPlan::one(
         SemanticOperation::UnwrapFromList { pos: doc_to },
     ))
+}
+
+fn move_into_previous_blockquote_action(
+    document: &Document,
+    map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    doc_to: u32,
+) -> Option<SemanticCommandPlan> {
+    if scalar_from >= scalar_to || map.doc_to_scalar(doc_to, document) != scalar_to {
+        return None;
+    }
+    let resolved = document.resolve(doc_to).ok()?;
+    let block = resolved.parent(document);
+    if !is_text_block(schema, block) || resolved.parent_offset != 0 || block.content_size() == 0 {
+        return None;
+    }
+
+    let (&index, parent_path) = resolved.node_path.split_last()?;
+    if index == 0 {
+        return None;
+    }
+    let parent = document.node_at(parent_path)?;
+    let parent_content = parent.content()?;
+    let previous_index = usize::try_from(index).ok()?.checked_sub(1)?;
+    let previous = parent_content.child(previous_index)?;
+    let quote_type = schema.node_by_html_tag("blockquote")?.name.as_str();
+    if previous.node_type() != quote_type {
+        return None;
+    }
+
+    let quote_content = previous.content()?;
+    let quote_child_types = quote_content
+        .iter()
+        .map(Node::node_type)
+        .chain(std::iter::once(block.node_type()))
+        .collect::<Vec<_>>();
+    let quote_spec = schema.node(quote_type)?;
+    if !quote_spec
+        .content
+        .matches(&quote_child_types, |child, symbol| {
+            schema.node_matches_symbol(child, symbol)
+        })
+    {
+        return None;
+    }
+    let remaining_parent_types = parent_content
+        .iter()
+        .enumerate()
+        .filter(|(child_index, _)| *child_index != previous_index + 1)
+        .map(|(_, child)| child.node_type())
+        .collect::<Vec<_>>();
+    let parent_spec = schema.node(parent.node_type())?;
+    if !parent_spec
+        .content
+        .matches(&remaining_parent_types, |child, symbol| {
+            schema.node_matches_symbol(child, symbol)
+        })
+    {
+        return None;
+    }
+
+    let mut children = quote_content.iter().cloned().collect::<Vec<_>>();
+    children.push(block.clone());
+    let replacement = Node::element(
+        previous.node_type().to_string(),
+        previous.attrs().clone(),
+        Fragment::from(children),
+    );
+    let mut previous_path = parent_path.to_vec();
+    previous_path.push(index - 1);
+    let from = node_delete_start(document, &previous_path)?;
+    let block_start = node_delete_start_pos(document, &resolved.node_path)?;
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::ReplaceRange {
+            from,
+            to: block_start.checked_add(block.node_size())?,
+            content: Fragment::from(vec![replacement]),
+        }],
+        selection_after: Some(Selection::cursor(block_start)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
 }
 
 /// Backspace at the very start of a text block that still has content joins it
@@ -364,7 +448,7 @@ fn join_with_previous_block_action(
     scalar_from: u32,
     scalar_to: u32,
     doc_to: u32,
-) -> Option<SemanticOperation> {
+) -> Option<SemanticCommandPlan> {
     if scalar_from >= scalar_to || map.doc_to_scalar(doc_to, document) != scalar_to {
         return None;
     }
@@ -389,8 +473,13 @@ fn join_with_previous_block_action(
         return None;
     }
 
-    Some(SemanticOperation::JoinBlocks {
-        pos: node_delete_start_pos(document, &resolved.node_path)?,
+    let block_boundary = node_delete_start_pos(document, &resolved.node_path)?;
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::JoinBlocks {
+            pos: block_boundary,
+        }],
+        selection_after: Some(Selection::cursor(block_boundary.checked_sub(1)?)),
+        history: SemanticCommandHistory::InputBoundary,
     })
 }
 

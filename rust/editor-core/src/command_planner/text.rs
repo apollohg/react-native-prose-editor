@@ -211,10 +211,7 @@ pub(crate) fn plan_delete_scalar_range(
             SemanticOperation::DeleteRange { from, to },
         )));
     }
-    // Must precede the DeleteRange fallback: at the head of a non-empty text
-    // block that range would straddle the block boundary, which the engine
-    // rejects as a cross-parent structural deletion.
-    if let Some(operation) = super::join_with_previous_block_action(
+    if let Some(plan) = super::move_into_previous_blockquote_action(
         document,
         position_map,
         schema,
@@ -222,7 +219,20 @@ pub(crate) fn plan_delete_scalar_range(
         scalar_to,
         doc_to,
     ) {
-        return Ok(Some(SemanticCommandPlan::one(operation)));
+        return Ok(Some(plan));
+    }
+    // Must precede the DeleteRange fallback: at the head of a non-empty text
+    // block that range would straddle the block boundary, which the engine
+    // rejects as a cross-parent structural deletion.
+    if let Some(plan) = super::join_with_previous_block_action(
+        document,
+        position_map,
+        schema,
+        scalar_from,
+        scalar_to,
+        doc_to,
+    ) {
+        return Ok(Some(plan));
     }
     Ok(Some(SemanticCommandPlan::one(
         SemanticOperation::DeleteRange {

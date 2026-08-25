@@ -41,6 +41,8 @@ class EditorInputConnection(
     private val boundGeneration: Long
 ) : InputConnectionWrapper(baseConnection, true) {
     private data class SurroundingDeleteRange(
+        val utf16Start: Int,
+        val utf16End: Int,
         val scalarStart: Int,
         val scalarEnd: Int
     )
@@ -108,9 +110,26 @@ class EditorInputConnection(
         val generation: Long
     )
 
+    private data class GeneratedCompositionAdjustment(
+        val leadingText: String,
+        val trailingText: String
+    ) {
+        fun sanitize(text: String): String {
+            var sanitized = text
+            if (leadingText.isNotEmpty() && sanitized.startsWith(leadingText)) {
+                sanitized = sanitized.substring(leadingText.length)
+            }
+            if (trailingText.isNotEmpty() && sanitized.endsWith(trailingText)) {
+                sanitized = sanitized.substring(0, sanitized.length - trailingText.length)
+            }
+            return sanitized
+        }
+    }
+
     private var pendingDuplicateCorrectionCommit: PendingDuplicateCorrectionCommit? = null
     private var pendingCompositionCorrectionCommit: PendingCompositionCorrectionCommit? = null
     private var pendingCompositionCorrectionGeneration: Long = 0L
+    private var generatedCompositionAdjustment: GeneratedCompositionAdjustment? = null
 
     /**
      * Called when the IME commits finalized text (single character, word,
@@ -546,6 +565,34 @@ class EditorInputConnection(
             beforeUtf16Length = beforeUtf16Length,
             afterUtf16Length = afterUtf16Length
         )
+        val isCollapsedBackwardDelete =
+            beforeLength == 1 &&
+                afterLength == 0 &&
+                editorView.selectionStart == editorView.selectionEnd
+
+        if (
+            deleteRange != null &&
+            editorView.renderedRangeContainsGeneratedStructure(
+                deleteRange.utf16Start,
+                deleteRange.utf16End
+            )
+        ) {
+            editorView.recordImeTraceForTesting(
+                "structuralSurroundingDelete",
+                "before=$beforeLength after=$afterLength codePoints=$deleteInCodePoints"
+            )
+            if (isCollapsedBackwardDelete) {
+                editorView.handleStructuralBackspace()
+            } else {
+                editorView.handleStructuralDelete(
+                    deleteRange.utf16Start,
+                    deleteRange.utf16End,
+                    deleteRange.scalarStart,
+                    deleteRange.scalarEnd
+                )
+            }
+            return true
+        }
 
         editorView.recordImeTraceForTesting(
             "deferredSurroundingDeleteBegin",
@@ -621,20 +668,20 @@ class EditorInputConnection(
             val logicalStart = minOf(logicalSelection.first, logicalSelection.second)
             val logicalEnd = maxOf(logicalSelection.first, logicalSelection.second)
             if (logicalStart != logicalEnd) {
-                return SurroundingDeleteRange(logicalStart, logicalEnd)
+                return SurroundingDeleteRange(deleteStart, deleteEnd, logicalStart, logicalEnd)
             }
             val deletedBefore = text.codePointCount(deleteStart, normalizedStart)
             val deletedAfter = text.codePointCount(normalizedEnd, deleteEnd)
             val scalarStart = (logicalStart - deletedBefore).coerceAtLeast(0)
             val scalarEnd = logicalEnd + deletedAfter
             if (scalarStart < scalarEnd) {
-                return SurroundingDeleteRange(scalarStart, scalarEnd)
+                return SurroundingDeleteRange(deleteStart, deleteEnd, scalarStart, scalarEnd)
             }
         }
         val scalarStart = PositionBridge.utf16ToScalar(deleteStart, text)
         val scalarEnd = PositionBridge.utf16ToScalar(deleteEnd, text)
         if (scalarStart >= scalarEnd) return null
-        return SurroundingDeleteRange(scalarStart, scalarEnd)
+        return SurroundingDeleteRange(deleteStart, deleteEnd, scalarStart, scalarEnd)
     }
 
     /**
@@ -653,19 +700,39 @@ class EditorInputConnection(
             return finishStaleComposingUpdateAfterInvalidation()
         }
         captureCompositionReplacementRangeIfNeeded()
-        val composingText = text?.toString()
+        val composingText = text?.toString()?.let { value ->
+            generatedCompositionAdjustment?.sanitize(value) ?: value
+        }
         val adjustedComposingText =
             editorView.samsungSentenceCapsComposingTextForEditor(composingText)
-        val textForBaseConnection = if (adjustedComposingText != composingText) {
-            adjustedComposingText
-        } else {
-            text
-        }
+        val textForBaseConnection = adjustedComposingText ?: text
         editorView.recordImeTraceForTesting(
             "setComposingText",
-            "${textTraceSummary(text)} cursor=$newCursorPosition adjusted=${adjustedComposingText != composingText}"
+            "${textTraceSummary(text)} cursor=$newCursorPosition adjusted=${textForBaseConnection.toString() != text?.toString()}"
         )
         editorView.setComposingTextForEditor(adjustedComposingText)
+        val trackedRange = trackedCompositionReplacementRange()
+        val currentText = editorView.text?.toString()
+        if (
+            trackedRange != null &&
+            currentText != null &&
+            editorView.isCurrentTextAuthorizedForEditor() &&
+            currentText.substring(trackedRange.first, trackedRange.second) == adjustedComposingText
+        ) {
+            return editorView.runWithTransientInputMutationGuard {
+                val regionSet = super.setComposingRegion(trackedRange.first, trackedRange.second)
+                val requestedCursor = if (newCursorPosition > 0) {
+                    trackedRange.second + newCursorPosition - 1
+                } else {
+                    trackedRange.first + newCursorPosition
+                }.coerceIn(0, currentText.length)
+                val selectionSet = super.setSelection(requestedCursor, requestedCursor)
+                if (regionSet) {
+                    editorView.applyTransientComposingTextStyleForEditor()
+                }
+                regionSet && selectionSet
+            }
+        }
         return editorView.runWithTransientInputMutationGuard {
             val result = super.setComposingText(textForBaseConnection, newCursorPosition)
             if (result) {
@@ -683,15 +750,37 @@ class EditorInputConnection(
         if (editorView.hasInvalidatedCompositionReplacementRangeForEditor()) {
             return finishStaleComposingUpdateAfterInvalidation()
         }
+        val currentText = editorView.text?.toString().orEmpty()
+        val requestedStart = minOf(start, end).coerceIn(0, currentText.length)
+        val requestedEnd = maxOf(start, end).coerceIn(0, currentText.length)
+        val contentRange = editorView.compositionContentRangeForEditor(requestedStart, requestedEnd)
+        if (contentRange == null) {
+            generatedCompositionAdjustment = null
+            editorView.recordImeTraceForTesting(
+                "setComposingRegionRejected",
+                "range=$start..$end reason=generatedInterior"
+            )
+            return true
+        }
         if (editorView.isCurrentTextAuthorizedForEditor()) {
-            editorView.setCompositionReplacementRange(start, end)
+            editorView.setCompositionReplacementRange(contentRange.first, contentRange.second)
+        }
+        generatedCompositionAdjustment = if (
+            contentRange.first != requestedStart || contentRange.second != requestedEnd
+        ) {
+            GeneratedCompositionAdjustment(
+                leadingText = currentText.substring(requestedStart, contentRange.first),
+                trailingText = currentText.substring(contentRange.second, requestedEnd)
+            )
+        } else {
+            null
         }
         editorView.recordImeTraceForTesting(
             "setComposingRegion",
-            "range=$start..$end"
+            "range=$start..$end content=${contentRange.first}..${contentRange.second}"
         )
         return editorView.runWithTransientInputMutationGuard {
-            val result = super.setComposingRegion(start, end)
+            val result = super.setComposingRegion(contentRange.first, contentRange.second)
             if (result) {
                 editorView.applyTransientComposingTextStyleForEditor()
             }
@@ -829,6 +918,7 @@ class EditorInputConnection(
     }
 
     private fun clearCompositionTracking() {
+        generatedCompositionAdjustment = null
         editorView.clearCompositionTrackingForEditor()
     }
 

@@ -39,6 +39,19 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NativeEditorExpoViewTest {
     @Test
+    fun `accessibility hint does not consume editor long press as a tooltip`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editor = view.richTextView.editorEditText
+
+        view.setAccessibilityHint("Formatting controls are above the keyboard")
+
+        assertNull(editor.tooltipText)
+        val nodeInfo = editor.createAccessibilityNodeInfo()
+        assertEquals("Formatting controls are above the keyboard", nodeInfo.tooltipText)
+    }
+
+    @Test
     fun `Android input options report and clear private IME options`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)

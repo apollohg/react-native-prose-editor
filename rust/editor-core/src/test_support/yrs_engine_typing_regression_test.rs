@@ -68,9 +68,9 @@ fn press_return(engine: &mut YrsDocumentEngine, request_id: u64) -> TypedTransac
 /// Press Backspace, surfacing a rejection as a readable failure rather than an
 /// `unwrap` panic — the whole point of these tests is *which* backspaces the
 /// planner refuses.
-fn press_backspace(engine: &mut YrsDocumentEngine, request_id: u64) {
+fn press_backspace(engine: &mut YrsDocumentEngine, request_id: u64) -> TypedTransactionResult {
     match engine.apply_command(request_id, TypedCommand::DeleteBackward) {
-        Ok(Some(_)) => {}
+        Ok(Some(result)) => result,
         Ok(None) => panic!(
             "Backspace was refused as not-applicable; document is {}",
             engine.document_json().unwrap()
@@ -311,12 +311,20 @@ fn backspace_at_the_start_of_a_second_line_joins_it_onto_the_first() {
     type_text(&mut engine, 3, "second");
 
     place_caret(&mut engine, 4, start_of_second_block(5), Affinity::After);
-    press_backspace(&mut engine, 5);
+    let result = press_backspace(&mut engine, 5);
 
     assert_eq!(
         document(&engine),
         doc(vec![paragraph(serde_json::json!([plain("firstsecond")]))]),
         "backspace at the head of the second line must merge it into the first"
+    );
+    let ResolvedSelection::Text { anchor, head } = result.selection else {
+        panic!("joining two lines must leave a text selection");
+    };
+    assert_eq!(anchor, head, "the caret must remain collapsed");
+    assert_eq!(
+        head.scalar, 5,
+        "the caret must land between the joined lines"
     );
 }
 
@@ -637,6 +645,48 @@ fn backspace_at_the_start_of_the_first_item_lifts_it_out_of_the_list() {
     );
 }
 
+#[test]
+fn backspace_walks_a_first_list_item_through_a_preceding_blockquote() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "quote");
+    toggle_blockquote(&mut engine, 2);
+    press_return(&mut engine, 3);
+    press_return(&mut engine, 4);
+    type_text(&mut engine, 5, "item");
+    apply_bullet_list(&mut engine, 6);
+    place_caret(&mut engine, 7, start_of_second_block(5), Affinity::After);
+
+    press_backspace(&mut engine, 8);
+    assert_eq!(
+        document(&engine),
+        doc(vec![
+            blockquote(vec![paragraph(serde_json::json!([plain("quote")]))]),
+            paragraph(serde_json::json!([plain("item")])),
+        ]),
+        "the first press removes the list marker"
+    );
+
+    press_backspace(&mut engine, 9);
+    assert_eq!(
+        document(&engine),
+        doc(vec![blockquote(vec![
+            paragraph(serde_json::json!([plain("quote")])),
+            paragraph(serde_json::json!([plain("item")])),
+        ])]),
+        "the second press moves the paragraph into the quote"
+    );
+
+    press_backspace(&mut engine, 10);
+    assert_eq!(
+        document(&engine),
+        doc(vec![blockquote(vec![paragraph(serde_json::json!([
+            plain("quoteitem")
+        ]))])]),
+        "the third press joins the quoted paragraphs"
+    );
+}
+
 /// Backspace at the head of a later item merges its text into the item above,
 /// leaving one item with one paragraph — not one item holding two paragraphs.
 #[test]
@@ -645,7 +695,7 @@ fn backspace_at_the_start_of_a_later_item_merges_its_text_into_the_previous_item
     two_item_list(&mut engine);
 
     place_caret(&mut engine, 5, START_OF_SECOND_ITEM, Affinity::After);
-    press_backspace(&mut engine, 6);
+    let result = press_backspace(&mut engine, 6);
 
     assert_eq!(
         document(&engine),
@@ -653,6 +703,14 @@ fn backspace_at_the_start_of_a_later_item_merges_its_text_into_the_previous_item
             serde_json::json!([plain("onetwo")])
         )])])]),
         "merging two bullets must produce a single bullet with a single line"
+    );
+    let ResolvedSelection::Text { anchor, head } = result.selection else {
+        panic!("merging two bullets must leave a text selection");
+    };
+    assert_eq!(anchor, head, "the caret must remain collapsed");
+    assert_eq!(
+        head.scalar, 5,
+        "the caret must land between the marker-prefixed joined item texts"
     );
 }
 

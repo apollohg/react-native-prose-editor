@@ -1139,6 +1139,41 @@ class RenderBridgeTest {
         assertEquals(2, result.getSpanEnd(annotations[0]))
     }
 
+    @Test
+    fun `every list marker carries the generated marker annotation`() {
+        val cases = listOf(
+            "listItem" to
+                """{"ordered":false,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true}""",
+            "listItem" to
+                """{"ordered":true,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true}""",
+            "taskItem" to
+                """{"ordered":false,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true,"kind":"task","checked":false}"""
+        )
+
+        cases.forEach { (nodeType, listContext) ->
+            val result = RenderBridge.buildSpannable(
+                """
+                [
+                    {"type":"blockStart","nodeType":"$nodeType","depth":0,"listContext":$listContext},
+                    {"type":"blockStart","nodeType":"paragraph","depth":1},
+                    {"type":"textRun","text":"Item","marks":[]},
+                    {"type":"blockEnd"},
+                    {"type":"blockEnd"}
+                ]
+                """.trimIndent(),
+                baseFontSize,
+                textColor
+            )
+            val bodyStart = result.indexOf("Item")
+            val annotations = result.getSpans(0, bodyStart, Annotation::class.java)
+                .filter { it.key == RenderBridge.NATIVE_LIST_MARKER_ANNOTATION }
+
+            assertEquals("$nodeType marker should be generated structure", 1, annotations.size)
+            assertEquals(0, result.getSpanStart(annotations.single()))
+            assertEquals(bodyStart, result.getSpanEnd(annotations.single()))
+        }
+    }
+
 
     @Test
     fun `task marker kind takes precedence over ordered visual presentation`() {
@@ -1539,7 +1574,9 @@ class RenderBridgeTest {
             result.getSpans(placeholderIndex, placeholderIndex + 1, Annotation::class.java)
         assertTrue(
             "Trailing hard-break placeholder should be marked as synthetic",
-            placeholderAnnotations.any { it.key == "nativeSyntheticPlaceholder" }
+            placeholderAnnotations.any {
+                it.key == RenderBridge.NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION
+            }
         )
         assertTrue(
             "Trailing hard-break placeholder should keep blockquote styling",
@@ -2029,6 +2066,65 @@ class RenderBridgeTest {
 
         val secondParaSpans = result.getSpans(separatorIndex + 1, result.length, ParagraphSpacerSpan::class.java)
         assertTrue("Second paragraph content should not have spacer spans", secondParaSpans.isEmpty())
+    }
+
+    @Test
+    fun `layout - paragraph spacing remains additive with fixed line height`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "First paragraph", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Second paragraph", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        fun secondParagraphBaseline(spacingAfter: Int): Int {
+            val theme = EditorTheme.fromJson(
+                """
+                {
+                  "paragraph": { "lineHeight": 28, "spacingAfter": $spacingAfter }
+                }
+                """.trimIndent()
+            )
+            val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+            val layout = StaticLayout.Builder
+                .obtain(result, 0, result.length, TextPaint().apply { textSize = baseFontSize }, 400)
+                .setIncludePad(false)
+                .build()
+            val secondParagraphLine = layout.getLineForOffset(result.indexOf("Second paragraph"))
+            return layout.getLineBaseline(secondParagraphLine)
+        }
+
+        val baselineWithoutSpacing = secondParagraphBaseline(spacingAfter = 0)
+        val baselineWithSpacing = secondParagraphBaseline(spacingAfter = 14)
+
+        assertEquals(14, baselineWithSpacing - baselineWithoutSpacing)
+    }
+
+    @Test
+    fun `render - inter-block newline carries generated separator annotation`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Alpha", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Beta", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val separator = result.indexOf('\n')
+        val annotations = result.getSpans(separator, separator + 1, Annotation::class.java)
+            .filter { it.key == RenderBridge.NATIVE_INTER_BLOCK_SEPARATOR_ANNOTATION }
+
+        assertEquals(1, annotations.size)
+        assertEquals(separator, result.getSpanStart(annotations.single()))
+        assertEquals(separator + 1, result.getSpanEnd(annotations.single()))
     }
 
     @Test

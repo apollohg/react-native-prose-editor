@@ -1315,8 +1315,9 @@ class NativeEditorExpoView(
 
     fun setAccessibilityHint(hint: String?) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            richTextView.editorEditText.tooltipText = hint
+            richTextView.editorEditText.tooltipText = null
         }
+        richTextView.editorEditText.setEditorAccessibilityHint(hint)
     }
 
     fun setShowToolbar(showToolbar: Boolean) {

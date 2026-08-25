@@ -603,7 +603,14 @@ class FixedLineHeightSpan(
         v: Int,
         fm: android.graphics.Paint.FontMetricsInt
     ) {
-        val currentHeight = fm.descent - fm.ascent
+        val paragraphSpacing = if (end > start && text[end - 1] == '\n' && text is Spanned) {
+            text.getSpans(end - 1, end, ParagraphSpacerSpan::class.java)
+                .maxOfOrNull { it.spacingPx }
+                ?: 0
+        } else {
+            0
+        }
+        val currentHeight = fm.descent - paragraphSpacing - fm.ascent
         if (lineHeightPx <= 0 || currentHeight <= 0) return
         if (lineHeightPx == currentHeight) return
 
@@ -626,7 +633,7 @@ class FixedLineHeightSpan(
  * preceding paragraph without inflating other lines.
  */
 class ParagraphSpacerSpan(
-    private val spacingPx: Int,
+    internal val spacingPx: Int,
     private val baseFontSize: Int,
     private val textColor: Int
 ) : ReplacementSpan() {
@@ -759,7 +766,9 @@ object RenderBridge {
     internal const val NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION = "nativeTopLevelChildIndex"
     internal const val NATIVE_LINK_HREF_ANNOTATION = "nativeLinkHref"
     internal const val NATIVE_TASK_LIST_MARKER_ANNOTATION = "nativeTaskListMarker"
-    private const val NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION = "nativeSyntheticPlaceholder"
+    internal const val NATIVE_INTER_BLOCK_SEPARATOR_ANNOTATION = "nativeInterBlockSeparator"
+    internal const val NATIVE_LIST_MARKER_ANNOTATION = "nativeListMarker"
+    internal const val NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION = "nativeSyntheticPlaceholder"
 
     private data class RenderBuildState(
         val result: SpannableStringBuilder = SpannableStringBuilder(),
@@ -1160,6 +1169,12 @@ object RenderBridge {
                         val markerStart = state.result.length - marker.length
                         val markerEnd = state.result.length
                         annotateTopLevelChild(state.result, markerStart, markerEnd, topLevelChildIndex)
+                        state.result.setSpan(
+                            Annotation(NATIVE_LIST_MARKER_ANNOTATION, "1"),
+                            markerStart,
+                            markerEnd,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
                         if (isTask) {
                             state.result.setSpan(
                                 Annotation(NATIVE_TASK_LIST_MARKER_ANNOTATION, "1"),
@@ -2075,6 +2090,12 @@ object RenderBridge {
         val start = builder.length
         builder.append("\n")
         val end = builder.length
+        builder.setSpan(
+            Annotation(NATIVE_INTER_BLOCK_SEPARATOR_ANNOTATION, "1"),
+            start,
+            end,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
         if (spacingPx > 0) {
             builder.setSpan(
                 ParagraphSpacerSpan(spacingPx, baseFontSize.toInt(), textColor),

@@ -41,6 +41,188 @@ import java.time.Duration
 @Config(sdk = [34])
 class EditorInputConnectionTest {
     @Test
+    fun `backspace at paragraph boundary stays equal to Rust render`() {
+        val harness = structuredDeleteHarness("<p>Alpha</p><p>Beta</p>")
+        try {
+            harness.editText.setSelection("Alpha\n".length)
+            val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+            assertTrue(inputConnection.deleteSurroundingText(1, 0))
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(harness.expectedText(), harness.editText.text.toString())
+            assertEquals("AlphaBeta", harness.editText.text.toString())
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `ordinary character backspace keeps deferred optimistic path`() {
+        val harness = structuredDeleteHarness("<p>Alpha</p>")
+        try {
+            harness.editText.setSelection(5)
+            val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+            assertTrue(inputConnection.deleteSurroundingText(1, 0))
+
+            assertTrue(harness.editText.hasDeferredRustUpdateApplicationForTesting())
+            assertEquals("Alph", harness.editText.text.toString())
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `ordinary backspace after earlier generated separators stays equal to Rust render`() {
+        val harness = structuredDeleteHarness(
+            "<p>First</p><p>Second</p><p>Type a native mention here</p>"
+        )
+        try {
+            val target = "native"
+            val cursor = harness.editText.text.toString().indexOf(target) + target.length
+            harness.editText.setSelection(cursor)
+            val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+            assertTrue(inputConnection.deleteSurroundingText(1, 0))
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(harness.expectedText(), harness.editText.text.toString())
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `generated structural backspaces do not mutate native text optimistically`() {
+        val listCases = listOf(
+            """
+            [
+                {"type":"blockStart","nodeType":"listItem","depth":0,"listContext":{"ordered":false,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true}},
+                {"type":"blockStart","nodeType":"paragraph","depth":1},
+                {"type":"textRun","text":"Item","marks":[]},
+                {"type":"blockEnd"},
+                {"type":"blockEnd"}
+            ]
+            """.trimIndent(),
+            """
+            [
+                {"type":"blockStart","nodeType":"listItem","depth":0,"listContext":{"ordered":true,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true}},
+                {"type":"blockStart","nodeType":"paragraph","depth":1},
+                {"type":"textRun","text":"Item","marks":[]},
+                {"type":"blockEnd"},
+                {"type":"blockEnd"}
+            ]
+            """.trimIndent(),
+            """
+            [
+                {"type":"blockStart","nodeType":"taskItem","depth":0,"listContext":{"ordered":false,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true,"kind":"task","checked":false}},
+                {"type":"blockStart","nodeType":"paragraph","depth":1},
+                {"type":"textRun","text":"Item","marks":[]},
+                {"type":"blockEnd"},
+                {"type":"blockEnd"}
+            ]
+            """.trimIndent()
+        )
+        listCases.forEach { renderJSON ->
+            val editText = EditorEditText(RuntimeEnvironment.getApplication())
+            editText.applyRenderJSON(renderJSON)
+            val bodyStart = editText.text.toString().indexOf("Item")
+            assertGeneratedBackspaceDoesNotMutateNative(editText, bodyStart)
+        }
+
+        val placeholderEditor = EditorEditText(RuntimeEnvironment.getApplication())
+        placeholderEditor.applyRenderJSON(
+            """
+            [
+                {"type":"blockStart","nodeType":"paragraph","depth":0},
+                {"type":"textRun","text":"A","marks":[]},
+                {"type":"voidInline","nodeType":"hardBreak","docPos":2},
+                {"type":"blockEnd"}
+            ]
+            """.trimIndent()
+        )
+        assertGeneratedBackspaceDoesNotMutateNative(
+            placeholderEditor,
+            placeholderEditor.text!!.length
+        )
+    }
+
+    @Test
+    fun `spellcheck composition excludes a generated list marker`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyRenderJSON(
+            """
+            [
+                {"type":"blockStart","nodeType":"listItem","depth":0,"listContext":{"ordered":false,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true}},
+                {"type":"blockStart","nodeType":"paragraph","depth":1},
+                {"type":"textRun","text":"Try typing","marks":[]},
+                {"type":"blockEnd"},
+                {"type":"blockEnd"}
+            ]
+            """.trimIndent()
+        )
+        editText.editorId = 1
+        val bodyStart = editText.text.toString().indexOf("Try typing")
+        editText.setSelection(bodyStart + 2)
+        var replacement: Triple<Int, Int, String>? = null
+        editText.onReplaceTextInRustForTesting = { scalarFrom, scalarTo, text ->
+            replacement = Triple(scalarFrom, scalarTo, text)
+        }
+        val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
+        val originalText = editText.text.toString()
+        val spellcheckText = originalText.substring(0, bodyStart + 3)
+
+        assertTrue(inputConnection.setComposingRegion(0, bodyStart + 3))
+        assertTrue(inputConnection.setComposingText(spellcheckText, 0))
+
+        assertEquals(originalText, editText.text.toString())
+        assertTrue(editText.renderedRangeContainsGeneratedStructure(0, bodyStart))
+        assertEquals(bodyStart to bodyStart + 3, editText.compositionReplacementRange())
+        assertEquals(bodyStart, BaseInputConnection.getComposingSpanStart(editText.text!!))
+        assertEquals(bodyStart + 3, BaseInputConnection.getComposingSpanEnd(editText.text!!))
+
+        assertTrue(inputConnection.commitText("Dry", 1))
+
+        assertEquals(Triple(bodyStart, bodyStart + 3, "Dry"), replacement)
+        assertTrue(editText.renderedRangeContainsGeneratedStructure(0, bodyStart))
+    }
+
+    @Test
+    fun `random collapsed backspaces keep native render equal to Rust`() {
+        val initialHtml = buildString {
+            append("<p><strong>Native Editor</strong> example app.</p>")
+            append("<p>Use this screen to test focus, theme updates, lists, line breaks, toolbar behavior, and optional addons.</p>")
+            append("<p>Enable mentions above, then type @ after a space, on a blank line, or after punctuation to show native mention suggestions in the toolbar.</p>")
+            append("<blockquote><p>Blockquotes can wrap one or more blocks and inherit theme styling.</p></blockquote>")
+            append("<ul><li><p>Try typing</p></li><li><p>Try list indenting</p><ul><li>Multiple levels are supported</li></ul></li></ul>")
+            append("<p></p>")
+        }
+
+        val seed = 0
+        val harness = structuredDeleteHarness(initialHtml)
+        try {
+            val random = kotlin.random.Random(seed)
+            repeat(80) { step ->
+                val offset = random.nextInt(harness.editText.text!!.length + 1)
+                harness.editText.setSelection(offset)
+                val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+                assertTrue(inputConnection.deleteSurroundingText(1, 0))
+                shadowOf(Looper.getMainLooper()).idle()
+
+                assertEquals(
+                    "seed=$seed step=$step offset=$offset",
+                    harness.expectedText(),
+                    harness.editText.text.toString()
+                )
+            }
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
     fun `external composition updates visible text without mutating Rust`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
@@ -5280,6 +5462,91 @@ class EditorInputConnectionTest {
 
     private fun renderUpdateJson(text: String): String =
         renderBlocksUpdateJson(text)
+
+    private class StructuredDeleteHarness(
+        val adapter: EditorV2Adapter,
+        val editText: EditorEditText,
+        initialBlocks: JSONArray
+    ) {
+        private var blocks = JSONArray(initialBlocks.toString())
+
+        fun adopt(updateJSON: String) {
+            val update = JSONObject(updateJSON)
+            update.optJSONArray("renderBlocks")?.let { replacement ->
+                blocks = JSONArray(replacement.toString())
+                return
+            }
+            val patch = update.getJSONObject("renderPatch")
+            val start = patch.getInt("startIndex")
+            val deleteCount = patch.getInt("deleteCount")
+            val replacement = patch.getJSONArray("renderBlocks")
+            blocks = JSONArray().apply {
+                for (index in 0 until start) put(blocks.get(index))
+                for (index in 0 until replacement.length()) put(replacement.get(index))
+                for (index in start + deleteCount until blocks.length()) {
+                    put(blocks.get(index))
+                }
+            }
+        }
+
+        fun expectedText(): String = RenderBridge.buildSpannableFromBlocks(
+            blocks,
+            baseFontSize = 16f,
+            textColor = Color.BLACK
+        ).toString()
+    }
+
+    private fun structuredDeleteHarness(initialHtml: String): StructuredDeleteHarness {
+        val created = UniffiEditorV2Backend.create(
+            """{"initialization":{"type":"localEmpty"}}""",
+            null
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(
+            UniffiEditorV2Backend,
+            editorId,
+            roomBound = false
+        )!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            this.editorId = 1
+            v2Driver = adapter
+        }
+        val initialUpdate = JSONObject(adapter.setContentHtml(initialHtml)!!)
+        val harness = StructuredDeleteHarness(
+            adapter,
+            editText,
+            initialUpdate.getJSONArray("renderBlocks")
+        )
+        editText.applyUpdateJSON(initialUpdate.toString(), notifyListener = false)
+        editText.editorListener = object : EditorEditText.EditorListener {
+            override fun onSelectionChanged(anchor: Int, head: Int) = Unit
+            override fun onEditorUpdate(updateJSON: String) = harness.adopt(updateJSON)
+        }
+        return harness
+    }
+
+    private fun assertGeneratedBackspaceDoesNotMutateNative(
+        editText: EditorEditText,
+        selection: Int
+    ) {
+        editText.editorId = 1
+        var routedDeleteCount = 0
+        editText.onDeleteBackwardAtSelectionScalarInRustForTesting = { _, _ ->
+            routedDeleteCount += 1
+        }
+        editText.onDeleteRangeInRustForTesting = { _, _ ->
+            routedDeleteCount += 1
+        }
+        editText.setSelection(selection)
+        val before = editText.text.toString()
+        val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
+
+        assertTrue(inputConnection.deleteSurroundingText(1, 0))
+
+        assertEquals(before, editText.text.toString())
+        assertEquals(1, routedDeleteCount)
+        assertFalse(editText.hasDeferredRustUpdateApplicationForTesting())
+    }
 
     private fun renderBlocksUpdateJson(vararg texts: String): String =
         JSONObject()

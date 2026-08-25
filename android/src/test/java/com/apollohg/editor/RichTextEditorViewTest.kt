@@ -429,6 +429,96 @@ class RichTextEditorViewTest {
     }
 
     @Test
+    fun `paragraph patch preserves following blockquote and list paragraph spans`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val initialBlocks = JSONArray().apply {
+            put(paragraphRenderBlock("Before"))
+            put(paragraphRenderBlock("Editable paragraph"))
+            put(blockquoteRenderBlock("Quoted"))
+            put(nestedListRenderBlock(ListRenderState.INITIAL))
+        }
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+
+        fun paragraphSpanCounts(): Pair<Int, Int> {
+            val content = editText.text as Spanned
+            val quoteOffset = content.toString().indexOf("Quoted")
+            val listOffset = content.toString().indexOf("First")
+            return content.getSpans(
+                quoteOffset,
+                quoteOffset + 1,
+                BlockquoteSpan::class.java
+            ).size to content.getSpans(
+                listOffset,
+                listOffset + 1,
+                LeadingMarginSpan::class.java
+            ).size
+        }
+
+        val initialSpanCounts = paragraphSpanCounts()
+        val renderPatch = JSONObject()
+            .put("startIndex", 1)
+            .put("deleteCount", 1)
+            .put("renderBlocks", JSONArray().put(paragraphRenderBlock("Edited")))
+
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                JSONArray(),
+                includeFullRenderBlocks = false,
+                renderPatch = renderPatch
+            ),
+            notifyListener = false
+        )
+
+        assertTrue(editText.lastRenderAppliedPatch())
+        assertEquals("Before\nEdited\nQuoted\n• First\n• Second\n• Nested", editText.text.toString())
+        assertEquals(initialSpanCounts, paragraphSpanCounts())
+    }
+
+    @Test
+    fun `blockquote patch preserves following list paragraph spans`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val initialBlocks = JSONArray().apply {
+            put(blockquoteRenderBlock("Quoted content"))
+            put(nestedListRenderBlock(ListRenderState.INITIAL))
+        }
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+
+        fun listParagraphSpanCounts(): Pair<Int, Int> {
+            val content = editText.text as Spanned
+            val rootOffset = content.toString().indexOf("First")
+            val nestedOffset = content.toString().indexOf("Nested")
+            return content.getSpans(
+                rootOffset,
+                rootOffset + 1,
+                LeadingMarginSpan::class.java
+            ).size to content.getSpans(
+                nestedOffset,
+                nestedOffset + 1,
+                LeadingMarginSpan::class.java
+            ).size
+        }
+
+        val initialSpanCounts = listParagraphSpanCounts()
+        val renderPatch = JSONObject()
+            .put("startIndex", 0)
+            .put("deleteCount", 1)
+            .put("renderBlocks", JSONArray().put(blockquoteRenderBlock("Quote")))
+
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                JSONArray(),
+                includeFullRenderBlocks = false,
+                renderPatch = renderPatch
+            ),
+            notifyListener = false
+        )
+
+        assertTrue(editText.lastRenderAppliedPatch())
+        assertEquals("Quote\n• First\n• Second\n• Nested", editText.text.toString())
+        assertEquals(initialSpanCounts, listParagraphSpanCounts())
+    }
+
+    @Test
     fun `terminal list patch preserves preceding blockquote span`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         val initialBlocks = JSONArray().apply {
@@ -1225,11 +1315,68 @@ class RichTextEditorViewTest {
     }
 
     @Test
+    fun `tapping nested list leading margin snaps caret to item text`() {
+        val context = RuntimeEnvironment.getApplication()
+        val editText = EditorEditText(context)
+        editText.editorId = 1
+        editText.applyRenderJSON(nestedListRenderBlock(ListRenderState.INITIAL).toString())
+        val parent = FrameLayout(context)
+        parent.addView(
+            editText,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY)
+        parent.measure(widthSpec, heightSpec)
+        parent.layout(0, 0, parent.measuredWidth, parent.measuredHeight)
+
+        val content = editText.text as Spanned
+        val bodyStart = content.toString().indexOf("Nested")
+        val marker = content
+            .getSpans(0, bodyStart, android.text.Annotation::class.java)
+            .single {
+                it.key == RenderBridge.NATIVE_LIST_MARKER_ANNOTATION &&
+                    content.getSpanEnd(it) == bodyStart
+            }
+        val markerStart = content.getSpanStart(marker)
+        val markerEnd = content.getSpanEnd(marker)
+        assertEquals(bodyStart, markerEnd)
+
+        editText.setSelection(bodyStart + 2)
+        val syncedSelections = mutableListOf<Pair<Int, Int>>()
+        editText.onSetSelectionScalarInRustForTesting = { anchor, head ->
+            syncedSelections += anchor to head
+        }
+
+        val textLayout = requireNotNull(editText.layout)
+        val line = textLayout.getLineForOffset(markerStart)
+        val tapX = editText.totalPaddingLeft + textLayout.getPrimaryHorizontal(markerStart) + 1f
+        val tapY = editText.totalPaddingTop +
+            ((textLayout.getLineTop(line) + textLayout.getLineBottom(line)) / 2f)
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        editText.onTouchEvent(down)
+        down.recycle()
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        editText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(markerEnd, editText.selectionStart)
+        assertEquals(markerEnd, editText.selectionEnd)
+        assertEquals(markerEnd to markerEnd, syncedSelections.last())
+    }
+
+    @Test
     fun `tapping below rendered task marker does not toggle nearest task item`() {
         val context = RuntimeEnvironment.getApplication()
         val editText = EditorEditText(context)
         editText.editorId = 1
         editText.applyRenderJSON(singleTaskListRenderJson())
+        editText.layoutParams = FrameLayout.LayoutParams(600, 240)
 
         val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
         val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
@@ -1596,7 +1743,17 @@ class RichTextEditorViewTest {
     }
 
     @Test
-    fun `painted caret rect is clipped to glyph height on a spacer line`() {
+    fun `native cursor stays enabled for Android insertion controls`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+
+        assertTrue(
+            "Android disables its insertion handle and magnifier when cursor visibility is false",
+            editText.isCursorVisible
+        )
+    }
+
+    @Test
+    fun `native cursor drawable is clipped to glyph height on a spacer line`() {
         val context = RuntimeEnvironment.getApplication()
         val editText = EditorEditText(context)
         editText.layoutParams = ViewGroup.LayoutParams(600, 240)
@@ -1617,8 +1774,7 @@ class RichTextEditorViewTest {
 
         val layout = editText.layout!!
         val inflatedLineHeight = (layout.getLineBottom(0) - layout.getLineTop(0)).toFloat()
-        // The exact rectangle drawCustomCaret paints (content coordinates, caret width).
-        val caret = editText.customCaretDrawRect()
+        val caret = editText.nativeCursorDrawRect()
 
         assertNotNull("a caret rect should be produced for a collapsed selection", caret)
         assertTrue("painted caret should have width", caret!!.width() > 0f)
@@ -1627,6 +1783,61 @@ class RichTextEditorViewTest {
             "painted caret height ${caret.height()} must exclude the 60px gap (inflated=$inflatedLineHeight)",
             caret.height() < inflatedLineHeight - 20f
         )
+    }
+
+    @Test
+    fun `native cursor drawable uses magnifier local bounds`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val content = (1..20).joinToString("\n") { "Line $it" }
+        editText.layoutParams = ViewGroup.LayoutParams(600, 1200)
+        editText.setText(content)
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(1200, View.MeasureSpec.EXACTLY)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        editText.setSelection(content.indexOf("Line 16"))
+
+        val bitmap = Bitmap.createBitmap(100, 80, Bitmap.Config.ARGB_8888)
+        val drawable = editText.textCursorDrawable!!
+        drawable.setBounds(48, 0, 50, bitmap.height)
+        drawable.draw(Canvas(bitmap))
+
+        assertTrue(
+            "Magnifier-local cursor should be drawn through the source height",
+            Color.alpha(bitmap.getPixel(48, bitmap.height - 1)) > 0
+        )
+    }
+
+    @Test
+    fun `native cursor drawable excludes paragraph spacer in editor bounds`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.layoutParams = ViewGroup.LayoutParams(600, 240)
+        val spanned = SpannableStringBuilder("Hello\nWorld")
+        spanned.setSpan(
+            ParagraphSpacerSpan(spacingPx = 60, baseFontSize = 16, textColor = Color.BLACK),
+            5,
+            6,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        editText.setText(spanned)
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        editText.setSelection(5)
+
+        val layout = editText.layout!!
+        val line = layout.getLineForOffset(editText.selectionEnd)
+        val caret = editText.nativeCursorDrawRect()!!
+        val bitmap = Bitmap.createBitmap(100, layout.height, Bitmap.Config.ARGB_8888)
+        val drawable = editText.textCursorDrawable!!
+        drawable.setBounds(48, layout.getLineTop(line), 50, layout.getLineBottom(line, false))
+        drawable.draw(Canvas(bitmap))
+
+        assertTrue(Color.alpha(bitmap.getPixel(48, caret.centerY().toInt())) > 0)
+        assertEquals(0, Color.alpha(bitmap.getPixel(48, caret.bottom.toInt() + 10)))
     }
 
     @Test
