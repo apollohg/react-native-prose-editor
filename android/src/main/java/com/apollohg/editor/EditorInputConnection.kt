@@ -816,7 +816,7 @@ class EditorInputConnection(
      */
     override fun finishComposingText(): Boolean {
         if (!isCurrentInputSessionFor("finishComposingText")) return true
-        if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
+        if (editorView.hasActiveExternalTextCompositionForEditor()) return true
         if (applyPendingCompositionCorrectionCommitIfNeeded("finishComposingText")) return true
         return finishComposingTextInternal(blockWhenCompositionWasCancelled = false)
     }

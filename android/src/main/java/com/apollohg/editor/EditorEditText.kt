@@ -1654,6 +1654,9 @@ class EditorEditText @JvmOverloads constructor(
         externalTextComposition == null ||
             finishExternalTextComposition("interaction", finalText = null, cancel = false)
 
+    internal fun hasActiveExternalTextCompositionForEditor(): Boolean =
+        externalTextComposition != null
+
     private fun commitExternalTextCompositionForDocumentChangeIfNeeded(): Boolean =
         externalTextComposition == null ||
             finishExternalTextComposition("documentChange", finalText = null, cancel = false)

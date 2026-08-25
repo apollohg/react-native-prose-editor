@@ -246,6 +246,28 @@ class EditorInputConnectionTest {
     }
 
     @Test
+    fun `IME finish composing does not end external composition`() {
+        val harness = externalCompositionHarness("arrival")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(0, 7)
+        val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+        harness.editText.beginExternalTextComposition("speech-1")
+        harness.editText.updateExternalTextComposition("speech-1", "draft")
+
+        assertTrue(inputConnection.finishComposingText())
+        assertTrue(listener.externalCompositionEnds.isEmpty())
+        assertEquals("arrival", harness.backend.sessions.getValue(harness.editorId).text.toString())
+
+        val update = JSONObject(
+            harness.editText.updateExternalTextComposition("speech-1", "final draft")
+        )
+        assertEquals("active", update.getString("type"))
+        assertEquals("final draft", harness.editText.text.toString())
+    }
+
+    @Test
     fun `external composition updates placeholder from provisional text`() {
         val harness = externalCompositionHarness("")
         harness.editText.placeholderText = "Type here"
