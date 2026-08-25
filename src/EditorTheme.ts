@@ -236,6 +236,8 @@ export interface EditorToolbarTheme {
     separatorColor?: string;
     /** Icon color of an idle button. */
     buttonColor?: string;
+    /** Icon size for toolbar buttons, in layout units. */
+    buttonIconSize?: number;
     /** Icon color of a button whose mark or node is active at the selection. */
     buttonActiveColor?: string;
     /** Icon color of a button the current selection cannot apply. */

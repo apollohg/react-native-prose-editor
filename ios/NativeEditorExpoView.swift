@@ -465,6 +465,7 @@ private struct NativeToolbarItem {
     var placement: ToolbarItemPlacement? = nil
     var presentation: ToolbarGroupPresentation? = nil
     var items: [NativeToolbarItem] = []
+    var buttonStyle: EditorToolbarButtonStyle? = nil
     var parentGroupKey: String? = nil
 
     static let defaults: [NativeToolbarItem] = [
@@ -499,13 +500,17 @@ private struct NativeToolbarItem {
         let key = rawItem["key"] as? String
         let placement = (rawItem["placement"] as? String)
             .flatMap(ToolbarItemPlacement.init(rawValue:))
+        let buttonStyle = (rawItem["buttonStyle"] as? [String: Any]).map(
+            EditorToolbarButtonStyle.init(dictionary:)
+        )
         switch type {
         case .separator:
             guard allowSeparator else { return nil }
             return NativeToolbarItem(
                 type: .separator,
                 key: key,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .mark:
             guard let mark = rawItem["mark"] as? String,
@@ -520,7 +525,8 @@ private struct NativeToolbarItem {
                 label: label,
                 icon: icon,
                 mark: mark,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .heading:
             guard let level = (rawItem["level"] as? NSNumber)?.intValue,
@@ -536,7 +542,8 @@ private struct NativeToolbarItem {
                 label: label,
                 icon: icon,
                 headingLevel: level,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .blockquote:
             guard let label = rawItem["label"] as? String,
@@ -549,7 +556,8 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .list:
             guard let listTypeRaw = rawItem["listType"] as? String,
@@ -565,7 +573,8 @@ private struct NativeToolbarItem {
                 label: label,
                 icon: icon,
                 listType: listType,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .command:
             guard let commandRaw = rawItem["command"] as? String,
@@ -581,7 +590,8 @@ private struct NativeToolbarItem {
                 label: label,
                 icon: icon,
                 command: command,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .node:
             guard let nodeType = rawItem["nodeType"] as? String,
@@ -596,7 +606,8 @@ private struct NativeToolbarItem {
                 label: label,
                 icon: icon,
                 nodeType: nodeType,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .action:
             guard let key,
@@ -612,7 +623,8 @@ private struct NativeToolbarItem {
                 icon: icon,
                 isActive: (rawItem["isActive"] as? Bool) ?? false,
                 isDisabled: (rawItem["isDisabled"] as? Bool) ?? false,
-                placement: placement
+                placement: placement,
+                buttonStyle: buttonStyle
             )
         case .group:
             guard allowGroup,
@@ -637,7 +649,8 @@ private struct NativeToolbarItem {
                 icon: icon,
                 placement: placement,
                 presentation: presentation,
-                items: children
+                items: children,
+                buttonStyle: buttonStyle
             )
         }
     }
@@ -909,6 +922,23 @@ final class EditorAccessoryToolbarView: UIInputView {
     func buttonIsEnabledForTesting(_ index: Int) -> Bool? {
         buttonBindings.indices.contains(index) ? buttonBindings[index].button.isEnabled : nil
     }
+    func buttonTintColorForTesting(_ index: Int) -> UIColor? {
+        buttonBindings.indices.contains(index) ? buttonBindings[index].button.tintColor : nil
+    }
+    func buttonFontSizeForTesting(_ index: Int) -> CGFloat? {
+        buttonBindings.indices.contains(index) ? buttonBindings[index].button.titleLabel?.font.pointSize : nil
+    }
+    func buttonCornerRadiusForTesting(_ index: Int) -> CGFloat? {
+        buttonBindings.indices.contains(index) ? buttonBindings[index].button.layer.cornerRadius : nil
+    }
+    func buttonBackgroundColorForTesting(_ index: Int) -> UIColor? {
+        guard buttonBindings.indices.contains(index) else { return nil }
+        let button = buttonBindings[index].button
+        if #available(iOS 15.0, *) {
+            return button.configuration?.background.backgroundColor
+        }
+        return button.backgroundColor
+    }
     func buttonLabelsForPlacementForTesting(_ rawPlacement: String) -> [String] {
         guard let placement = ToolbarItemPlacement(rawValue: rawPlacement) else { return [] }
         switch placement {
@@ -1137,7 +1167,7 @@ final class EditorAccessoryToolbarView: UIInputView {
                 : (theme?.separatorColor ?? .separator)
         }
         for binding in buttonBindings {
-            binding.button.layer.cornerRadius = resolvedButtonBorderRadius
+            binding.button.layer.cornerRadius = resolvedButtonBorderRadius(for: binding.item)
             binding.widthConstraint.constant = resolvedButtonSize
             binding.heightConstraint.constant = resolvedButtonSize
         }
@@ -1562,9 +1592,8 @@ final class EditorAccessoryToolbarView: UIInputView {
     private func makeButton(item: NativeToolbarItem) -> UIButton {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
         button.accessibilityLabel = item.label
-        button.layer.cornerRadius = resolvedButtonBorderRadius
+        button.layer.cornerRadius = resolvedButtonBorderRadius(for: item)
         button.clipsToBounds = true
         if #available(iOS 15.0, *) {
             var configuration = UIButton.Configuration.plain()
@@ -1583,10 +1612,6 @@ final class EditorAccessoryToolbarView: UIInputView {
         {
             button.setImage(symbolImage, for: .normal)
             button.setTitle(nil, for: .normal)
-            button.setPreferredSymbolConfiguration(
-                UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold),
-                forImageIn: .normal
-            )
         } else {
             button.setImage(nil, for: .normal)
             button.setTitle(item.icon?.resolvedGlyphText() ?? "?", for: .normal)
@@ -1721,38 +1746,42 @@ final class EditorAccessoryToolbarView: UIInputView {
         enabled: Bool,
         active: Bool
     ) {
-        if resolvedAppearance == .native {
-            let tintColor = enabled ? theme?.buttonColor : resolvedNativeDisabledButtonTintColor()
-            button.tintColor = tintColor
-            button.setTitleColor(tintColor, for: .normal)
-            button.setTitleColor(resolvedNativeDisabledButtonTintColor(), for: .disabled)
-            button.tintAdjustmentMode = enabled ? .automatic : .normal
-            button.alpha = 1
-            applyActiveBackground(
-                to: button,
-                color: active ? UIColor.white.withAlphaComponent(0.18) : .clear
-            )
-            return
-        }
-
+        let buttonStyle = item.buttonStyle
         let tintColor: UIColor
         if !enabled {
-            tintColor = theme?.buttonDisabledColor ?? .tertiaryLabel
+            tintColor = buttonStyle?.disabledColor
+                ?? theme?.buttonDisabledColor
+                ?? (resolvedAppearance == .native
+                    ? UIColor.label.withAlphaComponent(Self.nativeDisabledButtonOpacity)
+                    : .tertiaryLabel)
         } else if active {
-            tintColor = theme?.buttonActiveColor ?? .systemBlue
+            tintColor = buttonStyle?.activeColor
+                ?? theme?.buttonActiveColor
+                ?? (resolvedAppearance == .native ? self.tintColor : .systemBlue)
         } else {
-            tintColor = theme?.buttonColor ?? .secondaryLabel
+            tintColor = buttonStyle?.color
+                ?? theme?.buttonColor
+                ?? (resolvedAppearance == .native ? self.tintColor : .secondaryLabel)
         }
 
         button.tintColor = tintColor
         button.setTitleColor(tintColor, for: .normal)
-        button.alpha = enabled ? 1 : 0.7
+        button.setTitleColor(tintColor, for: .disabled)
+        button.tintAdjustmentMode = enabled ? .automatic : .normal
+        button.alpha = enabled || resolvedAppearance == .native ? 1 : 0.7
+        let activeBackgroundColor = buttonStyle?.activeBackgroundColor
+            ?? theme?.buttonActiveBackgroundColor
+            ?? (resolvedAppearance == .native
+                ? UIColor.white.withAlphaComponent(0.18)
+                : UIColor.systemBlue.withAlphaComponent(0.12))
+        let cornerRadius = resolvedButtonBorderRadius(for: item)
+        button.layer.cornerRadius = cornerRadius
         applyActiveBackground(
             to: button,
-            color: active
-                ? (theme?.buttonActiveBackgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12))
-                : .clear
+            color: active ? activeBackgroundColor : .clear,
+            cornerRadius: cornerRadius
         )
+        applyButtonIconStyle(to: button, item: item)
     }
 
     /// Paint the active-state background from exactly one source.
@@ -1763,14 +1792,18 @@ final class EditorAccessoryToolbarView: UIInputView {
     /// second shape behind the first — two offset rounded rects reading as a
     /// double halo. Owning `configuration.background` outright replaces the
     /// resolved one, and clearing `backgroundColor` leaves nothing underneath.
-    private func applyActiveBackground(to button: UIButton, color: UIColor) {
+    private func applyActiveBackground(
+        to button: UIButton,
+        color: UIColor,
+        cornerRadius: CGFloat
+    ) {
         guard #available(iOS 15.0, *), var configuration = button.configuration else {
             button.backgroundColor = color
             return
         }
         var background = UIBackgroundConfiguration.clear()
         background.backgroundColor = color
-        background.cornerRadius = resolvedButtonBorderRadius
+        background.cornerRadius = cornerRadius
         configuration.background = background
         button.configuration = configuration
         button.backgroundColor = .clear
@@ -1811,8 +1844,41 @@ final class EditorAccessoryToolbarView: UIInputView {
         theme?.resolvedButtonBorderRadius ?? 8
     }
 
-    private func resolvedNativeDisabledButtonTintColor() -> UIColor {
-        theme?.buttonDisabledColor ?? UIColor.label.withAlphaComponent(Self.nativeDisabledButtonOpacity)
+    private func resolvedButtonBorderRadius(for item: NativeToolbarItem) -> CGFloat {
+        guard let radius = item.buttonStyle?.borderRadius, radius.isFinite else {
+            return max(0, resolvedButtonBorderRadius)
+        }
+        return max(0, radius)
+    }
+
+    private func resolvedButtonIconSize(for item: NativeToolbarItem) -> CGFloat {
+        let requestedSize = item.buttonStyle?.iconSize ?? theme?.buttonIconSize
+        guard let requestedSize, requestedSize.isFinite, requestedSize > 0 else {
+            return 16
+        }
+        return min(requestedSize, resolvedButtonSize)
+    }
+
+    private func applyButtonIconStyle(to button: UIButton, item: NativeToolbarItem) {
+        let iconSize = resolvedButtonIconSize(for: item)
+        let font = UIFont.systemFont(ofSize: iconSize, weight: .semibold)
+        if #available(iOS 15.0, *), var configuration = button.configuration {
+            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
+                incoming in
+                var outgoing = incoming
+                outgoing.font = font
+                return outgoing
+            }
+            button.configuration = configuration
+            button.updateConfiguration()
+        }
+        button.titleLabel?.font = font
+        if button.image(for: .normal) != nil {
+            button.setPreferredSymbolConfiguration(
+                UIImage.SymbolConfiguration(pointSize: iconSize, weight: .semibold),
+                forImageIn: .normal
+            )
+        }
     }
 
     private var usesTransparentMentionChrome: Bool {

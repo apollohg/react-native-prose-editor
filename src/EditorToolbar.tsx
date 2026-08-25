@@ -105,6 +105,16 @@ export type EditorToolbarIcon =
           fallbackText?: string;
       };
 
+/** Visual overrides for one toolbar button. */
+export interface EditorToolbarButtonStyle {
+    iconSize?: number;
+    color?: string;
+    activeColor?: string;
+    disabledColor?: string;
+    activeBackgroundColor?: string;
+    borderRadius?: number;
+}
+
 /**
  * A single toolbar button. Every variant takes a `label` (its accessible
  * name), an `icon`, an optional `key` (defaults to something derived from the
@@ -120,7 +130,7 @@ export type EditorToolbarIcon =
  * - `action` — host-defined; calls `onToolbarAction` with its `key`, and the
  *   host supplies `isActive`/`isDisabled` since the engine knows nothing about it.
  */
-export type EditorToolbarLeafItem =
+export type EditorToolbarLeafItem = (
     | {
           type: 'mark';
           mark: string;
@@ -190,7 +200,10 @@ export type EditorToolbarLeafItem =
           isActive?: boolean;
           isDisabled?: boolean;
           placement?: EditorToolbarItemPlacement;
-      };
+      }
+) & {
+    buttonStyle?: EditorToolbarButtonStyle;
+};
 
 /** What a group may contain. Groups do not nest. */
 export type EditorToolbarGroupChildItem = EditorToolbarLeafItem;
@@ -209,6 +222,7 @@ export interface EditorToolbarGroupItem {
     /** How the children are revealed. Defaults to `'expand'`. */
     presentation?: EditorToolbarGroupPresentation;
     placement?: EditorToolbarItemPlacement;
+    buttonStyle?: EditorToolbarButtonStyle;
     items: readonly EditorToolbarGroupChildItem[];
 }
 
@@ -230,6 +244,7 @@ interface ToolbarButton {
     key: string;
     label: string;
     icon: EditorToolbarIcon;
+    buttonStyle?: EditorToolbarButtonStyle;
     action: () => void;
     isActive?: boolean;
     isDisabled?: boolean;
@@ -241,6 +256,7 @@ interface ToolbarGroupButton {
     key: string;
     label: string;
     icon: EditorToolbarIcon;
+    buttonStyle?: EditorToolbarButtonStyle;
     presentation: EditorToolbarGroupPresentation;
     placement: EditorToolbarItemPlacement;
     children: readonly ToolbarButton[];
@@ -966,6 +982,7 @@ export function EditorToolbar({
                 key: makeButtonKey(item, index, prefix),
                 label: item.label,
                 icon: item.icon,
+                buttonStyle: item.buttonStyle,
                 action,
                 isActive,
                 isDisabled,
@@ -1043,6 +1060,7 @@ export function EditorToolbar({
                     key: item.key,
                     label: item.label,
                     icon: item.icon,
+                    buttonStyle: item.buttonStyle,
                     presentation,
                     placement,
                     children,
@@ -1361,8 +1379,39 @@ export function EditorToolbar({
                   )
               );
 
+    const resolveButtonVisuals = (
+        button: Pick<ToolbarButton, 'buttonStyle' | 'isActive' | 'isDisabled'>
+    ) => {
+        const activeColor =
+            button.buttonStyle?.activeColor ?? theme?.buttonActiveColor ?? ACTIVE_COLOR;
+        const defaultColor = button.buttonStyle?.color ?? theme?.buttonColor ?? DEFAULT_COLOR;
+        const disabledColor =
+            button.buttonStyle?.disabledColor ?? theme?.buttonDisabledColor ?? DISABLED_COLOR;
+        const requestedIconSize = button.buttonStyle?.iconSize ?? theme?.buttonIconSize;
+        return {
+            color: button.isDisabled ? disabledColor : button.isActive ? activeColor : defaultColor,
+            iconSize:
+                requestedIconSize != null &&
+                Number.isFinite(requestedIconSize) &&
+                requestedIconSize > 0
+                    ? Math.min(requestedIconSize, resolvedButtonHeight)
+                    : undefined,
+            activeBackgroundColor:
+                button.buttonStyle?.activeBackgroundColor ??
+                theme?.buttonActiveBackgroundColor ??
+                ACTIVE_BG,
+            borderRadius: Math.max(
+                0,
+                button.buttonStyle?.borderRadius ?? theme?.buttonBorderRadius ?? BUTTON_RADIUS
+            ),
+        };
+    };
+
     const renderButton = (
-        button: Pick<ToolbarButton, 'key' | 'label' | 'icon' | 'isActive' | 'isDisabled'>,
+        button: Pick<
+            ToolbarButton,
+            'key' | 'label' | 'icon' | 'buttonStyle' | 'isActive' | 'isDisabled'
+        >,
         onPress: () => void,
         options?: {
             anchorGroupKey?: string;
@@ -1370,14 +1419,7 @@ export function EditorToolbar({
             expanded?: boolean;
         }
     ) => {
-        const activeColor = theme?.buttonActiveColor ?? ACTIVE_COLOR;
-        const defaultColor = theme?.buttonColor ?? DEFAULT_COLOR;
-        const disabledColor = theme?.buttonDisabledColor ?? DISABLED_COLOR;
-        const color = button.isActive
-            ? activeColor
-            : button.isDisabled
-              ? disabledColor
-              : defaultColor;
+        const visuals = resolveButtonVisuals(button);
         const anchorGroupKey = options?.anchorGroupKey;
 
         return (
@@ -1405,10 +1447,10 @@ export function EditorToolbar({
                         styles.button,
                         {
                             height: resolvedButtonHeight,
-                            borderRadius: theme?.buttonBorderRadius ?? BUTTON_RADIUS,
+                            borderRadius: visuals.borderRadius,
                         },
                         button.isActive && {
-                            backgroundColor: theme?.buttonActiveBackgroundColor ?? ACTIVE_BG,
+                            backgroundColor: visuals.activeBackgroundColor,
                         },
                     ]}
                     activeOpacity={0.5}
@@ -1420,11 +1462,17 @@ export function EditorToolbar({
                         expanded: options?.showsDisclosure ? options.expanded : undefined,
                     }}>
                     <View>
-                        <ToolbarIcon icon={button.icon} color={color} />
+                        <ToolbarIcon
+                            icon={button.icon}
+                            color={visuals.color}
+                            size={visuals.iconSize}
+                        />
                     </View>
                 </TouchableOpacity>
                 {options?.showsDisclosure ? (
-                    <Text style={[styles.groupDisclosure, { color }]}>{'\u25BE'}</Text>
+                    <Text style={[styles.groupDisclosure, { color: visuals.color }]}>
+                        {'\u25BE'}
+                    </Text>
                 ) : null}
             </View>
         );
@@ -1452,6 +1500,7 @@ export function EditorToolbar({
                         key: item.group.key,
                         label: item.group.label,
                         icon: item.group.icon,
+                        buttonStyle: item.group.buttonStyle,
                         isActive: item.group.isActive,
                         isDisabled: item.group.isDisabled,
                     },
@@ -1636,14 +1685,7 @@ export function EditorToolbar({
                                 },
                             ]}>
                             {menuGroup.children.map((button) => {
-                                const activeColor = theme?.buttonActiveColor ?? ACTIVE_COLOR;
-                                const defaultColor = theme?.buttonColor ?? DEFAULT_COLOR;
-                                const disabledColor = theme?.buttonDisabledColor ?? DISABLED_COLOR;
-                                const color = button.isActive
-                                    ? activeColor
-                                    : button.isDisabled
-                                      ? disabledColor
-                                      : defaultColor;
+                                const visuals = resolveButtonVisuals(button);
                                 return (
                                     <Pressable
                                         key={button.key}
@@ -1654,8 +1696,7 @@ export function EditorToolbar({
                                         style={({ pressed }) => [
                                             styles.menuItem,
                                             button.isActive && {
-                                                backgroundColor:
-                                                    theme?.buttonActiveBackgroundColor ?? ACTIVE_BG,
+                                                backgroundColor: visuals.activeBackgroundColor,
                                             },
                                             pressed &&
                                                 !button.isDisabled && {
@@ -1668,8 +1709,12 @@ export function EditorToolbar({
                                             selected: button.isActive,
                                             disabled: button.isDisabled,
                                         }}>
-                                        <ToolbarIcon icon={button.icon} color={color} />
-                                        <Text style={[styles.menuLabel, { color }]}>
+                                        <ToolbarIcon
+                                            icon={button.icon}
+                                            color={visuals.color}
+                                            size={visuals.iconSize}
+                                        />
+                                        <Text style={[styles.menuLabel, { color: visuals.color }]}>
                                             {button.label}
                                         </Text>
                                     </Pressable>
@@ -1683,12 +1728,20 @@ export function EditorToolbar({
     );
 }
 
-function ToolbarIcon({ icon, color }: { icon: EditorToolbarIcon; color: string }) {
+function ToolbarIcon({
+    icon,
+    color,
+    size,
+}: {
+    icon: EditorToolbarIcon;
+    color: string;
+    size?: number;
+}) {
     const materialIconName = resolveMaterialIconName(icon);
     if (materialIconName) {
         return (
             <View style={styles.iconContainer}>
-                <MaterialIcons name={materialIconName as never} size={20} color={color} />
+                <MaterialIcons name={materialIconName as never} size={size ?? 20} color={color} />
             </View>
         );
     }
@@ -1696,7 +1749,9 @@ function ToolbarIcon({ icon, color }: { icon: EditorToolbarIcon; color: string }
     const glyph = resolveGlyphText(icon) ?? '?';
     return (
         <View style={styles.iconContainer}>
-            <Text style={[styles.iconText, { color }]}>{glyph}</Text>
+            <Text style={[styles.iconText, size == null ? null : { fontSize: size }, { color }]}>
+                {glyph}
+            </Text>
         </View>
     );
 }

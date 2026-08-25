@@ -45,6 +45,7 @@ export {
     type EditorToolbarGroupItem,
     type EditorToolbarGroupPresentation,
     type EditorToolbarIcon,
+    type EditorToolbarButtonStyle,
     type EditorToolbarDefaultIconId,
     type EditorToolbarSFSymbolIcon,
     type EditorToolbarMaterialIcon,

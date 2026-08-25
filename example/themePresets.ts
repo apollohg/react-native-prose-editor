@@ -66,12 +66,7 @@ export interface ExampleThemePreset {
     lineHeightRatio: number;
     headings: EditorHeadingTheme;
     blockquote: Required<Omit<EditorBlockquoteTheme, 'text'>>;
-    list: Required<
-        Pick<
-            EditorListTheme,
-            'indent' | 'baseIndentMultiplier' | 'itemSpacing' | 'markerColor' | 'markerScale'
-        >
-    >;
+    list: EditorListTheme;
     horizontalRule: Required<EditorHorizontalRuleTheme>;
     mentions: EditorMentionTheme;
     links: Required<Omit<EditorLinkTheme, 'fontSize' | 'fontFamily'>>;
@@ -293,9 +288,10 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         list: {
             indent: 14,
             baseIndentMultiplier: 1,
-            itemSpacing: 4,
+            itemSpacing: 6,
             markerColor: '#2a6431',
             markerScale: 1.2,
+            spacingAfter: 10,
         },
         horizontalRule: {
             color: '#c0c7ba',
@@ -339,21 +335,22 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         },
         toolbar: {
             appearance: 'custom',
-            height: 36,
+            height: 48,
             backgroundColor: '#fbfdfa',
             borderColor: '#c6cdc0',
             borderWidth: 1,
             borderRadius: 0,
-            marginTop: 4,
+            marginTop: 0,
             showTopBorder: true,
             keyboardOffset: 0,
             horizontalInset: 0,
             separatorColor: '#dbe0d7',
+            buttonIconSize: 24,
             buttonColor: '#424b3a',
             buttonActiveColor: '#003f0d',
             buttonDisabledColor: '#a8aca5',
             buttonActiveBackgroundColor: '#d2edd3',
-            buttonBorderRadius: 0,
+            buttonBorderRadius: 20,
         },
         slider: {
             minimumTrackTintColor: '#2a6431',
@@ -389,6 +386,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             itemSpacing: 10,
             markerColor: '#b3260e',
             markerScale: 1.7,
+            spacingAfter: 22,
         },
         horizontalRule: {
             color: '#d9553f',
@@ -432,21 +430,22 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         },
         toolbar: {
             appearance: 'custom',
-            height: 48,
+            height: 58,
             backgroundColor: '#7c1403',
             borderColor: '#c74d38',
             borderWidth: 2,
-            borderRadius: 24,
+            borderRadius: 8,
             marginTop: 12,
             showTopBorder: false,
             keyboardOffset: 10,
             horizontalInset: 20,
             separatorColor: '#b23a26',
+            buttonIconSize: 20,
             buttonColor: '#f5e5d3',
             buttonActiveColor: '#fef3e7',
             buttonDisabledColor: '#bb6f60',
             buttonActiveBackgroundColor: '#c43922',
-            buttonBorderRadius: 18,
+            buttonBorderRadius: 8,
         },
         slider: {
             minimumTrackTintColor: '#f8e8d6',
@@ -482,6 +481,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             itemSpacing: 8,
             markerColor: '#c6952c',
             markerScale: 1.4,
+            spacingAfter: 16,
         },
         horizontalRule: {
             color: '#293630',
@@ -528,18 +528,19 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             height: 42,
             backgroundColor: '#141e1a',
             borderColor: '#303e38',
-            borderWidth: 1,
-            borderRadius: 12,
-            marginTop: 8,
+            borderWidth: 0,
+            borderRadius: 0,
+            marginTop: 0,
             showTopBorder: false,
-            keyboardOffset: 6,
-            horizontalInset: 12,
+            keyboardOffset: 0,
+            horizontalInset: 0,
             separatorColor: '#1e2924',
+            buttonIconSize: 20,
             buttonColor: '#86978f',
             buttonActiveColor: '#deaf56',
             buttonDisabledColor: '#3b4540',
             buttonActiveBackgroundColor: '#332405',
-            buttonBorderRadius: 8,
+            buttonBorderRadius: 20,
         },
         slider: {
             minimumTrackTintColor: '#c6952c',
@@ -575,6 +576,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             itemSpacing: 10,
             markerColor: '#ec79a9',
             markerScale: 1.6,
+            spacingAfter: 20,
         },
         horizontalRule: {
             color: '#4c283a',
@@ -628,11 +630,12 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             keyboardOffset: 8,
             horizontalInset: 18,
             separatorColor: '#3b192a',
+            buttonIconSize: 18,
             buttonColor: '#ac8a99',
             buttonActiveColor: '#ff99c2',
             buttonDisabledColor: '#573746',
             buttonActiveBackgroundColor: '#4e1530',
-            buttonBorderRadius: 16,
+            buttonBorderRadius: 46,
         },
         slider: {
             minimumTrackTintColor: '#ec79a9',
@@ -658,12 +661,12 @@ export function buildExampleEditorTheme(
         contentInsets: preset.contentInsets,
         placeholderColor: preset.placeholderColor,
         text: {
+            spacingAfter: preset.paragraphSpacingAfter,
             color: preset.textColor,
             fontSize,
         },
         paragraph: {
             spacingAfter: preset.paragraphSpacingAfter,
-            // `lineHeight` is absolute points, so it tracks the live font size.
             lineHeight: Math.round(fontSize * preset.lineHeightRatio),
         },
         headings: preset.headings,

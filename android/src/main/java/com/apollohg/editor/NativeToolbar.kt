@@ -328,6 +328,7 @@ internal data class NativeToolbarItem(
     val placement: ToolbarItemPlacement? = null,
     val presentation: ToolbarGroupPresentation? = null,
     val items: List<NativeToolbarItem> = emptyList(),
+    val buttonStyle: EditorToolbarButtonStyle? = null,
     val parentGroupKey: String? = null
 ) {
     companion object {
@@ -361,7 +362,7 @@ internal data class NativeToolbarItem(
             val placement = rawItem.optNullableString("placement")?.let {
                 runCatching { ToolbarItemPlacement.valueOf(it) }.getOrNull()
             }
-            return when (type) {
+            val parsed = when (type) {
                 ToolbarItemKind.separator -> {
                     if (!allowSeparator) {
                         null
@@ -451,6 +452,11 @@ internal data class NativeToolbarItem(
                     )
                 }
             }
+            return parsed?.copy(
+                buttonStyle = EditorToolbarButtonStyle.fromJson(
+                    rawItem.optJSONObject("buttonStyle")
+                )
+            )
         }
 
         fun fromJson(json: String?): List<NativeToolbarItem> {
@@ -510,6 +516,7 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
     private val separators = mutableListOf<View>()
     private val mentionChips = mutableListOf<MentionSuggestionChipView>()
     private val buttonBackgroundColors = mutableMapOf<AppCompatButton, Int>()
+    private val buttonCornerRadii = mutableMapOf<AppCompatButton, Float>()
     private val density = resources.displayMetrics.density
     internal var appliedAppearance: EditorToolbarAppearance = EditorToolbarAppearance.CUSTOM
         private set
@@ -604,7 +611,7 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         }
         bindings.forEach { binding ->
             updateButtonAppearance(
-                binding.button,
+                binding,
                 enabled = buttonState(binding.item, state).first,
                 active = buttonState(binding.item, state).second
             )
@@ -627,7 +634,7 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
             val (enabled, active) = buttonState(binding.item, state)
             binding.button.isEnabled = enabled
             binding.button.isSelected = active
-            updateButtonAppearance(binding.button, enabled, active)
+            updateButtonAppearance(binding, enabled, active)
         }
     }
 
@@ -671,6 +678,9 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
     internal fun buttonBackgroundColorAtForTesting(index: Int): Int? =
         bindings.getOrNull(index)?.button?.let { buttonBackgroundColors[it] }
 
+    internal fun buttonCornerRadiusAtForTesting(index: Int): Float? =
+        bindings.getOrNull(index)?.button?.let { buttonCornerRadii[it] }
+
     internal fun mentionChipAtForTesting(index: Int): MentionSuggestionChipView? =
         mentionChips.getOrNull(index)
 
@@ -681,6 +691,8 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         val targetScrollX = if (preserveScrollPosition) centerScrollView.scrollX else 0
         val generation = ++rebuildGeneration
         bindings.clear()
+        buttonBackgroundColors.clear()
+        buttonCornerRadii.clear()
         separators.clear()
         mentionChips.clear()
         contentRow.removeAllViews()
@@ -759,8 +771,9 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
             button.layoutParams = params
-            applyButtonLayout(button, appearance = theme?.appearance ?: EditorToolbarAppearance.CUSTOM)
-            bindings.add(ButtonBinding(item, button))
+            val binding = ButtonBinding(item, button)
+            applyButtonLayout(binding, appearance = theme?.appearance ?: EditorToolbarAppearance.CUSTOM)
+            bindings.add(binding)
             container.addView(button)
         }
     }
@@ -961,69 +974,71 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         separators.forEach(::configureSeparator)
     }
 
-    private fun updateButtonAppearance(button: AppCompatButton, enabled: Boolean, active: Boolean) {
+    private fun updateButtonAppearance(binding: ButtonBinding, enabled: Boolean, active: Boolean) {
+        val button = binding.button
+        val buttonStyle = binding.item.buttonStyle
         val appearance = theme?.appearance ?: EditorToolbarAppearance.CUSTOM
-        applyButtonLayout(button, appearance)
-        val textColor = if (appearance == EditorToolbarAppearance.NATIVE) {
-            when {
-                !enabled -> withAlpha(
+        applyButtonLayout(binding, appearance)
+        val textColor = when {
+            !enabled -> buttonStyle?.disabledColor
+                ?: theme?.buttonDisabledColor
+                ?: withAlpha(
                     resolveColorAttr(
                         MaterialR.attr.colorOnSurface,
                         android.R.attr.textColorPrimary
                     ),
                     0.38f
                 )
-                active -> resolveColorAttr(
-                    MaterialR.attr.colorOnSecondaryContainer,
-                    MaterialR.attr.colorOnPrimaryContainer,
-                    MaterialR.attr.colorOnSurface,
-                    android.R.attr.textColorPrimary
-                )
-                else -> resolveColorAttr(
+            active -> buttonStyle?.activeColor
+                ?: theme?.buttonActiveColor
+                ?: if (appearance == EditorToolbarAppearance.NATIVE) {
+                    resolveColorAttr(
+                        MaterialR.attr.colorOnSecondaryContainer,
+                        MaterialR.attr.colorOnPrimaryContainer,
+                        MaterialR.attr.colorOnSurface,
+                        android.R.attr.textColorPrimary
+                    )
+                } else {
+                    resolveColorAttr(
+                        AppCompatR.attr.colorPrimary,
+                        android.R.attr.textColorPrimary
+                    )
+                }
+            else -> buttonStyle?.color
+                ?: theme?.buttonColor
+                ?: resolveColorAttr(
                     MaterialR.attr.colorOnSurfaceVariant,
                     MaterialR.attr.colorOnSurface,
                     android.R.attr.textColorSecondary
                 )
-            }
-        } else {
-            when {
-                !enabled -> theme?.buttonDisabledColor ?: withAlpha(
-                    resolveColorAttr(MaterialR.attr.colorOnSurface, android.R.attr.textColorPrimary),
-                    0.38f
-                )
-                active -> theme?.buttonActiveColor ?: resolveColorAttr(
-                    AppCompatR.attr.colorPrimary,
-                    android.R.attr.textColorPrimary
-                )
-                else -> theme?.buttonColor ?: resolveColorAttr(
-                    MaterialR.attr.colorOnSurfaceVariant,
-                    MaterialR.attr.colorOnSurface,
-                    android.R.attr.textColorSecondary
-                )
-            }
         }
-        val backgroundColor = if (appearance == EditorToolbarAppearance.NATIVE) {
-            if (active) {
-                resolveColorAttr(
-                    MaterialR.attr.colorSecondaryContainer,
-                    MaterialR.attr.colorPrimaryContainer,
-                    MaterialR.attr.colorSurfaceVariant,
-                    android.R.attr.colorAccent
-                )
-            } else {
-                Color.TRANSPARENT
-            }
-        } else if (active) {
-            theme?.buttonActiveBackgroundColor ?: resolveColorAttr(
-                MaterialR.attr.colorPrimaryContainer,
-                MaterialR.attr.colorSecondaryContainer,
-                MaterialR.attr.colorSurfaceVariant,
-                android.R.attr.colorAccent
-            )
-        } else {
+        val backgroundColor = if (!active) {
             Color.TRANSPARENT
+        } else {
+            buttonStyle?.activeBackgroundColor
+                ?: theme?.buttonActiveBackgroundColor
+                ?: if (appearance == EditorToolbarAppearance.NATIVE) {
+                    resolveColorAttr(
+                        MaterialR.attr.colorSecondaryContainer,
+                        MaterialR.attr.colorPrimaryContainer,
+                        MaterialR.attr.colorSurfaceVariant,
+                        android.R.attr.colorAccent
+                    )
+                } else {
+                    resolveColorAttr(
+                        MaterialR.attr.colorPrimaryContainer,
+                        MaterialR.attr.colorSecondaryContainer,
+                        MaterialR.attr.colorSurfaceVariant,
+                        android.R.attr.colorAccent
+                    )
+                }
         }
-        val buttonCornerRadiusPx = (theme?.resolvedButtonBorderRadius() ?: 6f) * density
+        val defaultCornerRadius = theme?.resolvedButtonBorderRadius() ?: 6f
+        val buttonCornerRadiusDp = (buttonStyle?.borderRadius ?: defaultCornerRadius)
+            .takeIf { it.isFinite() }
+            ?.coerceAtLeast(0f)
+            ?: defaultCornerRadius
+        val buttonCornerRadiusPx = buttonCornerRadiusDp * density
         val drawable = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = buttonCornerRadiusPx
@@ -1031,6 +1046,7 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         }
         appliedButtonCornerRadiusPx = buttonCornerRadiusPx
         buttonBackgroundColors[button] = backgroundColor
+        buttonCornerRadii[button] = buttonCornerRadiusPx
         button.background = drawable
         button.setTextColor(textColor)
         button.alpha = if (enabled || appearance == EditorToolbarAppearance.NATIVE) 1f else 0.7f
@@ -1162,11 +1178,17 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         endRow.gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }
 
-    private fun applyButtonLayout(button: AppCompatButton, appearance: EditorToolbarAppearance) {
+    private fun applyButtonLayout(binding: ButtonBinding, appearance: EditorToolbarAppearance) {
+        val button = binding.button
         val isNative = appearance == EditorToolbarAppearance.NATIVE
         val toolbarHeightDp = resolvedToolbarHeightDp(isNative)
-        val sizePx = dp(resolvedButtonSizeDp(isNative, toolbarHeightDp).roundToInt())
-        button.textSize = if (isNative) NATIVE_BUTTON_ICON_SIZE_SP else 16f
+        val buttonSizeDp = resolvedButtonSizeDp(isNative, toolbarHeightDp)
+        val sizePx = dp(buttonSizeDp.roundToInt())
+        val requestedIconSize = binding.item.buttonStyle?.iconSize ?: theme?.buttonIconSize
+        button.textSize = requestedIconSize
+            ?.takeIf { it.isFinite() && it > 0f }
+            ?.coerceAtMost(buttonSizeDp)
+            ?: if (isNative) NATIVE_BUTTON_ICON_SIZE_SP else 16f
         button.minWidth = sizePx
         button.minimumWidth = sizePx
         button.minHeight = sizePx

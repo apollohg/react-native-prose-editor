@@ -291,6 +291,24 @@ enum EditorToolbarAppearance: String {
     case native
 }
 
+struct EditorToolbarButtonStyle {
+    var iconSize: CGFloat?
+    var color: UIColor?
+    var activeColor: UIColor?
+    var disabledColor: UIColor?
+    var activeBackgroundColor: UIColor?
+    var borderRadius: CGFloat?
+
+    init(dictionary: [String: Any]) {
+        iconSize = EditorTheme.cgFloat(dictionary["iconSize"])
+        color = EditorTheme.color(from: dictionary["color"])
+        activeColor = EditorTheme.color(from: dictionary["activeColor"])
+        disabledColor = EditorTheme.color(from: dictionary["disabledColor"])
+        activeBackgroundColor = EditorTheme.color(from: dictionary["activeBackgroundColor"])
+        borderRadius = EditorTheme.cgFloat(dictionary["borderRadius"])
+    }
+}
+
 struct EditorToolbarTheme {
     var appearance: EditorToolbarAppearance?
     var height: CGFloat?
@@ -304,6 +322,7 @@ struct EditorToolbarTheme {
     var horizontalInset: CGFloat?
     var separatorColor: UIColor?
     var buttonColor: UIColor?
+    var buttonIconSize: CGFloat?
     var buttonActiveColor: UIColor?
     var buttonDisabledColor: UIColor?
     var buttonActiveBackgroundColor: UIColor?
@@ -322,6 +341,7 @@ struct EditorToolbarTheme {
         horizontalInset = EditorTheme.cgFloat(dictionary["horizontalInset"])
         separatorColor = EditorTheme.color(from: dictionary["separatorColor"])
         buttonColor = EditorTheme.color(from: dictionary["buttonColor"])
+        buttonIconSize = EditorTheme.cgFloat(dictionary["buttonIconSize"])
         buttonActiveColor = EditorTheme.color(from: dictionary["buttonActiveColor"])
         buttonDisabledColor = EditorTheme.color(from: dictionary["buttonDisabledColor"])
         buttonActiveBackgroundColor = EditorTheme.color(from: dictionary["buttonActiveBackgroundColor"])

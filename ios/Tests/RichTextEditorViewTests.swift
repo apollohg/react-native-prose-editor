@@ -1463,6 +1463,75 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
     }
 
+    func testNativeToolbarCascadesGlobalAndPerButtonStyles() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        toolbar.setItemsJSONForTesting("""
+        [
+          {
+            "type": "action",
+            "key": "idle",
+            "label": "Idle",
+            "icon": { "type": "glyph", "text": "I" }
+          },
+          {
+            "type": "action",
+            "key": "disabled",
+            "label": "Disabled",
+            "icon": { "type": "glyph", "text": "D" },
+            "isActive": true,
+            "isDisabled": true,
+            "buttonStyle": { "disabledColor": "#444444" }
+          },
+          {
+            "type": "action",
+            "key": "global-active",
+            "label": "Global Active",
+            "icon": { "type": "glyph", "text": "T" },
+            "isActive": true
+          },
+          {
+            "type": "action",
+            "key": "active",
+            "label": "Active",
+            "icon": { "type": "glyph", "text": "A" },
+            "isActive": true,
+            "buttonStyle": {
+              "iconSize": 26,
+              "activeColor": "#555555",
+              "activeBackgroundColor": "#666666",
+              "borderRadius": 12
+            }
+          }
+        ]
+        """)
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+            "buttonIconSize": 18,
+            "buttonColor": "#111111",
+            "buttonActiveColor": "#222222",
+            "buttonDisabledColor": "#333333",
+            "buttonActiveBackgroundColor": "#777777",
+            "buttonBorderRadius": 9,
+        ]))
+
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(0), EditorTheme.color(from: "#111111"))
+        XCTAssertEqual(toolbar.buttonFontSizeForTesting(0) ?? -1, 18, accuracy: 0.1)
+        XCTAssertEqual(toolbar.buttonCornerRadiusForTesting(0) ?? -1, 9, accuracy: 0.1)
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(1), EditorTheme.color(from: "#444444"))
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(2), EditorTheme.color(from: "#222222"))
+        XCTAssertEqual(
+            toolbar.buttonBackgroundColorForTesting(2),
+            EditorTheme.color(from: "#777777")
+        )
+        XCTAssertEqual(toolbar.buttonTintColorForTesting(3), EditorTheme.color(from: "#555555"))
+        XCTAssertEqual(toolbar.buttonFontSizeForTesting(3) ?? -1, 26, accuracy: 0.1)
+        XCTAssertEqual(
+            toolbar.buttonBackgroundColorForTesting(3),
+            EditorTheme.color(from: "#666666")
+        )
+        XCTAssertEqual(toolbar.buttonCornerRadiusForTesting(3) ?? -1, 12, accuracy: 0.1)
+    }
+
     /// A configured `UIButton` resolves its own selected-state background, so
     /// filling `backgroundColor` as well stacks two shapes into a double halo.
     func testActiveButtonPaintsExactlyOneBackground() {

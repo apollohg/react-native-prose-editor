@@ -20,7 +20,6 @@ import {
 } from '../EditorToolbar';
 import type { ActiveState, HistoryState } from '../NativeEditorBridge';
 
-
 const EMPTY_ACTIVE_STATE: ActiveState = {
     marks: {},
     markAttrs: {},
@@ -101,14 +100,12 @@ function ToolbarFrameProbe({ ownerId }: { ownerId: number }) {
     return <Text testID='toolbar-frame-probe'>{JSON.stringify(frames)}</Text>;
 }
 
-
 describe('EditorToolbar', () => {
     afterEach(() => {
         act(() => {
             _resetEditorToolbarFrameRegistryForTests();
         });
     });
-
 
     describe('rendering', () => {
         it('renders all 13 buttons including blockquote and list depth controls', () => {
@@ -552,8 +549,96 @@ describe('EditorToolbar', () => {
             // max(1, min(40, 60 - 4)) = min(40, 56) = 40.
             expect(boldButtonStyle.height).toBe(40);
         });
-    });
 
+        it('cascades toolbar and per-button icon and state styles', () => {
+            const { getByLabelText, getByText } = renderToolbar({
+                theme: {
+                    buttonIconSize: 18,
+                    buttonColor: '#101010',
+                    buttonActiveColor: '#202020',
+                    buttonDisabledColor: '#303030',
+                    buttonActiveBackgroundColor: '#404040',
+                    buttonBorderRadius: 5,
+                },
+                toolbarItems: [
+                    {
+                        type: 'action',
+                        key: 'global',
+                        label: 'Global',
+                        icon: { type: 'glyph', text: 'G' },
+                    },
+                    {
+                        type: 'action',
+                        key: 'idle',
+                        label: 'Idle',
+                        icon: { type: 'glyph', text: 'I' },
+                        buttonStyle: { iconSize: 24, color: '#111111' },
+                    },
+                    {
+                        type: 'action',
+                        key: 'global-active',
+                        label: 'Global Active',
+                        icon: { type: 'glyph', text: 'T' },
+                        isActive: true,
+                    },
+                    {
+                        type: 'action',
+                        key: 'active',
+                        label: 'Active',
+                        icon: { type: 'glyph', text: 'A' },
+                        isActive: true,
+                        buttonStyle: {
+                            activeColor: '#222222',
+                            activeBackgroundColor: '#333333',
+                            borderRadius: 12,
+                        },
+                    },
+                    {
+                        type: 'action',
+                        key: 'disabled',
+                        label: 'Disabled',
+                        icon: { type: 'glyph', text: 'D' },
+                        isActive: true,
+                        isDisabled: true,
+                        buttonStyle: { disabledColor: '#444444' },
+                    },
+                ],
+                onToolbarAction: jest.fn(),
+            });
+
+            expect(StyleSheet.flatten(getByText('G').props.style)).toMatchObject({
+                color: '#101010',
+                fontSize: 18,
+            });
+            expect(StyleSheet.flatten(getByText('I').props.style)).toMatchObject({
+                color: '#111111',
+                fontSize: 24,
+            });
+            expect(StyleSheet.flatten(getByLabelText('Global').props.style)).toMatchObject({
+                borderRadius: 5,
+            });
+            expect(StyleSheet.flatten(getByText('T').props.style)).toMatchObject({
+                color: '#202020',
+                fontSize: 18,
+            });
+            expect(StyleSheet.flatten(getByLabelText('Global Active').props.style)).toMatchObject({
+                backgroundColor: '#404040',
+                borderRadius: 5,
+            });
+            expect(StyleSheet.flatten(getByText('A').props.style)).toMatchObject({
+                color: '#222222',
+                fontSize: 18,
+            });
+            expect(StyleSheet.flatten(getByLabelText('Active').props.style)).toMatchObject({
+                backgroundColor: '#333333',
+                borderRadius: 12,
+            });
+            expect(StyleSheet.flatten(getByText('D').props.style)).toMatchObject({
+                color: '#444444',
+                fontSize: 18,
+            });
+        });
+    });
 
     describe('active state visual feedback', () => {
         it('bold button gets selected state when bold mark is active', () => {
@@ -712,7 +797,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-
     describe('disabled state for undo/redo', () => {
         it('undo button is disabled when canUndo is false', () => {
             const { getByLabelText } = renderToolbar({
@@ -831,7 +915,6 @@ describe('EditorToolbar', () => {
             expect(props.onOutdentList).toHaveBeenCalledTimes(1);
         });
     });
-
 
     describe('button press callbacks', () => {
         it('bold button fires onToggleBold', () => {
@@ -1095,7 +1178,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-
     describe('schema-aware disabled state', () => {
         it('mark buttons are disabled when not in allowedMarks', () => {
             const { getByLabelText } = renderToolbar({
@@ -1273,7 +1355,6 @@ describe('EditorToolbar', () => {
         });
     });
 
-
     describe('focus preservation', () => {
         it('publishes menu actions as a second owner-scoped native hit-test frame', () => {
             jest.useFakeTimers();
@@ -1302,7 +1383,8 @@ describe('EditorToolbar', () => {
             const measureInWindow = jest
                 .spyOn(viewPrototype, 'measureInWindow')
                 .mockImplementation(function (callback) {
-                    const testID = (this as unknown as { props?: { testID?: string } }).props?.testID;
+                    const testID = (this as unknown as { props?: { testID?: string } }).props
+                        ?.testID;
                     if (testID === 'editor-toolbar-root') {
                         callback(12, 24, 320, 48);
                         return;

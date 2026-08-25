@@ -35,10 +35,7 @@ import {
     type ReadonlyActiveState,
     type Selection,
 } from './NativeEditorBridge';
-import {
-    NativeEditorV2ErrorBase,
-    NativeEditorV2OperationError,
-} from './NativeEditorBoundaryError';
+import { NativeEditorV2ErrorBase, NativeEditorV2OperationError } from './NativeEditorBoundaryError';
 import { allocateEditorUpdateRevision } from './EditorUpdateRevision';
 import {
     ExternalTextCompositionManager,
@@ -361,6 +358,7 @@ function mapToolbarChildForNative(
             key: LINK_TOOLBAR_ACTION_KEY,
             label: item.label,
             icon: item.icon as EditorToolbarIcon,
+            buttonStyle: item.buttonStyle,
             placement: item.placement,
             isActive: activeState.marks.link === true,
             isDisabled: !editable || !onRequestLink || !activeState.allowedMarks.includes('link'),
@@ -372,6 +370,7 @@ function mapToolbarChildForNative(
             key: IMAGE_TOOLBAR_ACTION_KEY,
             label: item.label,
             icon: item.icon as EditorToolbarIcon,
+            buttonStyle: item.buttonStyle,
             placement: item.placement,
             isActive: false,
             isDisabled:
@@ -903,9 +902,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             value,
             valueJSON: controlledValueJSON,
         };
-        const deliveredControlledValueRef = useRef<ControlledValueDelivery>(
-            currentControlledValue
-        );
+        const deliveredControlledValueRef = useRef<ControlledValueDelivery>(currentControlledValue);
         if (
             deliveredControlledValueRef.current.manager !== externalCompositionManager ||
             valueJSONUpdateMode !== 'reset' ||

@@ -432,6 +432,80 @@ class NativeToolbarTest {
     }
 
     @Test
+    fun `native toolbar cascades global and per-button icon and state styles`() {
+        val context = RuntimeEnvironment.getApplication()
+        val density = context.resources.displayMetrics.density
+        val scaledDensity = density * context.resources.configuration.fontScale
+        val toolbar = EditorKeyboardToolbarView(context)
+        val items = NativeToolbarItem.fromJson(
+            """
+            [
+              {
+                "type":"action","key":"idle","label":"Idle",
+                "icon":{"type":"glyph","text":"I"}
+              },
+              {
+                "type":"action","key":"disabled","label":"Disabled",
+                "icon":{"type":"glyph","text":"D"},"isActive":true,"isDisabled":true,
+                "buttonStyle":{"disabledColor":"#444444"}
+              },
+              {
+                "type":"action","key":"global-active","label":"Global Active",
+                "icon":{"type":"glyph","text":"T"},"isActive":true
+              },
+              {
+                "type":"action","key":"active","label":"Active",
+                "icon":{"type":"glyph","text":"A"},"isActive":true,
+                "buttonStyle":{
+                  "iconSize":26,
+                  "activeColor":"#555555",
+                  "activeBackgroundColor":"#666666",
+                  "borderRadius":12
+                }
+              }
+            ]
+            """.trimIndent()
+        )
+        val theme = EditorToolbarTheme.fromJson(
+            org.json.JSONObject(
+                """
+                {
+                  "appearance":"native",
+                  "buttonIconSize":18,
+                  "buttonColor":"#111111",
+                  "buttonActiveColor":"#222222",
+                  "buttonDisabledColor":"#333333",
+                  "buttonActiveBackgroundColor":"#777777",
+                  "buttonBorderRadius":9
+                }
+                """.trimIndent()
+            )
+        )
+
+        toolbar.setItems(items)
+        toolbar.applyTheme(theme)
+        toolbar.applyState(NativeToolbarState.empty)
+
+        val idle = requireNotNull(toolbar.buttonAtForTesting(0))
+        val disabled = requireNotNull(toolbar.buttonAtForTesting(1))
+        val globalActive = requireNotNull(toolbar.buttonAtForTesting(2))
+        val active = requireNotNull(toolbar.buttonAtForTesting(3))
+        assertEquals(Color.parseColor("#111111"), idle.currentTextColor)
+        assertEquals(18f * scaledDensity, idle.textSize, 0.01f)
+        assertEquals(9f * density, toolbar.buttonCornerRadiusAtForTesting(0) ?: -1f, 0.01f)
+        assertEquals(Color.parseColor("#444444"), disabled.currentTextColor)
+        assertEquals(Color.parseColor("#222222"), globalActive.currentTextColor)
+        assertEquals(
+            Color.parseColor("#777777"),
+            toolbar.buttonBackgroundColorAtForTesting(2)
+        )
+        assertEquals(Color.parseColor("#555555"), active.currentTextColor)
+        assertEquals(26f * scaledDensity, active.textSize, 0.01f)
+        assertEquals(Color.parseColor("#666666"), toolbar.buttonBackgroundColorAtForTesting(3))
+        assertEquals(12f * density, toolbar.buttonCornerRadiusAtForTesting(3) ?: -1f, 0.01f)
+    }
+
+    @Test
     fun `toolbar switches to mention suggestion mode`() {
         val context = RuntimeEnvironment.getApplication()
         val toolbar = EditorKeyboardToolbarView(context)

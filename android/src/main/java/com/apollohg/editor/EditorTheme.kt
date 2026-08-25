@@ -331,6 +331,31 @@ enum class EditorToolbarAppearance {
     }
 }
 
+data class EditorToolbarButtonStyle(
+    val iconSize: Float? = null,
+    val color: Int? = null,
+    val activeColor: Int? = null,
+    val disabledColor: Int? = null,
+    val activeBackgroundColor: Int? = null,
+    val borderRadius: Float? = null
+) {
+    companion object {
+        fun fromJson(json: JSONObject?): EditorToolbarButtonStyle? {
+            json ?: return null
+            return EditorToolbarButtonStyle(
+                iconSize = json.optNullableFloat("iconSize"),
+                color = parseColor(json.optNullableString("color")),
+                activeColor = parseColor(json.optNullableString("activeColor")),
+                disabledColor = parseColor(json.optNullableString("disabledColor")),
+                activeBackgroundColor = parseColor(
+                    json.optNullableString("activeBackgroundColor")
+                ),
+                borderRadius = json.optNullableFloat("borderRadius")
+            )
+        }
+    }
+}
+
 data class EditorToolbarTheme(
     val appearance: EditorToolbarAppearance? = null,
     val height: Float? = null,
@@ -344,6 +369,7 @@ data class EditorToolbarTheme(
     val horizontalInset: Float? = null,
     val separatorColor: Int? = null,
     val buttonColor: Int? = null,
+    val buttonIconSize: Float? = null,
     val buttonActiveColor: Int? = null,
     val buttonDisabledColor: Int? = null,
     val buttonActiveBackgroundColor: Int? = null,
@@ -357,7 +383,8 @@ data class EditorToolbarTheme(
 
     fun resolvedBorderWidth(): Float = borderWidth ?: if (appearance == EditorToolbarAppearance.NATIVE) 0f else 1f
 
-    fun resolvedButtonBorderRadius(): Float = if (appearance == EditorToolbarAppearance.NATIVE) 20f else (buttonBorderRadius ?: 6f)
+    fun resolvedButtonBorderRadius(): Float =
+        buttonBorderRadius ?: if (appearance == EditorToolbarAppearance.NATIVE) 20f else 6f
 
     companion object {
         fun fromJson(json: JSONObject?): EditorToolbarTheme? {
@@ -375,6 +402,7 @@ data class EditorToolbarTheme(
                 horizontalInset = json.optNullableFloat("horizontalInset"),
                 separatorColor = parseColor(json.optNullableString("separatorColor")),
                 buttonColor = parseColor(json.optNullableString("buttonColor")),
+                buttonIconSize = json.optNullableFloat("buttonIconSize"),
                 buttonActiveColor = parseColor(json.optNullableString("buttonActiveColor")),
                 buttonDisabledColor = parseColor(json.optNullableString("buttonDisabledColor")),
                 buttonActiveBackgroundColor = parseColor(json.optNullableString("buttonActiveBackgroundColor")),

@@ -18,6 +18,7 @@ type ToolbarNumericKey =
     | 'borderRadius'
     | 'borderWidth'
     | 'buttonBorderRadius'
+    | 'buttonIconSize'
     | 'keyboardOffset'
     | 'horizontalInset'
     | 'marginTop';
@@ -44,8 +45,9 @@ const NUMERIC_FIELDS: readonly {
         min: 0,
         max: 20,
         step: 1,
-        visualOnly: true,
+        visualOnly: false,
     },
+    { key: 'buttonIconSize', label: 'Icon size', min: 8, max: 32, step: 1, visualOnly: false },
     { key: 'borderWidth', label: 'Border width', min: 0, max: 8, step: 0.5, visualOnly: true },
     {
         key: 'keyboardOffset',
@@ -200,7 +202,7 @@ function ToolbarSettingsPanelInner({
                 title='Appearance'
                 hint={
                     isNativeAppearance
-                        ? 'Native uses platform chrome and ignores the colour and radius tokens. Layout tokens below still apply.'
+                        ? 'Native uses platform chrome, while explicit button colours, icon size, and button radius still override its defaults.'
                         : 'Custom honours every token below on both the keyboard toolbar and the inline bubble.'
                 }
                 chrome={chrome}>
@@ -236,27 +238,29 @@ function ToolbarSettingsPanelInner({
                 />
             </PanelSection>
 
-            {isNativeAppearance ? null : (
-                <PanelSection
-                    title='Colours'
-                    hint='Tap a swatch to open its channel sliders. The theme commits on release.'
-                    chrome={chrome}>
-                    <View style={sharedStyles.columnGrid}>
-                        {TOOLBAR_COLOR_FIELDS.map(({ key, label }) => (
-                            <ToolbarColorRow
-                                key={key}
-                                colorKey={key}
-                                label={label}
-                                value={toolbarTheme[key]}
-                                isExpanded={expandedColor === key}
-                                onToggleKey={toggleColorKey}
-                                onChangeKey={changeColorKey}
-                                chrome={chrome}
-                            />
-                        ))}
-                    </View>
-                </PanelSection>
-            )}
+            <PanelSection
+                title='Colours'
+                hint={
+                    isNativeAppearance
+                        ? 'Button colours override native defaults. Platform chrome may ignore background and border colours.'
+                        : 'Tap a swatch to open its channel sliders. The theme commits on release.'
+                }
+                chrome={chrome}>
+                <View style={sharedStyles.columnGrid}>
+                    {TOOLBAR_COLOR_FIELDS.map(({ key, label }) => (
+                        <ToolbarColorRow
+                            key={key}
+                            colorKey={key}
+                            label={label}
+                            value={toolbarTheme[key]}
+                            isExpanded={expandedColor === key}
+                            onToggleKey={toggleColorKey}
+                            onChangeKey={changeColorKey}
+                            chrome={chrome}
+                        />
+                    ))}
+                </View>
+            </PanelSection>
         </View>
     );
 }

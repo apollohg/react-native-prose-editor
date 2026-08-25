@@ -743,6 +743,40 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('preserves buttonStyle when link items are mapped to native actions', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const buttonStyle = {
+            iconSize: 22,
+            color: '#111111',
+            activeColor: '#222222',
+            disabledColor: '#333333',
+            activeBackgroundColor: '#444444',
+            borderRadius: 9,
+        };
+        const { getByTestId } = render(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                toolbarItems={[
+                    {
+                        type: 'link',
+                        label: 'Link',
+                        icon: { type: 'default', id: 'link' },
+                        buttonStyle,
+                    },
+                ]}
+                onRequestLink={jest.fn()}
+            />
+        );
+
+        const items = JSON.parse(getByTestId('native-editor-view').props.toolbarItemsJson);
+        expect(items[0]).toMatchObject({
+            type: 'action',
+            key: '__native-editor-link__',
+            buttonStyle,
+        });
+        handle.destroy();
+    });
+
     it('serializes Android input options for the native view', () => {
         const platformSpy = jest.replaceProperty(Platform, 'OS', 'android');
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
@@ -823,10 +857,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         await session.update('on arrival');
         await session.commit('O/A');
 
-        expect(mockNativeUpdateExternalComposition).toHaveBeenCalledWith(
-            sessionId,
-            'on arrival'
-        );
+        expect(mockNativeUpdateExternalComposition).toHaveBeenCalledWith(sessionId, 'on arrival');
         expect(mockNativeCommitExternalComposition).toHaveBeenCalledWith(sessionId, 'O/A');
         handle.destroy();
     });
@@ -942,9 +973,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const onEnd = jest.fn();
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();
-        const { getByTestId } = render(
-            <NativeRichTextEditor ref={ref} documentHandle={handle} />
-        );
+        const { getByTestId } = render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
         await ref.current!.beginExternalTextComposition({ onEnd });
         const sessionId = mockNativeBeginExternalComposition.mock.calls.at(-1)![0];
         const endEvent = {
@@ -987,8 +1016,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const { getByTestId, rerender } = render(
             <NativeRichTextEditor ref={ref} documentHandle={handleA} />
         );
-        const staleEndHandler = getByTestId('native-editor-view').props
-            .onExternalTextCompositionEnd;
+        const staleEndHandler =
+            getByTestId('native-editor-view').props.onExternalTextCompositionEnd;
 
         rerender(<NativeRichTextEditor ref={ref} documentHandle={handleB} />);
         await ref.current!.beginExternalTextComposition({ onEnd: onEndB });
@@ -1024,9 +1053,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const ref = createRef<NativeRichTextEditorRef>();
         const received: unknown[] = [];
         handle.addErrorListener((error) => received.push(error));
-        const { getByTestId } = render(
-            <NativeRichTextEditor ref={ref} documentHandle={handle} />
-        );
+        const { getByTestId } = render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
         await ref.current!.beginExternalTextComposition();
 
         expect(() => {
@@ -1081,9 +1108,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         mockExternalCompositionSupported = false;
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();
-        const { rerender } = render(
-            <NativeRichTextEditor ref={ref} documentHandle={handle} />
-        );
+        const { rerender } = render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
         expect(ref.current!.supportsExternalTextComposition()).toBe(false);
 
         rerender(<NativeRichTextEditor ref={ref} documentHandle={handle} editable={false} />);
@@ -2018,11 +2043,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(getByTestId('native-editor-view').props.editorUpdateEditorId).toBe(handleA.editorId);
 
         rerender(
-            <NativeRichTextEditor
-                ref={ref}
-                documentHandle={handleB}
-                onFocus={onReboundFocus}
-            />
+            <NativeRichTextEditor ref={ref} documentHandle={handleB} onFocus={onReboundFocus} />
         );
 
         const view = getByTestId('native-editor-view');
@@ -2066,9 +2087,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 nativeEvent: { editorId: localHandle.editorId, isFocused: true },
             });
         });
-        rerender(
-            <NativeRichTextEditor documentHandle={roomHandle} onFocus={onRoomFocus} />
-        );
+        rerender(<NativeRichTextEditor documentHandle={roomHandle} onFocus={onRoomFocus} />);
         expect(queryByTestId('native-editor-view')).toBeNull();
 
         act(() => {
