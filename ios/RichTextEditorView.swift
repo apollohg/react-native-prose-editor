@@ -1065,6 +1065,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         lastAuthorizedTextStorage as String
     }
     private(set) var lastRenderAppliedPatchForTesting: Bool = false
+    var onApplyingRustTextForTesting: (() -> Void)?
     var captureApplyUpdateTraceForTesting = false
     private(set) var lastApplyUpdateTraceForTesting: ApplyUpdateTrace?
     private var currentRenderBlocks: [[[String: Any]]]? = nil
@@ -1110,6 +1111,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// and replaying a user input operation through Rust, including the
     /// trailing UIKit text-storage callbacks that arrive on the next run loop.
     private var interceptedInputDepth = 0
+    private var deferredInsertTexts: [String] = []
+    private var deferredInsertDrainScheduled = false
+    private var isReplayingDeferredInsertText = false
     private var reconciliationWorkScheduled = false
     private var nativeTextMutationCommitScheduled = false
     private var pendingNativeTextMutation: NativeTextMutation?
@@ -2151,8 +2155,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// underlying text storage directly), we route through Rust.
     override func insertText(_ text: String) {
         ensureInternalTextViewDelegate()
-        guard !isApplyingRustState else {
-            super.insertText(text)
+        if isApplyingRustState
+            || (!isReplayingDeferredInsertText && !deferredInsertTexts.isEmpty)
+        {
+            enqueueDeferredInsertText(text)
             return
         }
         guard editorId != 0 else {
@@ -2161,6 +2167,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
         guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
+        if !isReplayingDeferredInsertText, !deferredInsertTexts.isEmpty {
+            enqueueDeferredInsertText(text)
+            return
+        }
 
         if text == "\n" {
             guard commitActiveMarkedTextBeforeReturn() else { return }
@@ -3393,7 +3403,46 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                     allowAfterBlur: false,
                     allowWhileIntercepting: false
                 )
+                self.drainDeferredInsertTextIfReady()
             }
+        }
+    }
+
+    private func enqueueDeferredInsertText(_ text: String) {
+        deferredInsertTexts.append(text)
+        scheduleDeferredInsertDrain()
+    }
+
+    private func scheduleDeferredInsertDrain() {
+        guard !deferredInsertDrainScheduled else { return }
+        deferredInsertDrainScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.drainDeferredInsertTextIfReady()
+        }
+    }
+
+    private func drainDeferredInsertTextIfReady() {
+        deferredInsertDrainScheduled = false
+        guard !deferredInsertTexts.isEmpty else { return }
+        guard editorId != 0 else {
+            deferredInsertTexts.removeAll()
+            return
+        }
+        guard !isApplyingRustState,
+              interceptedInputDepth == 0,
+              pendingNativeTextMutation == nil,
+              !nativeTextMutationCommitScheduled
+        else {
+            scheduleDeferredInsertDrain()
+            return
+        }
+
+        let text = deferredInsertTexts.removeFirst()
+        isReplayingDeferredInsertText = true
+        defer { isReplayingDeferredInsertText = false }
+        insertText(text)
+        if !deferredInsertTexts.isEmpty {
+            scheduleDeferredInsertDrain()
         }
     }
 
@@ -4541,6 +4590,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     func discardTransientNativeInputForEditorRebind() -> String? {
         let externalCompositionResultJSON =
             cancelExternalTextCompositionForLifecycleIfNeeded()
+        deferredInsertTexts.removeAll()
+        deferredInsertDrainScheduled = false
+        isReplayingDeferredInsertText = false
         resetPendingNativeTextMutationState()
         lastAuthorizedSelectedUtf16Range = nil
         logicalSelectionScalarRange = nil
@@ -5470,6 +5522,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             stringMutationNanos =
                 DispatchTime.now().uptimeNanoseconds - stringMutationStartedAt
         }
+        onApplyingRustTextForTesting?()
         let endEditingStartedAt = DispatchTime.now().uptimeNanoseconds
         textStorage.endEditing()
         let endEditingNanos = DispatchTime.now().uptimeNanoseconds - endEditingStartedAt

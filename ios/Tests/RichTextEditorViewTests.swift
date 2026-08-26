@@ -10461,6 +10461,13 @@ final class EditorV2StagingViewTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 
+    private func flushMain(until condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(1.0)
+        repeat {
+            flushMain()
+        } while !condition() && Date() < deadline
+    }
+
     private func setCollapsedCaret(in textView: UITextView, utf16Offset: Int) {
         textView.selectedRange = NSRange(location: utf16Offset, length: 0)
     }
@@ -10559,6 +10566,69 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertEqual(v2DocumentText(adapter), "the n")
         XCTAssertEqual(view.textView.textStorage.string, "the n")
         XCTAssertEqual(view.textView.selectedRange, NSRange(location: 5, length: 0))
+    }
+
+    func testStagingAutocorrectQueuesSpaceDeliveredDuringRustRender() {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        for character in "thueh" {
+            view.textView.insertText(String(character))
+        }
+
+        view.textView.onApplyingRustTextForTesting = { [weak textView = view.textView] in
+            textView?.onApplyingRustTextForTesting = nil
+            textView?.insertText(" ")
+        }
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 4),
+            with: "thrus"
+        )
+        setCollapsedCaret(in: view.textView, utf16Offset: 6)
+        flushMain {
+            v2DocumentText(adapter) == "thrush "
+                && view.textView.textStorage.string == "thrush "
+                && view.textView.selectedRange == NSRange(location: 7, length: 0)
+        }
+
+        XCTAssertEqual(v2DocumentText(adapter), "thrush ")
+        XCTAssertEqual(view.textView.textStorage.string, "thrush ")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 7, length: 0))
+    }
+
+    func testStagingAutocorrectDoesNotLetFollowingInputOvertakeDeferredSpace() {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        for character in "thueh" {
+            view.textView.insertText(String(character))
+        }
+
+        view.textView.onApplyingRustTextForTesting = { [weak textView = view.textView] in
+            textView?.onApplyingRustTextForTesting = nil
+            textView?.insertText(" ")
+        }
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 4),
+            with: "thrus"
+        )
+        setCollapsedCaret(in: view.textView, utf16Offset: 6)
+
+        view.textView.insertText("x")
+        view.textView.insertText("y")
+        flushMain {
+            v2DocumentText(adapter) == "thrush xy"
+                && view.textView.textStorage.string == "thrush xy"
+                && view.textView.selectedRange == NSRange(location: 9, length: 0)
+        }
+
+        XCTAssertEqual(v2DocumentText(adapter), "thrush xy")
+        XCTAssertEqual(view.textView.textStorage.string, "thrush xy")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 9, length: 0))
     }
 
     func testStagingAutocorrectReplacePreservesAcceptedSpaceImmediately() throws {
