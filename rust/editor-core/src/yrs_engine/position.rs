@@ -610,11 +610,13 @@ fn xml_fragment_pm_content_size<T: ReadTxn>(
 }
 
 fn is_void_element<T: ReadTxn>(element: &XmlElementRef, txn: &T, schema: &Schema) -> bool {
-    let node_type = super::codec::normalized_wire_element_node_type(element, txn);
-    if matches!(node_type.as_str(), "__opaque" | "__opaque_json" | "__skip") {
+    if matches!(
+        element.tag().as_ref(),
+        "__opaque" | "__opaque_json" | "__skip"
+    ) {
         return true;
     }
-    if let Some(spec) = schema.node(&node_type) {
+    if let Some(spec) = super::codec::wire_element_node_spec(element, txn, schema) {
         return spec.is_void;
     }
     true

@@ -213,7 +213,11 @@ fn command_applicability_with_known_node_count_impl(
             document,
             schema,
             selection,
-            "bulletList",
+            if schema.node("bullet_list").is_some() {
+                "bullet_list"
+            } else {
+                "bulletList"
+            },
             limits,
             document_node_count,
             block_range.as_ref(),
@@ -226,7 +230,11 @@ fn command_applicability_with_known_node_count_impl(
             document,
             schema,
             selection,
-            "orderedList",
+            if schema.node("ordered_list").is_some() {
+                "ordered_list"
+            } else {
+                "orderedList"
+            },
             limits,
             document_node_count,
             block_range.as_ref(),
@@ -1825,6 +1833,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn default_schema_list_commands_are_available() {
+        let schema = crate::schema::presets::default_schema();
+        let document = document(vec![paragraph("one")]);
+        let limits = ResourceLimits::default();
+        let state = active_state_for_debug_invariant(
+            &document,
+            &schema,
+            &Selection::cursor(1),
+            None,
+            &limits,
+            document_node_count(document.root()),
+        );
+
+        assert_eq!(state.commands.get("wrapBulletList"), Some(&true));
+        assert_eq!(state.commands.get("wrapOrderedList"), Some(&true));
     }
 
     #[test]

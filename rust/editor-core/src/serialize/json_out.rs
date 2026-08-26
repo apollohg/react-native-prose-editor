@@ -72,7 +72,11 @@ fn node_to_json_shallow(node: &Node, schema: &Schema) -> Value {
             .unwrap_or(Value::Null);
     }
     let mut obj = Map::new();
-    obj.insert("type".to_string(), json!(node.node_type()));
+    let spec = schema.node(node.node_type());
+    let projected_type = spec
+        .and_then(|spec| spec.json_projection.as_ref())
+        .map_or(node.node_type(), |projection| projection.node_type.as_str());
+    obj.insert("type".to_string(), json!(projected_type));
 
     if node.is_text() {
         obj.insert("text".to_string(), json!(node.text_str().unwrap_or("")));
@@ -142,6 +146,15 @@ fn build_attrs_json(node: &Node, schema: &Schema) -> Map<String, Value> {
                 crate::boundary::clone_json_value_stack_safe(value),
             );
         }
+    }
+
+    if let Some(projection) = spec.and_then(|spec| spec.json_projection.as_ref()) {
+        attrs_map.extend(projection.attrs.iter().map(|(name, value)| {
+            (
+                name.clone(),
+                crate::boundary::clone_json_value_stack_safe(value),
+            )
+        }));
     }
 
     attrs_map

@@ -524,19 +524,10 @@ fn wire_element_semantics<T: ReadTxn>(
     schema: &Schema,
 ) -> (bool, bool) {
     let tag = element.tag();
-    if tag.as_ref() != "heading" {
-        if matches!(tag.as_ref(), "__opaque" | "__opaque_json" | "__skip") {
-            return (true, false);
-        }
-        return schema.node(tag.as_ref()).map_or((true, false), |spec| {
-            (spec.is_void, matches!(spec.role, NodeRole::TextBlock))
-        });
-    }
-    let node_type = super::super::codec::normalized_wire_element_node_type(element, txn);
-    if matches!(node_type.as_str(), "__opaque" | "__opaque_json" | "__skip") {
+    if matches!(tag.as_ref(), "__opaque" | "__opaque_json" | "__skip") {
         return (true, false);
     }
-    if let Some(spec) = schema.node(&node_type) {
+    if let Some(spec) = super::super::codec::wire_element_node_spec(element, txn, schema) {
         return (spec.is_void, matches!(spec.role, NodeRole::TextBlock));
     }
     (true, false)

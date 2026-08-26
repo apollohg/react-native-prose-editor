@@ -1,14 +1,172 @@
 use std::collections::HashMap;
 
+use crate::boundary::ResourceLimits;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::{AttrSpec, MarkSpec, NodeRole, NodeSpec, Schema};
 use crate::serialize::{
     from_html, from_prosemirror_json, to_html, to_prosemirror_json, FromHtmlOptions,
     JsonParseError, UnknownTypeMode,
 };
+use crate::transform::DocumentValidator;
 
 fn schema() -> Schema {
     crate::tiptap_schema()
+}
+
+fn projected_heading_schema() -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            {
+                "name": "h1", "content": "inline*", "group": "block heading",
+                "role": "textBlock", "htmlTag": "h1",
+                "json": { "type": "heading", "attrs": { "level": 1 } }
+            },
+            {
+                "name": "h2", "content": "inline*", "group": "block heading",
+                "role": "textBlock", "htmlTag": "h2",
+                "json": { "type": "heading", "attrs": { "level": 2 } }
+            },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap()
+}
+
+#[test]
+fn legacy_flat_heading_schema_still_accepts_tiptap_json() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "h2", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "h2" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    for level in [
+        serde_json::json!(2),
+        serde_json::json!(2.0),
+        serde_json::json!("2"),
+        serde_json::json!("+2"),
+    ] {
+        let source = serde_json::json!({
+            "type": "doc",
+            "content": [{ "type": "heading", "attrs": { "level": level } }]
+        });
+
+        let document = from_prosemirror_json(&source, &schema, UnknownTypeMode::Error).unwrap();
+        assert_eq!(document.root().child(0).unwrap().node_type(), "h2");
+    }
+}
+
+#[test]
+fn projected_json_node_types_round_trip_through_native_variants() {
+    let schema = projected_heading_schema();
+    let source = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "heading",
+            "attrs": { "level": 2 },
+            "content": [{ "type": "text", "text": "Projected" }]
+        }]
+    });
+
+    let document = from_prosemirror_json(&source, &schema, UnknownTypeMode::Error).unwrap();
+    let heading = document.root().child(0).unwrap();
+    assert_eq!(heading.node_type(), "h2");
+    assert!(!heading.attrs().contains_key("level"));
+    assert_eq!(to_prosemirror_json(&document, &schema), source);
+}
+
+#[test]
+fn projected_json_node_types_match_equivalent_float_discriminators() {
+    let schema = projected_heading_schema();
+    let source = serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "heading", "attrs": { "level": 2.0 } }]
+    });
+
+    let document = from_prosemirror_json(&source, &schema, UnknownTypeMode::Error).unwrap();
+    assert_eq!(document.root().child(0).unwrap().node_type(), "h2");
+    assert_eq!(
+        to_prosemirror_json(&document, &schema),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{ "type": "heading", "attrs": { "level": 2 } }]
+        })
+    );
+}
+
+#[test]
+fn native_projection_type_rejects_a_conflicting_public_discriminator() {
+    let source = serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "h2", "attrs": { "level": 3 } }]
+    });
+
+    let error = from_prosemirror_json(&source, &projected_heading_schema(), UnknownTypeMode::Error)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        JsonParseError::InvalidStructure(message)
+            if message.contains("projection attribute 'level'")
+    ));
+}
+
+#[test]
+fn legacy_heading_alias_retains_a_declared_native_level_attribute() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            {
+                "name": "h2", "content": "inline*", "group": "block", "role": "textBlock",
+                "attrs": { "level": { "default": 0 } }
+            },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let source = serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "heading", "attrs": { "level": 2 } }]
+    });
+
+    let document = from_prosemirror_json(&source, &schema, UnknownTypeMode::Error).unwrap();
+
+    assert_eq!(document.root().child(0).unwrap().attrs()["level"], 2);
+}
+
+#[test]
+fn unresolved_legacy_heading_does_not_fall_back_to_its_raw_type() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let source = serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "heading", "attrs": { "level": 2 } }]
+    });
+
+    assert!(matches!(
+        from_prosemirror_json(&source, &schema, UnknownTypeMode::Error),
+        Err(JsonParseError::UnknownType(name)) if name == "h2"
+    ));
+
+    let preserved = from_prosemirror_json(&source, &schema, UnknownTypeMode::Preserve).unwrap();
+    let opaque = preserved.root().child(0).unwrap();
+    assert_eq!(opaque.attrs()["original_type"], "heading");
+    assert_eq!(opaque.attrs()["original_json"], source["content"][0]);
+    DocumentValidator::validate(&preserved, &schema, &ResourceLimits::default()).unwrap();
 }
 
 fn mention_schema() -> Schema {
@@ -31,6 +189,7 @@ fn mention_schema() -> Schema {
             attrs,
             role: NodeRole::Inline,
             html_tag: None,
+            json_projection: None,
             is_void: true,
             // Mirrors the real `mentionNodeSpec()` (src/addons.ts), which
             // intentionally round-trips arbitrary app-defined attrs.

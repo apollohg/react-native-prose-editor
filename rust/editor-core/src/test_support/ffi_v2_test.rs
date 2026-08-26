@@ -26,6 +26,7 @@ use crate::yrs_engine::{
     TransactionOrigin, YrsDocumentEngine, YrsEngineConfig,
 };
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 use yrs::sync::awareness::Awareness;
 use yrs::sync::{Message, SyncMessage};
 use yrs::updates::decoder::Decode;
@@ -37,6 +38,14 @@ const LINEAGE_ID: &str = "ffi-v2-lineage";
 const FRAGMENT_NAME: &str = "prosemirror";
 const JSON_SEED: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"ffi seed"}]}]}"#;
 const SEED_HTML: &str = "<p>html seed</p>";
+
+#[test]
+fn omitted_schema_uses_prosemirror_node_names() {
+    let schema = v2_render::resolve_create_schema(&None).unwrap();
+
+    assert!(schema.node("bullet_list").is_some());
+    assert!(schema.node("bulletList").is_none());
+}
 
 fn ok_json(result: &FfiJsonResult) -> Value {
     assert!(
@@ -126,7 +135,30 @@ fn create_handle(config: Value) -> String {
     create_handle_with_state(config, None)
 }
 
-fn create_handle_with_state(config: Value, snapshot_state: Option<Vec<u8>>) -> String {
+fn tiptap_schema_json() -> Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA
+        .get_or_init(|| {
+            let fixtures: Value = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/schema-fingerprints.json"
+            )))
+            .unwrap();
+            fixtures["fingerprints"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|fixture| fixture["name"] == "Tiptap-compatible camelCase schema")
+                .unwrap()["schema"]
+                .clone()
+        })
+        .clone()
+}
+
+fn create_handle_with_state(mut config: Value, snapshot_state: Option<Vec<u8>>) -> String {
+    if let Some(config) = config.as_object_mut() {
+        config.entry("schema").or_insert_with(tiptap_schema_json);
+    }
     let result = v2::editor_v2_create(config.to_string(), snapshot_state);
     ok_json(&result)["editorId"]
         .as_str()
@@ -2357,6 +2389,7 @@ fn error_envelopes_pin_nullability_and_decimal_request_ids() {
 
 fn local_json_config(document: &str) -> Value {
     json!({
+        "schema": tiptap_schema_json(),
         "initialization": {
             "type": "localJson",
             "json": serde_json::from_str::<Value>(document).unwrap(),
@@ -2810,9 +2843,9 @@ fn caret_scalar(id: &str) -> u64 {
 fn converting_a_line_into_a_list_item_keeps_the_caret_on_the_same_character() {
     let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
 
-    ok_json(&v2::editor_v2_apply_command(
+    ok_json(&v2::editor_v2_apply_input(
         id.clone(),
-        command_envelope(1, 0, json!({ "type": "insertText", "text": "one" })),
+        input_envelope(1, 0, "one"),
     ));
     assert_eq!(
         caret_scalar(&id),
@@ -2839,6 +2872,36 @@ fn converting_a_line_into_a_list_item_keeps_the_caret_on_the_same_character() {
          offset it held before the wrap"
     );
 
+    destroy_handle(&id);
+}
+
+#[test]
+fn default_schema_list_wrap_keeps_the_caret_on_the_same_character() {
+    let created = ok_json(&v2::editor_v2_create(
+        json!({ "initialization": { "type": "localEmpty" } }).to_string(),
+        None,
+    ));
+    let id = created["editorId"].as_str().unwrap().to_string();
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(1, 0, json!({ "type": "insertText", "text": "one" })),
+    ));
+    let revision = revision_of(&id);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            2,
+            revision,
+            json!({
+                "type": "wrapInList",
+                "listType": "bullet_list",
+                "itemType": "list_item"
+            }),
+        ),
+    ));
+
+    assert_eq!(caret_scalar(&id), 5);
     destroy_handle(&id);
 }
 

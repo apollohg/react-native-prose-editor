@@ -1475,7 +1475,13 @@ fn apply_outdent_list_item(
 
     let parent_list_item_path = &context.list_path[..context.list_path.len() - 1];
     let parent_list_item = match doc.node_at(parent_list_item_path) {
-        Some(node) if node.node_type() == "listItem" => node,
+        Some(node)
+            if schema
+                .node(node.node_type())
+                .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem)) =>
+        {
+            node
+        }
         _ => return Ok((doc.clone(), StepMap::empty())),
     };
 
@@ -2748,7 +2754,11 @@ fn validate_opaque(
             .unwrap_or(&empty_attrs);
         let normalized_type =
             crate::serialize::normalized_wire_json_node_type(original_type, original_attrs);
-        if schema.node(&normalized_type).is_some() {
+        if schema
+            .node_for_json(original_type, Some(original_attrs))
+            .is_some()
+            || schema.node(&normalized_type).is_some()
+        {
             return Err(BoundaryError::new(
                 "DOCUMENT_INVALID",
                 "opaque JSON payload normalizes to a known schema node",
@@ -2902,6 +2912,37 @@ mod document_validation_stats_tests {
         assert_eq!(report.stats.max_depth, 5);
         assert!(report.metrics.metadata_bytes > 0);
         assert_eq!(report.metrics.validation_work, 104);
+    }
+
+    #[test]
+    fn opaque_json_cannot_hide_a_projected_schema_node() {
+        let unknown_schema = tiptap_schema();
+        let opaque = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{ "type": "callout", "attrs": { "tone": "info" } }]
+            }),
+            &unknown_schema,
+            UnknownTypeMode::Preserve,
+        )
+        .unwrap();
+        let projected_schema = Schema::from_json(&json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                {
+                    "name": "info-box", "content": "", "group": "block", "role": "block",
+                    "json": { "type": "callout", "attrs": { "tone": "info" } }
+                },
+                { "name": "text", "content": "", "group": "inline", "role": "text" }
+            ],
+            "marks": []
+        }))
+        .unwrap();
+
+        let error =
+            DocumentValidator::validate(&opaque, &projected_schema, &ResourceLimits::default())
+                .unwrap_err();
+        assert!(error.message.contains("normalizes to a known schema node"));
     }
 
     #[test]

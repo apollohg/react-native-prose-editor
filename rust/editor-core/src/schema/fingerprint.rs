@@ -41,8 +41,17 @@ struct CanonicalNode<'a> {
     attrs: BTreeMap<&'a str, CanonicalAttr>,
     role: &'static str,
     html_tag: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_projection: Option<CanonicalJsonProjection<'a>>,
     is_void: bool,
     allow_undeclared_attrs: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalJsonProjection<'a> {
+    node_type: &'a str,
+    attrs: BTreeMap<&'a str, CanonicalJsonValue>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +87,15 @@ impl From<&serde_json::Value> for CanonicalJsonValue {
             serde_json::Value::Null => Self::Null,
             serde_json::Value::Bool(value) => Self::Bool(*value),
             serde_json::Value::Number(value) => {
+                if let Some(integer) = value.as_i64() {
+                    if !super::integer_is_exact_binary64(integer.unsigned_abs()) {
+                        return Self::Number(format!("integer:{integer}"));
+                    }
+                } else if let Some(integer) = value.as_u64() {
+                    if !super::integer_is_exact_binary64(integer) {
+                        return Self::Number(format!("integer:{integer}"));
+                    }
+                }
                 let value = value
                     .as_f64()
                     .expect("JSON numbers are representable as finite binary64 values");
@@ -142,6 +160,16 @@ impl<'a> From<&'a NodeSpec> for CanonicalNode<'a> {
                 NodeRole::Block => "block",
             },
             html_tag: spec.html_tag.as_deref(),
+            json_projection: spec.json_projection.as_ref().map(|projection| {
+                CanonicalJsonProjection {
+                    node_type: projection.node_type.as_str(),
+                    attrs: projection
+                        .attrs
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), CanonicalJsonValue::from(value)))
+                        .collect(),
+                }
+            }),
             is_void: spec.is_void,
             allow_undeclared_attrs: spec.allow_undeclared_attrs,
         }
@@ -214,6 +242,7 @@ mod tests {
 
     use super::schema_fingerprint;
     use crate::schema::content_rule::ContentRule;
+    use crate::schema::presets::{prosemirror_schema, tiptap_schema};
     use crate::schema::{AttrSpec, NodeRole, NodeSpec, Schema};
 
     #[derive(Deserialize)]
@@ -316,6 +345,7 @@ mod tests {
                     attrs: HashMap::new(),
                     role: NodeRole::Doc,
                     html_tag: None,
+                    json_projection: None,
                     is_void: false,
                     allow_undeclared_attrs: false,
                 },
@@ -326,6 +356,7 @@ mod tests {
                     attrs: HashMap::new(),
                     role: NodeRole::List { ordered },
                     html_tag: Some("ol".into()),
+                    json_projection: None,
                     is_void: false,
                     allow_undeclared_attrs: false,
                 },
@@ -336,6 +367,7 @@ mod tests {
                     attrs: HashMap::<String, AttrSpec>::new(),
                     role: NodeRole::Text,
                     html_tag: None,
+                    json_projection: None,
                     is_void: false,
                     allow_undeclared_attrs: false,
                 },
@@ -379,6 +411,52 @@ mod tests {
         }))
         .unwrap();
         assert_ne!(schema_fingerprint(&left), schema_fingerprint(&right));
+    }
+
+    #[test]
+    fn fingerprint_changes_with_json_projection() {
+        let schema = |level| {
+            Schema::from_json(&json!({
+                "nodes": [
+                    { "name": "doc", "content": "heading", "role": "doc" },
+                    {
+                        "name": "heading", "content": "", "role": "textBlock",
+                        "json": { "type": "publicHeading", "attrs": { "level": level } }
+                    },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": []
+            }))
+            .unwrap()
+        };
+
+        assert_ne!(
+            schema_fingerprint(&schema(1)),
+            schema_fingerprint(&schema(2))
+        );
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_projection_integers_beyond_binary64_precision() {
+        let schema = |level: u64| {
+            Schema::from_json(&json!({
+                "nodes": [
+                    { "name": "doc", "content": "heading", "role": "doc" },
+                    {
+                        "name": "heading", "content": "", "role": "textBlock",
+                        "json": { "type": "publicHeading", "attrs": { "level": level } }
+                    },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": []
+            }))
+            .unwrap()
+        };
+
+        assert_ne!(
+            schema_fingerprint(&schema(9_007_199_254_740_992)),
+            schema_fingerprint(&schema(9_007_199_254_740_993))
+        );
     }
 
     #[test]
@@ -449,6 +527,29 @@ mod tests {
                     fixture.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn default_schemas_match_their_parity_fixtures() {
+        let fixtures: FingerprintFixtures = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/schema-fingerprints.json"
+        )))
+        .unwrap();
+        for (name, schema) in [
+            ("Tiptap-compatible camelCase schema", tiptap_schema()),
+            ("default ProseMirror schema", prosemirror_schema()),
+        ] {
+            let expected = fixtures
+                .fingerprints
+                .iter()
+                .find(|fixture| fixture.name == name)
+                .unwrap();
+            assert_eq!(
+                schema_fingerprint(&schema),
+                expected.expected_fingerprint.as_str()
+            );
         }
     }
 }

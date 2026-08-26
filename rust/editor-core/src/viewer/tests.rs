@@ -490,9 +490,9 @@ fn elements_preserve_blocks_text_marks_and_atoms() {
         "content": [
             {"type": "paragraph", "content": [
                 {"type": "text", "text": "linked", "marks": [{"type": "link", "attrs": {"href": "https://example.test"}}]},
-                {"type": "hardBreak"}
+                {"type": "hard_break"}
             ]},
-            {"type": "horizontalRule"},
+            {"type": "horizontal_rule"},
             {"type": "image", "attrs": {"src": "https://example.test/a.png"}}
         ]
     });
@@ -506,10 +506,10 @@ fn elements_preserve_blocks_text_marks_and_atoms() {
         FfiViewerElement::TextRun { text, marks } if text == "linked" && marks.iter().any(|mark| mark.mark_type == "link" && mark.attrs_json == r#"{"href":"https://example.test"}"#)
     )));
     assert!(elements.iter().any(|element| matches!(element,
-        FfiViewerElement::InlineAtom { node_type, .. } if node_type == "hardBreak"
+        FfiViewerElement::InlineAtom { node_type, .. } if node_type == "hard_break"
     )));
     assert!(elements.iter().any(|element| matches!(element,
-        FfiViewerElement::BlockAtom { node_type, .. } if node_type == "horizontalRule"
+        FfiViewerElement::BlockAtom { node_type, .. } if node_type == "horizontal_rule"
     )));
     assert!(elements.iter().any(|element| matches!(element,
         FfiViewerElement::BlockAtom { node_type, .. } if node_type == "image"

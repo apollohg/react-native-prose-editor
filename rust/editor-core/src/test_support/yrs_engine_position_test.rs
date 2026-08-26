@@ -16,7 +16,7 @@ use serde::Deserialize;
 use yrs::branch::{Branch, BranchPtr};
 use yrs::types::text::Text;
 use yrs::types::xml::{
-    XmlElementPrelim, XmlElementRef, XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef,
+    Xml, XmlElementPrelim, XmlElementRef, XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef,
 };
 use yrs::{
     Any, Assoc, ClientID, Doc, OffsetKind, Options, ReadTxn, StickyIndex, Transact, WriteTxn,
@@ -82,6 +82,7 @@ fn rich_position_schema() -> Schema {
         attrs: HashMap::new(),
         role: NodeRole::Inline,
         html_tag: None,
+        json_projection: None,
         is_void: true,
         allow_undeclared_attrs: true,
     });
@@ -156,6 +157,30 @@ fn custom_root_fixture() -> (Doc, Schema) {
     push_text(&second, &mut txn, "tail");
     drop(txn);
     (doc, custom_root_schema())
+}
+
+fn projected_textblock_fixture() -> (Doc, Schema) {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            {
+                "name": "info-box", "content": "inline*", "group": "block",
+                "role": "textBlock",
+                "json": { "type": "callout", "attrs": { "tone": "info" } }
+            },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let doc = utf16_doc_with_client_id(4445);
+    let mut txn = doc.transact_mut();
+    let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+    let callout = push_element(&fragment, &mut txn, "callout");
+    callout.insert_attribute(&mut txn, "tone", Any::String("info".into()));
+    push_text(&callout, &mut txn, "abc");
+    drop(txn);
+    (doc, schema)
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,6 +390,13 @@ fn shared_position_codec_uses_schema_for_custom_roots_and_void_nodes() {
 
     // body("root😀") = 7, custom void = 1, body("tail") = 6.
     assert_all_positions_round_trip(&doc, "article-content", &schema, 14, &[6, 13, 14]);
+}
+
+#[test]
+fn shared_position_codec_sizes_projected_textblocks_by_native_semantics() {
+    let (doc, schema) = projected_textblock_fixture();
+
+    assert_all_positions_round_trip(&doc, "prosemirror", &schema, 5, &[4, 5]);
 }
 
 fn strict_position_schema() -> Schema {

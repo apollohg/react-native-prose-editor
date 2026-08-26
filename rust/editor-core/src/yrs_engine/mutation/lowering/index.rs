@@ -2020,9 +2020,8 @@ fn localized_root_structural_parent<T: ReadTxn>(
             return Ok(None);
         };
         let tag = element.tag();
-        let normalized_heading = (tag.as_ref() == "heading")
-            .then(|| super::super::codec::normalized_wire_element_node_type(&element, txn));
-        let wire_node_type = normalized_heading.as_deref().unwrap_or(tag.as_ref());
+        let wire_spec = super::super::codec::wire_element_node_spec(&element, txn, schema);
+        let wire_node_type = wire_spec.map_or(tag.as_ref(), |spec| spec.name.as_str());
         if semantic.is_text()
             || semantic.node_type() != wire_node_type
             || semantic.is_void() != wire_element_is_semantic_void(&element, txn, schema)
@@ -2031,14 +2030,17 @@ fn localized_root_structural_parent<T: ReadTxn>(
         }
         let mut attrs = Vec::new();
         let mut normalized_attr_count = 0usize;
-        let synthetic_heading_level = wire_node_type != tag.as_ref();
+        let projection = wire_spec.and_then(|spec| spec.json_projection.as_ref());
+        let synthetic_heading_level = projection.is_none() && wire_node_type != tag.as_ref();
         let mut attribute_budget =
             super::super::codec::WireAttributeJsonBudget::new(resource_limits);
         for (key, value) in element.attributes(txn) {
             let yrs::Out::Any(value) = value else {
                 return Ok(None);
             };
-            if !(synthetic_heading_level && key == "level") {
+            if !projection.is_some_and(|projection| projection.attrs.contains_key(key))
+                && !(synthetic_heading_level && key == "level")
+            {
                 let Some(expected) = semantic.attrs().get(key) else {
                     return Ok(None);
                 };
@@ -2845,7 +2847,8 @@ fn localized_existing_textblock_targets<T: ReadTxn>(
         let Some(semantic_node) = locator.document().node_at(&semantic_path) else {
             return Ok(None);
         };
-        if semantic_node.node_type() != element.tag().as_ref()
+        if super::super::codec::wire_element_node_spec(element, txn, schema)
+            .is_none_or(|spec| semantic_node.node_type() != spec.name)
             || wire_element_is_semantic_void(element, txn, schema)
         {
             return Ok(None);

@@ -175,6 +175,129 @@ fn schema_rejects_unsafe_html_tags_and_attribute_identifiers() {
 }
 
 #[test]
+fn schema_rejects_invalid_or_ambiguous_json_projections() {
+    let invalid = serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            {
+                "name": "aside", "content": "", "group": "block", "role": "block",
+                "json": { "type": "callout", "attrs": { "tone": { "nested": true } } }
+            },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    });
+    assert!(Schema::from_json(&invalid).is_err());
+
+    let ambiguous = serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            {
+                "name": "note", "content": "", "group": "block", "role": "block",
+                "json": { "type": "callout", "attrs": { "tone": "info" } }
+            },
+            {
+                "name": "warning", "content": "", "group": "block", "role": "block",
+                "json": { "type": "callout", "attrs": { "tone": "info" } }
+            },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    });
+    assert!(Schema::from_json(&ambiguous).is_err());
+
+    for reserved in ["__opaque", "__opaque_json", "__skip"] {
+        let schema = serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                {
+                    "name": "note", "group": "block", "role": "block",
+                    "json": { "type": reserved, "attrs": { "tone": "info" } }
+                },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        });
+        assert!(Schema::from_json(&schema).is_err());
+    }
+
+    for level in [
+        serde_json::json!(2),
+        serde_json::json!(2.0),
+        serde_json::json!("2"),
+        serde_json::json!("+2"),
+    ] {
+        let conflicting_heading_alias = serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "h2", "content": "inline*", "group": "block", "role": "textBlock" },
+                {
+                    "name": "infoBox", "content": "inline*", "group": "block", "role": "textBlock",
+                    "json": { "type": "heading", "attrs": { "level": level } }
+                },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        });
+        let error = Schema::from_json(&conflicting_heading_alias).unwrap_err();
+        assert!(error.contains("legacy heading alias"));
+    }
+
+    for ambiguous in [
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "note", "group": "block", "role": "block", "json": { "type": "callout", "attrs": { "tone": "info" } } },
+                { "name": "compact-note", "group": "block", "role": "block", "json": { "type": "callout", "attrs": { "tone": "info", "size": "compact" } } },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        }),
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "callout", "group": "block", "role": "block" },
+                { "name": "note", "group": "block", "role": "block", "json": { "type": "callout", "attrs": { "tone": "info" } } },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        }),
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "note", "group": "block", "role": "block", "attrs": { "tone": { "default": "warning" } }, "json": { "type": "callout", "attrs": { "tone": "info" } } },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        }),
+    ] {
+        assert!(Schema::from_json(&ambiguous).is_err());
+    }
+}
+
+#[test]
+fn schema_budget_charges_json_projection_scalar_payloads() {
+    let limits = ResourceLimits {
+        max_schema_nodes: 2,
+        max_schema_expression_bytes: 16,
+        ..ResourceLimits::default()
+    };
+    let schema = serde_json::json!({
+        "nodes": [
+            {
+                "name": "article", "content": "", "role": "doc",
+                "json": { "type": "x".repeat(700) }
+            },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    });
+
+    let error = Schema::from_json_with_limits(&schema, &limits).unwrap_err();
+    assert_eq!(error.code(), "SCHEMA_INVALID");
+}
+
+#[test]
 fn reversed_dependency_chain_is_constructible_within_the_indexed_work_budget() {
     const CHAIN_LENGTH: usize = 128;
     let mut nodes = vec![serde_json::json!({

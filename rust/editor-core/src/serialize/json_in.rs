@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use crate::boundary::ResourceLimits;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::content_rule::WorkBudget;
-use crate::schema::Schema;
+use crate::schema::{json_projection_values_equal, Schema};
 
 /// Errors returned by `from_prosemirror_json`.
 #[derive(Debug, Clone)]
@@ -168,29 +168,61 @@ fn parse_node(
                         "node must have a string \"type\" field".into(),
                     )
                 })?;
-                let heading_level = (raw_type == "heading")
-                    .then(|| {
-                        obj.get("attrs")
-                            .and_then(Value::as_object)
-                            .and_then(|attrs| parse_heading_level_value(attrs.get("level")))
-                    })
+                let raw_attrs = obj.get("attrs").and_then(Value::as_object);
+                let empty_attrs = Map::new();
+                let normalized_type =
+                    normalized_wire_json_node_type(raw_type, raw_attrs.unwrap_or(&empty_attrs));
+                let uses_legacy_heading = normalized_type != raw_type;
+                let legacy_spec = uses_legacy_heading
+                    .then(|| schema.node(&normalized_type))
                     .flatten();
-                let type_name = heading_level
-                    .map(|level| format!("h{level}"))
-                    .unwrap_or_else(|| raw_type.to_string());
+                let projection_spec =
+                    legacy_spec.is_none().then(|| {
+                        schema.projected_nodes_for_json(raw_type).find(|spec| {
+                            spec.json_projection.as_ref().is_some_and(|projection| {
+                                projection.attrs.iter().all(|(name, expected)| {
+                                    raw_attrs.and_then(|attrs| attrs.get(name)).is_some_and(
+                                        |actual| json_projection_values_equal(actual, expected),
+                                    )
+                                })
+                            })
+                        })
+                    });
+                let projection_spec = projection_spec.flatten();
+                let native_spec =
+                    (legacy_spec.is_none() && projection_spec.is_none() && !uses_legacy_heading)
+                        .then(|| schema.node(raw_type))
+                        .flatten();
+                let spec = legacy_spec.or(projection_spec).or(native_spec);
+                if let Some(projection) = native_spec.and_then(|spec| spec.json_projection.as_ref())
+                {
+                    for (name, expected) in &projection.attrs {
+                        if raw_attrs
+                            .and_then(|attrs| attrs.get(name))
+                            .is_some_and(|actual| !json_projection_values_equal(actual, expected))
+                        {
+                            return Err(JsonParseError::InvalidStructure(format!(
+                                "node '{raw_type}' projection attribute '{name}' does not match its canonical value"
+                            )));
+                        }
+                    }
+                }
+                let type_name = spec
+                    .map(|spec| spec.name.clone())
+                    .unwrap_or(normalized_type);
 
                 if type_name == "text" {
                     built.push(parse_text_node(obj, schema, mode)?);
                     continue;
                 }
 
-                let Some(spec) = schema.node(&type_name) else {
+                let Some(spec) = spec.or_else(|| schema.node(&type_name)) else {
                     match mode {
                         UnknownTypeMode::Error => {
                             return Err(JsonParseError::UnknownType(type_name));
                         }
                         UnknownTypeMode::Preserve => {
-                            built.push(build_opaque_json_node(&type_name, json, placement));
+                            built.push(build_opaque_json_node(raw_type, json, placement));
                         }
                         UnknownTypeMode::Skip => {
                             built.push(Node::void("__skip".to_string(), HashMap::new()));
@@ -200,7 +232,14 @@ fn parse_node(
                 };
 
                 let mut attrs = parse_attrs(obj, spec);
-                if heading_level.is_some() {
+                if let Some(projection) = &spec.json_projection {
+                    for name in projection.attrs.keys() {
+                        attrs.remove(name);
+                    }
+                } else if uses_legacy_heading
+                    && spec.name != raw_type
+                    && !spec.attrs.contains_key("level")
+                {
                     attrs.remove("level");
                 }
                 if spec.is_void {
@@ -646,6 +685,7 @@ fn normalize_json_object_aliases<'a>(
         .unwrap_or(Cow::Borrowed(value))
 }
 
+#[cfg(test)]
 fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
     let value = value?;
     let level = match value {

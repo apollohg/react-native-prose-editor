@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use crate::schema::content_rule::ContentRule;
-use crate::schema::{AttrSpec, MarkSpec, NodeRole, NodeSpec, Schema};
+use crate::schema::{AttrSpec, MarkSpec, NodeJsonProjection, NodeRole, NodeSpec, Schema};
 
-/// Build the standard Tiptap schema using camelCase node names.
+/// Build the Tiptap-compatible schema using camelCase node names.
 ///
 /// Node names: doc, paragraph, blockquote, bulletList, orderedList, listItem,
 ///             hardBreak, horizontalRule, image, text.
@@ -12,23 +12,22 @@ pub fn tiptap_schema() -> Schema {
     build_schema(NamingConvention::CamelCase)
 }
 
+/// Build the default schema using ProseMirror snake_case node names.
+pub fn default_schema() -> Schema {
+    prosemirror_schema()
+}
+
 /// Build the standard ProseMirror schema using snake_case node names.
 ///
 /// Node names: doc, paragraph, blockquote, bullet_list, ordered_list, list_item,
 ///             hard_break, horizontal_rule, image, text.
 /// Mark names: bold, italic, underline, strike, link.
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
-#[allow(dead_code)]
 pub fn prosemirror_schema() -> Schema {
     build_schema(NamingConvention::SnakeCase)
 }
 
 enum NamingConvention {
     CamelCase,
-    // Not reachable from production call paths after the Task 16C legacy runtime
-    // removal; exercised by crate tests.
-    #[allow(dead_code)]
     SnakeCase,
 }
 
@@ -54,6 +53,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::Doc,
             html_tag: None,
+            json_projection: None,
             is_void: false,
             allow_undeclared_attrs: false,
         },
@@ -64,6 +64,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::TextBlock,
             html_tag: Some("p".to_string()),
+            json_projection: None,
             is_void: false,
             allow_undeclared_attrs: false,
         },
@@ -73,10 +74,17 @@ fn build_schema(convention: NamingConvention) -> Schema {
         nodes.push(NodeSpec {
             name: format!("h{level}"),
             content: ContentRule::parse("inline*").unwrap(),
-            group: Some("block".to_string()),
+            group: Some("block heading".to_string()),
             attrs: HashMap::new(),
             role: NodeRole::TextBlock,
             html_tag: Some(format!("h{level}")),
+            json_projection: Some(NodeJsonProjection {
+                node_type: "heading".to_string(),
+                attrs: HashMap::from([(
+                    "level".to_string(),
+                    serde_json::Value::Number(level.into()),
+                )]),
+            }),
             is_void: false,
             allow_undeclared_attrs: false,
         });
@@ -90,6 +98,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::Block,
             html_tag: Some("blockquote".to_string()),
+            json_projection: None,
             is_void: false,
             allow_undeclared_attrs: false,
         },
@@ -100,6 +109,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::List { ordered: false },
             html_tag: Some("ul".to_string()),
+            json_projection: None,
             is_void: false,
             allow_undeclared_attrs: false,
         },
@@ -120,6 +130,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             },
             role: NodeRole::List { ordered: true },
             html_tag: Some("ol".to_string()),
+            json_projection: None,
             is_void: false,
             allow_undeclared_attrs: false,
         },
@@ -130,6 +141,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::ListItem,
             html_tag: Some("li".to_string()),
+            json_projection: None,
             is_void: false,
             allow_undeclared_attrs: false,
         },
@@ -140,6 +152,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::HardBreak,
             html_tag: Some("br".to_string()),
+            json_projection: None,
             is_void: true,
             allow_undeclared_attrs: false,
         },
@@ -150,6 +163,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::Block,
             html_tag: Some("hr".to_string()),
+            json_projection: None,
             is_void: true,
             allow_undeclared_attrs: false,
         },
@@ -198,6 +212,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             },
             role: NodeRole::Block,
             html_tag: Some("img".to_string()),
+            json_projection: None,
             is_void: true,
             allow_undeclared_attrs: false,
         },
@@ -208,6 +223,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::Text,
             html_tag: None,
+            json_projection: None,
             is_void: false,
             allow_undeclared_attrs: false,
         },
@@ -364,6 +380,19 @@ mod tests {
         assert!(block_names.contains(&"horizontalRule"));
         assert!(!block_names.contains(&"doc"));
         assert!(!block_names.contains(&"text"));
+    }
+
+    #[test]
+    fn heading_variants_retain_the_public_heading_group() {
+        for schema in [tiptap_schema(), prosemirror_schema()] {
+            for level in 1..=6 {
+                let heading = schema.node(&format!("h{level}")).unwrap();
+                assert!(heading
+                    .group
+                    .as_deref()
+                    .is_some_and(|group| group.split_whitespace().any(|name| name == "heading")));
+            }
+        }
     }
 
     #[test]

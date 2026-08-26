@@ -1,7 +1,7 @@
 {
     "fingerprints": [
         {
-            "name": "default Tiptap schema",
+            "name": "Tiptap-compatible camelCase schema",
             "schema": {
                 "nodes": [
                     { "name": "doc", "content": "block+", "role": "doc" },
@@ -15,44 +15,50 @@
                     {
                         "name": "h1",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h1"
+                        "htmlTag": "h1",
+                        "json": { "type": "heading", "attrs": { "level": 1 } }
                     },
                     {
                         "name": "h2",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h2"
+                        "htmlTag": "h2",
+                        "json": { "type": "heading", "attrs": { "level": 2 } }
                     },
                     {
                         "name": "h3",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h3"
+                        "htmlTag": "h3",
+                        "json": { "type": "heading", "attrs": { "level": 3 } }
                     },
                     {
                         "name": "h4",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h4"
+                        "htmlTag": "h4",
+                        "json": { "type": "heading", "attrs": { "level": 4 } }
                     },
                     {
                         "name": "h5",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h5"
+                        "htmlTag": "h5",
+                        "json": { "type": "heading", "attrs": { "level": 5 } }
                     },
                     {
                         "name": "h6",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h6"
+                        "htmlTag": "h6",
+                        "json": { "type": "heading", "attrs": { "level": 6 } }
                     },
                     {
                         "name": "blockquote",
@@ -116,17 +122,17 @@
                     { "name": "text", "content": "", "group": "inline", "role": "text" }
                 ],
                 "marks": [
-                    { "name": "bold" },
-                    { "name": "italic" },
-                    { "name": "underline" },
-                    { "name": "strike" },
-                    { "name": "link", "attrs": { "href": {} } }
+                    { "name": "bold", "htmlTag": "strong" },
+                    { "name": "italic", "htmlTag": "em" },
+                    { "name": "underline", "htmlTag": "u" },
+                    { "name": "strike", "htmlTag": "s" },
+                    { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "ff51b8ac0b43b42e60ab4d0f90ac65be0d4ae31e66f60c8704d8990d1ad48b72"
+            "expectedFingerprint": "dfba81f7cd3fd5b21370c97fb7600327b80d01ae586d2bdcd2e3ab9d8c74d821"
         },
         {
-            "name": "ProseMirror snake-case schema",
+            "name": "default ProseMirror schema",
             "schema": {
                 "nodes": [
                     { "name": "doc", "content": "block+", "role": "doc" },
@@ -140,44 +146,50 @@
                     {
                         "name": "h1",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h1"
+                        "htmlTag": "h1",
+                        "json": { "type": "heading", "attrs": { "level": 1 } }
                     },
                     {
                         "name": "h2",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h2"
+                        "htmlTag": "h2",
+                        "json": { "type": "heading", "attrs": { "level": 2 } }
                     },
                     {
                         "name": "h3",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h3"
+                        "htmlTag": "h3",
+                        "json": { "type": "heading", "attrs": { "level": 3 } }
                     },
                     {
                         "name": "h4",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h4"
+                        "htmlTag": "h4",
+                        "json": { "type": "heading", "attrs": { "level": 4 } }
                     },
                     {
                         "name": "h5",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h5"
+                        "htmlTag": "h5",
+                        "json": { "type": "heading", "attrs": { "level": 5 } }
                     },
                     {
                         "name": "h6",
                         "content": "inline*",
-                        "group": "block",
+                        "group": "block heading",
                         "role": "textBlock",
-                        "htmlTag": "h6"
+                        "htmlTag": "h6",
+                        "json": { "type": "heading", "attrs": { "level": 6 } }
                     },
                     {
                         "name": "blockquote",
@@ -241,14 +253,14 @@
                     { "name": "text", "content": "", "group": "inline", "role": "text" }
                 ],
                 "marks": [
-                    { "name": "bold" },
-                    { "name": "italic" },
-                    { "name": "underline" },
-                    { "name": "strike" },
-                    { "name": "link", "attrs": { "href": {} } }
+                    { "name": "bold", "htmlTag": "strong" },
+                    { "name": "italic", "htmlTag": "em" },
+                    { "name": "underline", "htmlTag": "u" },
+                    { "name": "strike", "htmlTag": "s" },
+                    { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "bd1254970f5558f26a441e8ea46ec4dd39055af30939d840fbe7ce61ced7d56c"
+            "expectedFingerprint": "5128557cb5b3e1abfb7e01e95c51028a8201616595bbe3a7856ec7373bb97819"
         },
         {
             "name": "custom root schema",
@@ -373,6 +385,23 @@
                 ]
             },
             "expectedFingerprint": "c11360106662640beb4f7ab8d3b39721967df7ac83a72070e9c36694c81d0599"
+        },
+        {
+            "name": "projected JSON node",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "infoBox", "role": "doc" },
+                    {
+                        "name": "infoBox",
+                        "content": "",
+                        "role": "block",
+                        "json": { "type": "callout", "attrs": { "tone": "info" } }
+                    },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": []
+            },
+            "expectedFingerprint": "aa353d589096244ca9bc0a3aad27154024609888732da313b9ed51faa3d8659e"
         }
     ],
     "equivalentSchemas": [

@@ -1859,6 +1859,49 @@ fn test_outdent_nested_list_item_lifts_after_parent_item() {
 }
 
 #[test]
+fn test_outdent_nested_prosemirror_list_item_lifts_after_parent_item() {
+    let root = doc(vec![Node::element(
+        "bullet_list".to_string(),
+        HashMap::new(),
+        Fragment::from(vec![
+            Node::element(
+                "list_item".to_string(),
+                HashMap::new(),
+                Fragment::from(vec![
+                    paragraph(vec![text("A")]),
+                    Node::element(
+                        "bullet_list".to_string(),
+                        HashMap::new(),
+                        Fragment::from(vec![Node::element(
+                            "list_item".to_string(),
+                            HashMap::new(),
+                            Fragment::from(vec![paragraph(vec![text("B")])]),
+                        )]),
+                    ),
+                ]),
+            ),
+            Node::element(
+                "list_item".to_string(),
+                HashMap::new(),
+                Fragment::from(vec![paragraph(vec![text("C")])]),
+            ),
+        ]),
+    )]);
+    let document = Document::new(root);
+    let schema = crate::schema::presets::prosemirror_schema();
+    let mut tx = Transaction::new(Source::Input);
+    tx.add_step(Step::OutdentListItem { pos: 8 });
+
+    let (new_doc, _) = tx
+        .apply(&document, &schema)
+        .expect("outdent should succeed");
+    let list = new_doc.root().child(0).unwrap();
+
+    assert_eq!(list.child_count(), 3);
+    assert_eq!(list.child(1).unwrap().text_content(), "B");
+}
+
+#[test]
 fn test_outdent_top_level_list_item_is_noop() {
     let (d, schema) = doc_and_schema(doc(vec![bullet_list(vec![
         list_item(vec![paragraph(vec![text("A")])]),

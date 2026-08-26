@@ -982,9 +982,11 @@ impl MutationCompiler {
         let Some(parent_item) = before.node_at(&parent_item_path) else {
             return Err(invalid_action_range(self.request_id, operation_index));
         };
-        // Preserve the legacy transform contract: only a literal listItem may
-        // act as the immediate parent of an outdented nested item.
-        if parent_item.node_type() != "listItem" || parent_item_path.is_empty() {
+        if !schema
+            .node(parent_item.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
+            || parent_item_path.is_empty()
+        {
             return Ok(());
         }
         let parent_list_path = parent_item_path[..parent_item_path.len() - 1].to_vec();

@@ -6850,6 +6850,51 @@ fn outdent_first_middle_and_last_nested_items_execute_directly() {
 }
 
 #[test]
+fn outdent_nested_prosemirror_list_item_executes_directly() {
+    let source = json!({
+        "type": "doc",
+        "content": [{
+            "type": "bullet_list",
+            "content": [{
+                "type": "list_item",
+                "content": [
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "parent" }] },
+                    {
+                        "type": "bullet_list",
+                        "content": [{
+                            "type": "list_item",
+                            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "nested" }] }]
+                        }]
+                    }
+                ]
+            }]
+        }]
+    });
+    let schema = crate::schema::presets::prosemirror_schema();
+    let at = rendered_scalar_offset(&source, &schema, "nested") + 1;
+    let (doc, schema, limits, compiled) = compile_operations_with_schema(
+        &source,
+        vec![TypedOperation::OutdentListItem {
+            at: point_for_test(at),
+        }],
+        schema,
+    );
+    let expected = to_prosemirror_json(&compiled.preview, &schema);
+    {
+        let mut txn = doc.transact_mut();
+        execute_mutation_plan(compiled.mutation_plan, &mut txn);
+    }
+    let txn = doc.transact();
+    let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+    let actual = YrsDocumentCodec::new(&schema, &limits)
+        .read_json(&fragment, &txn)
+        .unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual["content"][0]["content"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn outdent_preserves_existing_final_nested_list_attrs_when_merging_trailing_items() {
     let source = json!({
         "type": "doc",
@@ -7141,7 +7186,7 @@ fn outdent_preflight_growth_undo_and_replica_bounds_are_exactly_enforced() {
 }
 
 #[test]
-fn outdent_preserves_the_legacy_literal_immediate_parent_list_item_quirk() {
+fn outdent_uses_the_list_item_role_for_custom_schemas() {
     let source = json!({
         "type": "doc",
         "content": [{
@@ -7171,16 +7216,28 @@ fn outdent_preserves_the_legacy_literal_immediate_parent_list_item_quirk() {
             .count(),
     )
     .unwrap();
-    let (_, _, _, compiled) = compile_operations_with_schema(
+    let (doc, schema, limits, compiled) = compile_operations_with_schema(
         &source,
         vec![TypedOperation::OutdentListItem {
             at: point_for_test(at),
         }],
-        schema.clone(),
+        schema,
     );
-    assert_eq!(to_prosemirror_json(&compiled.preview, &schema), source);
-    assert!(compiled.mutation_plan.actions.is_empty());
-    assert_eq!(compiled.encoded_growth_bound, 0);
+    let expected = to_prosemirror_json(&compiled.preview, &schema);
+    assert_ne!(expected, source);
+    assert!(!compiled.mutation_plan.actions.is_empty());
+    {
+        let mut txn = doc.transact_mut();
+        execute_mutation_plan(compiled.mutation_plan, &mut txn);
+    }
+    let txn = doc.transact();
+    let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+    assert_eq!(
+        YrsDocumentCodec::new(&schema, &limits)
+            .read_json(&fragment, &txn)
+            .unwrap(),
+        expected
+    );
 }
 
 #[test]

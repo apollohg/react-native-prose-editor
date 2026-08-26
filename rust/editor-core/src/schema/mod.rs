@@ -68,6 +68,7 @@ pub struct Schema {
     marks: HashMap<String, MarkSpec>,
     mark_order: Vec<String>,
     node_html_tags: HashMap<String, String>,
+    json_node_types: HashMap<String, Vec<String>>,
     mark_html_tags: HashMap<String, String>,
     preferred_text_block_name: Option<String>,
     fallback_list_item_name: Option<String>,
@@ -89,6 +90,7 @@ pub struct NodeSpec {
     pub attrs: HashMap<String, AttrSpec>,
     pub role: NodeRole,
     pub html_tag: Option<String>,
+    pub json_projection: Option<NodeJsonProjection>,
     /// If `true`, this node has no editable content (e.g. horizontal rule, hard break).
     pub is_void: bool,
     /// If `true`, JSON ingestion (`set_json`/`insert_content_json`) admits attrs
@@ -99,6 +101,86 @@ pub struct NodeSpec {
     /// other node type is filtered to its schema-declared attrs, matching the
     /// HTML ingestion path (`extract_node_attrs`).
     pub allow_undeclared_attrs: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeJsonProjection {
+    pub node_type: String,
+    pub attrs: HashMap<String, serde_json::Value>,
+}
+
+pub(crate) fn json_projection_values_equal(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> bool {
+    match (left.as_number(), right.as_number()) {
+        (Some(left), Some(right)) => json_projection_numbers_equal(left, right),
+        _ => left == right,
+    }
+}
+
+fn json_projection_numbers_equal(left: &serde_json::Number, right: &serde_json::Number) -> bool {
+    if left.is_f64() {
+        return left
+            .as_f64()
+            .is_some_and(|left| json_projection_float_matches(left, right));
+    }
+    if right.is_f64() {
+        return right
+            .as_f64()
+            .is_some_and(|right| json_projection_float_matches(right, left));
+    }
+    left.as_i64()
+        .zip(right.as_i64())
+        .is_some_and(|(left, right)| left == right)
+        || left
+            .as_u64()
+            .zip(right.as_u64())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn json_projection_float_matches(value: f64, number: &serde_json::Number) -> bool {
+    if number.is_f64() {
+        return number.as_f64() == Some(value);
+    }
+    if let Some(integer) = number.as_i64() {
+        return integer_is_exact_binary64(integer.unsigned_abs()) && (integer as f64) == value;
+    }
+    number
+        .as_u64()
+        .is_some_and(|integer| integer_is_exact_binary64(integer) && (integer as f64) == value)
+}
+
+fn integer_is_exact_binary64(magnitude: u64) -> bool {
+    if magnitude == 0 {
+        return true;
+    }
+    let significant_bits = u64::BITS - magnitude.leading_zeros();
+    significant_bits <= 53 || magnitude.trailing_zeros() >= significant_bits - 53
+}
+
+fn legacy_heading_projection_name(projection: &NodeJsonProjection) -> Option<String> {
+    if projection.node_type != "heading" {
+        return None;
+    }
+    let level = match projection.attrs.get("level")? {
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .and_then(|value| u8::try_from(value).ok())
+            .or_else(|| number.as_i64().and_then(|value| u8::try_from(value).ok()))
+            .or_else(|| {
+                number.as_f64().and_then(|value| {
+                    (value.is_finite() && value.fract() == 0.0)
+                        .then(|| u8::try_from(value as i64).ok())
+                        .flatten()
+                })
+            }),
+        serde_json::Value::String(value) => (value.len() <= 3)
+            .then(|| value.parse::<u8>().ok())
+            .flatten(),
+        _ => None,
+    }?;
+    (1..=6).contains(&level).then(|| format!("h{level}"))
 }
 
 /// The semantic role of a node, used by transactions and rendering to handle
@@ -206,11 +288,89 @@ impl Schema {
                     node.name
                 )));
             }
+            if let Some(projection) = &node.json_projection {
+                if projection.node_type.is_empty()
+                    || matches!(
+                        projection.node_type.as_str(),
+                        "__opaque" | "__opaque_json" | "__skip"
+                    )
+                    || projection.attrs.keys().any(|name| !is_safe_html_attr(name))
+                    || projection.attrs.values().any(|value| {
+                        !matches!(
+                            value,
+                            serde_json::Value::Null
+                                | serde_json::Value::Bool(_)
+                                | serde_json::Value::Number(_)
+                                | serde_json::Value::String(_)
+                        )
+                    })
+                {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' has an invalid JSON projection",
+                        node.name
+                    )));
+                }
+            }
             if !node_names.insert(node.name.clone()) {
                 return Err(SchemaValidationError::semantic(format!(
                     "duplicate node name '{}'",
                     node.name
                 )));
+            }
+        }
+        let projected_nodes = nodes
+            .iter()
+            .filter(|node| node.json_projection.is_some())
+            .collect::<Vec<_>>();
+        for (index, node) in projected_nodes.iter().enumerate() {
+            let projection = node.json_projection.as_ref().expect("projected node");
+            if node_names.contains(&projection.node_type) {
+                return Err(SchemaValidationError::semantic(format!(
+                    "node '{}' projects to native node name '{}'",
+                    node.name, projection.node_type
+                )));
+            }
+            if let Some(legacy_name) = legacy_heading_projection_name(projection) {
+                if node.name != legacy_name && node_names.contains(&legacy_name) {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' JSON projection conflicts with legacy heading alias '{}'",
+                        node.name, legacy_name
+                    )));
+                }
+            }
+            if projection
+                .attrs
+                .keys()
+                .any(|name| node.attrs.contains_key(name))
+            {
+                return Err(SchemaValidationError::semantic(format!(
+                    "node '{}' JSON projection overlaps its native attributes",
+                    node.name
+                )));
+            }
+            for previous in &projected_nodes[..index] {
+                consume_schema_work(
+                    budget,
+                    1,
+                    "schema JSON projection ambiguity work budget exceeded",
+                )?;
+                let previous_projection =
+                    previous.json_projection.as_ref().expect("projected node");
+                if projection.node_type != previous_projection.node_type {
+                    continue;
+                }
+                let overlaps = projection.attrs.iter().all(|(name, value)| {
+                    previous_projection
+                        .attrs
+                        .get(name)
+                        .is_none_or(|previous| json_projection_values_equal(value, previous))
+                });
+                if overlaps {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' has an ambiguous JSON projection",
+                        node.name
+                    )));
+                }
             }
         }
         let mut mark_names = HashSet::new();
@@ -309,6 +469,7 @@ impl Schema {
         }
 
         let mut node_html_tags = HashMap::new();
+        let mut json_node_types: HashMap<String, Vec<String>> = HashMap::new();
         for node in &nodes {
             if let Some(tag) = &node.html_tag {
                 consume_schema_work(budget, 1, "schema HTML index work budget exceeded")?;
@@ -319,6 +480,17 @@ impl Schema {
                 node_html_tags
                     .entry(tag.clone())
                     .or_insert_with(|| node.name.clone());
+            }
+            if let Some(projection) = &node.json_projection {
+                consume_schema_work(
+                    budget,
+                    1,
+                    "schema JSON projection index work budget exceeded",
+                )?;
+                json_node_types
+                    .entry(projection.node_type.clone())
+                    .or_default()
+                    .push(node.name.clone());
             }
         }
         let mut mark_html_tags = HashMap::new();
@@ -366,6 +538,7 @@ impl Schema {
                 .collect(),
             mark_order,
             node_html_tags,
+            json_node_types,
             mark_html_tags,
             preferred_text_block_name,
             fallback_list_item_name,
@@ -643,6 +816,43 @@ impl Schema {
         self.node_html_tags
             .get(tag)
             .and_then(|name| self.nodes.get(name))
+    }
+
+    pub fn node_for_json(
+        &self,
+        node_type: &str,
+        attrs: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Option<&NodeSpec> {
+        if let Some(spec) = self.node(node_type) {
+            return Some(spec);
+        }
+        self.json_node_types
+            .get(node_type)?
+            .iter()
+            .find_map(|name| {
+                let spec = self.node(name)?;
+                let projection = spec.json_projection.as_ref()?;
+                projection
+                    .attrs
+                    .iter()
+                    .all(|(name, value)| {
+                        attrs
+                            .and_then(|attrs| attrs.get(name))
+                            .is_some_and(|actual| json_projection_values_equal(actual, value))
+                    })
+                    .then_some(spec)
+            })
+    }
+
+    pub(crate) fn projected_nodes_for_json<'a>(
+        &'a self,
+        node_type: &str,
+    ) -> impl Iterator<Item = &'a NodeSpec> + 'a {
+        self.json_node_types
+            .get(node_type)
+            .into_iter()
+            .flatten()
+            .filter_map(|name| self.nodes.get(name))
     }
 
     pub fn mark_by_html_tag(&self, tag: &str) -> Option<&MarkSpec> {
@@ -988,6 +1198,62 @@ impl Schema {
                 .get("htmlTag")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let json_projection = match node_val.get("json") {
+                None => None,
+                Some(value) => {
+                    let value = value.as_object().ok_or_else(|| {
+                        BoundaryError::new(
+                            "SCHEMA_INVALID",
+                            "node JSON projection must be an object",
+                        )
+                    })?;
+                    let node_type = value
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|node_type| !node_type.is_empty())
+                        .ok_or_else(|| {
+                            BoundaryError::new(
+                                "SCHEMA_INVALID",
+                                "node JSON projection missing 'type'",
+                            )
+                        })?;
+                    admit_schema_string(node_type, &budget, work_limit)?;
+                    let attrs = match value.get("attrs") {
+                        None => HashMap::new(),
+                        Some(attrs) => {
+                            let attrs = attrs.as_object().ok_or_else(|| {
+                                BoundaryError::new(
+                                    "SCHEMA_INVALID",
+                                    "node JSON projection attrs must be an object",
+                                )
+                            })?;
+                            let mut admitted = HashMap::new();
+                            for (name, value) in attrs {
+                                admit_schema_string(name, &budget, work_limit)?;
+                                if !matches!(
+                                    value,
+                                    serde_json::Value::Null
+                                        | serde_json::Value::Bool(_)
+                                        | serde_json::Value::Number(_)
+                                        | serde_json::Value::String(_)
+                                ) {
+                                    return Err(BoundaryError::new(
+                                        "SCHEMA_INVALID",
+                                        "node JSON projection attrs must be scalar",
+                                    ));
+                                }
+                                admit_schema_value(value, &budget, work_limit, 1)?;
+                                admitted.insert(name.clone(), value.clone());
+                            }
+                            admitted
+                        }
+                    };
+                    Some(NodeJsonProjection {
+                        node_type: node_type.to_string(),
+                        attrs,
+                    })
+                }
+            };
             let is_void = node_val
                 .get("isVoid")
                 .and_then(|v| v.as_bool())
@@ -1036,6 +1302,7 @@ impl Schema {
                 attrs,
                 role,
                 html_tag,
+                json_projection,
                 is_void,
                 allow_undeclared_attrs,
             });

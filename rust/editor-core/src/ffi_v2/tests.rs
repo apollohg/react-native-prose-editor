@@ -608,7 +608,7 @@ fn max_depth_document_lifecycle_is_stack_safe_on_a_constrained_thread() {
         .name("max-depth-document-lifecycle".into())
         .stack_size(192 * 1024)
         .spawn(|| {
-            use crate::schema::{presets::tiptap_schema, schema_fingerprint};
+            use crate::schema::{presets::default_schema, schema_fingerprint};
             use crate::yrs_engine::{
                 DocumentScope, InitializationMode, TransactionOrigin, YrsDocumentEngine,
                 YrsEngineConfig,
@@ -670,7 +670,7 @@ fn max_depth_document_lifecycle_is_stack_safe_on_a_constrained_thread() {
 
             let mut limits = ResourceLimits::default();
             limits.max_document_depth = LIMIT;
-            let schema = tiptap_schema();
+            let schema = default_schema();
             let mut source = YrsDocumentEngine::new(YrsEngineConfig {
                 schema: schema.clone(),
                 fragment_name: "content".into(),

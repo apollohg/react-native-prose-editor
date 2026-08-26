@@ -19,7 +19,7 @@ use yrs::updates::decoder::Decode;
 use yrs::{Doc, GetString, ReadTxn, Transact, Update};
 
 const JSON_BEFORE: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"before replacement"}]}]}"#;
-const JSON_REPLACEMENT: &str = r#"{"type":"doc","content":[{"type":"h2","content":[{"type":"text","text":"replaced"}]},{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}"#;
+const JSON_REPLACEMENT: &str = r#"{"type":"doc","content":[{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"replaced"}]},{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}"#;
 const HTML_REPLACEMENT: &str = "<h2>replaced</h2><p>body</p>";
 const JSON_MALFORMED: &str = r#"{"type":"doc","content":["#;
 const JSON_SCHEMA_INVALID: &str =

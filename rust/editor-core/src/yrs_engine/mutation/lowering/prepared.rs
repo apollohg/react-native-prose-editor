@@ -125,13 +125,17 @@ fn prepared_clone_work(nodes: &[PreparedXmlChild]) -> Option<usize> {
 /// blueprint-backed target without emitting a second live Yrs action.
 fn materialize_empty_prepared_textblocks(nodes: &mut [PreparedXmlChild], schema: &Schema) -> usize {
     fn visit(node: &mut PreparedXmlNode, schema: &Schema, work: &mut usize) {
-        let PreparedXmlNode::Element { tag, children, .. } = node else {
+        let PreparedXmlNode::Element {
+            tag,
+            attrs,
+            children,
+        } = node
+        else {
             return;
         };
         *work = work.saturating_add(1);
         if children.is_empty()
-            && schema
-                .node(tag)
+            && super::super::codec::prepared_wire_node_spec(tag, attrs, schema)
                 .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
         {
             children.push(PreparedXmlChild {

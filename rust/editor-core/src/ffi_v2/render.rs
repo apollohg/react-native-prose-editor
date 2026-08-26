@@ -48,7 +48,7 @@ use serde_json::Value;
 use crate::boundary::{BoundaryError, ResourceLimits};
 use crate::model::Document;
 use crate::position::PositionMap;
-use crate::schema::{presets::tiptap_schema, Schema};
+use crate::schema::{presets::default_schema, Schema};
 use crate::selection::Selection;
 use crate::session::{EditorSession, SessionError};
 use crate::yrs_engine::ResolvedSelection;
@@ -168,7 +168,7 @@ struct AtomicRenderSnapshot {
 /// the identical structured error and no partial registration exists.
 pub(crate) fn resolve_create_schema(schema: &Option<Value>) -> Result<Schema, SessionError> {
     match schema {
-        None => Ok(tiptap_schema()),
+        None => Ok(default_schema()),
         Some(value) => Schema::from_json_with_limits(value, &ResourceLimits::default())
             .map_err(SessionError::from),
     }

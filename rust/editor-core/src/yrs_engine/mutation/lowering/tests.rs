@@ -1,4 +1,21 @@
 #[cfg(test)]
+fn projected_textblock_test_schema() -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            {
+                "name": "info-box", "content": "inline*", "group": "block",
+                "role": "textBlock",
+                "json": { "type": "callout", "attrs": { "tone": "info" } }
+            },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap()
+}
+
+#[cfg(test)]
 mod prepared_batch_tests {
     use serde_json::json;
     use yrs::types::xml::{XmlElementPrelim, XmlFragment};
@@ -64,6 +81,48 @@ mod prepared_batch_tests {
             let txn = doc.transact();
             assert!(wire_element_is_semantic_void(&element, &txn, &schema));
         }
+    }
+
+    #[test]
+    fn projected_wire_elements_use_their_native_semantics() {
+        let schema = projected_textblock_test_schema();
+        let doc = utf16_doc();
+        let element = {
+            let mut txn = doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let element = fragment.push_back(&mut txn, XmlElementPrelim::empty("callout"));
+            element.insert_attribute(&mut txn, "tone", Any::String("info".into()));
+            element
+        };
+        let txn = doc.transact();
+
+        assert_eq!(wire_element_semantics(&element, &txn, &schema), (false, true));
+    }
+
+    #[test]
+    fn projected_prepared_textblocks_materialize_an_empty_text_target() {
+        let schema = projected_textblock_test_schema();
+        let mut nodes = vec![PreparedXmlChild {
+            index: 0,
+            node: PreparedXmlNode::Element {
+                tag: "callout".into(),
+                attrs: vec![("tone".into(), Any::String("info".into()))],
+                children: Vec::new(),
+            },
+        }];
+
+        materialize_empty_prepared_textblocks(&mut nodes, &schema);
+
+        let PreparedXmlNode::Element { children, .. } = &nodes[0].node else {
+            panic!("projected element expected")
+        };
+        assert!(matches!(
+            children.as_slice(),
+            [PreparedXmlChild {
+                node: PreparedXmlNode::Text { .. },
+                ..
+            }]
+        ));
     }
 
     fn seed_two_prepared_root_blocks(
@@ -314,6 +373,35 @@ mod localized_insert_tests {
             .unwrap();
         drop(txn);
         doc
+    }
+
+    #[test]
+    fn localized_root_signature_accepts_projected_wire_tags() {
+        let schema = projected_textblock_test_schema();
+        let limits = ResourceLimits::default();
+        let source = json!({
+            "type": "doc",
+            "content": [{
+                "type": "callout",
+                "attrs": { "tone": "info" },
+                "content": [{ "type": "text", "text": "projected" }]
+            }]
+        });
+        let document = from_prosemirror_json(&source, &schema, UnknownTypeMode::Preserve).unwrap();
+        let doc = seeded_document(&source, &schema, &limits);
+        let txn = doc.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+
+        assert!(localized_root_structural_parent(
+            719,
+            &txn,
+            &fragment,
+            &document,
+            &schema,
+            &limits,
+        )
+        .unwrap()
+        .is_some());
     }
 
     #[derive(Debug, PartialEq)]
