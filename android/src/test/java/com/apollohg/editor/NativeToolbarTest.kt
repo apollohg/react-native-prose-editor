@@ -31,6 +31,36 @@ import org.robolectric.annotation.Config
 class NativeToolbarTest {
 
     @Test
+    fun `default toolbar uses ProseMirror node names`() {
+        assertEquals(
+            listOf("bullet_list", "ordered_list"),
+            NativeToolbarItem.defaults.mapNotNull { it.listType?.name }
+        )
+        assertEquals(
+            listOf("hard_break", "horizontal_rule"),
+            NativeToolbarItem.defaults.mapNotNull { it.nodeType }
+        )
+
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+        toolbar.applyState(
+            NativeToolbarState(
+                marks = emptyMap(),
+                nodes = mapOf("bullet_list" to true, "list_item" to true),
+                commands = mapOf("wrapBulletList" to true, "wrapOrderedList" to true),
+                allowedMarks = emptySet(),
+                insertableNodes = setOf("hard_break", "horizontal_rule"),
+                canUndo = false,
+                canRedo = false
+            )
+        )
+
+        assertTrue(requireNotNull(toolbar.buttonAtForTesting(5)).isSelected)
+        assertTrue(requireNotNull(toolbar.buttonAtForTesting(9)).isEnabled)
+        assertTrue(requireNotNull(toolbar.buttonAtForTesting(10)).isEnabled)
+    }
+
+    @Test
     fun `toolbar items parse platform material icons and action state`() {
         val items = NativeToolbarItem.fromJson(
             """

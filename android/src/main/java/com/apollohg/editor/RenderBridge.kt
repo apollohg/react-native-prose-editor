@@ -1443,7 +1443,7 @@ object RenderBridge {
         density: Float
     ) {
         when (nodeType) {
-            "hardBreak" -> {
+            "hardBreak", "hard_break" -> {
                 val start = builder.length
                 builder.append("\n")
                 val end = builder.length
@@ -1489,7 +1489,7 @@ object RenderBridge {
         topLevelChildIndex: Int?
     ) {
         when (nodeType) {
-            "horizontalRule" -> {
+            "horizontalRule", "horizontal_rule" -> {
                 val start = builder.length
                 builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
                 val end = builder.length
@@ -2051,7 +2051,7 @@ object RenderBridge {
     }
 
     private fun isListItemNodeType(nodeType: String): Boolean {
-        return nodeType == "listItem" || nodeType == "taskItem"
+        return EditorNodeTypes.isListItem(nodeType)
     }
 
     /**
@@ -2166,7 +2166,7 @@ object RenderBridge {
         if (builder.isEmpty()) return false
         val lastIndex = builder.length - 1
         return builder.getSpans(lastIndex, builder.length, Annotation::class.java).any {
-            it.key == "nativeVoidNodeType" && it.value == "hardBreak"
+            it.key == "nativeVoidNodeType" && EditorNodeTypes.isHardBreak(it.value)
         }
     }
 

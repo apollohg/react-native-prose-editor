@@ -1426,7 +1426,7 @@ internal class EditorV2Adapter private constructor(
         commandAtSelection(JSONObject().put("type", "toggleBlockquote"), anchor, head)
 
     override fun wrapInList(listType: String, anchor: Int, head: Int): String? {
-        val itemType = if (listType == "taskList") "taskItem" else "listItem"
+        val itemType = EditorNodeTypes.listItemType(listType)
         return commandAtSelection(
             JSONObject().put("type", "wrapInList").put("listType", listType).put("itemType", itemType),
             anchor,

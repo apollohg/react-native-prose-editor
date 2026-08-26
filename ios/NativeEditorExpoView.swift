@@ -267,7 +267,47 @@ private enum ToolbarCommand: String {
     case redo
 }
 
+enum EditorNodeTypes {
+    static func listItemType(for listType: String) -> String {
+        switch listType {
+        case "bullet_list", "ordered_list":
+            return "list_item"
+        case "task_list":
+            return "task_item"
+        case "taskList":
+            return "taskItem"
+        default:
+            return "listItem"
+        }
+    }
+
+    static func isHardBreak(_ nodeType: String?) -> Bool {
+        nodeType == "hardBreak" || nodeType == "hard_break"
+    }
+
+    static func isHorizontalRule(_ nodeType: String?) -> Bool {
+        nodeType == "horizontalRule" || nodeType == "horizontal_rule"
+    }
+
+    static func isListItem(_ nodeType: String) -> Bool {
+        nodeType == "listItem" || nodeType == "list_item"
+            || nodeType == "taskItem" || nodeType == "task_item"
+    }
+
+    static func isListContainer(_ nodeType: String) -> Bool {
+        nodeType == "bulletList" || nodeType == "bullet_list"
+            || nodeType == "orderedList" || nodeType == "ordered_list"
+            || nodeType == "taskList" || nodeType == "task_list"
+    }
+
+    static func preferredHardBreak(in insertableNodes: Set<String>) -> String {
+        insertableNodes.contains("hard_break") ? "hard_break" : "hardBreak"
+    }
+}
+
 private enum ToolbarListType: String {
+    case bullet_list
+    case ordered_list
     case bulletList
     case orderedList
 }
@@ -475,12 +515,12 @@ private struct NativeToolbarItem {
         NativeToolbarItem(type: .mark, label: "Strikethrough", icon: .defaultIcon(.strike), mark: "strike"),
         NativeToolbarItem(type: .blockquote, label: "Blockquote", icon: .defaultIcon(.blockquote)),
         NativeToolbarItem(type: .separator),
-        NativeToolbarItem(type: .list, label: "Bullet List", icon: .defaultIcon(.bulletList), listType: .bulletList),
-        NativeToolbarItem(type: .list, label: "Ordered List", icon: .defaultIcon(.orderedList), listType: .orderedList),
+        NativeToolbarItem(type: .list, label: "Bullet List", icon: .defaultIcon(.bulletList), listType: .bullet_list),
+        NativeToolbarItem(type: .list, label: "Ordered List", icon: .defaultIcon(.orderedList), listType: .ordered_list),
         NativeToolbarItem(type: .command, label: "Indent List", icon: .defaultIcon(.indentList), command: .indentList),
         NativeToolbarItem(type: .command, label: "Outdent List", icon: .defaultIcon(.outdentList), command: .outdentList),
-        NativeToolbarItem(type: .node, label: "Line Break", icon: .defaultIcon(.lineBreak), nodeType: "hardBreak"),
-        NativeToolbarItem(type: .node, label: "Horizontal Rule", icon: .defaultIcon(.horizontalRule), nodeType: "horizontalRule"),
+        NativeToolbarItem(type: .node, label: "Line Break", icon: .defaultIcon(.lineBreak), nodeType: "hard_break"),
+        NativeToolbarItem(type: .node, label: "Horizontal Rule", icon: .defaultIcon(.horizontalRule), nodeType: "horizontal_rule"),
         NativeToolbarItem(type: .separator),
         NativeToolbarItem(type: .command, label: "Undo", icon: .defaultIcon(.undo), command: .undo),
         NativeToolbarItem(type: .command, label: "Redo", icon: .defaultIcon(.redo), command: .redo),
@@ -1682,15 +1722,15 @@ final class EditorAccessoryToolbarView: UIInputView {
             )
         case .list:
             switch item.listType {
-            case .bulletList:
+            case .bulletList, .bullet_list:
                 return (
                     enabled: state.commands["wrapBulletList"] == true,
-                    active: state.nodes["bulletList"] == true
+                    active: state.nodes[item.listType?.rawValue ?? ""] == true
                 )
-            case .orderedList:
+            case .orderedList, .ordered_list:
                 return (
                     enabled: state.commands["wrapOrderedList"] == true,
-                    active: state.nodes["orderedList"] == true
+                    active: state.nodes[item.listType?.rawValue ?? ""] == true
                 )
             case .none:
                 return (enabled: false, active: false)

@@ -135,7 +135,7 @@ class PreparedProseRenderingTest {
         val nested = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 12L } }
         val empty = leavesByItem.values.first { leaves -> leaves.any { it.value.listContext?.index == 8L } }
         assertEquals("7.", layout.blocks[outer.first().index].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.label)
-        assertEquals("12.", layout.blocks[nested.first().index].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.label)
+        assertEquals("l.", layout.blocks[nested.first().index].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.label)
         assertEquals("8.", layout.blocks[empty.first().index].fragments.single { it.kind == PreparedProseFragmentKind.MARKER }.label)
 
         val outerBlocks = outer.map { layout.blocks[it.index] }.sortedBy { it.bounds.top }
@@ -148,7 +148,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `scaled list markers stay centered without changing item spacing`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
             Fixture.structural.first().configJson,
         )
         val regular = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerScale":1,"itemSpacing":7}}""", 1f))
@@ -204,7 +204,7 @@ class PreparedProseRenderingTest {
                 13,
             ),
             Triple(
-                """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
+                """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
                 """{"list":{"itemSpacing":11,"spacingAfter":20},"contentInsets":{"bottom":7}}""",
                 11,
             ),
@@ -238,7 +238,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `list spacingAfter replaces terminal item spacing before following content`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"third"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}""",
+            """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]},{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]},{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"third"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}""",
             Fixture.structural.first().configJson,
         )
         val layout = prepare(
@@ -269,7 +269,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `nested list spacingAfter applies before parent content`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after nested"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after nested"}]}]}]}]}""",
             Fixture.structural.first().configJson,
         )
         val layout = prepare(
@@ -284,7 +284,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `nested and outer list spacingAfter stack at a shared ending`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}""",
+            """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"after"}]}]}""",
             Fixture.structural.first().configJson,
         )
         val layout = prepare(
@@ -299,7 +299,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `nested list ending with a non-final parent keeps parent item spacing`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"parent"}]},{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"nested"}]}]}]}]},{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}]}]}""",
             Fixture.structural.first().configJson,
         )
         val layout = prepare(
@@ -342,7 +342,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `list markerGap sets the space between the marker and the text`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
             Fixture.structural.first().configJson,
         )
 
@@ -359,7 +359,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `list markerGap keeps the marker column left edge fixed`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
             Fixture.structural.first().configJson,
         )
         val narrow = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerGap":4}}""", 1f))
@@ -376,7 +376,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `list marker scale does not resize ordered numbers`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"ordered_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}""",
             Fixture.structural.first().configJson,
         )
         val regular = prepare(document, PreparedProseTheme.resolve("""{"list":{"markerScale":1}}""", 1f))
@@ -524,7 +524,7 @@ class PreparedProseRenderingTest {
     @Test
     fun `compiler backed fixed line heights cover single final heading code list and density metrics`() {
         val document = compileSource(
-            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"single"}]},{"type":"paragraph","content":[{"type":"text","text":"wrapped final line needs enough words to wrap at this fixed width"}]},{"type":"paragraph","content":[{"type":"text","text":"hard"},{"type":"hardBreak"},{"type":"text","text":"break"}]},{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"heading"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"list leaf"}]}]}]}]}""",
+            """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"single"}]},{"type":"paragraph","content":[{"type":"text","text":"wrapped final line needs enough words to wrap at this fixed width"}]},{"type":"paragraph","content":[{"type":"text","text":"hard"},{"type":"hard_break"},{"type":"text","text":"break"}]},{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"heading"}]},{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"list leaf"}]}]}]}]}""",
             Fixture.structural[1].configJson,
         )
         val codeDocument = compileSource(
@@ -838,20 +838,20 @@ private data class Fixture(
         private const val customConfig = """{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"opaqueBlock","content":"","group":"block","role":"block","isVoid":true,"allowUndeclaredAttrs":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"""
 
         val structural: List<Fixture> = listOf(
-            Fixture("nested JSON list and blockquote inheritance", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"""), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER), documentExpectation = "a blockquote nested ordered-list block with list index 12") { it.blocks.any { block -> block.inBlockquote && block.listContext?.index == 12L } },
+            Fixture("nested JSON list and blockquote inheritance", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"ordered_list","attrs":{"start":12},"content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"""), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER), documentExpectation = "a blockquote nested ordered-list block with list index 12") { it.blocks.any { block -> block.inBlockquote && block.listContext?.index == 12L } },
             Fixture("HTML headings marks rules and hard breaks", ProseViewerSource.Html("<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6><blockquote><p><strong>bold</strong><br>quote</p></blockquote><ol start=\"3\"><li>third</li></ol><hr>"), localConfig, setOf(PreparedProseFragmentKind.TEXT, PreparedProseFragmentKind.MARKER, PreparedProseFragmentKind.BORDER, PreparedProseFragmentKind.RULE), documentExpectation = "exact h1-h6, quoted bold hard-break paragraph, ordered index-3 leaf, and rule projection") { document ->
-                val expectedTypes = listOf("h1", "h2", "h3", "h4", "h5", "h6", "paragraph", "paragraph", "horizontalRule")
+                val expectedTypes = listOf("h1", "h2", "h3", "h4", "h5", "h6", "paragraph", "paragraph", "horizontal_rule")
                 document.blocks.map { it.nodeType } == expectedTypes &&
                     document.blocks[6].inBlockquote &&
                     document.blocks[6].inlines.any { inline -> inline is ViewerInline.Text && inline.text == "bold" && inline.marks.any { it.markType == "bold" } } &&
-                    document.blocks[6].inlines.any { inline -> inline is ViewerInline.Atom && inline.nodeType == "hardBreak" } &&
+                    document.blocks[6].inlines.any { inline -> inline is ViewerInline.Atom && inline.nodeType == "hard_break" } &&
                     document.blocks[6].inlines.any { inline -> inline is ViewerInline.Text && inline.text == "quote" } &&
                     document.blocks[7].listContext?.ordered == true &&
                     document.blocks[7].listContext?.index == 3L &&
                     document.blocks[7].listItemBoundary?.isFirstRenderableLeaf == true &&
                     document.blocks[7].listItemBoundary?.isFinalRenderableLeaf == true &&
                     document.blocks[7].inlines.singleOrNull().let { inline -> inline is ViewerInline.Text && inline.text == "third" } &&
-                    document.blocks[8].nodeType == "horizontalRule"
+                    document.blocks[8].nodeType == "horizontal_rule"
             },
             Fixture("custom atoms task list and snake rule", ProseViewerSource.Json("""{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Ada","mentionTheme":{"node":{"textColor":"#FF0000","backgroundColor":"#00FF00","borderColor":"#0000FF","borderWidth":2,"borderRadius":9}}}},{"type":"opaque","attrs":{"label":"opaque"}}]},{"type":"taskList","content":[{"type":"listItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"task"}]}]}]},{"type":"horizontal_rule"}]}"""), customConfig, setOf(PreparedProseFragmentKind.ATOM, PreparedProseFragmentKind.RULE), documentExpectation = "a checked task-list block") { document -> document.blocks.any { it.listContext?.kind == "task" && it.listContext.checked } }
         )

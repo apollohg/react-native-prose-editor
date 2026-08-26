@@ -93,7 +93,36 @@ internal enum class ToolbarCommand {
     redo,
 }
 
+internal object EditorNodeTypes {
+    fun listItemType(listType: String): String = when (listType) {
+        "bullet_list", "ordered_list" -> "list_item"
+        "task_list" -> "task_item"
+        "taskList" -> "taskItem"
+        else -> "listItem"
+    }
+
+    fun isHardBreak(nodeType: String?): Boolean =
+        nodeType == "hardBreak" || nodeType == "hard_break"
+
+    fun isHorizontalRule(nodeType: String?): Boolean =
+        nodeType == "horizontalRule" || nodeType == "horizontal_rule"
+
+    fun isListItem(nodeType: String): Boolean =
+        nodeType == "listItem" || nodeType == "list_item" ||
+            nodeType == "taskItem" || nodeType == "task_item"
+
+    fun isListContainer(nodeType: String): Boolean =
+        nodeType == "bulletList" || nodeType == "bullet_list" ||
+            nodeType == "orderedList" || nodeType == "ordered_list" ||
+            nodeType == "taskList" || nodeType == "task_list"
+
+    fun preferredHardBreak(insertableNodes: Set<String>): String =
+        if (insertableNodes.contains("hard_break")) "hard_break" else "hardBreak"
+}
+
 internal enum class ToolbarListType {
+    bullet_list,
+    ordered_list,
     bulletList,
     orderedList,
 }
@@ -340,12 +369,12 @@ internal data class NativeToolbarItem(
             NativeToolbarItem(ToolbarItemKind.mark, label = "Strikethrough", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.strike), mark = "strike"),
             NativeToolbarItem(ToolbarItemKind.blockquote, label = "Blockquote", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.blockquote)),
             NativeToolbarItem(ToolbarItemKind.separator),
-            NativeToolbarItem(ToolbarItemKind.list, label = "Bullet List", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.bulletList), listType = ToolbarListType.bulletList),
-            NativeToolbarItem(ToolbarItemKind.list, label = "Ordered List", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.orderedList), listType = ToolbarListType.orderedList),
+            NativeToolbarItem(ToolbarItemKind.list, label = "Bullet List", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.bulletList), listType = ToolbarListType.bullet_list),
+            NativeToolbarItem(ToolbarItemKind.list, label = "Ordered List", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.orderedList), listType = ToolbarListType.ordered_list),
             NativeToolbarItem(ToolbarItemKind.command, label = "Indent List", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.indentList), command = ToolbarCommand.indentList),
             NativeToolbarItem(ToolbarItemKind.command, label = "Outdent List", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.outdentList), command = ToolbarCommand.outdentList),
-            NativeToolbarItem(ToolbarItemKind.node, label = "Line Break", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.lineBreak), nodeType = "hardBreak"),
-            NativeToolbarItem(ToolbarItemKind.node, label = "Horizontal Rule", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.horizontalRule), nodeType = "horizontalRule"),
+            NativeToolbarItem(ToolbarItemKind.node, label = "Line Break", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.lineBreak), nodeType = "hard_break"),
+            NativeToolbarItem(ToolbarItemKind.node, label = "Horizontal Rule", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.horizontalRule), nodeType = "horizontal_rule"),
             NativeToolbarItem(ToolbarItemKind.separator),
             NativeToolbarItem(ToolbarItemKind.command, label = "Undo", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.undo), command = ToolbarCommand.undo),
             NativeToolbarItem(ToolbarItemKind.command, label = "Redo", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.redo), command = ToolbarCommand.redo)
@@ -1081,13 +1110,15 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
                 state.nodes["blockquote"] == true
             )
             ToolbarItemKind.list -> when (item.listType) {
-                ToolbarListType.bulletList -> Pair(
+                ToolbarListType.bulletList,
+                ToolbarListType.bullet_list -> Pair(
                     state.commands["wrapBulletList"] == true,
-                    state.nodes["bulletList"] == true
+                    state.nodes[item.listType.name] == true
                 )
-                ToolbarListType.orderedList -> Pair(
+                ToolbarListType.orderedList,
+                ToolbarListType.ordered_list -> Pair(
                     state.commands["wrapOrderedList"] == true,
-                    state.nodes["orderedList"] == true
+                    state.nodes[item.listType.name] == true
                 )
                 null -> Pair(false, false)
             }

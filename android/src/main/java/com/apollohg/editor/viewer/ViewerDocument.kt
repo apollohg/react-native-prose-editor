@@ -246,7 +246,20 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
     }
 }
 
-private val CONTAINER_BLOCKS = setOf("doc", "blockquote", "bulletList", "orderedList", "taskList", "listItem")
+private val CONTAINER_BLOCKS = setOf(
+    "doc",
+    "blockquote",
+    "bulletList",
+    "bullet_list",
+    "orderedList",
+    "ordered_list",
+    "taskList",
+    "task_list",
+    "listItem",
+    "list_item",
+    "taskItem",
+    "task_item"
+)
 
 internal fun listContext(json: String?): ViewerListContext? = runCatching {
     json ?: return@runCatching null

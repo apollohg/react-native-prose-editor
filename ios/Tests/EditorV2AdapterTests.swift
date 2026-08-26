@@ -1667,17 +1667,18 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertNotNil(heading)
         let headedDoc = documentJsonObject(adapter)
         let headingNode = (headedDoc["content"] as? [[String: Any]])?.first
-        XCTAssertEqual(headingNode?["type"] as? String, "h2")
+        XCTAssertEqual(headingNode?["type"] as? String, "heading")
+        XCTAssertEqual((headingNode?["attrs"] as? [String: Any])?["level"] as? Int, 2)
 
-        // listItem's content expression rejects headings: wrap a fresh
+        // list_item's content expression rejects headings: wrap a fresh
         // paragraph instead.
         _ = adapter.setContentHtml("<p>ab</p>")
-        let list = adapter.wrapInList(listType: "bulletList", itemType: "listItem", anchor: 1, head: 1)
+        let list = adapter.wrapInList(listType: "bullet_list", itemType: "list_item", anchor: 1, head: 1)
         XCTAssertNotNil(list)
         let listDoc = documentJsonObject(adapter)
-        XCTAssertEqual((listDoc["content"] as? [[String: Any]])?.first?["type"] as? String, "bulletList")
+        XCTAssertEqual((listDoc["content"] as? [[String: Any]])?.first?["type"] as? String, "bullet_list")
 
-        let hardBreak = adapter.insertNode("hardBreak", anchor: 1, head: 1)
+        let hardBreak = adapter.insertNode("hard_break", anchor: 1, head: 1)
         XCTAssertNotNil(hardBreak)
 
         _ = adapter.setContentHtml("<p>ab</p>")
@@ -1897,8 +1898,8 @@ final class EditorV2AdapterTests: XCTestCase {
         )
 
         let updateJSON = adapter.wrapInList(
-            listType: "bulletList",
-            itemType: "listItem",
+            listType: "bullet_list",
+            itemType: "list_item",
             anchor: 3,
             head: 3
         )
@@ -1925,8 +1926,8 @@ final class EditorV2AdapterTests: XCTestCase {
         _ = adapter.insertText("one", atScalar: 0)
 
         let updateJSON = adapter.wrapInList(
-            listType: "bulletList",
-            itemType: "listItem",
+            listType: "bullet_list",
+            itemType: "list_item",
             anchor: 1,
             head: 1
         )

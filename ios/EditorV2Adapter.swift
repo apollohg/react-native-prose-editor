@@ -1973,7 +1973,7 @@ final class EditorV2Adapter {
                 head: head
             )
         }
-        if nodeType == "hardBreak" {
+        if EditorNodeTypes.isHardBreak(nodeType) {
             // Inline void: the caret lands immediately after the break.
             let caret = min(anchor, head) &+ 1
             return performMutation(

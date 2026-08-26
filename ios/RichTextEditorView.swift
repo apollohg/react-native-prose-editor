@@ -2231,7 +2231,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
         performInterceptedInput {
-            insertNodeInRust("hardBreak")
+            insertNodeInRust(preferredHardBreakNodeType())
         }
     }
 
@@ -2458,7 +2458,22 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             return false
         }
 
-        return nodes["bulletList"] as? Bool == true || nodes["orderedList"] as? Bool == true
+        return nodes.contains { nodeType, value in
+            EditorNodeTypes.isListContainer(nodeType) && value as? Bool == true
+        }
+    }
+
+    private func preferredHardBreakNodeType() -> String {
+        guard
+            let data = EditorV2Shadow.getCurrentState(id: editorId).data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let activeState = object["activeState"] as? [String: Any],
+            let insertableNodes = activeState["insertableNodes"] as? [String]
+        else {
+            return "hardBreak"
+        }
+
+        return EditorNodeTypes.preferredHardBreak(in: Set(insertableNodes))
     }
 
     // MARK: - Input Interception: Replace (Autocorrect)
@@ -3926,7 +3941,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         let attrs = textStorage.attributes(at: utf16Offset, effectiveRange: nil)
         return attrs[.attachment] is NSTextAttachment
-            && (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "horizontalRule"
+            && EditorNodeTypes.isHorizontalRule(attrs[RenderBridgeAttributes.voidNodeType] as? String)
     }
 
     private func hardBreakBaselineY(after utf16Offset: Int) -> CGFloat? {
@@ -3936,7 +3951,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             at: utf16Offset - 1,
             effectiveRange: nil
         ) as? String
-        guard previousVoidType == "hardBreak" else { return nil }
+        guard EditorNodeTypes.isHardBreak(previousVoidType) else { return nil }
 
         let previousGlyphIndex = layoutManager.glyphIndexForCharacter(at: utf16Offset - 1)
         guard previousGlyphIndex < layoutManager.numberOfGlyphs else { return nil }

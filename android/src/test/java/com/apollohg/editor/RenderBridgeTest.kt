@@ -429,6 +429,25 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `render - ProseMirror void node names`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Above", "marks": []},
+            {"type": "voidInline", "nodeType": "hard_break", "docPos": 6},
+            {"type": "textRun", "text": "Below", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "voidBlock", "nodeType": "horizontal_rule", "docPos": 13}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertTrue(result.toString().contains("Above\nBelow"))
+        assertTrue(result.getSpans(0, result.length, HorizontalRuleSpan::class.java).isNotEmpty())
+    }
+
+    @Test
     fun `render - image span honors preferred dimensions`() {
         val json = """
         [
@@ -805,6 +824,24 @@ class RenderBridgeTest {
         )
         assertTrue("Should contain first item text", string.contains("First item"))
         assertTrue("Should contain second item text", string.contains("Second item"))
+    }
+
+    @Test
+    fun `render - ProseMirror ordered list item`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "list_item", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertTrue(result.toString().contains("1. Item"))
     }
 
     @Test

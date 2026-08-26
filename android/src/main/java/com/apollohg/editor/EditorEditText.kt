@@ -2796,7 +2796,7 @@ class EditorEditText @JvmOverloads constructor(
 
         val selection = currentScalarSelection() ?: return
         v2Driver?.let { driver ->
-            driver.insertNode("hardBreak", selection.first, selection.second)?.let { applyUpdateJSON(it) }
+            driver.insertNode(preferredHardBreakNodeType(), selection.first, selection.second)?.let { applyUpdateJSON(it) }
         }
     }
 
@@ -4375,10 +4375,30 @@ class EditorEditText @JvmOverloads constructor(
             val stateJson = v2Driver?.currentStateJson() ?: return false
             val state = org.json.JSONObject(stateJson)
             val nodes = state.optJSONObject("activeState")?.optJSONObject("nodes")
-            nodes?.optBoolean("bulletList", false) == true ||
-                nodes?.optBoolean("orderedList", false) == true
+            nodes?.keys()?.asSequence()?.any { nodeType ->
+                EditorNodeTypes.isListContainer(nodeType) && nodes.optBoolean(nodeType, false)
+            } == true
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun preferredHardBreakNodeType(): String {
+        return try {
+            val stateJson = v2Driver?.currentStateJson() ?: return "hardBreak"
+            val insertableNodes = org.json.JSONObject(stateJson)
+                .optJSONObject("activeState")
+                ?.optJSONArray("insertableNodes")
+            val names = buildSet {
+                if (insertableNodes != null) {
+                    for (index in 0 until insertableNodes.length()) {
+                        insertableNodes.optString(index, null)?.let(::add)
+                    }
+                }
+            }
+            EditorNodeTypes.preferredHardBreak(names)
+        } catch (_: Exception) {
+            "hardBreak"
         }
     }
 

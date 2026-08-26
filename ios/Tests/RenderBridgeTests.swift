@@ -1875,6 +1875,50 @@ final class RenderBridgeTests: XCTestCase {
         }
     }
 
+    func testRender_proseMirrorVoidNodeNames() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Above", "marks": []},
+            {"type": "voidInline", "nodeType": "hard_break", "docPos": 6},
+            {"type": "textRun", "text": "Below", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "voidBlock", "nodeType": "horizontal_rule", "docPos": 13}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertTrue(result.string.contains("Above\nBelow"))
+        let ruleRange = (result.string as NSString).range(of: "\u{FFFC}")
+        XCTAssertNotEqual(ruleRange.location, NSNotFound)
+        XCTAssertTrue(result.attribute(.attachment, at: ruleRange.location, effectiveRange: nil) is HorizontalRuleAttachment)
+    }
+
+    func testRender_proseMirrorListItemName() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "list_item", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertEqual(result.string, "Item")
+        XCTAssertNotNil(result.attribute(RenderBridgeAttributes.listContext, at: 0, effectiveRange: nil))
+    }
+
     func testRender_horizontalRuleCollapsesAdjacentParagraphSpacing() {
         let json = """
         [

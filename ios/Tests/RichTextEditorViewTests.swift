@@ -1463,6 +1463,27 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
     }
 
+    func testDefaultAccessoryToolbarUsesProseMirrorNodeNames() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        toolbar.applyStateJSONForTesting("""
+        {
+          "activeState": {
+            "marks": {},
+            "nodes": { "bullet_list": true, "list_item": true },
+            "commands": { "wrapBulletList": true, "wrapOrderedList": true },
+            "allowedMarks": [],
+            "insertableNodes": ["hard_break", "horizontal_rule"]
+          },
+          "historyState": { "canUndo": false, "canRedo": false }
+        }
+        """)
+
+        XCTAssertEqual(toolbar.buttonLabelForTesting(5), "Bullet List")
+        XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
+        XCTAssertEqual(toolbar.buttonIsEnabledForTesting(9), true)
+        XCTAssertEqual(toolbar.buttonIsEnabledForTesting(10), true)
+    }
+
     func testNativeToolbarCascadesGlobalAndPerButtonStyles() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         toolbar.setItemsJSONForTesting("""
@@ -3209,6 +3230,19 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 8)
         XCTAssertEqual(view.textView.reconciliationCount, 0)
+    }
+
+    func testProseMirrorListToggleUsesSnakeCaseListItem() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        view.editorId = editorId
+        view.setContent(html: "<p>item</p>")
+
+        view.textView.performToolbarToggleList("bullet_list", isActive: false)
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<ul><li><p>item</p></li></ul>")
     }
 
     func testNativeMutationUsesUIKitSelectionAlreadyMovedBeforeCapture() {

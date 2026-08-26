@@ -234,7 +234,7 @@ final class RenderBridge {
                 let nodeType = element["nodeType"] as? String ?? ""
                 guard let docPos = jsonUInt32(element["docPos"]) else { continue }
                 let attrs = element["attrs"] as? [String: Any] ?? [:]
-                if nodeType == "hardBreak" {
+                if EditorNodeTypes.isHardBreak(nodeType) {
                     overrideTrailingParagraphSpacing(in: result, paragraphSpacing: 0)
                 }
                 let attrStr = attributedStringForVoidInline(
@@ -721,7 +721,7 @@ final class RenderBridge {
         )
 
         switch nodeType {
-        case "hardBreak":
+        case "hardBreak", "hard_break":
             var hardBreakAttrs = styledAttrs
             if let paragraphStyle = (hardBreakAttrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
                 as? NSMutableParagraphStyle
@@ -762,7 +762,7 @@ final class RenderBridge {
         }
 
         switch nodeType {
-        case "horizontalRule":
+        case "horizontalRule", "horizontal_rule":
             let attachment = HorizontalRuleAttachment()
             attachment.lineColor = theme?.horizontalRule?.color ?? textColor.withAlphaComponent(0.3)
             attachment.lineHeight = theme?.horizontalRule?.thickness ?? LayoutConstants.horizontalRuleHeight
@@ -1219,7 +1219,7 @@ final class RenderBridge {
     }
 
     private static func isListItemNodeType(_ nodeType: String) -> Bool {
-        nodeType == "listItem" || nodeType == "taskItem"
+        EditorNodeTypes.isListItem(nodeType)
     }
 
     private static func overrideTrailingParagraphSpacing(
@@ -1248,7 +1248,7 @@ final class RenderBridge {
         nodeType: String,
         theme: EditorTheme?
     ) {
-        guard nodeType == "horizontalRule" else { return }
+        guard EditorNodeTypes.isHorizontalRule(nodeType) else { return }
         let horizontalRuleMargin = resolvedHorizontalRuleVerticalMargin(theme: theme)
 
         if let pendingSpacing = pendingParagraphSpacing {
@@ -1343,11 +1343,11 @@ final class RenderBridge {
             if scalar == 0x000A || scalar == 0x000D {
                 continue
             }
-            guard result.attribute(
+            guard let nodeType = result.attribute(
                 RenderBridgeAttributes.voidNodeType,
                 at: index,
                 effectiveRange: nil
-            ) as? String == "horizontalRule" else {
+            ) as? String, EditorNodeTypes.isHorizontalRule(nodeType) else {
                 return nil
             }
             return (
@@ -1380,11 +1380,11 @@ final class RenderBridge {
     ) {
         guard result.length > 0 else { return }
         guard !isListItemNodeType(endedBlock.nodeType) else { return }
-        guard result.attribute(
+        guard let nodeType = result.attribute(
             RenderBridgeAttributes.voidNodeType,
             at: result.length - 1,
             effectiveRange: nil
-        ) as? String == "hardBreak" else {
+        ) as? String, EditorNodeTypes.isHardBreak(nodeType) else {
             return
         }
 

@@ -439,6 +439,19 @@ class EditorV2AdapterTest {
     }
 
     @Test
+    fun `ProseMirror list command uses snake case list item`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>ab</p>")
+        backend.calls.clear()
+
+        assertNotNull(adapter.wrapInList("bullet_list", 1, 1))
+
+        val command = sessionOf(adapter).commands.single()
+        assertEquals("bullet_list", command.getString("listType"))
+        assertEquals("list_item", command.getString("itemType"))
+    }
+
+    @Test
     fun `paste routes typed content commands`() {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>ab</p>")

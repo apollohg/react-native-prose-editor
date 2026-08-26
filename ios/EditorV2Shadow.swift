@@ -187,7 +187,7 @@ enum EditorV2Shadow {
     }
 
     static func wrapInListAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, listType: String) -> String {
-        let itemType = listType == "taskList" ? "taskItem" : "listItem"
+        let itemType = EditorNodeTypes.listItemType(for: listType)
         return adapter(for: id)?.wrapInList(listType: listType, itemType: itemType, anchor: scalarAnchor, head: scalarHead) ?? "{}"
     }
 
@@ -244,7 +244,7 @@ enum EditorV2Shadow {
     static func wrapInList(id: UInt64, listType: String) -> String {
         guard let adapter = adapter(for: id) else { return "{}" }
         let selection = currentScalarSelection(adapter)
-        let itemType = listType == "taskList" ? "taskItem" : "listItem"
+        let itemType = EditorNodeTypes.listItemType(for: listType)
         return adapter.wrapInList(listType: listType, itemType: itemType, anchor: selection.anchor, head: selection.head) ?? "{}"
     }
 

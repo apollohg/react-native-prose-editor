@@ -763,7 +763,7 @@ final class EditorLayoutManager: NSLayoutManager {
             at: paragraphStart - 1,
             effectiveRange: nil
         ) as? String
-        return previousVoidType == "hardBreak"
+        return EditorNodeTypes.isHardBreak(previousVoidType)
     }
 
     private func markerFont(
