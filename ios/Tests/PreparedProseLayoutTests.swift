@@ -1260,7 +1260,7 @@ final class PreparedProseLayoutTests: XCTestCase {
     }
 
     func testBenchmarkCensusIncludesOnlyObservedLiveArtifacts() throws {
-        let cache = PreparedProseLayoutCache(byteBudget: 1)
+        let cache = PreparedProseLayoutCache(byteBudget: 3)
         func key(_ name: String) -> ProseLayoutKey {
             ProseLayoutKey(
                 semanticKey: name,
@@ -1326,7 +1326,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         _ = try cache.value(for: completedKey) { XCTFail("completed entry should satisfy the lookup"); return layout(completedKey, bytes: 1) }
         _ = try cache.value(for: replacementKey) { layout(replacementKey, bytes: 1) }
         XCTAssertThrowsError(try cache.value(for: rejectedKey) { throw NSError(domain: "benchmark", code: 2) })
-        _ = try cache.value(for: oversizedKey) { layout(oversizedKey, bytes: 2) }
+        _ = try cache.value(for: oversizedKey) { layout(oversizedKey, bytes: 4) }
         XCTAssertEqual(
             Set(cache.endBenchmarkCensus()),
             Set([replacementKey]),

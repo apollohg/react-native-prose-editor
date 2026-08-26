@@ -4652,11 +4652,15 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         let previousEditorId = editorId
         let previousAuthorizedText = lastAuthorizedText
         let previousStateJSON = previousEditorId != 0 ? EditorV2Shadow.getCurrentState(id: previousEditorId) : nil
-        guard prepareForExternalEditorUpdate() else {
+        let preparation = prepareForExternalEditorUpdateResult()
+        guard preparation.ready else {
             return (false, nil, "composition")
         }
         guard editorId != 0 else {
             return (true, nil, nil)
+        }
+        if let adoptedUpdateJSON = preparation.adoptedUpdateJSON {
+            return (true, adoptedUpdateJSON, nil)
         }
         let currentStateJSON = EditorV2Shadow.getCurrentState(id: editorId)
         guard lastAuthorizedText != previousAuthorizedText
@@ -4810,21 +4814,22 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         var adoptedUpdateJSON: String?
         performInterceptedInput(flushPendingNativeTextMutation: false) {
             guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else { return }
-            if mutation.from == mutation.to {
-                guard !mutation.replacementText.isEmpty else { return }
-                adoptedUpdateJSON = adapter.insertText(mutation.replacementText, atScalar: mutation.from)
-            } else if mutation.replacementText.isEmpty {
-                adoptedUpdateJSON = adapter.deleteScalarRange(from: mutation.from, to: mutation.to)
+            let postSelection: (anchor: UInt32, head: UInt32)?
+            if let anchor = mutation.selectionAnchor,
+               let head = mutation.selectionHead {
+                postSelection = (anchor: anchor, head: head)
             } else {
-                adoptedUpdateJSON = adapter.replaceTextRange(
-                    from: mutation.from,
-                    to: mutation.to,
-                    with: mutation.replacementText
-                )
+                postSelection = nil
             }
+            adoptedUpdateJSON = adapter.commitNativeTextMutation(
+                from: mutation.from,
+                to: mutation.to,
+                with: mutation.replacementText,
+                postSelection: postSelection
+            )
             guard let adoptedUpdateJSON else { return }
             applyUpdateJSON(adoptedUpdateJSON)
-            restoreNativeTextMutationSelectionIfNeeded(mutation)
+            notifyDelegateOfAuthoritativeTextSelection()
         }
         guard let adoptedUpdateJSON else { return .rejected }
         if mutation.capturedAfterBlur {
@@ -4833,28 +4838,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return .committed(adoptedUpdateJSON: adoptedUpdateJSON)
     }
 
-    private func restoreNativeTextMutationSelectionIfNeeded(_ mutation: NativeTextMutation) {
-        guard let anchor = mutation.selectionAnchor,
-              let head = mutation.selectionHead,
-              editorId != 0
+    private func notifyDelegateOfAuthoritativeTextSelection() {
+        guard editorId != 0,
+              let selection = logicalSelectionScalarRange
         else {
             return
         }
-
-        let startUtf16 = PositionBridge.scalarToUtf16Offset(min(anchor, head), in: self)
-        let endUtf16 = PositionBridge.scalarToUtf16Offset(max(anchor, head), in: self)
-        let targetRange = NSRange(location: startUtf16, length: max(0, endUtf16 - startUtf16))
-        logicalSelectionScalarRange = (anchor: anchor, head: head)
-        if selectedRange != targetRange {
-            selectedRange = targetRange
-            noteSelectionDidChange()
-        }
-        logicalSelectionUtf16Range = selectedRange
-        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
-        recordAuthorizedSelectionIfPossible()
-        refreshTypingAttributesForSelection()
-        let docAnchor = EditorV2Shadow.scalarToDoc(id: editorId, scalar: anchor)
-        let docHead = EditorV2Shadow.scalarToDoc(id: editorId, scalar: head)
+        let docAnchor = EditorV2Shadow.scalarToDoc(id: editorId, scalar: selection.anchor)
+        let docHead = EditorV2Shadow.scalarToDoc(id: editorId, scalar: selection.head)
         editorDelegate?.editorTextView(self, selectionDidChange: docAnchor, head: docHead)
     }
 
@@ -6146,7 +6137,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             false
         }
 
-        let patchTrace: PatchApplyTrace? = if lastAppliedRenderAppearanceRevision == renderAppearanceRevision {
+        let patchTrace: PatchApplyTrace? = if !shouldSkipRender
+            && lastAppliedRenderAppearanceRevision == renderAppearanceRevision
+        {
             renderPatch.map(applyRenderPatchIfPossible)
         } else {
             nil
@@ -6992,8 +6985,10 @@ final class RichTextEditorView: UIView {
     /// - Parameter html: The HTML string to load.
     func setContent(html: String) {
         guard editorId != 0 else { return }
-        _ = EditorV2Shadow.setHtml(id: editorId, html: html)
-        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        let updateJSON = EditorV2Shadow.setHtml(id: editorId, html: html)
+        if !textView.applyUpdateJSON(updateJSON, notifyDelegate: false) {
+            textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        }
     }
 
     /// Set initial content from ProseMirror JSON.
@@ -7001,8 +6996,10 @@ final class RichTextEditorView: UIView {
     /// - Parameter json: The JSON string to load.
     func setContent(json: String) {
         guard editorId != 0 else { return }
-        _ = EditorV2Shadow.setJson(id: editorId, json: json)
-        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        let updateJSON = EditorV2Shadow.setJson(id: editorId, json: json)
+        if !textView.applyUpdateJSON(updateJSON, notifyDelegate: false) {
+            textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        }
     }
 
     private func measuredEditorHeight() -> CGFloat {

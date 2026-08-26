@@ -1263,8 +1263,7 @@ private enum NativePerformanceFixtureFactory {
     }
 
     static func loadLargeDocument(into editorId: UInt64) -> String {
-        _ = EditorV2Shadow.setJson(id: editorId, json: largeDocumentJSONString())
-        return EditorV2Shadow.getCurrentState(id: editorId)
+        EditorV2Shadow.setJson(id: editorId, json: largeDocumentJSONString())
     }
 
     static func remoteSelections(
@@ -1380,16 +1379,13 @@ private enum NativePerformanceFixtureFactory {
     private static func largeDocumentContent() -> [[String: Any]] {
         var content: [[String: Any]] = [
             [
-                "type": "h1",
+                "type": "heading",
+                "attrs": ["level": 1],
                 "content": [textNode(textFragment(seed: 10_000, minCharacterCount: 40))],
             ],
         ]
 
         for index in 0..<blockCount {
-            if index > 0 && index % 18 == 0 {
-                content.append(["type": "horizontalRule"])
-            }
-
             if index % 12 == 5 {
                 content.append([
                     "type": "blockquote",
@@ -1403,7 +1399,8 @@ private enum NativePerformanceFixtureFactory {
 
             if index % 9 == 3 {
                 content.append([
-                    "type": "h2",
+                    "type": "heading",
+                    "attrs": ["level": 2],
                     "content": [textNode(textFragment(seed: index + 2_000, minCharacterCount: 72))],
                 ])
                 continue
@@ -1547,7 +1544,7 @@ private enum NativePerformanceFixtureFactory {
 
     private static func isVoidNode(_ type: String) -> Bool {
         switch type {
-        case "horizontalRule", "hardBreak", "image", "mention":
+        case "horizontal_rule", "hard_break", "image", "mention":
             return true
         default:
             return false

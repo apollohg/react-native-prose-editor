@@ -652,14 +652,14 @@ final class RichTextEditorViewTests: XCTestCase {
         }
         let documentBefore = editorV2GetDocumentJson(editorId: adapter.editorId).value ?? ""
         XCTAssertTrue(
-            documentBefore.contains("bulletList"),
+            documentBefore.contains("bullet_list"),
             "precondition: the document holds an empty bullet, got \(documentBefore)"
         )
         textView.deleteBackward()
 
         let documentAfter = editorV2GetDocumentJson(editorId: adapter.editorId).value ?? ""
         XCTAssertFalse(
-            documentAfter.contains("bulletList"),
+            documentAfter.contains("bullet_list"),
             "backspace in an empty bullet must leave the list, got \(documentAfter)"
         )
     }
@@ -854,7 +854,8 @@ final class RichTextEditorViewTests: XCTestCase {
 
         let horizontalRuleRanges = (0..<textView.textStorage.length).compactMap { index -> NSRange? in
             let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
-            return (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "horizontalRule"
+            return (attrs[RenderBridgeAttributes.voidNodeType] as? String)
+                .map(EditorNodeTypes.isHorizontalRule) == true
                 ? NSRange(location: index, length: 1)
                 : nil
         }
@@ -892,8 +893,10 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         var explicitPatchUpdate = parseJSONObject(finalUpdateJSON)
         let finalRenderBlocks = try XCTUnwrap(
-            explicitPatchUpdate["renderBlocks"] as? [[[String: Any]]]
+            (explicitPatchUpdate["renderPatch"] as? [String: Any])?["renderBlocks"]
+                as? [[[String: Any]]]
         )
+        explicitPatchUpdate["renderBlocks"] = finalRenderBlocks
         explicitPatchUpdate["renderPatch"] = [
             "startIndex": 0,
             "deleteCount": 0,
@@ -1020,9 +1023,8 @@ final class RichTextEditorViewTests: XCTestCase {
           ]
         }
         """
-        _ = EditorV2Shadow.setJson(id: editorId, json: updatedDocument)
-
-        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        let update = EditorV2Shadow.setJson(id: editorId, json: updatedDocument)
+        textView.applyUpdateJSON(update, notifyDelegate: false)
 
         XCTAssertTrue(
             textView.lastRenderAppliedPatch(),
@@ -2581,14 +2583,14 @@ final class RichTextEditorViewTests: XCTestCase {
         setCollapsedSelection(in: textView, utf16Offset: plainOffset + 2)
         flushMainQueue()
         XCTAssertTrue(
-            activeState(in: editorId).insertableNodes.contains("horizontalRule"),
+            activeState(in: editorId).insertableNodes.contains("horizontal_rule"),
             "horizontal rule should be insertable in a normal paragraph"
         )
 
         setCollapsedSelection(in: textView, utf16Offset: listOffset + 2)
         flushMainQueue()
         XCTAssertFalse(
-            activeState(in: editorId).insertableNodes.contains("horizontalRule"),
+            activeState(in: editorId).insertableNodes.contains("horizontal_rule"),
             "horizontal rule should be disabled in list items after a manual caret move"
         )
     }
@@ -3177,7 +3179,7 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Ahysyc</p>")
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 6)
 
-        view.textView.performToolbarToggleList("bulletList", isActive: false)
+        view.textView.performToolbarToggleList("bullet_list", isActive: false)
         flushMainQueue()
 
         XCTAssertEqual(
@@ -4761,7 +4763,15 @@ final class RichTextEditorViewTests: XCTestCase {
         secondView.setEditorId(editorId)
         let firstInitialText = firstView.richTextView.textView.textStorage.string
 
-        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        let remoteMutation = editorV2ApplyCommand(
+            editorId: adapter.editorId,
+            requestJson: #"{"version":1,"requestId":"991106","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"Remote"}}"#
+        )
+        XCTAssertNil(remoteMutation.error)
         NativeEditorViewRegistry.shared.applyRemoteCommitRefresh(editorId: editorId)
 
         XCTAssertEqual(firstView.richTextView.textView.textStorage.string, firstInitialText)
@@ -6590,7 +6600,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         setCollapsedSelection(in: textView, utf16Offset: textView.textStorage.length)
         textView.setMarkedText("!", selectedRange: NSRange(location: 1, length: 0))
-        textView.performToolbarInsertNode("horizontalRule")
+        textView.performToolbarInsertNode("horizontal_rule")
 
         let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("Hello brave world"), "toolbar node insert should preserve the earlier composed text, got: \(html)")
@@ -8034,7 +8044,7 @@ final class RichTextEditorViewTests: XCTestCase {
             id: editorId,
             scalarAnchor: 3,
             scalarHead: 3,
-            nodeType: "hardBreak"
+            nodeType: "hard_break"
         )
         XCTAssertFalse(firstUpdate.isEmpty)
         XCTAssertEqual(
@@ -8047,7 +8057,7 @@ final class RichTextEditorViewTests: XCTestCase {
             id: editorId,
             scalarAnchor: 4,
             scalarHead: 4,
-            nodeType: "hardBreak"
+            nodeType: "hard_break"
         )
         XCTAssertFalse(secondUpdate.isEmpty)
         XCTAssertEqual(
@@ -8067,14 +8077,14 @@ final class RichTextEditorViewTests: XCTestCase {
         EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
         textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
-        textView.performToolbarInsertNode("hardBreak")
+        textView.performToolbarInsertNode("hard_break")
         XCTAssertEqual(
             EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>A<br></p></li></ul>",
             "first hardBreak should preserve the existing list item text"
         )
 
-        textView.performToolbarInsertNode("hardBreak")
+        textView.performToolbarInsertNode("hard_break")
         XCTAssertEqual(
             EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>A<br><br></p></li></ul>",
@@ -8106,7 +8116,7 @@ final class RichTextEditorViewTests: XCTestCase {
         }
         let beforeCaretRect = textView.caretRect(for: beforePosition)
 
-        textView.performToolbarInsertNode("hardBreak")
+        textView.performToolbarInsertNode("hard_break")
         textView.layoutIfNeeded()
 
         let selectionOffset = textView.offset(
@@ -8142,7 +8152,7 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
-        textView.performToolbarInsertNode("hardBreak")
+        textView.performToolbarInsertNode("hard_break")
         textView.layoutIfNeeded()
         let heightAfterBreak = ceil(
             textView.sizeThatFits(CGSize(width: 220, height: CGFloat.greatestFiniteMagnitude)).height
@@ -8240,7 +8250,7 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
-        textView.performToolbarInsertNode("horizontalRule")
+        textView.performToolbarInsertNode("horizontal_rule")
         textView.layoutIfNeeded()
 
         guard let hrRange = firstHorizontalRuleRange(in: textView) else {
@@ -8955,12 +8965,11 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(editorId)
         let setHtmlUpdate = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>Hello @al</p></li></ul>")
         XCTAssertTrue(setHtmlUpdate.contains("@al"), "setHtml must return the updated list snapshot, got: \(setHtmlUpdate)")
-        let currentState = EditorV2Shadow.getCurrentState(id: editorId)
-        view.richTextView.textView.applyUpdateJSON(currentState, notifyDelegate: false)
+        view.richTextView.textView.applyUpdateJSON(setHtmlUpdate, notifyDelegate: false)
 
         let text = view.richTextView.textView.text ?? ""
         let mentionRange = (text as NSString).range(of: "@al")
-        XCTAssertNotEqual(mentionRange.location, NSNotFound, "rendered list text should contain the mention query, got: \(text), state: \(currentState)")
+        XCTAssertNotEqual(mentionRange.location, NSNotFound, "rendered list text should contain the mention query, got: \(text), state: \(setHtmlUpdate)")
         guard mentionRange.location != NSNotFound else { return }
         let utf16Offset = mentionRange.location + 3
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: utf16Offset)
@@ -8978,12 +8987,11 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(editorId)
         let setHtmlUpdate = EditorV2Shadow.setHtml(id: editorId, html: "<p>First paragraph</p><p>@al</p>")
         XCTAssertTrue(setHtmlUpdate.contains("@al"), "setHtml must return the updated paragraph snapshot, got: \(setHtmlUpdate)")
-        let currentState = EditorV2Shadow.getCurrentState(id: editorId)
-        view.richTextView.textView.applyUpdateJSON(currentState, notifyDelegate: false)
+        view.richTextView.textView.applyUpdateJSON(setHtmlUpdate, notifyDelegate: false)
 
         let text = view.richTextView.textView.text ?? ""
         let mentionRange = (text as NSString).range(of: "@al")
-        XCTAssertNotEqual(mentionRange.location, NSNotFound, "rendered final paragraph should contain the mention query, got: \(text), state: \(currentState)")
+        XCTAssertNotEqual(mentionRange.location, NSNotFound, "rendered final paragraph should contain the mention query, got: \(text), state: \(setHtmlUpdate)")
         guard mentionRange.location != NSNotFound else { return }
         let utf16Offset = mentionRange.location + 3
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: utf16Offset)
@@ -9003,7 +9011,7 @@ final class RichTextEditorViewTests: XCTestCase {
         EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
         textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
-        textView.performToolbarInsertNode("horizontalRule")
+        textView.performToolbarInsertNode("horizontal_rule")
         XCTAssertEqual(
             EditorV2Shadow.getHtml(id: editorId),
             "<p>Hello</p><hr><p></p>",
@@ -9887,7 +9895,8 @@ final class RichTextEditorViewTests: XCTestCase {
         for index in 0..<textView.textStorage.length {
             let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
             if attrs[.attachment] is NSTextAttachment,
-               (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "horizontalRule"
+               (attrs[RenderBridgeAttributes.voidNodeType] as? String)
+                .map(EditorNodeTypes.isHorizontalRule) == true
             {
                 return NSRange(location: index, length: 1)
             }
@@ -10544,6 +10553,61 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertEqual(v2DocumentText(adapter), "the ")
         XCTAssertEqual(adapter.baseDocumentRevision, revisionBefore + 1)
         XCTAssertEqual(view.textView.textStorage.string, "the ")
+    }
+
+    func testStagingNativeCorrectionUpdateCarriesAuthoritativePostSelection() throws {
+        let (view, _, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let delegate = EditorTextViewDelegateSpy()
+        view.textView.editorDelegate = delegate
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        for character in "teh " {
+            view.textView.insertText(String(character))
+        }
+        delegate.receivedUpdates.removeAll()
+        delegate.selectionChanges.removeAll()
+
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 3),
+            with: "the"
+        )
+        flushMain()
+
+        let updateJSON = try XCTUnwrap(delegate.receivedUpdates.last)
+        let updateData = try XCTUnwrap(updateJSON.data(using: .utf8))
+        let update = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: updateData) as? [String: Any]
+        )
+        let selection = try XCTUnwrap(update["selection"] as? [String: Any])
+        XCTAssertEqual((selection["anchorScalar"] as? NSNumber)?.uint32Value, 4)
+        XCTAssertEqual((selection["headScalar"] as? NSNumber)?.uint32Value, 4)
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 4, length: 0))
+        let expectedDocPosition = EditorV2Shadow.scalarToDoc(id: view.editorId, scalar: 4)
+        XCTAssertEqual(delegate.selectionChanges.last?.anchor, expectedDocPosition)
+        XCTAssertEqual(delegate.selectionChanges.last?.head, expectedDocPosition)
+    }
+
+    func testNativeCorrectionProjectsRustCaretAfterLengthChange() {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        for character in "thueh" {
+            view.textView.insertText(String(character))
+        }
+
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 4),
+            with: "thrus"
+        )
+        setCollapsedCaret(in: view.textView, utf16Offset: 6)
+        flushMain()
+
+        XCTAssertEqual(v2DocumentText(adapter), "thrush")
+        XCTAssertEqual(view.textView.textStorage.string, "thrush")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 6, length: 0))
+        XCTAssertEqual(view.textView.currentLogicalScalarSelection()?.head, 6)
     }
 
     func testStagingAutocorrectPreservesAcceptedSpaceWhenNativeReplacementConsumesIt() {

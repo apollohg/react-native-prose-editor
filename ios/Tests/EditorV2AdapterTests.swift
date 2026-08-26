@@ -292,6 +292,35 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertEqual(renderedText(undone), "ab")
     }
 
+    func testNativeTextMutationRendersExplicitPostSelection() {
+        let adapter = makeAdapter()
+        _ = adapter.setContentHtml("<p>thueh</p>")
+        let owner = UUID()
+        adapter.claimNativeBindingIfUnowned(token: owner)
+        defer { adapter.releaseNativeBindingOwner(token: owner) }
+
+        let updateJSON = adapter.commitNativeTextMutation(
+            from: 0,
+            to: 4,
+            with: "thrus",
+            postSelection: (anchor: 6, head: 6)
+        )
+        let update = parseObject(updateJSON)
+
+        XCTAssertEqual(documentText(adapter), "thrush")
+        let renderPatch = update["renderPatch"] as? [String: Any]
+        let renderBlocks = renderPatch?["renderBlocks"] as? [[[String: Any]]]
+        let renderedRuns = renderBlocks?.flatMap { block in
+            block.compactMap { element in
+                element["type"] as? String == "textRun" ? element["text"] as? String : nil
+            }
+        }
+        XCTAssertEqual(renderedRuns?.joined(), "thrush")
+        let selection = update["selection"] as? [String: Any]
+        XCTAssertEqual((selection?["anchorScalar"] as? NSNumber)?.uint32Value, 6)
+        XCTAssertEqual((selection?["headScalar"] as? NSNumber)?.uint32Value, 6)
+    }
+
     func testRoomTypingPublishesPostMutationAwarenessBeforeTransportWake() {
         var calls: [String] = []
         let adapter = makeAttachedAdapter(
@@ -1712,14 +1741,13 @@ final class EditorV2AdapterTests: XCTestCase {
         let adapter = makeAdapter()
         let spy = ErrorSpy()
         adapter.onAutonomousError = spy.record
-        let doc = #"{"type":"doc","content":[{"type":"image","attrs":{"src":"https://example.com/a.png","alt":null,"title":null,"width":null,"height":null}},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"item"}]}]}]}]}"#
+        let doc = #"{"type":"doc","content":[{"type":"image","attrs":{"src":"https://example.com/a.png","alt":null,"title":null,"width":null,"height":null}},{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"item"}]}]}]}]}"#
         _ = adapter.setContentJson(doc)
         XCTAssertEqual(documentText(adapter), "item")
 
         // Type inside the list item paragraph: the image void is scalar 0,
         // the block separator is scalar 1, "item" text starts at scalar 2.
         let update = adapter.insertText("X", atScalar: 2)
-        print("VOID2 update nil?: \(update == nil); notes:", adapter.debugNotes)
         XCTAssertEqual(renderedText(update), "Xitem")
 
         // The block-separator scalar is not a text position: the v2 boundary
@@ -1732,7 +1760,7 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertEqual(documentText(adapter), "Xitem")
         let after = documentJsonObject(adapter)
         XCTAssertEqual((after["content"] as? [[String: Any]])?.first?["type"] as? String, "image")
-        XCTAssertEqual((after["content"] as? [[String: Any]])?.last?["type"] as? String, "bulletList")
+        XCTAssertEqual((after["content"] as? [[String: Any]])?.last?["type"] as? String, "bullet_list")
 
         // Resize the void image by its document position.
         let resized = adapter.resizeImage(atDocPos: 0, width: 120, height: 80)

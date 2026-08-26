@@ -1494,6 +1494,11 @@ final class EditorV2Adapter {
         let documentChanged: Bool
     }
 
+    private struct NativeIntentOutcome {
+        let changed: Bool
+        let documentChanged: Bool
+    }
+
     private func nativeIntent(_ type: String, anchor: UInt32, head: UInt32) -> [String: Any] {
         [
             "type": type,
@@ -1502,10 +1507,11 @@ final class EditorV2Adapter {
         ]
     }
 
-    private func performNativeIntent(
+    private func submitNativeIntent(
         _ intent: [String: Any],
-        reportPositionEpochInvalid: Bool = false
-    ) -> NativeMutationRender? {
+        reportPositionEpochInvalid: Bool = false,
+        refreshPositionEpochInvalid: Bool = true
+    ) -> NativeIntentOutcome? {
         guard !destroyed else { return nil }
         guard let nativeOwnerId else { return nil }
         if positionEpoch == nil {
@@ -1527,8 +1533,14 @@ final class EditorV2Adapter {
         switch Self.normalizeJsonResult(result) {
         case .failure(let error):
             if error.code == "POSITION_EPOCH_INVALID" {
-                debugNotes.append("position-epoch-refresh")
-                _ = refreshInternal(mirrorSelection: nil, strippingViewSelection: false)
+                debugNotes.append(
+                    refreshPositionEpochInvalid
+                        ? "position-epoch-refresh"
+                        : "position-epoch-invalid"
+                )
+                if refreshPositionEpochInvalid {
+                    _ = refreshInternal(mirrorSelection: nil, strippingViewSelection: false)
+                }
                 if reportPositionEpochInvalid {
                     emit(error)
                 }
@@ -1566,23 +1578,70 @@ final class EditorV2Adapter {
                 }
                 documentChanged = didChangeDocument
             }
-            guard let update = refreshInternal(
-                mirrorSelection: nil,
-                strippingViewSelection: false
-            )?.updateJSON else {
-                return nil
-            }
-            lastSyncedScalarSelection = cachedAuthoritativeScalarSelection
-            if changed {
-                publishCachedCollaborationSelection()
-                notifyCollaborationMutation()
-            }
-            return NativeMutationRender(
-                updateJSON: update,
+            return NativeIntentOutcome(
                 changed: changed,
                 documentChanged: documentChanged
             )
         }
+    }
+
+    private func renderNativeIntentOutcome(
+        _ outcome: NativeIntentOutcome,
+        publishMutation: Bool = true
+    ) -> NativeMutationRender? {
+        guard let update = refreshInternal(
+            mirrorSelection: nil,
+            strippingViewSelection: false
+        )?.updateJSON else {
+            return nil
+        }
+        lastSyncedScalarSelection = cachedAuthoritativeScalarSelection
+        if publishMutation, outcome.changed {
+            publishCachedCollaborationSelection()
+            notifyCollaborationMutation()
+        }
+        return NativeMutationRender(
+            updateJSON: update,
+            changed: outcome.changed,
+            documentChanged: outcome.documentChanged
+        )
+    }
+
+    private static func replacingRender(
+        in stateUpdateJSON: String,
+        with renderUpdateJSON: String
+    ) -> String? {
+        guard let stateData = stateUpdateJSON.data(using: .utf8),
+              var stateUpdate = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any],
+              let renderData = renderUpdateJSON.data(using: .utf8),
+              let renderUpdate = try? JSONSerialization.jsonObject(with: renderData) as? [String: Any]
+        else {
+            return nil
+        }
+        for key in ["renderBlocks", "renderPatch", "renderElements"] {
+            if renderUpdate.keys.contains(key) {
+                stateUpdate[key] = renderUpdate[key]
+            } else {
+                stateUpdate.removeValue(forKey: key)
+            }
+        }
+        guard let combinedData = try? JSONSerialization.data(withJSONObject: stateUpdate) else {
+            return nil
+        }
+        return String(data: combinedData, encoding: .utf8)
+    }
+
+    private func performNativeIntent(
+        _ intent: [String: Any],
+        reportPositionEpochInvalid: Bool = false
+    ) -> NativeMutationRender? {
+        guard let outcome = submitNativeIntent(
+            intent,
+            reportPositionEpochInvalid: reportPositionEpochInvalid
+        ) else {
+            return nil
+        }
+        return renderNativeIntentOutcome(outcome)
     }
 
     /// One typed v2 mutation: optional selection pre-sync, one transaction,
@@ -1773,6 +1832,105 @@ final class EditorV2Adapter {
     }
 
     // MARK: - Typed verbs (one method per legacy choke point)
+
+    func commitNativeTextMutation(
+        from: UInt32,
+        to: UInt32,
+        with text: String,
+        postSelection: (anchor: UInt32, head: UInt32)?
+    ) -> String? {
+        if nativeOwnerId != nil {
+            var intent: [String: Any]
+            if from == to {
+                guard !text.isEmpty else {
+                    guard let postSelection else { return currentStateJSON() }
+                    intent = [
+                        "type": "setSelection",
+                        "anchor": Int(postSelection.anchor),
+                        "head": Int(postSelection.head),
+                    ]
+                    return performNativeIntent(intent)?.updateJSON
+                }
+                intent = nativeIntent("insertText", anchor: from, head: from)
+                intent["text"] = text
+            } else if text.isEmpty {
+                intent = nativeIntent("deleteRange", anchor: from, head: to)
+            } else {
+                intent = nativeIntent("replaceSelectionText", anchor: from, head: to)
+                intent["text"] = text
+            }
+            guard let mutationOutcome = submitNativeIntent(
+                intent,
+                reportPositionEpochInvalid: true
+            ) else {
+                return nil
+            }
+            guard let postSelection else {
+                return renderNativeIntentOutcome(mutationOutcome)?.updateJSON
+            }
+            guard let mutationRender = renderNativeIntentOutcome(
+                mutationOutcome,
+                publishMutation: false
+            ) else {
+                return nil
+            }
+            let selectionIntent: [String: Any] = [
+                "type": "setSelection",
+                "anchor": Int(postSelection.anchor),
+                "head": Int(postSelection.head),
+            ]
+            guard let selectionOutcome = submitNativeIntent(
+                selectionIntent,
+                refreshPositionEpochInvalid: false
+            ) else {
+                if mutationOutcome.changed {
+                    publishCachedCollaborationSelection()
+                    notifyCollaborationMutation()
+                }
+                return mutationRender.updateJSON
+            }
+            let combinedOutcome = NativeIntentOutcome(
+                changed: mutationOutcome.changed || selectionOutcome.changed,
+                documentChanged: mutationOutcome.documentChanged
+            )
+            guard let stateRender = renderNativeIntentOutcome(combinedOutcome) else {
+                if combinedOutcome.changed {
+                    publishCachedCollaborationSelection()
+                    notifyCollaborationMutation()
+                }
+                return nil
+            }
+            guard
+                let combinedUpdateJSON = Self.replacingRender(
+                    in: stateRender.updateJSON,
+                    with: mutationRender.updateJSON
+                )
+            else {
+                emit(contractError("v2 native mutation update could not combine render and selection"))
+                return nil
+            }
+            return combinedUpdateJSON
+        }
+
+        let mutationUpdateJSON: String?
+        if from == to {
+            mutationUpdateJSON = text.isEmpty
+                ? currentStateJSON()
+                : insertText(text, atScalar: from)
+        } else if text.isEmpty {
+            mutationUpdateJSON = deleteScalarRange(from: from, to: to)
+        } else {
+            mutationUpdateJSON = replaceTextRange(from: from, to: to, with: text)
+        }
+        guard let mutationUpdateJSON,
+              let postSelection,
+              syncSelection(anchor: postSelection.anchor, head: postSelection.head) != nil
+        else {
+            return mutationUpdateJSON
+        }
+
+        return refreshInternal(mirrorSelection: nil)?.updateJSON ?? mutationUpdateJSON
+    }
 
     func insertText(_ text: String, atScalar scalarPos: UInt32) -> String? {
         guard !text.isEmpty else { return currentStateJSON() }

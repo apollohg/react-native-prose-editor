@@ -79,7 +79,7 @@ final class PreparedProseRenderingTests: XCTestCase {
                 leaves.contains { $0.1.0.listContext?.ordered == true && $0.1.0.listContext?.index == 12 }
             }
             XCTAssertEqual(outerOrdered?.flatMap { $0.1.1.fragments }.first(where: { $0.kind == .marker })?.label, "7.")
-            XCTAssertEqual(nestedOrdered?.flatMap { $0.1.1.fragments }.first(where: { $0.kind == .marker })?.label, "12.")
+            XCTAssertEqual(nestedOrdered?.flatMap { $0.1.1.fragments }.first(where: { $0.kind == .marker })?.label, "l.")
             let emptyOrdered = layoutByItem.values.first { leaves in
                 leaves.contains { $0.1.0.listContext?.ordered == true && $0.1.0.listContext?.index == 8 }
             }
@@ -512,7 +512,7 @@ private struct Fixture {
     static let structuralFixtures: [Fixture] = [
         Fixture(
             name: "nested JSON list and blockquote inheritance",
-            source: .json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"orderedList","attrs":{"start":12},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"#),
+            source: .json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"bullet_list","content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"outer"}]},{"type":"ordered_list","attrs":{"start":12},"content":[{"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}]}]}]}]}]}"#),
             configJSON: localConfig,
             expectedKinds: [.text, .marker, .border],
             assertDocument: { document in

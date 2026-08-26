@@ -3601,7 +3601,11 @@ final class RenderBridgeTests: XCTestCase {
             .font: markerFont,
         ]).width)
 
-        XCTAssertEqual(point.x, usedRect.minX - 4.0 - markerWidth, accuracy: 0.1)
+        XCTAssertEqual(
+            point.x,
+            usedRect.minX - LayoutConstants.listMarkerTextGap - markerWidth,
+            accuracy: 0.1
+        )
         XCTAssertEqual(point.y, baselineY - markerFont.ascender, accuracy: 0.1)
     }
 
@@ -3628,8 +3632,16 @@ final class RenderBridgeTests: XCTestCase {
             .font: markerFont,
         ]).width)
 
-        XCTAssertEqual(point.x, usedRect.minX - 4.0 - visibleWidth, accuracy: 0.1)
-        XCTAssertNotEqual(point.x, usedRect.minX - 4.0 - fullWidth, accuracy: 0.1)
+        XCTAssertEqual(
+            point.x,
+            usedRect.minX - LayoutConstants.listMarkerTextGap - visibleWidth,
+            accuracy: 0.1
+        )
+        XCTAssertNotEqual(
+            point.x,
+            usedRect.minX - LayoutConstants.listMarkerTextGap - fullWidth,
+            accuracy: 0.1
+        )
     }
 
     func testListMarkerBaseFontUsesParagraphFontInsteadOfLeadingBoldRun() {
