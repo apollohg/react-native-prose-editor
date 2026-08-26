@@ -10527,6 +10527,52 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertEqual(view.textView.selectedRange, NSRange(location: 5, length: 0))
     }
 
+    func testStagingAutocorrectReplacePreservesAcceptedSpaceImmediately() throws {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        for character in "teh " {
+            view.textView.insertText(String(character))
+        }
+        let start = try XCTUnwrap(
+            view.textView.position(from: view.textView.beginningOfDocument, offset: 0)
+        )
+        let end = try XCTUnwrap(view.textView.position(from: start, offset: 4))
+        let correctionRange = try XCTUnwrap(view.textView.textRange(from: start, to: end))
+
+        view.textView.replace(correctionRange, withText: "the")
+
+        XCTAssertEqual(v2DocumentText(adapter), "the ")
+        XCTAssertEqual(view.textView.textStorage.string, "the ")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 4, length: 0))
+    }
+
+    func testStagingSelectedReplacementCanRemoveTrailingSpace() throws {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        for character in "teh " {
+            view.textView.insertText(String(character))
+        }
+
+        let start = try XCTUnwrap(
+            view.textView.position(from: view.textView.beginningOfDocument, offset: 0)
+        )
+        let end = try XCTUnwrap(view.textView.position(from: start, offset: 4))
+        let replacementRange = try XCTUnwrap(view.textView.textRange(from: start, to: end))
+        view.textView.selectedTextRange = replacementRange
+
+        view.textView.replace(replacementRange, withText: "the")
+
+        XCTAssertEqual(v2DocumentText(adapter), "the")
+        XCTAssertEqual(view.textView.textStorage.string, "the")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 3, length: 0))
+    }
+
     func testStagingTypingAppliesRenderPatchWithoutFullRerender() {
         let (view, adapter, window) = makeBoundView(html: "<p>Hello world, this is a long paragraph.</p>")
         defer { view.removeFromSuperview(); window.isHidden = true }

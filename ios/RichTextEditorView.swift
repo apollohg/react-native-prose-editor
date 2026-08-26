@@ -2490,8 +2490,21 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
 
         let scalarRange = PositionBridge.textRangeToScalarRange(range, in: self)
+        let replacementStartUtf16 = offset(from: beginningOfDocument, to: range.start)
+        let replacementEndUtf16 = offset(from: beginningOfDocument, to: range.end)
+        let preservesAcceptedSpace = textStorage.string == lastAuthorizedText
+            && shouldPreserveAcceptedAutocorrectSpace(
+                authorizedText: lastAuthorizedText as NSString,
+                replacementStartUtf16: replacementStartUtf16,
+                authorizedEndUtf16: replacementEndUtf16,
+                replacementText: text,
+                rawSelectionUtf16Range: selectedUtf16Range(),
+                authorizedSelectionUtf16Range: lastAuthorizedSelectedUtf16Range,
+                acceptedCaretUtf16Offset: replacementEndUtf16
+            )
+        let replacementText = preservesAcceptedSpace ? text + " " : text
         Self.inputLog.debug(
-            "[replace] text=\(self.preview(text), privacy: .public) scalarRange=\(scalarRange.from)-\(scalarRange.to) selection=\(self.selectionSummary(), privacy: .public) textState=\(self.textSnapshotSummary(), privacy: .public)"
+            "[replace] text=\(self.preview(replacementText), privacy: .public) scalarRange=\(scalarRange.from)-\(scalarRange.to) selection=\(self.selectionSummary(), privacy: .public) textState=\(self.textSnapshotSummary(), privacy: .public)"
         )
 
         // Atomically replace the range with the new text via Rust.
@@ -2500,7 +2513,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 id: editorId,
                 scalarFrom: scalarRange.from,
                 scalarTo: scalarRange.to,
-                text: text
+                text: replacementText
             )
             applyUpdateJSON(updateJSON)
         }
@@ -4147,10 +4160,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             authorizedText: authorized,
             replacementStartUtf16: prefix,
             authorizedEndUtf16: authorizedEnd,
-            currentEndUtf16: currentEnd,
             replacementText: rawReplacementText,
             rawSelectionUtf16Range: rawSelectionUtf16Range,
-            authorizedSelectionUtf16Range: authorizedSelectionUtf16Range
+            authorizedSelectionUtf16Range: authorizedSelectionUtf16Range,
+            acceptedCaretUtf16Offset: currentEnd
         )
         let replacementText = preservesAcceptedSpace
             ? rawReplacementText + " "
@@ -4205,19 +4218,21 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         authorizedText: NSString,
         replacementStartUtf16: Int,
         authorizedEndUtf16: Int,
-        currentEndUtf16: Int,
         replacementText: String,
         rawSelectionUtf16Range: NSRange?,
-        authorizedSelectionUtf16Range: NSRange?
+        authorizedSelectionUtf16Range: NSRange?,
+        acceptedCaretUtf16Offset: Int
     ) -> Bool {
-        guard authorizedEndUtf16 > replacementStartUtf16,
+        guard replacementStartUtf16 >= 0,
+              authorizedEndUtf16 > replacementStartUtf16,
+              authorizedEndUtf16 <= authorizedText.length,
               authorizedText.character(at: authorizedEndUtf16 - 1) == 0x20,
               !replacementText.isEmpty,
               let replacementLastCharacter = replacementText.last,
               replacementLastCharacter.isLetter || replacementLastCharacter.isNumber,
               let rawSelectionUtf16Range,
               rawSelectionUtf16Range.length == 0,
-              rawSelectionUtf16Range.location == currentEndUtf16,
+              rawSelectionUtf16Range.location == acceptedCaretUtf16Offset,
               let authorizedSelectionUtf16Range,
               authorizedSelectionUtf16Range.length == 0,
               authorizedSelectionUtf16Range.location == authorizedEndUtf16
