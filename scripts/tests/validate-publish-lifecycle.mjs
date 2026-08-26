@@ -94,7 +94,22 @@ for (const dependency of [
 }
 assert.match(publishJob, /id-token:\s*write/);
 assert.match(publishJob, /actions\/download-artifact@v4/);
+assert.match(
+  publishJob,
+  /- name: Publish to npm\s+if: github\.event_name == 'release' && github\.event\.action == 'published'/,
+  'real npm publishing must only run for a published GitHub release',
+);
+assert.match(
+  publishJob,
+  /- name: Dry-run npm publish\s+if: github\.event_name == 'workflow_dispatch'/,
+  'manual workflow dispatches must use the npm publish dry run',
+);
 assert.match(publishJob, /npm publish "\$tarball" --ignore-scripts --tag/);
+assert.match(
+  publishJob,
+  /npm publish "\$tarball" --dry-run --ignore-scripts --tag/,
+  'the manual publish rehearsal must dry-run the exact release tarball and dist-tag',
+);
 assert.doesNotMatch(publishJob, /npm run (?:build|validate:package|build:rust)/);
 
 assert.match(packedFixtureSource, /VALIDATE_PACKED_PACKAGE_GROUP/);
