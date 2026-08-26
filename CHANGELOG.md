@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.0-alpha.7] - 2026-08-27
+
+### Added
+
+- Added customizable schema projections so application-specific node names can
+  map onto the editor's native and Rust schema roles.
+
+### Changed
+
+- Default native schema handling now supports canonical ProseMirror node names
+  while preserving configured custom-schema names.
+
+### Fixed
+
+- Preserved Android external composition sessions when an IME finishes
+  composition as housekeeping after a partial speech result.
+- Preserved iOS autocorrect spaces and input ordering during rapid corrections,
+  and made the Rust-owned selection authoritative after native text changes.
+- Resolved Expo native modules consistently in the example app's Metro setup.
+- Made npm dist-tag resolution independent of a checked-out Git repository.
+
 ## [1.0.0-alpha.6] - 2026-08-25
 
 ### Added
@@ -566,6 +587,7 @@ boundaries. Pre-1.0 compatibility adapters are not retained; see
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0-alpha.7]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.6...1.0.0-alpha.7
 [1.0.0-alpha.6]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.5...1.0.0-alpha.6
 [1.0.0-alpha.5]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.4...1.0.0-alpha.5
 [1.0.0-alpha.4]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.3...1.0.0-alpha.4
