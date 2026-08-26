@@ -26,7 +26,7 @@ import type { EditorMentionTheme, EditorToolbarTheme } from './EditorTheme';
 import type { MentionSuggestion } from './addons';
 
 /** List kinds a first-class `list` toolbar item can toggle. */
-export type EditorToolbarListType = 'bulletList' | 'orderedList';
+export type EditorToolbarListType = 'bullet_list' | 'ordered_list' | 'bulletList' | 'orderedList';
 /** Heading levels the toolbar and `toggleHeading` accept. */
 export type EditorToolbarHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 /** Commands a `command` toolbar item can run. */
@@ -540,10 +540,15 @@ export const DEFAULT_EDITOR_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
     { type: 'mark', mark: 'strike', label: 'Strikethrough', icon: defaultIcon('strike') },
     { type: 'blockquote', label: 'Blockquote', icon: defaultIcon('blockquote') },
     { type: 'separator' },
-    { type: 'list', listType: 'bulletList', label: 'Bullet List', icon: defaultIcon('bulletList') },
     {
         type: 'list',
-        listType: 'orderedList',
+        listType: 'bullet_list',
+        label: 'Bullet List',
+        icon: defaultIcon('bulletList'),
+    },
+    {
+        type: 'list',
+        listType: 'ordered_list',
         label: 'Ordered List',
         icon: defaultIcon('orderedList'),
     },
@@ -559,10 +564,10 @@ export const DEFAULT_EDITOR_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
         label: 'Outdent List',
         icon: defaultIcon('outdentList'),
     },
-    { type: 'node', nodeType: 'hardBreak', label: 'Line Break', icon: defaultIcon('lineBreak') },
+    { type: 'node', nodeType: 'hard_break', label: 'Line Break', icon: defaultIcon('lineBreak') },
     {
         type: 'node',
-        nodeType: 'horizontalRule',
+        nodeType: 'horizontal_rule',
         label: 'Horizontal Rule',
         icon: defaultIcon('horizontalRule'),
     },
@@ -819,7 +824,7 @@ export function EditorToolbar({
                     if (onToggleListType) {
                         return () => onToggleListType(item.listType);
                     }
-                    return item.listType === 'bulletList'
+                    return item.listType === 'bulletList' || item.listType === 'bullet_list'
                         ? (onToggleBulletList ?? null)
                         : (onToggleOrderedList ?? null);
                 case 'link':
@@ -836,8 +841,10 @@ export function EditorToolbar({
                     }
                     switch (item.nodeType) {
                         case 'hardBreak':
+                        case 'hard_break':
                             return onInsertLineBreak ?? null;
                         case 'horizontalRule':
+                        case 'horizontal_rule':
                             return onInsertHorizontalRule ?? null;
                         default:
                             return null;
@@ -951,7 +958,9 @@ export function EditorToolbar({
                     isActive = !!nodes[item.listType];
                     isDisabled =
                         !commands[
-                            item.listType === 'bulletList' ? 'wrapBulletList' : 'wrapOrderedList'
+                            item.listType === 'bulletList' || item.listType === 'bullet_list'
+                                ? 'wrapBulletList'
+                                : 'wrapOrderedList'
                         ];
                     break;
                 case 'command':

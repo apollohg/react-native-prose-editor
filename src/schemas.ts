@@ -18,9 +18,30 @@ export interface AttrSpec {
     default?: unknown;
 }
 
+/** Static DOM output supported by the native HTML serializer. */
+export type DOMOutputSpec = readonly [tag: string] | readonly [tag: string, content: 0];
+
+/** Declarative DOM rule supported by the native HTML parser. */
+export interface ParseDOMRule {
+    tag: string;
+    attrs?: Record<string, unknown>;
+}
+
+/** Select a DOM output from one declared node attribute. */
+export interface AttributeDOMOutputSpec {
+    switchOn: string;
+    cases: Readonly<Record<string, DOMOutputSpec>>;
+}
+
+/** JSON representation projected from one native node variant. */
+export interface NodeJSONProjection {
+    type: string;
+    attrs?: Record<string, unknown>;
+}
+
 /** Declaration of one node type in a {@link SchemaDefinition}. */
 export interface NodeSpec {
-    /** Node type name, as it appears in document JSON. */
+    /** Native node type name. `json` may expose a different public document type. */
     name: string;
     /** ProseMirror-style content expression, e.g. `'block+'`, `'inline*'`, or `''` for a leaf. */
     content: string;
@@ -49,6 +70,8 @@ export interface NodeSpec {
      * (e.g. the mention node — see `mentionNodeSpec()` in addons.ts).
      */
     allowUndeclaredAttrs?: boolean;
+    /** Public JSON representation when it differs from the native node name. */
+    json?: NodeJSONProjection;
 }
 
 /** Declaration of one mark type in a {@link SchemaDefinition}. */
@@ -77,14 +100,285 @@ export interface MarkSpec {
 /**
  * The node and mark types a document may contain. Fixed when the document
  * handle is created (`NativeEditorV2CreateConfig.schema`), or per render for
- * `NativeProseViewer`. Start from {@link tiptapSchema} or
- * {@link prosemirrorSchema} rather than assembling one from scratch.
+ * `NativeProseViewer`. Start from {@link defaultSchema},
+ * {@link prosemirrorSchema}, or {@link tiptapCompatibleSchema} rather than
+ * assembling one from scratch.
  */
 export interface SchemaDefinition {
     /** Node types. Exactly one must have `role: 'doc'`. */
     nodes: NodeSpec[];
     /** Mark types. */
     marks: MarkSpec[];
+}
+
+/** Keyed node declaration accepted by {@link defineSchema}. */
+export interface SchemaNodeSpec {
+    content?: string;
+    group?: string;
+    attrs?: Record<string, AttrSpec>;
+    /** Native semantic role. Common `doc`, `paragraph`, and `text` shapes are inferred. */
+    role?: NodeSpec['role'] | 'heading';
+    parseDOM?: readonly ParseDOMRule[];
+    toDOM?: DOMOutputSpec | AttributeDOMOutputSpec;
+    isVoid?: boolean;
+    allowUndeclaredAttrs?: boolean;
+}
+
+/** Keyed mark declaration accepted by {@link defineSchema}. */
+export interface SchemaMarkSpec {
+    attrs?: Record<string, AttrSpec>;
+    excludes?: string;
+    parseDOM?: readonly ParseDOMRule[];
+    toDOM?: DOMOutputSpec;
+    allowUndeclaredAttrs?: boolean;
+}
+
+/** ProseMirror-shaped authoring schema compiled for the native engine. */
+export interface SchemaSpec {
+    nodes: Readonly<Record<string, SchemaNodeSpec>>;
+    marks?: Readonly<Record<string, SchemaMarkSpec>>;
+}
+
+const RESERVED_WIRE_NODE_TYPES = new Set(['__opaque', '__opaque_json', '__skip']);
+const ALLOWED_MARK_HTML_TAGS = new Set([
+    'span',
+    'strong',
+    'em',
+    'u',
+    's',
+    'code',
+    'a',
+    'sub',
+    'sup',
+    'mark',
+]);
+
+function outputTag(spec: DOMOutputSpec): string {
+    return spec[0];
+}
+
+function appendGroup(group: string | undefined, name: string): string {
+    const groups = group?.split(/\s+/).filter(Boolean) ?? [];
+    if (!groups.includes(name)) groups.push(name);
+    return groups.join(' ');
+}
+
+function schemaNodeRole(name: string, node: SchemaNodeSpec): string {
+    if (node.role != null) return node.role === 'heading' ? 'textBlock' : node.role;
+    if (name === 'doc') return 'doc';
+    if (name === 'text') return 'text';
+    if (node.content === 'inline*' && node.group?.split(/\s+/).includes('block')) {
+        return 'textBlock';
+    }
+    if (node.group?.split(/\s+/).includes('inline')) return 'inline';
+    return 'block';
+}
+
+function caseAttributeValue(
+    key: string,
+    attribute: string,
+    tag: string,
+    parseDOM: readonly ParseDOMRule[] | undefined,
+    defaultValue: unknown
+): unknown {
+    const rule = parseDOM?.find(
+        (candidate) =>
+            candidate.tag === tag &&
+            candidate.attrs != null &&
+            String(candidate.attrs[attribute]) === key
+    );
+    if (rule?.attrs && Object.prototype.hasOwnProperty.call(rule.attrs, attribute)) {
+        return rule.attrs[attribute];
+    }
+    if (typeof defaultValue === 'number') return Number(key);
+    if (typeof defaultValue === 'boolean') return key === 'true';
+    return key;
+}
+
+function validateAttributeDOMRules(
+    name: string,
+    switched: AttributeDOMOutputSpec,
+    parseDOM: readonly ParseDOMRule[] | undefined,
+    defaultValue: unknown
+): void {
+    const cases = Object.entries(switched.cases);
+    let discriminatorType =
+        typeof defaultValue === 'string' ||
+        typeof defaultValue === 'number' ||
+        typeof defaultValue === 'boolean'
+            ? typeof defaultValue
+            : undefined;
+    if (discriminatorType == null && parseDOM != null) {
+        const parsedTypes = parseDOM.map((rule) => {
+            const value = rule.attrs?.[switched.switchOn];
+            return typeof value === 'string' ||
+                typeof value === 'number' ||
+                typeof value === 'boolean'
+                ? typeof value
+                : undefined;
+        });
+        const firstType = parsedTypes[0];
+        if (firstType != null && parsedTypes.every((type) => type === firstType)) {
+            discriminatorType = firstType;
+        }
+    }
+    if (discriminatorType == null) {
+        throw new Error(
+            `node '${name}' DOM discriminator '${switched.switchOn}' must have a scalar type`
+        );
+    }
+    if (parseDOM == null) {
+        const validCases = cases.every(([caseKey]) => {
+            if (discriminatorType === 'number') {
+                return /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(caseKey);
+            }
+            return discriminatorType !== 'boolean' || caseKey === 'true' || caseKey === 'false';
+        });
+        if (!validCases) {
+            throw new Error(
+                `node '${name}' DOM discriminator '${switched.switchOn}' must use ${discriminatorType} values`
+            );
+        }
+        return;
+    }
+    const matchesCase = ([caseKey, output]: [string, DOMOutputSpec]) =>
+        parseDOM.filter(
+            (rule) =>
+                rule.tag === outputTag(output) &&
+                rule.attrs != null &&
+                Object.prototype.hasOwnProperty.call(rule.attrs, switched.switchOn) &&
+                String(rule.attrs[switched.switchOn]) === caseKey
+        ).length === 1;
+    if (parseDOM.length !== cases.length || !cases.every(matchesCase)) {
+        throw new Error(
+            `node '${name}' DOM parse rules must map one-to-one with '${switched.switchOn}' output cases`
+        );
+    }
+    if (
+        discriminatorType != null &&
+        parseDOM.some(
+            (rule) =>
+                rule.attrs != null && typeof rule.attrs[switched.switchOn] !== discriminatorType
+        )
+    ) {
+        throw new Error(
+            `node '${name}' DOM discriminator '${switched.switchOn}' must use ${discriminatorType} values`
+        );
+    }
+}
+
+function staticDOMTag(
+    kind: 'node' | 'mark',
+    name: string,
+    parseDOM: readonly ParseDOMRule[] | undefined,
+    toDOM: DOMOutputSpec | undefined
+): string | undefined {
+    if ((parseDOM?.length ?? 0) > 1) {
+        throw new Error(`${kind} '${name}' has multiple static DOM parse rules`);
+    }
+    const parsed = parseDOM?.[0]?.tag;
+    const serialized = toDOM == null ? undefined : outputTag(toDOM);
+    if (parsed != null && serialized != null && parsed !== serialized) {
+        throw new Error(`${kind} '${name}' parses '${parsed}' but serializes '${serialized}'`);
+    }
+    return serialized ?? parsed;
+}
+
+/** Compile a keyed, ProseMirror-shaped schema into the serializable native form. */
+export function defineSchema(spec: SchemaSpec): SchemaDefinition {
+    const nodes: NodeSpec[] = [];
+    const names = new Set<string>();
+    for (const [name, node] of Object.entries(spec.nodes)) {
+        const common = {
+            content: node.content ?? '',
+            ...(node.group == null ? {} : { group: node.group }),
+            ...(node.attrs == null ? {} : { attrs: node.attrs }),
+            role: schemaNodeRole(name, node),
+            ...(node.isVoid == null ? {} : { isVoid: node.isVoid }),
+            ...(node.allowUndeclaredAttrs == null
+                ? {}
+                : { allowUndeclaredAttrs: node.allowUndeclaredAttrs }),
+        };
+        if (node.toDOM != null && !Array.isArray(node.toDOM)) {
+            const switched = node.toDOM as AttributeDOMOutputSpec;
+            if (RESERVED_WIRE_NODE_TYPES.has(name)) {
+                throw new Error(`node '${name}' uses a reserved wire projection type`);
+            }
+            if (
+                node.attrs == null ||
+                !Object.prototype.hasOwnProperty.call(node.attrs, switched.switchOn)
+            ) {
+                throw new Error(
+                    `node '${name}' switches on undeclared attribute '${switched.switchOn}'`
+                );
+            }
+            if (Object.keys(switched.cases).length === 0) {
+                throw new Error(`node '${name}' has no DOM output cases`);
+            }
+            const discriminatorDefault = node.attrs[switched.switchOn]?.default;
+            validateAttributeDOMRules(name, switched, node.parseDOM, discriminatorDefault);
+            const { attrs: _attrs, ...variantCommon } = common;
+            for (const [caseKey, output] of Object.entries(switched.cases)) {
+                const tag = outputTag(output);
+                if (names.has(tag))
+                    throw new Error(`schema produces duplicate native node '${tag}'`);
+                names.add(tag);
+                const { [switched.switchOn]: _discriminator, ...variantAttrs } = node.attrs ?? {};
+                nodes.push({
+                    name: tag,
+                    ...variantCommon,
+                    group: appendGroup(node.group, name),
+                    ...(Object.keys(variantAttrs).length === 0 ? {} : { attrs: variantAttrs }),
+                    htmlTag: tag,
+                    json: {
+                        type: name,
+                        attrs: {
+                            [switched.switchOn]: caseAttributeValue(
+                                caseKey,
+                                switched.switchOn,
+                                tag,
+                                node.parseDOM,
+                                discriminatorDefault
+                            ),
+                        },
+                    },
+                });
+            }
+            continue;
+        }
+
+        if (names.has(name)) throw new Error(`schema produces duplicate native node '${name}'`);
+        names.add(name);
+        const tag = staticDOMTag(
+            'node',
+            name,
+            node.parseDOM,
+            node.toDOM as DOMOutputSpec | undefined
+        );
+        nodes.push({
+            name,
+            ...common,
+            ...(tag == null ? {} : { htmlTag: tag }),
+        });
+    }
+
+    const marks: MarkSpec[] = Object.entries(spec.marks ?? {}).map(([name, mark]) => {
+        const tag = staticDOMTag('mark', name, mark.parseDOM, mark.toDOM);
+        const normalizedTag = tag?.toLowerCase();
+        if (normalizedTag != null && !ALLOWED_MARK_HTML_TAGS.has(normalizedTag)) {
+            throw new Error(`mark '${name}' has disallowed HTML tag '${tag}'`);
+        }
+        return {
+            name,
+            ...(mark.attrs == null ? {} : { attrs: mark.attrs }),
+            ...(mark.excludes == null ? {} : { excludes: mark.excludes }),
+            ...(normalizedTag == null ? {} : { htmlTag: normalizedTag as MarkSpec['htmlTag'] }),
+            ...(mark.allowUndeclaredAttrs == null
+                ? {}
+                : { allowUndeclaredAttrs: mark.allowUndeclaredAttrs }),
+        };
+    });
+    return { nodes, marks };
 }
 
 /** Attributes of the built-in image node. */
@@ -101,7 +395,7 @@ export interface ImageNodeAttributes {
 
 /** A schema together with the facts derived from it. See {@link resolveDocumentDescriptor}. */
 export interface ResolvedDocumentSchema {
-    /** The schema itself, defaulted to {@link tiptapSchema} when none was supplied. */
+    /** The schema itself, defaulted to {@link defaultSchema} when none was supplied. */
     schema: SchemaDefinition;
     /** Name of the node with `role: 'doc'` — the `type` of a document's root. */
     documentNodeName: string;
@@ -117,18 +411,6 @@ type DocumentDescriptorLimits = Pick<
 /** Node name the built-in image node is stored under. */
 export const IMAGE_NODE_NAME = 'image';
 const HEADING_LEVELS = [1, 2, 3, 4, 5, 6] as const;
-const ALLOWED_MARK_HTML_TAGS = new Set([
-    'span',
-    'strong',
-    'em',
-    'u',
-    's',
-    'code',
-    'a',
-    'sub',
-    'sup',
-    'mark',
-]);
 
 /**
  * The built-in image node spec: a void block node carrying
@@ -136,10 +418,8 @@ const ALLOWED_MARK_HTML_TAGS = new Set([
  *
  * @param name Node name to declare it under. Defaults to {@link IMAGE_NODE_NAME}.
  */
-export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
+function imageSchemaNodeSpec(): SchemaNodeSpec {
     return {
-        name,
-        content: '',
         group: 'block',
         attrs: {
             src: {},
@@ -149,24 +429,19 @@ export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
             height: { default: null },
         },
         role: 'block',
-        htmlTag: 'img',
+        parseDOM: [{ tag: 'img' }],
+        toDOM: ['img'],
         isVoid: true,
     };
 }
 
-function headingNodeSpec(level: (typeof HEADING_LEVELS)[number]): NodeSpec {
-    return {
-        name: `h${level}`,
-        content: 'inline*',
-        group: 'block',
-        role: 'textBlock',
-        htmlTag: `h${level}`,
-    };
+export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
+    return defineSchema({ nodes: { [name]: imageSchemaNodeSpec() } }).nodes[0]!;
 }
 
 /**
  * Return `schema` with the image node added, or `schema` unchanged when it
- * already declares one. {@link tiptapSchema} already includes it.
+ * already declares one. {@link tiptapCompatibleSchema} already includes it.
  */
 export function withImagesSchema(schema: SchemaDefinition): SchemaDefinition {
     const hasImageNode = schema.nodes.some((node) => node.name === IMAGE_NODE_NAME);
@@ -216,88 +491,124 @@ export function buildImageFragmentJson(
     );
 }
 
-const MARKS: MarkSpec[] = [
-    { name: 'bold' },
-    { name: 'italic' },
-    { name: 'underline' },
-    { name: 'strike' },
-    { name: 'link', attrs: { href: {} } },
-];
-
 /**
- * Default schema, using Tiptap's camelCase node names — `bulletList`,
- * `orderedList`, `listItem`, `hardBreak`, `horizontalRule` — plus the image
- * node. Applied when no schema is supplied.
+ * Keyed authoring definition for the Tiptap-compatible camelCase schema.
  */
-export const tiptapSchema: SchemaDefinition = {
-    nodes: [
-        {
-            name: 'doc',
-            content: 'block+',
-            role: 'doc',
-        },
-        {
-            name: 'paragraph',
+export const tiptapCompatibleSchemaSpec: SchemaSpec = {
+    nodes: {
+        doc: { content: 'block+', role: 'doc' },
+        paragraph: {
             content: 'inline*',
             group: 'block',
             role: 'textBlock',
-            htmlTag: 'p',
+            parseDOM: [{ tag: 'p' }],
+            toDOM: ['p', 0],
         },
-        ...HEADING_LEVELS.map((level) => headingNodeSpec(level)),
-        {
-            name: 'blockquote',
+        heading: {
+            content: 'inline*',
+            group: 'block',
+            role: 'heading',
+            attrs: { level: { default: 1 } },
+            parseDOM: HEADING_LEVELS.map((level) => ({
+                tag: `h${level}`,
+                attrs: { level },
+            })),
+            toDOM: {
+                switchOn: 'level',
+                cases: Object.fromEntries(
+                    HEADING_LEVELS.map((level) => [level, [`h${level}`, 0] as const])
+                ),
+            },
+        },
+        blockquote: {
             content: 'block+',
             group: 'block',
             role: 'block',
-            htmlTag: 'blockquote',
+            parseDOM: [{ tag: 'blockquote' }],
+            toDOM: ['blockquote', 0],
         },
-        {
-            name: 'bulletList',
+        bulletList: {
             content: 'listItem+',
             group: 'block',
             role: 'list',
-            htmlTag: 'ul',
+            parseDOM: [{ tag: 'ul' }],
+            toDOM: ['ul', 0],
         },
-        {
-            name: 'orderedList',
+        orderedList: {
             content: 'listItem+',
             group: 'block',
             attrs: { start: { default: 1 } },
             role: 'list',
-            htmlTag: 'ol',
+            parseDOM: [{ tag: 'ol' }],
+            toDOM: ['ol', 0],
         },
-        {
-            name: 'listItem',
+        listItem: {
             content: 'paragraph block*',
             role: 'listItem',
-            htmlTag: 'li',
+            parseDOM: [{ tag: 'li' }],
+            toDOM: ['li', 0],
         },
-        {
-            name: 'hardBreak',
-            content: '',
+        hardBreak: {
             group: 'inline',
             role: 'hardBreak',
-            htmlTag: 'br',
+            parseDOM: [{ tag: 'br' }],
+            toDOM: ['br'],
             isVoid: true,
         },
-        {
-            name: 'horizontalRule',
-            content: '',
+        horizontalRule: {
             group: 'block',
             role: 'block',
-            htmlTag: 'hr',
+            parseDOM: [{ tag: 'hr' }],
+            toDOM: ['hr'],
             isVoid: true,
         },
-        imageNodeSpec(),
-        {
-            name: 'text',
-            content: '',
-            group: 'inline',
-            role: 'text',
-        },
-    ],
-    marks: MARKS,
+        [IMAGE_NODE_NAME]: imageSchemaNodeSpec(),
+        text: { group: 'inline', role: 'text' },
+    },
+    marks: {
+        bold: { parseDOM: [{ tag: 'strong' }], toDOM: ['strong', 0] },
+        italic: { parseDOM: [{ tag: 'em' }], toDOM: ['em', 0] },
+        underline: { parseDOM: [{ tag: 'u' }], toDOM: ['u', 0] },
+        strike: { parseDOM: [{ tag: 's' }], toDOM: ['s', 0] },
+        link: { attrs: { href: {} }, parseDOM: [{ tag: 'a' }], toDOM: ['a', 0] },
+    },
 };
+
+/** Tiptap-compatible serializable schema using camelCase node names. */
+export const tiptapCompatibleSchema: SchemaDefinition = defineSchema(tiptapCompatibleSchemaSpec);
+
+/** Keyed authoring definition using ProseMirror snake_case node names. */
+export const prosemirrorSchemaSpec: SchemaSpec = {
+    nodes: {
+        doc: tiptapCompatibleSchemaSpec.nodes.doc,
+        paragraph: tiptapCompatibleSchemaSpec.nodes.paragraph,
+        heading: tiptapCompatibleSchemaSpec.nodes.heading,
+        blockquote: tiptapCompatibleSchemaSpec.nodes.blockquote,
+        bullet_list: {
+            ...tiptapCompatibleSchemaSpec.nodes.bulletList,
+            content: 'list_item+',
+        },
+        ordered_list: {
+            ...tiptapCompatibleSchemaSpec.nodes.orderedList,
+            content: 'list_item+',
+        },
+        list_item: tiptapCompatibleSchemaSpec.nodes.listItem,
+        hard_break: tiptapCompatibleSchemaSpec.nodes.hardBreak,
+        horizontal_rule: tiptapCompatibleSchemaSpec.nodes.horizontalRule,
+        [IMAGE_NODE_NAME]: tiptapCompatibleSchemaSpec.nodes[IMAGE_NODE_NAME],
+        text: tiptapCompatibleSchemaSpec.nodes.text,
+    },
+    marks: tiptapCompatibleSchemaSpec.marks,
+};
+
+/** ProseMirror-compatible serializable schema using snake_case node names. */
+export const prosemirrorSchema: SchemaDefinition = defineSchema(prosemirrorSchemaSpec);
+
+/** Keyed authoring definition used when callers do not provide a schema. */
+export const defaultSchemaSpec: SchemaSpec = prosemirrorSchemaSpec;
+
+/** Schema used when callers do not provide one. */
+export const defaultSchema: SchemaDefinition = prosemirrorSchema;
 
 /** Mirror native's invalid-schema fallback before constructing an empty doc. */
 function utf8ByteLengthUpTo(value: string, maximum: number): number {
@@ -342,12 +653,20 @@ interface AdmittedSchemaCollections {
 }
 
 function consumeSchemaWork(budget: SchemaWorkBudget): boolean {
-    if (budget.work >= budget.limit) {
+    return consumeSchemaWorkAmount(budget, 1);
+}
+
+function consumeSchemaWorkAmount(budget: SchemaWorkBudget, amount: number): boolean {
+    if (amount > budget.limit - budget.work) {
         budget.exhausted = true;
         return false;
     }
-    budget.work += 1;
+    budget.work += amount;
     return true;
+}
+
+function consumeSchemaStringWork(budget: SchemaWorkBudget, value: string): boolean {
+    return consumeSchemaWorkAmount(budget, utf8ByteLengthUpTo(value, budget.limit) + 1);
 }
 
 function collectOwnAttrs(
@@ -413,7 +732,55 @@ function normalizeAttrs(value: unknown): Record<string, AttrSpec> {
     );
 }
 
-function normalizeSchemaDefinition(schema: SchemaDefinition): SchemaDefinition | null {
+function normalizeNodeJSONProjection(value: unknown): NodeJSONProjection | null | undefined {
+    if (value === undefined) return undefined;
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+    const raw = value as Record<string, unknown>;
+    if (typeof raw.type !== 'string' || raw.type.length === 0) return null;
+    if (raw.attrs === undefined) return { type: raw.type };
+    if (raw.attrs == null || typeof raw.attrs !== 'object' || Array.isArray(raw.attrs)) return null;
+    const attrs: Record<string, unknown> = {};
+    for (const [name, attrValue] of Object.entries(raw.attrs)) {
+        if (!isSafeHtmlAttr(name)) return null;
+        if (
+            attrValue !== null &&
+            typeof attrValue !== 'string' &&
+            typeof attrValue !== 'boolean' &&
+            !(typeof attrValue === 'number' && Number.isFinite(attrValue))
+        ) {
+            return null;
+        }
+        attrs[name] = attrValue;
+    }
+    return Object.keys(attrs).length === 0 ? { type: raw.type } : { type: raw.type, attrs };
+}
+
+function projectionAttrsOverlap(
+    left: Record<string, unknown>,
+    right: Record<string, unknown>
+): boolean {
+    return Object.entries(left).every(
+        ([name, value]) =>
+            !Object.prototype.hasOwnProperty.call(right, name) || right[name] === value
+    );
+}
+
+function legacyHeadingProjectionName(projection: NodeJSONProjection): string | undefined {
+    if (projection.type !== 'heading') return undefined;
+    const value = projection.attrs?.level;
+    let level: number | undefined;
+    if (typeof value === 'number' && Number.isInteger(value)) {
+        level = value;
+    } else if (typeof value === 'string' && value.length <= 3 && /^\+?\d+$/.test(value)) {
+        level = Number(value);
+    }
+    return level != null && level >= 1 && level <= 6 ? `h${level}` : undefined;
+}
+
+function normalizeSchemaDefinition(
+    schema: SchemaDefinition,
+    budget?: SchemaWorkBudget
+): SchemaDefinition | null {
     const normalizeRole = (role: unknown): string => {
         switch (role) {
             case 'doc':
@@ -437,8 +804,10 @@ function normalizeSchemaDefinition(schema: SchemaDefinition): SchemaDefinition |
         const raw = rawNode as unknown as Record<string, unknown>;
         const htmlTag = typeof raw.htmlTag === 'string' ? raw.htmlTag : undefined;
         const attrs = normalizeAttrs(raw.attrs);
+        const json = normalizeNodeJSONProjection(raw.json);
         if (
             (htmlTag != null && !isSafeHtmlTag(htmlTag)) ||
+            json === null ||
             Object.keys(attrs).some((name) => !isSafeHtmlAttr(name))
         ) {
             return null;
@@ -450,11 +819,43 @@ function normalizeSchemaDefinition(schema: SchemaDefinition): SchemaDefinition |
             ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
             role: normalizeRole(raw.role),
             ...(htmlTag == null ? {} : { htmlTag }),
+            ...(json == null ? {} : { json }),
             isVoid: typeof raw.isVoid === 'boolean' ? raw.isVoid : false,
             ...(typeof raw.allowUndeclaredAttrs === 'boolean'
                 ? { allowUndeclaredAttrs: raw.allowUndeclaredAttrs }
                 : {}),
         });
+    }
+    const nativeNodeNames = new Set(nodes.map((node) => node.name));
+    const projectedNodes = nodes.filter((node) => node.json != null);
+    for (let index = 0; index < projectedNodes.length; index += 1) {
+        const node = projectedNodes[index];
+        const projection = node.json as NodeJSONProjection;
+        const legacyHeadingName = legacyHeadingProjectionName(projection);
+        if (
+            nativeNodeNames.has(projection.type) ||
+            RESERVED_WIRE_NODE_TYPES.has(projection.type) ||
+            (legacyHeadingName != null &&
+                legacyHeadingName !== node.name &&
+                nativeNodeNames.has(legacyHeadingName)) ||
+            Object.keys(projection.attrs ?? {}).some((name) =>
+                Object.prototype.hasOwnProperty.call(node.attrs ?? {}, name)
+            )
+        ) {
+            return null;
+        }
+        for (let previousIndex = 0; previousIndex < index; previousIndex += 1) {
+            if (budget != null && !consumeSchemaWork(budget)) {
+                throw schemaBoundaryError(budget.limit, budget.limit + 1);
+            }
+            const previous = projectedNodes[previousIndex];
+            if (
+                previous.json?.type === projection.type &&
+                projectionAttrsOverlap(projection.attrs ?? {}, previous.json.attrs ?? {})
+            ) {
+                return null;
+            }
+        }
     }
 
     const marks: MarkSpec[] = [];
@@ -500,9 +901,7 @@ function resolveDescriptorLimits(limits?: DocumentDescriptorLimits): ResolvedEdi
 
 function createSchemaWorkBudget(limits: ResolvedEditorResourceLimits): SchemaWorkBudget {
     return {
-        limit:
-            limits.maxSchemaNodes * 64 +
-            limits.maxSchemaExpressionBytes * 32,
+        limit: limits.maxSchemaNodes * 64 + limits.maxSchemaExpressionBytes * 32,
         work: 0,
         exhausted: false,
     };
@@ -533,6 +932,24 @@ function admitSchemaCollections(
         }
         const attrs = collectOwnAttrs(node.attrs, budget);
         if (attrs == null) return null;
+        const projectionAttrs = collectOwnAttrs(node.json?.attrs, budget);
+        if (projectionAttrs == null) return null;
+        if (
+            node.json != null &&
+            ((typeof node.json.type === 'string' &&
+                !consumeSchemaStringWork(budget, node.json.type)) ||
+                projectionAttrs.some(([name, rawValue]) => {
+                    const value: unknown = rawValue;
+                    return (
+                        !consumeSchemaStringWork(budget, name) ||
+                        (typeof value === 'string'
+                            ? !consumeSchemaStringWork(budget, value)
+                            : !consumeSchemaWork(budget))
+                    );
+                }))
+        ) {
+            throw schemaBoundaryError(budget.limit, budget.limit + 1);
+        }
         if (budget.exhausted) {
             throw schemaBoundaryError(budget.limit, budget.limit + 1);
         }
@@ -561,8 +978,8 @@ export function resolveDocumentSchema(
     schema?: SchemaDefinition,
     limits?: DocumentDescriptorLimits
 ): SchemaDefinition {
-    if (schema == null) return tiptapSchema;
-    if (!Array.isArray(schema.nodes)) return tiptapSchema;
+    if (schema == null) return defaultSchema;
+    if (!Array.isArray(schema.nodes)) return defaultSchema;
     if (!Array.isArray(schema.marks)) {
         schema = { ...schema, marks: [] };
     }
@@ -585,16 +1002,16 @@ export function resolveDocumentSchema(
         }
     }
     const schemaBudget = createSchemaWorkBudget(resolvedLimits);
-    if (admitSchemaCollections(schema, schemaBudget) == null) return tiptapSchema;
-    const normalizedSchema = normalizeSchemaDefinition(schema);
-    if (normalizedSchema == null) return tiptapSchema;
+    if (admitSchemaCollections(schema, schemaBudget) == null) return defaultSchema;
+    const normalizedSchema = normalizeSchemaDefinition(schema, schemaBudget);
+    if (normalizedSchema == null) return defaultSchema;
     schema = normalizedSchema;
     const admittedCollections = admitSchemaCollections(schema, {
         limit: Number.MAX_SAFE_INTEGER,
         work: 0,
         exhausted: false,
     });
-    if (admittedCollections == null) return tiptapSchema;
+    if (admittedCollections == null) return defaultSchema;
 
     const nodeNames = new Set<string>();
     const markNames = new Set<string>();
@@ -609,7 +1026,7 @@ export function resolveDocumentSchema(
             typeof node.role !== 'string' ||
             nodeNames.has(node.name)
         ) {
-            return tiptapSchema;
+            return defaultSchema;
         }
         nodeNames.add(node.name);
         if (node.role === 'doc') docRoles += 1;
@@ -622,11 +1039,11 @@ export function resolveDocumentSchema(
             mark.name.length === 0 ||
             markNames.has(mark.name)
         ) {
-            return tiptapSchema;
+            return defaultSchema;
         }
         markNames.add(mark.name);
     }
-    if (docRoles !== 1 || textRoles !== 1) return tiptapSchema;
+    if (docRoles !== 1 || textRoles !== 1) return defaultSchema;
 
     const groups = new Set<string>();
     const nodesBySymbol = new Map<string, NodeSpec[]>();
@@ -648,7 +1065,7 @@ export function resolveDocumentSchema(
             symbols == null ||
             symbols.some((symbol) => !nodeNames.has(symbol) && !groups.has(symbol))
         ) {
-            return tiptapSchema;
+            return defaultSchema;
         }
     }
 
@@ -674,9 +1091,9 @@ export function resolveDocumentSchema(
     while (true) {
         const before = generatable.size;
         for (const node of schema.nodes) {
-            const hasRequiredAttrs = (
-                admittedCollections.attrsByNode.get(node) ?? []
-            ).some(([, attr]) => attr.default === undefined);
+            const hasRequiredAttrs = (admittedCollections.attrsByNode.get(node) ?? []).some(
+                ([, attr]) => attr.default === undefined
+            );
             if (node.role !== 'text' && !hasRequiredAttrs && contentIsConstructible(node)) {
                 generatable.add(node.name);
             }
@@ -686,20 +1103,18 @@ export function resolveDocumentSchema(
     if (schemaBudget.exhausted) {
         throw schemaBoundaryError(schemaBudget.limit, schemaBudget.limit + 1);
     }
-    const hasUnconstructibleNode = schema.nodes.some(
-        (node) => !contentIsConstructible(node)
-    );
+    const hasUnconstructibleNode = schema.nodes.some((node) => !contentIsConstructible(node));
     if (schemaBudget.exhausted) {
         throw schemaBoundaryError(schemaBudget.limit, schemaBudget.limit + 1);
     }
-    if (hasUnconstructibleNode) return tiptapSchema;
+    if (hasUnconstructibleNode) return defaultSchema;
 
     try {
         constructDefaultEmptyDocument(schema, resolvedLimits, admittedCollections);
         return schema;
     } catch (error) {
         if (error instanceof NativeEditorBoundaryError) throw error;
-        return tiptapSchema;
+        return defaultSchema;
     }
 }
 
@@ -820,10 +1235,14 @@ function constructDefaultEmptyDocument(
         }
         budget.nodes += 1;
 
-        const result: DocumentJSON = { type: node.name };
+        const result: DocumentJSON = { type: node.json?.type ?? node.name };
         if (children.length > 0) result.content = children;
-        if (attrs.length > 0) {
-            result.attrs = Object.fromEntries(attrs.map(([name, spec]) => [name, spec.default]));
+        const projectedAttrs = Object.entries(node.json?.attrs ?? {});
+        if (attrs.length > 0 || projectedAttrs.length > 0) {
+            result.attrs = Object.fromEntries([
+                ...attrs.map(([name, spec]) => [name, spec.default] as const),
+                ...projectedAttrs,
+            ]);
         }
         return result;
     };
@@ -839,7 +1258,7 @@ function constructDefaultEmptyDocument(
 }
 
 export function defaultEmptyDocument(
-    schema: SchemaDefinition = tiptapSchema,
+    schema: SchemaDefinition = defaultSchema,
     limits?: DocumentDescriptorLimits
 ): DocumentJSON {
     const resolvedLimits = resolveDescriptorLimits(limits);
@@ -854,10 +1273,7 @@ export function defaultEmptyDocument(
                 resolvedLimits.maxSchemaExpressionBytes - expressionBytes
             );
             if (expressionBytes > resolvedLimits.maxSchemaExpressionBytes) {
-                throw schemaBoundaryError(
-                    resolvedLimits.maxSchemaExpressionBytes,
-                    expressionBytes
-                );
+                throw schemaBoundaryError(resolvedLimits.maxSchemaExpressionBytes, expressionBytes);
             }
         }
     }
@@ -874,7 +1290,7 @@ export function defaultEmptyDocument(
  * mirroring what the Rust core does when a handle is created. Use it to build
  * fragments or empty documents for a custom schema.
  *
- * @param schema Defaults to {@link tiptapSchema}.
+ * @param schema Defaults to {@link defaultSchema}.
  * @param limits Schema and document bounds. Defaults to
  * {@link DEFAULT_EDITOR_RESOURCE_LIMITS}.
  * @throws NativeEditorBoundaryError `SCHEMA_INVALID` when the schema is
@@ -899,7 +1315,7 @@ export function resolveDocumentDescriptor(
 
 export function normalizeDocumentJson(
     doc: DocumentJSON,
-    schemaOrDescriptor: SchemaDefinition | ResolvedDocumentSchema = tiptapSchema,
+    schemaOrDescriptor: SchemaDefinition | ResolvedDocumentSchema = defaultSchema,
     limits?: DocumentDescriptorLimits
 ): DocumentJSON {
     const descriptor =
@@ -916,79 +1332,3 @@ export function normalizeDocumentJson(
     }
     return descriptor.emptyDocument;
 }
-
-/**
- * The same document model as {@link tiptapSchema} under ProseMirror's
- * snake_case node names — `bullet_list`, `ordered_list`, `list_item`,
- * `hard_break`, `horizontal_rule`. Use it when the content is authored by a
- * stock ProseMirror editor.
- */
-export const prosemirrorSchema: SchemaDefinition = {
-    nodes: [
-        {
-            name: 'doc',
-            content: 'block+',
-            role: 'doc',
-        },
-        {
-            name: 'paragraph',
-            content: 'inline*',
-            group: 'block',
-            role: 'textBlock',
-            htmlTag: 'p',
-        },
-        ...HEADING_LEVELS.map((level) => headingNodeSpec(level)),
-        {
-            name: 'blockquote',
-            content: 'block+',
-            group: 'block',
-            role: 'block',
-            htmlTag: 'blockquote',
-        },
-        {
-            name: 'bullet_list',
-            content: 'list_item+',
-            group: 'block',
-            role: 'list',
-            htmlTag: 'ul',
-        },
-        {
-            name: 'ordered_list',
-            content: 'list_item+',
-            group: 'block',
-            attrs: { start: { default: 1 } },
-            role: 'list',
-            htmlTag: 'ol',
-        },
-        {
-            name: 'list_item',
-            content: 'paragraph block*',
-            role: 'listItem',
-            htmlTag: 'li',
-        },
-        {
-            name: 'hard_break',
-            content: '',
-            group: 'inline',
-            role: 'hardBreak',
-            htmlTag: 'br',
-            isVoid: true,
-        },
-        {
-            name: 'horizontal_rule',
-            content: '',
-            group: 'block',
-            role: 'block',
-            htmlTag: 'hr',
-            isVoid: true,
-        },
-        imageNodeSpec('image'),
-        {
-            name: 'text',
-            content: '',
-            group: 'inline',
-            role: 'text',
-        },
-    ],
-    marks: MARKS,
-};

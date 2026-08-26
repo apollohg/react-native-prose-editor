@@ -93,8 +93,13 @@ export {
 } from './addons';
 
 export {
-    tiptapSchema,
+    defineSchema,
+    defaultSchema,
+    defaultSchemaSpec,
     prosemirrorSchema,
+    prosemirrorSchemaSpec,
+    tiptapCompatibleSchema,
+    tiptapCompatibleSchemaSpec,
     IMAGE_NODE_NAME,
     imageNodeSpec,
     withImagesSchema,
@@ -103,9 +108,16 @@ export {
     resolveDocumentDescriptor,
     type ResolvedDocumentSchema,
     type SchemaDefinition,
+    type SchemaSpec,
+    type SchemaNodeSpec,
+    type SchemaMarkSpec,
     type NodeSpec,
+    type NodeJSONProjection,
     type MarkSpec,
     type AttrSpec,
+    type ParseDOMRule,
+    type DOMOutputSpec,
+    type AttributeDOMOutputSpec,
     type ImageNodeAttributes,
 } from './schemas';
 

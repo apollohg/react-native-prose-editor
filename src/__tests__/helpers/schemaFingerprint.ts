@@ -122,12 +122,32 @@ function canonicalNode(node: NodeSpec): CanonicalObject {
     const group = [...new Set((node.group ?? '').split(/\s+/u).filter(Boolean))].sort(
         compareScalarStrings
     );
+    const jsonProjection: ReadonlyArray<readonly [string, CanonicalValue]> =
+        node.json == null
+            ? []
+            : [
+                  [
+                      'jsonProjection',
+                      canonicalObject([
+                          ['nodeType', node.json.type],
+                          [
+                              'attrs',
+                              canonicalMap(
+                                  Object.entries(node.json.attrs ?? {}).map(
+                                      ([name, value]) => [name, canonicalJson(value)] as const
+                                  )
+                              ),
+                          ],
+                      ]),
+                  ],
+              ];
     return canonicalObject([
         ['content', node.content.trim()],
         ['group', group],
         ['attrs', canonicalAttrs(node.attrs)],
         ['role', canonicalRole(node)],
         ['htmlTag', node.htmlTag ?? null],
+        ...jsonProjection,
         ['isVoid', node.isVoid ?? false],
         ['allowUndeclaredAttrs', node.allowUndeclaredAttrs ?? false],
     ]);

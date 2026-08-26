@@ -209,7 +209,7 @@ export function mentionNodeSpec(): NodeSpec {
  * ```ts
  * createNativeEditorDocumentHandle({
  *     initialization: { type: 'localEmpty' },
- *     schema: withMentionsSchema(tiptapSchema),
+ *     schema: withMentionsSchema(defaultSchema),
  * });
  * ```
  */

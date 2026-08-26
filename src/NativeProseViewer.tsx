@@ -18,7 +18,7 @@ import {
     serializePreparedProseViewerConfiguration,
     type PreparedProseViewerConfiguration,
 } from './ViewerConfiguration';
-import { tiptapSchema, type SchemaDefinition } from './schemas';
+import { defaultSchema, type SchemaDefinition } from './schemas';
 
 interface NativeProseViewerLinkPressNativeEvent {
     href: string;
@@ -81,7 +81,7 @@ export interface NativeProseViewerAddons {
 
 /** Props shared by both content forms of {@link NativeProseViewerProps}. */
 export interface NativeProseViewerBaseProps extends ViewProps {
-    /** Schema the content is parsed against. Defaults to {@link tiptapSchema}; the mention node is always added. */
+    /** Schema the content is parsed against. Defaults to {@link defaultSchema}; the mention node is always added. */
     schema?: SchemaDefinition;
     /** Native content theme. See {@link EditorTheme}. */
     theme?: EditorTheme;
@@ -149,7 +149,7 @@ function resolveViewerConfiguration(
 ): PreparedProseViewerConfiguration {
     return {
         initialization: { type: 'localEmpty' },
-        schema: withMentionsSchema(schema ?? tiptapSchema),
+        schema: withMentionsSchema(schema ?? defaultSchema),
         ...(allowBase64Images ? { policy: { allowBase64Images: true } } : {}),
         ...(resourceLimits ? { limits: { resource: resourceLimits } } : {}),
         ...(mentions?.trigger || mentions?.prefix

@@ -1854,7 +1854,7 @@ export type NativeEditorV2Initialization =
  */
 export interface NativeEditorV2CreateConfig {
     initialization: NativeEditorV2Initialization;
-    /** Node and mark types this document admits. Defaults to `tiptapSchema`. */
+    /** Node and mark types this document admits. Defaults to `defaultSchema`. */
     schema?: SchemaDefinition;
     /** Yjs fragment the document lives in. Defaults to `'prosemirror'`. */
     fragmentName?: string;

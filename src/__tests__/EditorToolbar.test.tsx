@@ -11,6 +11,7 @@ import { Keyboard, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { render, fireEvent, act } from '@testing-library/react-native';
 
 import {
+    DEFAULT_EDITOR_TOOLBAR_ITEMS,
     EditorToolbar,
     _resetEditorToolbarFrameRegistryForTests,
     setActiveEditorToolbarFrameOwnerForEditor,
@@ -37,7 +38,7 @@ const ENABLED_BUTTONS_ACTIVE_STATE: ActiveState = {
         wrapOrderedList: true,
     },
     allowedMarks: ['bold', 'italic', 'underline', 'strike'],
-    insertableNodes: ['hardBreak', 'horizontalRule'],
+    insertableNodes: ['hard_break', 'horizontal_rule'],
 };
 const EMPTY_HISTORY_STATE: HistoryState = { canUndo: false, canRedo: false };
 
@@ -108,6 +109,17 @@ describe('EditorToolbar', () => {
     });
 
     describe('rendering', () => {
+        it('uses ProseMirror node names in the default toolbar items', () => {
+            expect(DEFAULT_EDITOR_TOOLBAR_ITEMS).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({ type: 'list', listType: 'bullet_list' }),
+                    expect.objectContaining({ type: 'list', listType: 'ordered_list' }),
+                    expect.objectContaining({ type: 'node', nodeType: 'hard_break' }),
+                    expect.objectContaining({ type: 'node', nodeType: 'horizontal_rule' }),
+                ])
+            );
+        });
+
         it('renders all 13 buttons including blockquote and list depth controls', () => {
             const { getByLabelText } = renderToolbar();
 
@@ -738,14 +750,14 @@ describe('EditorToolbar', () => {
             );
         });
 
-        it('bullet list button gets selected state when bulletList node is active', () => {
+        it('bullet list button gets selected state when bullet_list node is active', () => {
             const { getByLabelText } = renderToolbar({
                 activeState: {
                     marks: {},
-                    nodes: { bulletList: true },
+                    nodes: { bullet_list: true },
                     commands: {},
                     allowedMarks: ['bold', 'italic', 'underline', 'strike'],
-                    insertableNodes: ['horizontalRule'],
+                    insertableNodes: ['horizontal_rule'],
                 },
             });
 
@@ -755,14 +767,14 @@ describe('EditorToolbar', () => {
             );
         });
 
-        it('ordered list button gets selected state when orderedList node is active', () => {
+        it('ordered list button gets selected state when ordered_list node is active', () => {
             const { getByLabelText } = renderToolbar({
                 activeState: {
                     marks: {},
-                    nodes: { orderedList: true },
+                    nodes: { ordered_list: true },
                     commands: {},
                     allowedMarks: ['bold', 'italic', 'underline', 'strike'],
-                    insertableNodes: ['horizontalRule'],
+                    insertableNodes: ['horizontal_rule'],
                 },
             });
 
@@ -1059,7 +1071,7 @@ describe('EditorToolbar', () => {
                     nodes: {},
                     commands: {},
                     allowedMarks: [],
-                    insertableNodes: ['hardBreak'],
+                    insertableNodes: ['hard_break'],
                 },
             });
 
@@ -1287,7 +1299,7 @@ describe('EditorToolbar', () => {
                     nodes: {},
                     commands: {},
                     allowedMarks: [],
-                    insertableNodes: ['hardBreak'],
+                    insertableNodes: ['hard_break'],
                 },
             });
 
@@ -1301,7 +1313,7 @@ describe('EditorToolbar', () => {
                     nodes: {},
                     commands: {},
                     allowedMarks: [],
-                    insertableNodes: ['horizontalRule'],
+                    insertableNodes: ['horizontal_rule'],
                 },
             });
 
@@ -1341,6 +1353,21 @@ describe('EditorToolbar', () => {
             expect(getByLabelText('Ordered List').props.accessibilityState).toEqual(
                 expect.objectContaining({ disabled: true })
             );
+        });
+
+        it('maps snake_case bullet and ordered lists to their matching commands', () => {
+            const { getByLabelText } = renderToolbar({
+                activeState: {
+                    marks: {},
+                    nodes: {},
+                    commands: { wrapBulletList: false, wrapOrderedList: true },
+                    allowedMarks: [],
+                    insertableNodes: [],
+                },
+            });
+
+            expect(getByLabelText('Bullet List').props.accessibilityState.disabled).toBe(true);
+            expect(getByLabelText('Ordered List').props.accessibilityState.disabled).toBeFalsy();
         });
 
         it('list toggle buttons are enabled when commands say so', () => {

@@ -1447,7 +1447,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 applyEngineCommand({
                     type: 'wrapInList',
                     listType,
-                    itemType: listType === 'taskList' ? 'taskItem' : 'listItem',
+                    itemType:
+                        listType === 'taskList'
+                            ? 'taskItem'
+                            : listType === 'bullet_list' || listType === 'ordered_list'
+                              ? 'list_item'
+                              : 'listItem',
                 });
             },
             [applyEngineCommand]

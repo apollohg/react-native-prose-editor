@@ -6,8 +6,24 @@ import type {
     ReadonlyActiveState,
 } from '../index';
 import type { NativeRichTextEditorProps } from '../NativeRichTextEditor';
+import {
+    defaultSchema,
+    defaultSchemaSpec,
+    defineSchema,
+    prosemirrorSchema,
+    tiptapCompatibleSchema,
+    type SchemaDefinition,
+    type SchemaSpec,
+} from '../index';
 
 declare const documentHandle: NativeEditorDocumentHandle;
+
+const shippedSchemas: readonly SchemaDefinition[] = [
+    defaultSchema,
+    prosemirrorSchema,
+    tiptapCompatibleSchema,
+];
+void shippedSchemas;
 
 // Compile-only public API contract. `npm run typecheck` must fail if a
 // handle-creation field ever returns to NativeRichTextEditorProps.
@@ -97,3 +113,16 @@ async function driveExternalComposition(): Promise<void> {
 }
 
 void driveExternalComposition;
+
+const headingSchemaSpec: SchemaSpec = {
+    ...defaultSchemaSpec,
+    nodes: {
+        ...defaultSchemaSpec.nodes,
+        heading: {
+            ...defaultSchemaSpec.nodes.heading,
+            attrs: { level: { default: 1 } },
+        },
+    },
+};
+
+void defineSchema(headingSchemaSpec);

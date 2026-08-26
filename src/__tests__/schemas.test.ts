@@ -1,11 +1,17 @@
 import { acceptingContentSymbols } from '../contentExpression';
+import * as schemaExports from '../schemas';
 import {
     buildDocumentFragmentJson,
+    defaultSchema,
+    defineSchema,
     defaultEmptyDocument,
     normalizeDocumentJson,
+    prosemirrorSchema,
     resolveDocumentDescriptor,
     resolveDocumentSchema,
-    tiptapSchema,
+    tiptapCompatibleSchema,
+    tiptapCompatibleSchemaSpec,
+    type NodeSpec,
     type SchemaDefinition,
 } from '../schemas';
 import { buildImageFragmentJson } from '../schemas';
@@ -22,7 +28,285 @@ const GROUPED_RANGE_SCHEMA: SchemaDefinition = {
     marks: [],
 };
 
+describe('defineSchema', () => {
+    it('uses ProseMirror naming by default and retains a Tiptap-compatible preset', () => {
+        const exports = schemaExports as unknown as Record<string, unknown>;
+        const defaultSchema = exports.defaultSchema as SchemaDefinition | undefined;
+        const tiptapCompatibleSchema = exports.tiptapCompatibleSchema as
+            | SchemaDefinition
+            | undefined;
+        const defaultSchemaSpec = exports.defaultSchemaSpec as SchemaSpec | undefined;
+        const prosemirrorSchemaSpec = exports.prosemirrorSchemaSpec as SchemaSpec | undefined;
+
+        expect(defaultSchema).toBe(prosemirrorSchema);
+        expect(defaultSchemaSpec).toBe(prosemirrorSchemaSpec);
+        expect(defaultSchemaSpec?.nodes.bullet_list.content).toBe('list_item+');
+        expect(defaultSchema?.nodes.some((node) => node.name === 'bullet_list')).toBe(true);
+        expect(tiptapCompatibleSchema?.nodes.some((node) => node.name === 'bulletList')).toBe(true);
+        expect(exports.tiptapSchema).toBeUndefined();
+    });
+
+    it('exposes the Tiptap-compatible schema as a keyed authoring definition', () => {
+        expect(tiptapCompatibleSchemaSpec.nodes.heading).toMatchObject({
+            content: 'inline*',
+            group: 'block',
+            role: 'heading',
+            attrs: { level: { default: 1 } },
+        });
+        expect(tiptapCompatibleSchema.nodes.find((node) => node.name === 'h2')?.json).toEqual({
+            type: 'heading',
+            attrs: { level: 2 },
+        });
+        expect(prosemirrorSchema.nodes.find((node) => node.name === 'h3')?.json).toEqual({
+            type: 'heading',
+            attrs: { level: 3 },
+        });
+    });
+
+    it('compiles keyed static DOM specs into the native schema representation', () => {
+        expect(
+            defineSchema({
+                nodes: {
+                    doc: { content: 'block+' },
+                    paragraph: {
+                        content: 'inline*',
+                        group: 'block',
+                        parseDOM: [{ tag: 'p' }],
+                        toDOM: ['p', 0],
+                    },
+                    text: { group: 'inline' },
+                },
+            })
+        ).toEqual({
+            nodes: [
+                { name: 'doc', content: 'block+', role: 'doc' },
+                {
+                    name: 'paragraph',
+                    content: 'inline*',
+                    group: 'block',
+                    role: 'textBlock',
+                    htmlTag: 'p',
+                },
+                { name: 'text', content: '', group: 'inline', role: 'text' },
+            ],
+            marks: [],
+        });
+    });
+
+    it('compiles an attribute-driven heading into native variants with JSON projections', () => {
+        const schema = defineSchema({
+            nodes: {
+                doc: { content: 'block+', role: 'doc' },
+                heading: {
+                    content: 'inline*',
+                    group: 'block',
+                    role: 'heading',
+                    attrs: { level: { default: 1 } },
+                    parseDOM: [
+                        { tag: 'h1', attrs: { level: 1 } },
+                        { tag: 'h2', attrs: { level: 2 } },
+                    ],
+                    toDOM: {
+                        switchOn: 'level',
+                        cases: {
+                            1: ['h1', 0],
+                            2: ['h2', 0],
+                        },
+                    },
+                },
+                text: { group: 'inline', role: 'text' },
+            },
+        });
+        expect(schema.nodes).toEqual([
+            { name: 'doc', content: 'block+', role: 'doc' },
+            {
+                name: 'h1',
+                content: 'inline*',
+                group: 'block heading',
+                role: 'textBlock',
+                htmlTag: 'h1',
+                json: { type: 'heading', attrs: { level: 1 } },
+            },
+            {
+                name: 'h2',
+                content: 'inline*',
+                group: 'block heading',
+                role: 'textBlock',
+                htmlTag: 'h2',
+                json: { type: 'heading', attrs: { level: 2 } },
+            },
+            { name: 'text', content: '', group: 'inline', role: 'text' },
+        ]);
+        expect(resolveDocumentSchema(schema).nodes[1].json).toEqual({
+            type: 'heading',
+            attrs: { level: 1 },
+        });
+    });
+
+    it('rejects an attribute-driven DOM spec without the discriminating attribute', () => {
+        expect(() =>
+            defineSchema({
+                nodes: {
+                    doc: { content: 'block+', role: 'doc' },
+                    callout: {
+                        group: 'block',
+                        role: 'block',
+                        toDOM: {
+                            switchOn: 'tone',
+                            cases: { info: ['aside'] },
+                        },
+                    },
+                    text: { group: 'inline', role: 'text' },
+                },
+            })
+        ).toThrow("node 'callout' switches on undeclared attribute 'tone'");
+    });
+
+    it('rejects static DOM rules the native schema cannot represent', () => {
+        expect(() =>
+            defineSchema({
+                nodes: {
+                    doc: { content: 'block+', role: 'doc' },
+                    paragraph: {
+                        content: 'inline*',
+                        group: 'block',
+                        role: 'textBlock',
+                        parseDOM: [{ tag: 'p' }, { tag: 'div' }],
+                        toDOM: ['p', 0],
+                    },
+                    text: { group: 'inline', role: 'text' },
+                },
+            })
+        ).toThrow("node 'paragraph' has multiple static DOM parse rules");
+
+        expect(() =>
+            defineSchema({
+                nodes: {
+                    doc: { content: 'text*', role: 'doc' },
+                    text: { group: 'inline', role: 'text' },
+                },
+                marks: {
+                    bold: { parseDOM: [{ tag: 'strong' }], toDOM: ['b', 0] },
+                },
+            })
+        ).toThrow("mark 'bold' parses 'strong' but serializes 'b'");
+    });
+
+    it('rejects unsafe mark DOM tags at definition time', () => {
+        expect(() =>
+            defineSchema({
+                nodes: {
+                    doc: { content: 'text*', role: 'doc' },
+                    text: { group: 'inline', role: 'text' },
+                },
+                marks: {
+                    unsafe: { toDOM: ['script'] },
+                },
+            })
+        ).toThrow("mark 'unsafe' has disallowed HTML tag 'script'");
+    });
+
+    it('requires attribute-driven parse rules to map one-to-one with output cases', () => {
+        expect(() =>
+            defineSchema({
+                nodes: {
+                    doc: { content: 'block+', role: 'doc' },
+                    heading: {
+                        content: 'inline*',
+                        group: 'block',
+                        role: 'heading',
+                        attrs: { level: { default: 1 } },
+                        parseDOM: [
+                            { tag: 'h1', attrs: { level: 1 } },
+                            { tag: 'h2', attrs: { level: 2 } },
+                        ],
+                        toDOM: {
+                            switchOn: 'level',
+                            cases: { 1: ['h1', 0] },
+                        },
+                    },
+                    text: { group: 'inline', role: 'text' },
+                },
+            })
+        ).toThrow("node 'heading' DOM parse rules must map one-to-one with 'level' output cases");
+    });
+
+    it('derives discriminator types from the declared attribute default', () => {
+        const schema = defineSchema({
+            nodes: {
+                doc: { content: 'badge', role: 'doc' },
+                badge: {
+                    group: 'block',
+                    attrs: { value: { default: '1' } },
+                    toDOM: { switchOn: 'value', cases: { 1: ['badge-one'] } },
+                },
+                text: { group: 'inline', role: 'text' },
+            },
+        });
+        expect(schema.nodes[1]?.json).toEqual({
+            type: 'badge',
+            attrs: { value: '1' },
+        });
+    });
+
+    it('rejects parse rules whose discriminator type conflicts with its default', () => {
+        expect(() =>
+            defineSchema({
+                nodes: {
+                    doc: { content: 'heading', role: 'doc' },
+                    heading: {
+                        content: 'inline*',
+                        group: 'block',
+                        attrs: { level: { default: 1 } },
+                        parseDOM: [{ tag: 'h1', attrs: { level: '1' } }],
+                        toDOM: { switchOn: 'level', cases: { 1: ['h1', 0] } },
+                    },
+                    text: { group: 'inline', role: 'text' },
+                },
+            })
+        ).toThrow("node 'heading' DOM discriminator 'level' must use number values");
+    });
+
+    it('rejects an attribute switch whose discriminator type cannot be inferred', () => {
+        expect(() =>
+            defineSchema({
+                nodes: {
+                    doc: { content: 'callout', role: 'doc' },
+                    callout: {
+                        attrs: { tone: {} },
+                        toDOM: {
+                            switchOn: 'tone',
+                            cases: { info: ['aside-info'], warning: ['aside-warning'] },
+                        },
+                    },
+                    text: { group: 'inline', role: 'text' },
+                },
+            })
+        ).toThrow("node 'callout' DOM discriminator 'tone' must have a scalar type");
+    });
+});
+
 describe('defaultEmptyDocument', () => {
+    it('uses the public JSON projection for constructed nodes', () => {
+        const schema = defineSchema({
+            nodes: {
+                doc: { content: 'heading', role: 'doc' },
+                heading: {
+                    content: 'inline*',
+                    group: 'block',
+                    role: 'heading',
+                    attrs: { level: { default: 1 } },
+                    toDOM: { switchOn: 'level', cases: { 1: ['h1', 0] } },
+                },
+                text: { group: 'inline', role: 'text' },
+            },
+        });
+        expect(defaultEmptyDocument(schema)).toEqual({
+            type: 'doc',
+            content: [{ type: 'heading', attrs: { level: 1 } }],
+        });
+    });
+
     it('uses grouped alternatives and ranges when selecting the first text block', () => {
         expect(defaultEmptyDocument(GROUPED_RANGE_SCHEMA)).toEqual({
             type: 'doc',
@@ -160,7 +444,7 @@ describe('schema-aware document normalization', () => {
         });
     });
 
-    it('falls back to Tiptap for schemas native would reject', () => {
+    it('falls back to the default schema for schemas native would reject', () => {
         const empty = { nodes: [], marks: [] } as SchemaDefinition;
         const unconstructible: SchemaDefinition = {
             nodes: [
@@ -170,8 +454,8 @@ describe('schema-aware document normalization', () => {
             ],
             marks: [],
         };
-        expect(resolveDocumentSchema(empty)).toBe(tiptapSchema);
-        expect(resolveDocumentSchema(unconstructible)).toBe(tiptapSchema);
+        expect(resolveDocumentSchema(empty)).toBe(defaultSchema);
+        expect(resolveDocumentSchema(unconstructible)).toBe(defaultSchema);
         expect(
             resolveDocumentSchema({
                 nodes: [
@@ -181,7 +465,7 @@ describe('schema-aware document normalization', () => {
                 ],
                 marks: [],
             })
-        ).toBe(tiptapSchema);
+        ).toBe(defaultSchema);
         expect(
             resolveDocumentSchema({
                 nodes: [
@@ -192,7 +476,7 @@ describe('schema-aware document normalization', () => {
                 ],
                 marks: [],
             })
-        ).toBe(tiptapSchema);
+        ).toBe(defaultSchema);
         expect(normalizeDocumentJson({ type: 'doc', content: [] }, empty)).toEqual({
             type: 'doc',
             content: [{ type: 'paragraph' }],
@@ -201,6 +485,90 @@ describe('schema-aware document normalization', () => {
 
     it('retains a valid custom schema', () => {
         expect(resolveDocumentSchema(articleSchema)).toMatchObject(articleSchema);
+    });
+
+    it('matches native projection ambiguity validation', () => {
+        const invalid: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: 'block+', role: 'doc' },
+                {
+                    name: 'note',
+                    content: '',
+                    group: 'block',
+                    role: 'block',
+                    json: { type: 'callout', attrs: { tone: 'info' } },
+                },
+                {
+                    name: 'compact-note',
+                    content: '',
+                    group: 'block',
+                    role: 'block',
+                    json: { type: 'callout', attrs: { tone: 'info', size: 'compact' } },
+                },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+
+        expect(resolveDocumentSchema(invalid)).toBe(defaultSchema);
+    });
+
+    it('rejects reserved wire sentinel names as public projection types', () => {
+        for (const type of ['__opaque', '__opaque_json', '__skip']) {
+            const invalid: SchemaDefinition = {
+                nodes: [
+                    { name: 'doc', content: 'block+', role: 'doc' },
+                    {
+                        name: 'note',
+                        content: '',
+                        group: 'block',
+                        role: 'block',
+                        json: { type, attrs: { tone: 'info' } },
+                    },
+                    { name: 'text', content: '', role: 'text' },
+                ],
+                marks: [],
+            };
+
+            expect(resolveDocumentSchema(invalid)).toBe(defaultSchema);
+        }
+    });
+
+    it('rejects projections shadowed by legacy heading normalization', () => {
+        const projectedHeading = (level: number | string): NodeSpec => ({
+            name: 'infoBox',
+            content: 'inline*',
+            group: 'block',
+            role: 'textBlock',
+            json: { type: 'heading', attrs: { level } },
+        });
+        const valid: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: 'block+', role: 'doc' },
+                projectedHeading(2),
+                { name: 'text', content: '', group: 'inline', role: 'text' },
+            ],
+            marks: [],
+        };
+
+        expect(resolveDocumentSchema(valid)).not.toBe(defaultSchema);
+        for (const level of [2, 2.0, '2', '+2']) {
+            const invalid: SchemaDefinition = {
+                nodes: [
+                    { name: 'doc', content: 'block+', role: 'doc' },
+                    {
+                        name: 'h2',
+                        content: 'inline*',
+                        group: 'block',
+                        role: 'textBlock',
+                    },
+                    projectedHeading(level),
+                    { name: 'text', content: '', group: 'inline', role: 'text' },
+                ],
+                marks: [],
+            };
+            expect(resolveDocumentSchema(invalid)).toBe(defaultSchema);
+        }
     });
 
     it('matches native by treating a non-array marks field as an empty mark list', () => {
@@ -224,7 +592,7 @@ describe('schema-aware document normalization', () => {
                 ...articleSchema,
                 marks: [{ name: 'danger', htmlTag: 'script' }],
             } as unknown as SchemaDefinition)
-        ).toBe(tiptapSchema);
+        ).toBe(defaultSchema);
     });
 
     it('matches native schema defaults, tag normalization, and identifier validation', () => {
@@ -257,7 +625,7 @@ describe('schema-aware document normalization', () => {
                 marks: [{ name: 'highlight', attrs: { 'href\" onclick': {} } }],
             },
         ] as SchemaDefinition[]) {
-            expect(resolveDocumentSchema(invalid)).toBe(tiptapSchema);
+            expect(resolveDocumentSchema(invalid)).toBe(defaultSchema);
         }
     });
 
@@ -414,6 +782,28 @@ describe('schema-aware document normalization', () => {
             // @ts-expect-error the public API must not expose an admission-bypass argument
             defaultEmptyDocument(schema, undefined, true);
         }
+    });
+
+    it('charges projection scalar payloads to the schema work budget', () => {
+        const schema: SchemaDefinition = {
+            nodes: [
+                {
+                    name: 'article',
+                    content: '',
+                    role: 'doc',
+                    json: { type: 'x'.repeat(700) },
+                },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+
+        expect(() =>
+            resolveDocumentDescriptor(schema, {
+                maxSchemaNodes: 2,
+                maxSchemaExpressionBytes: 16,
+            })
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID' }));
     });
 
     it('accepts schema collections at their exact public limits', () => {

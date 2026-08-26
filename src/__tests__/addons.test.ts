@@ -5,11 +5,11 @@ import {
     serializeEditorAddons,
     withMentionsSchema,
 } from '../addons';
-import { tiptapSchema } from '../schemas';
+import { tiptapCompatibleSchema } from '../schemas';
 
 describe('mentions addon helpers', () => {
     it('extends the schema with a mention node exactly once', () => {
-        const once = withMentionsSchema(tiptapSchema);
+        const once = withMentionsSchema(tiptapCompatibleSchema);
         const twice = withMentionsSchema(once);
 
         expect(once.nodes.filter((node) => node.name === MENTION_NODE_NAME)).toHaveLength(1);

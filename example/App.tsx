@@ -29,7 +29,7 @@ import {
     DEFAULT_EDITOR_RESOURCE_LIMITS,
     NativeRichTextEditor,
     NativeProseViewer,
-    tiptapSchema,
+    defaultSchema,
     withMentionsSchema,
     type DocumentJSON,
     type EditorAddons,
@@ -376,7 +376,7 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
     );
 
     const documentSchema = useMemo(
-        () => (mentionsEnabled ? withMentionsSchema(tiptapSchema) : tiptapSchema),
+        () => (mentionsEnabled ? withMentionsSchema(defaultSchema) : defaultSchema),
         [mentionsEnabled]
     );
 
@@ -587,10 +587,10 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
                     editor.toggleBlockquote();
                     return;
                 case 'block:bulletList':
-                    editor.toggleList('bulletList');
+                    editor.toggleList('bullet_list');
                     return;
                 case 'block:orderedList':
-                    editor.toggleList('orderedList');
+                    editor.toggleList('ordered_list');
                     return;
                 case 'block:indent':
                     editor.indentListItem();
@@ -609,10 +609,10 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
                     );
                     return;
                 case 'insert:hardBreak':
-                    editor.insertNode('hardBreak');
+                    editor.insertNode('hard_break');
                     return;
                 case 'insert:horizontalRule':
-                    editor.insertNode('horizontalRule');
+                    editor.insertNode('horizontal_rule');
                     return;
                 case 'insert:text':
                     editor.insertText(INSERT_TEXT_SAMPLE);

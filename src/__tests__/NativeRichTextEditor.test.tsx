@@ -85,7 +85,7 @@ import {
     type FakeNativeEditorV2Runtime,
 } from './helpers/nativeEditorV2Fake';
 import { withMentionsSchema } from '../addons';
-import { tiptapSchema, type SchemaDefinition } from '../schemas';
+import { tiptapCompatibleSchema, type SchemaDefinition } from '../schemas';
 
 const mockResolveDocumentDescriptor = require('../schemas').resolveDocumentDescriptor as jest.Mock;
 
@@ -2737,6 +2737,13 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         act(() => ref.current!.toggleList('bulletList'));
         expect(lastCommand()).toEqual({ type: 'unwrapFromList' });
 
+        act(() => ref.current!.toggleList('bullet_list'));
+        expect(lastCommand()).toEqual({
+            type: 'wrapInList',
+            listType: 'bullet_list',
+            itemType: 'list_item',
+        });
+
         act(() => ref.current!.indentListItem());
         expect(lastCommand()).toEqual({ type: 'indentListItem' });
 
@@ -3089,7 +3096,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('resolves mention styling with active mark attrs and inserts the resolved mention', () => {
         const handle = createNativeEditorDocumentHandle({
-            schema: withMentionsSchema(tiptapSchema),
+            schema: withMentionsSchema(tiptapCompatibleSchema),
             initialization: {
                 type: 'localJson',
                 json: {
@@ -3224,7 +3231,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('feeds the inline toolbar mention suggestions while a query is active', () => {
         const handle = createNativeEditorDocumentHandle({
-            schema: withMentionsSchema(tiptapSchema),
+            schema: withMentionsSchema(tiptapCompatibleSchema),
             initialization: {
                 type: 'localJson',
                 json: {
@@ -3344,7 +3351,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('never writes an unrenderable mention theme into the document', () => {
         const handle = createNativeEditorDocumentHandle({
-            schema: withMentionsSchema(tiptapSchema),
+            schema: withMentionsSchema(tiptapCompatibleSchema),
             initialization: {
                 type: 'localJson',
                 json: {
@@ -3425,7 +3432,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('falls back to Before affinity when a collapsed mention caret is unrepresentable', () => {
         const handle = createNativeEditorDocumentHandle({
-            schema: withMentionsSchema(tiptapSchema),
+            schema: withMentionsSchema(tiptapCompatibleSchema),
             initialization: {
                 type: 'localJson',
                 json: {
@@ -3511,7 +3518,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('applies per-suggestion resolveTheme styling to inline toolbar suggestions', () => {
         const handle = createNativeEditorDocumentHandle({
-            schema: withMentionsSchema(tiptapSchema),
+            schema: withMentionsSchema(tiptapCompatibleSchema),
             initialization: {
                 type: 'localJson',
                 json: {
