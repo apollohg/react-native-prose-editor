@@ -31,7 +31,7 @@ scraper = "0.21"
 ego-tree = "0.9"
 regex = "1"
 sha2 = { version = "0.10", features = ["asm"] }
-yrs = { version = "=0.27.2", features = ["sync"] }
+yrs = { version = "=0.27.4", features = ["sync"] }
 uniffi = "0.29"
 
 # Prevent this from interfering with workspace if present

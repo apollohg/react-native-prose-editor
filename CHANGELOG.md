@@ -10,6 +10,7 @@
 
 - [**Breaking:**](./BREAKING_CHANGES.md) the default schema node names are now `snake_case`, changed from `camelCase`, i.e. `list_item` instead of `listItem`.
 - Default native schema handling now supports canonical ProseMirror node names while preserving configured custom-schema names.
+- Upgraded Yrs from 0.27.2 to 0.27.4.
 
 ### Fixed
 
