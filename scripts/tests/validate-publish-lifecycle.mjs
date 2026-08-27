@@ -8,6 +8,7 @@ const repoRoot = path.resolve(import.meta.dirname, '../..');
 const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
 const babelConfigSource = await readFile(path.join(repoRoot, 'babel.config.js'), 'utf8');
 const jestConfigSource = await readFile(path.join(repoRoot, 'jest.config.cjs'), 'utf8');
+const ciWorkflow = await readFile(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
 const publishWorkflow = await readFile(path.join(repoRoot, '.github/workflows/publish.yml'), 'utf8');
 const packedFixtureSource = await readFile(
   path.join(repoRoot, 'scripts/tests/validate-packed-package.test.mjs'),
@@ -38,6 +39,17 @@ assert.match(
   /^permissions:\s*\n\s+contents:\s*read\s*$/m,
   'workflow-level permissions must be read-only',
 );
+assert.match(ciWorkflow, /actions\/cache@v5/, 'CI caches must use the Node.js 24 action major');
+assert.doesNotMatch(
+  `${ciWorkflow}\n${publishWorkflow}`,
+  /actions\/cache(?:\/(?:restore|save))?@v4/,
+  'workflow caches must not use the deprecated Node.js 20 action major',
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /actions\/(?:upload-artifact|download-artifact)@v4/,
+  'release artifacts must not use deprecated Node.js 20 action majors',
+);
 
 const buildJob = requireJob('build-package');
 assert.match(buildJob, /runs-on:\s*macos-[^\s]+/);
@@ -45,7 +57,7 @@ assert.match(buildJob, /cargo install cargo-ndk --version 4\.1\.2 --locked/);
 assert.match(buildJob, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
 assert.match(
   buildJob,
-  /- name: Restore release build cache\s+id: release-build-cache\s+uses: actions\/cache\/restore@v4/,
+  /- name: Restore release build cache\s+id: release-build-cache\s+uses: actions\/cache\/restore@v5/,
   'release builds must restore exact previously rehearsed outputs',
 );
 assert.match(
@@ -77,7 +89,7 @@ for (const stepName of [
 }
 assert.match(
   buildJob,
-  /- name: Save release build cache\s+if: steps\.release-build-cache\.outputs\.cache-hit != 'true'\s+uses: actions\/cache\/save@v4/,
+  /- name: Save release build cache\s+if: steps\.release-build-cache\.outputs\.cache-hit != 'true'\s+uses: actions\/cache\/save@v5/,
   'new release outputs must populate the exact commit cache',
 );
 assert.match(
@@ -87,7 +99,7 @@ assert.match(
 );
 assert.match(
   buildJob,
-  /- name: Upload release artifact\s+uses: actions\/upload-artifact@v4/,
+  /- name: Upload release artifact\s+uses: actions\/upload-artifact@v7/,
   'restored and freshly built outputs must both be uploaded for validation',
 );
 assert.match(buildJob, /release-artifact\/\*\.tgz/);
@@ -105,7 +117,7 @@ for (const jobName of [
   const job = requireJob(jobName);
   assert.match(
     job,
-    /actions\/download-artifact@v4/,
+    /actions\/download-artifact@v8/,
     `${jobName} must download the release artifact`,
   );
 }
@@ -154,7 +166,7 @@ for (const dependency of [
   );
 }
 assert.match(publishJob, /id-token:\s*write/);
-assert.match(publishJob, /actions\/download-artifact@v4/);
+assert.match(publishJob, /actions\/download-artifact@v8/);
 assert.match(
   publishJob,
   /- name: Publish to npm\s+if: github\.event_name == 'release' && github\.event\.action == 'published'/,

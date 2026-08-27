@@ -22,7 +22,7 @@ jobs:
 
             - name: Restore release build cache
               id: release-build-cache
-              uses: actions/cache/restore@v4
+              uses: actions/cache/restore@v5
               with:
                   path: |
                       release-artifact
@@ -57,7 +57,7 @@ jobs:
 
             - name: Cache Cargo
               if: steps.release-build-cache.outputs.cache-hit != 'true'
-              uses: actions/cache@v4
+              uses: actions/cache@v5
               with:
                   path: |
                       ~/.cargo/registry
@@ -115,7 +115,7 @@ jobs:
 
             - name: Save release build cache
               if: steps.release-build-cache.outputs.cache-hit != 'true'
-              uses: actions/cache/save@v4
+              uses: actions/cache/save@v5
               with:
                   path: |
                       release-artifact
@@ -129,7 +129,7 @@ jobs:
                   key: ${{ steps.release-build-cache.outputs.cache-primary-key }}
 
             - name: Upload release artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   retention-days: 2
@@ -166,7 +166,7 @@ jobs:
               uses: dtolnay/rust-toolchain@1.95.0
 
             - name: Cache Cargo
-              uses: actions/cache@v4
+              uses: actions/cache@v5
               with:
                   path: |
                       ~/.cargo/registry
@@ -181,7 +181,7 @@ jobs:
                   npm --prefix example ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -238,7 +238,7 @@ jobs:
               uses: dtolnay/rust-toolchain@1.95.0
 
             - name: Cache Cargo
-              uses: actions/cache@v4
+              uses: actions/cache@v5
               with:
                   path: |
                       ~/.cargo/registry
@@ -251,7 +251,7 @@ jobs:
               run: npm ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -284,7 +284,7 @@ jobs:
                   npm --prefix example ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -329,7 +329,7 @@ jobs:
               run: sdkmanager --install 'ndk;27.1.12297006'
 
             - name: Cache Gradle
-              uses: actions/cache@v4
+              uses: actions/cache@v5
               with:
                   path: |
                       ${{ env.GRADLE_USER_HOME }}/caches
@@ -343,7 +343,7 @@ jobs:
                   npm --prefix example ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -379,7 +379,7 @@ jobs:
                   npm --prefix example ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -423,7 +423,7 @@ jobs:
                   npm --prefix example ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -468,7 +468,7 @@ jobs:
               run: sdkmanager --install 'ndk;27.1.12297006'
 
             - name: Cache Gradle
-              uses: actions/cache@v4
+              uses: actions/cache@v5
               with:
                   path: |
                       ${{ env.GRADLE_USER_HOME }}/caches
@@ -482,7 +482,7 @@ jobs:
                   npm --prefix example ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -533,7 +533,7 @@ jobs:
               run: sdkmanager --install 'ndk;27.1.12297006'
 
             - name: Cache Gradle
-              uses: actions/cache@v4
+              uses: actions/cache@v5
               with:
                   path: |
                       ${{ env.GRADLE_USER_HOME }}/caches
@@ -547,7 +547,7 @@ jobs:
                   npm --prefix example ci
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
@@ -583,7 +583,7 @@ jobs:
                   package-manager-cache: false
 
             - name: Download release artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: ${{ env.RELEASE_ARTIFACT_NAME }}
                   path: .
