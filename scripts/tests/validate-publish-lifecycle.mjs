@@ -43,7 +43,53 @@ const buildJob = requireJob('build-package');
 assert.match(buildJob, /runs-on:\s*macos-[^\s]+/);
 assert.match(buildJob, /cargo install cargo-ndk --version 4\.1\.2 --locked/);
 assert.match(buildJob, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
-assert.match(buildJob, /actions\/upload-artifact@v4/);
+assert.match(
+  buildJob,
+  /- name: Restore release build cache\s+id: release-build-cache\s+uses: actions\/cache\/restore@v4/,
+  'release builds must restore exact previously rehearsed outputs',
+);
+assert.match(
+  buildJob,
+  /key: release-build-v1-\$\{\{ runner\.os \}\}-rust-1\.95\.0-ndk-4\.1\.2-android-27\.1\.12297006-\$\{\{ github\.sha \}\}/,
+  'release build caches must be isolated by toolchain and exact commit',
+);
+for (const stepName of [
+  'Setup Node',
+  'Setup Java',
+  'Setup Rust',
+  'Cache Cargo',
+  'Install cargo-ndk',
+  'Setup Android SDK',
+  'Setup Android NDK',
+  'Install dependencies',
+  'Build editor-core for all shipping targets',
+  'Verify generated bindings are current',
+  'Build package',
+  'Pack release artifact',
+]) {
+  assert.match(
+    buildJob,
+    new RegExp(
+      `- name: ${stepName}\\s+if: steps\\.release-build-cache\\.outputs\\.cache-hit != 'true'`,
+    ),
+    `${stepName} must be skipped when exact release outputs are restored`,
+  );
+}
+assert.match(
+  buildJob,
+  /- name: Save release build cache\s+if: steps\.release-build-cache\.outputs\.cache-hit != 'true'\s+uses: actions\/cache\/save@v4/,
+  'new release outputs must populate the exact commit cache',
+);
+assert.match(
+  buildJob,
+  /key: \$\{\{ steps\.release-build-cache\.outputs\.cache-primary-key \}\}/,
+  'release output saves must reuse the restore primary key',
+);
+assert.match(
+  buildJob,
+  /- name: Upload release artifact\s+uses: actions\/upload-artifact@v4/,
+  'restored and freshly built outputs must both be uploaded for validation',
+);
 assert.match(buildJob, /release-artifact\/\*\.tgz/);
 
 for (const jobName of [
@@ -72,6 +118,21 @@ for (const jobName of [
   const job = requireJob(jobName);
   assert.match(job, /android-actions\/setup-android@v4/);
   assert.match(job, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
+  assert.match(
+    job,
+    /GRADLE_USER_HOME:\s*\$\{\{ github\.workspace \}\}\/\.gradle\/publish/,
+    `${jobName} must use the shared publish Gradle home`,
+  );
+  assert.match(
+    job,
+    /key: gradle-publish-\$\{\{ runner\.os \}\}-\$\{\{ hashFiles\('package-lock\.json', 'example\/package-lock\.json', 'example\/package\.json', 'example\/app\.config\.ts'\) \}\}/,
+    `${jobName} must use the shared publish Gradle cache key`,
+  );
+  assert.match(
+    job,
+    /restore-keys: gradle-publish-\$\{\{ runner\.os \}\}-/,
+    `${jobName} must restore prior shared publish Gradle caches`,
+  );
 }
 
 const publishJob = requireJob('publish');

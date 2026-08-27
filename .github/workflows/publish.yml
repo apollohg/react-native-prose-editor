@@ -20,24 +20,43 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v5
 
+            - name: Restore release build cache
+              id: release-build-cache
+              uses: actions/cache/restore@v4
+              with:
+                  path: |
+                      release-artifact
+                      dist
+                      rust/bindings
+                      rust/ios
+                      rust/android
+                      ios/Generated_editor_core.swift
+                      ios/editor_coreFFI
+                      ios/EditorCore.xcframework
+                  key: release-build-v1-${{ runner.os }}-rust-1.95.0-ndk-4.1.2-android-27.1.12297006-${{ github.sha }}
+
             - name: Setup Node
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               uses: actions/setup-node@v6
               with:
                   node-version: 24
                   cache: npm
 
             - name: Setup Java
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               uses: actions/setup-java@v5
               with:
                   distribution: temurin
                   java-version: 17
 
             - name: Setup Rust
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               uses: dtolnay/rust-toolchain@1.95.0
               with:
                   targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios, aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
             - name: Cache Cargo
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               uses: actions/cache@v4
               with:
                   path: |
@@ -49,6 +68,7 @@ jobs:
                   restore-keys: cargo-release-${{ runner.os }}-rust-1.95.0-
 
             - name: Install cargo-ndk
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               shell: bash
               run: |
                   set -euo pipefail
@@ -57,9 +77,11 @@ jobs:
                   fi
 
             - name: Setup Android SDK
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               uses: android-actions/setup-android@v4
 
             - name: Setup Android NDK
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               shell: bash
               run: |
                   set -euo pipefail
@@ -67,24 +89,44 @@ jobs:
                   echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
 
             - name: Install dependencies
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               run: npm ci
 
             - name: Build editor-core for all shipping targets
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               run: npm run build:rust
 
             - name: Verify generated bindings are current
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               run: git diff --exit-code -- rust/bindings ios/Generated_editor_core.swift ios/editor_coreFFI
 
             - name: Build package
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               run: npm run build
 
             - name: Pack release artifact
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
               shell: bash
               run: |
                   set -euo pipefail
                   mkdir -p release-artifact
                   npm pack --ignore-scripts --pack-destination release-artifact
                   test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
+
+            - name: Save release build cache
+              if: steps.release-build-cache.outputs.cache-hit != 'true'
+              uses: actions/cache/save@v4
+              with:
+                  path: |
+                      release-artifact
+                      dist
+                      rust/bindings
+                      rust/ios
+                      rust/android
+                      ios/Generated_editor_core.swift
+                      ios/editor_coreFFI
+                      ios/EditorCore.xcframework
+                  key: ${{ steps.release-build-cache.outputs.cache-primary-key }}
 
             - name: Upload release artifact
               uses: actions/upload-artifact@v4
@@ -260,7 +302,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 25
         env:
-            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/security
+            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/publish
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -292,8 +334,8 @@ jobs:
                   path: |
                       ${{ env.GRADLE_USER_HOME }}/caches
                       ${{ env.GRADLE_USER_HOME }}/wrapper
-                  key: gradle-security-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
-                  restore-keys: gradle-security-${{ runner.os }}-
+                  key: gradle-publish-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
+                  restore-keys: gradle-publish-${{ runner.os }}-
 
             - name: Install dependencies
               run: |
@@ -399,7 +441,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 25
         env:
-            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/packed-consumer
+            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/publish
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -431,8 +473,8 @@ jobs:
                   path: |
                       ${{ env.GRADLE_USER_HOME }}/caches
                       ${{ env.GRADLE_USER_HOME }}/wrapper
-                  key: gradle-packed-consumer-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
-                  restore-keys: gradle-packed-consumer-${{ runner.os }}-
+                  key: gradle-publish-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
+                  restore-keys: gradle-publish-${{ runner.os }}-
 
             - name: Install dependencies
               run: |
@@ -464,7 +506,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 25
         env:
-            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/packed-consumer
+            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/publish
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -496,8 +538,8 @@ jobs:
                   path: |
                       ${{ env.GRADLE_USER_HOME }}/caches
                       ${{ env.GRADLE_USER_HOME }}/wrapper
-                  key: gradle-packed-consumer-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
-                  restore-keys: gradle-packed-consumer-${{ runner.os }}-
+                  key: gradle-publish-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
+                  restore-keys: gradle-publish-${{ runner.os }}-
 
             - name: Install dependencies
               run: |
