@@ -4,100 +4,65 @@
 
 ### Added
 
-- Added customizable schema projections so application-specific node names can
-  map onto the editor's native and Rust schema roles.
+- Added customizable schema projections so application-specific node names can map onto the editor's native and Rust schema roles.
 
 ### Changed
 
-- Default native schema handling now supports canonical ProseMirror node names
-  while preserving configured custom-schema names.
+- [**Breaking:**](./BREAKING_CHANGES.md) the default schema node names are now `snake_case`, changed from `camelCase`, i.e. `list_item` instead of `listItem`.
+- Default native schema handling now supports canonical ProseMirror node names while preserving configured custom-schema names.
 
 ### Fixed
 
-- Preserved Android external composition sessions when an IME finishes
-  composition as housekeeping after a partial speech result.
-- Preserved iOS autocorrect spaces and input ordering during rapid corrections,
-  and made the Rust-owned selection authoritative after native text changes.
-- Resolved Expo native modules consistently in the example app's Metro setup.
+- Preserved Android external composition sessions when an IME finishes composition.
+- Preserved iOS autocorrect spaces and input ordering during rapid corrections and made the Rust-owned selection authoritative after native text changes.
+- Resolved Expo native modules consistently in the example app Metro setup.
 - Made npm dist-tag resolution independent of a checked-out Git repository.
 
 ## [1.0.0-alpha.6] - 2026-08-25
 
 ### Added
 
-- Added `EditorToolbarTheme` button sizing, icon colors, and idle, active, and
-  disabled background colors, plus matching per-item `buttonStyle` overrides
-  across the React, Android, and iOS toolbars.
-- Added `androidInputOptions.privateImeOptions` for passing IME-specific options
-  to the focused Android editor.
-
-### Changed
-
-- Release validation now builds the package once and runs package contracts,
-  security behavior, and native consumer validation in parallel jobs against
-  the same packed artifact.
+- Added `EditorToolbarTheme` button sizing, icon colors, and idle, active, and disabled background colors, plus matching per-item `buttonStyle` overrides across the React, Android, and iOS toolbars.
+- Added `androidInputOptions.privateImeOptions` for passing IME-specific options to the focused Android editor.
 
 ### Fixed
 
-- Stabilized Android list and block editing around Return, Backspace, blank
-  paragraphs, nested-list outdenting, and blockquote boundaries without
-  shifting indentation, dropping content, or losing adjacent block styling.
-- Kept Android's rendered selection synchronized with the Rust-owned caret
-  through optimistic and deferred input, ambiguous native projections,
-  generated separators, spellcheck composition, and replacement actions.
-- Fixed Android list `spacingAfter`, paragraph spacing, incremental list and
-  blockquote span preservation, and caret placement when tapping inside a list
-  item's leading margin.
-- Restored Android's native long-press magnifier and insertion controls without
-  exposing the formatting accessibility hint as a tooltip.
-- Focused Android auto-grow editors now scroll ancestor containers for every
-  coalesced caret movement and keep the caret above the keyboard toolbar using
-  the toolbar's actual on-screen occlusion.
-- Kept end-placed native toolbar items visible when middle toolbar content
-  overflows.
-- Clipped Android toolbar touch feedback to each button's configured rounded
-  shape.
+- Stabilized Android list and block editing around Return, Backspace, blank paragraphs, nested-list outdenting, and blockquote boundaries without shifting indentation, dropping content, or losing adjacent block styling.
+- Kept Android's rendered selection synchronized with the Rust-owned caret through optimistic and deferred input, ambiguous native projections, generated separators, spellcheck composition, and replacement actions.
+- Fixed Android list `spacingAfter`, paragraph spacing, incremental list and blockquote span preservation, and caret placement when tapping inside a list item's leading margin.
+- Restored Android's native long-press magnifier and insertion controls without exposing the formatting accessibility hint as a tooltip.
+- Focused Android auto-grow editors now scroll ancestor containers for every coalesced caret movement and keep the caret above the keyboard toolbar using the toolbar's actual on-screen occlusion.
+- Kept end-placed native toolbar items visible when middle toolbar content overflows.
+- Clipped Android toolbar touch feedback to each button's configured rounded shape.
 
 ## [1.0.0-alpha.5] - 2026-08-23
 
 ### Fixed
 
-- Ready-to-ready document handle rebinding now preserves the mounted native
-  editor, focus, keyboard, caret selection, and current replacement document
-  content without a transient loading state. Handles awaiting a remote document
-  still use the loading state and do not inherit focus.
+- Ready-to-ready document handle rebinding now preserves the mounted native editor, focus, keyboard, caret selection, and current replacement document content without a transient loading state. Handles awaiting a remote document still use the loading state and do not inherit focus.
 
 ## [1.0.0-alpha.4] - 2026-08-23
 
 ### Added
 
-- Added external text composition sessions to `NativeRichTextEditorRef` on iOS
-  and Android, including capability detection and provisional update, commit,
-  cancel, and terminal-event APIs.
-- Added provisional text presentation that can be revised without changing the
-  document, undo history, collaboration state, or content callbacks until the
-  session commits.
+- Added external text composition sessions to `NativeRichTextEditorRef` on iOS and Android, including capability detection and provisional update, commit, cancel, and terminal-event APIs.
+- Added provisional text presentation that can be revised without changing the document, undo history, collaboration state, or content callbacks until the session commits.
 
 ### Changed
 
-- External composition commits now follow normal editor selection, policy,
-  undo, collaboration reconciliation, error, interruption, and lifecycle
-  behavior.
+- External composition commits now follow normal editor selection, policy, undo, collaboration reconciliation, error, interruption, and lifecycle behavior.
 
 ## [1.0.0-alpha.3] - 2026-08-15
 
 ### Fixed
 
-- Fixed the Android native viewer intermittently rendering blank after Fabric
-  prop updates.
+- Fixed the Android native viewer intermittently rendering blank after Fabric prop updates.
 
 ## [1.0.0-alpha.2] - 2026-08-14
 
 ### Fixed
 
-- Fixed JSON object inputs rejecting optional properties explicitly set to
-  `undefined`, including collaboration awareness, custom schemas, and local
-  document initialization.
+- Fixed JSON object inputs rejecting optional properties explicitly set to`undefined`, including collaboration awareness, custom schemas, and local document initialization.
 
 ## [1.0.0-alpha.1] - 2026-08-14
 
@@ -107,96 +72,45 @@
 
 ## [1.0.0-alpha] - 2026-08-01
 
-This is a hard cutover to shared native document, collaboration, and viewer
-boundaries. Pre-1.0 compatibility adapters are not retained; see
-[`BREAKING_CHANGES.md`](./BREAKING_CHANGES.md) for upgrade guidance.
+This is a hard cutover to shared native document, collaboration, and viewer boundaries. Pre-1.0 compatibility adapters are not retained; see [`BREAKING_CHANGES.md`](./BREAKING_CHANGES.md) for upgrade guidance.
 
 ### Added
 
-- Added `createNativeEditorDocumentHandle` as the document construction path,
-  plus `useNativeEditorDocument`, document-scoped snapshots, and typed
-  structured errors.
-- Added the exact-size, JSON/HTML `NativeProseViewer` Fabric surface and public
-  `ProseViewerView` facades for UIKit and Android Views.
-- Added bounded document, editing, collaboration, and image-loading policies,
-  with stricter custom-schema and content validation.
-- Added task-list editing, native code-block rendering and commands, and
-  start/scroll/end toolbar item placement.
-- Added `NativeRichTextEditor.focusPreservingRefs` for external controls that
-  should preserve editor focus, keyboard, and selection.
-- Added `EditorTheme.list.markerGap` for spacing between markers and item
-  content, plus `spacingAfter` for spacing after lists, including nested lists.
-- Added `EditorTheme.list.orderedMarker` with decimal, alphabetic, and Roman
-  numbering schemes plus `.` and `)` suffixes. Schemes cycle by nesting depth;
-  the default cycle is `decimal`, `lowerAlpha`, `lowerRoman`.
-- Added `useNativeEditorDocument().documentOrigin` to identify the source of
-  the current document revision.
+- Added `createNativeEditorDocumentHandle` as the document construction path, plus `useNativeEditorDocument`, document-scoped snapshots, and typed structured errors.
+- Added the exact-size, JSON/HTML `NativeProseViewer` Fabric surface and public`ProseViewerView` facades for UIKit and Android Views.
+- Added bounded document, editing, collaboration, and image-loading policies, with stricter custom-schema and content validation.
+- Added task-list editing, native code-block rendering and commands, and start/scroll/end toolbar item placement.
+- Added `NativeRichTextEditor.focusPreservingRefs` for external controls that should preserve editor focus, keyboard, and selection.
+- Added `EditorTheme.list.markerGap` for spacing between markers and item content, plus `spacingAfter` for spacing after lists, including nested lists.
+- Added `EditorTheme.list.orderedMarker` with decimal, alphabetic, and Roman numbering schemes plus `.` and `)` suffixes. Schemes cycle by nesting depth; the default cycle is `decimal`, `lowerAlpha`, `lowerRoman`.
+- Added `useNativeEditorDocument().documentOrigin` to identify the source of the current document revision.
 
 ### Changed
 
-- **Breaking:** `NativeRichTextEditor` now binds to a required document handle.
-  One Yrs-backed session owns document state, local-only undo history, schema,
-  policy, and limits across editor and collaboration consumers.
-- **Breaking:** `useYjsCollaboration` now accepts the shared handle and
-  `transport: { url, connect } | null`. Native code owns WebSockets while Rust
-  owns y-sync, awareness, retries, peers, and outbound state; new rooms are
-  initialized by the server handshake.
-- Mounted editors now publish their live caret directly into Rust-owned sticky
-  awareness, removing stale JavaScript selection mirroring from focus and
-  state updates.
-- `NativeProseViewer` now consumes document JSON or HTML directly, requires the
-  React Native New Architecture, and measures from prepared native layout at
-  the host width. Disabled images are omitted from layout and loading.
-- Compiled Rust artifacts are no longer tracked in Git. Release validation
-  builds them from the shipped source with the pinned toolchain, while
-  published packages continue to include the required native binaries.
-- `NativeEditorV2AtomicRenderSnapshot` now contains either full render blocks
-  or an incremental render patch.
+- [**Breaking:**](./BREAKING_CHANGES.md) `NativeRichTextEditor` now binds to a required document handle. One Yrs-backed session owns document state, local-only undo history, schema, policy, and limits across editor and collaboration consumers.
+- [**Breaking:**](./BREAKING_CHANGES.md) `useYjsCollaboration` now accepts the shared handle and`transport: { url, connect } | null`. Native code owns WebSockets while Rust owns y-sync, awareness, retries, peers, and outbound state; new rooms are initialized by the server handshake.
+- Mounted editors now publish their live caret directly into Rust-owned sticky awareness, removing stale JavaScript selection mirroring from focus and state updates.
+- `NativeProseViewer` now consumes document JSON or HTML directly, requires the React Native New Architecture, and measures from prepared native layout at the host width. Disabled images are omitted from layout and loading.
+- Compiled Rust artifacts are no longer tracked in Git. Release validation builds them from the shipped source with the pinned toolchain, while published packages continue to include the required native binaries.
+- `NativeEditorV2AtomicRenderSnapshot` now contains either full render blocks or an incremental render patch.
 
 ### Fixed
 
-- Fixed collaboration document and cursor mapping around emoji and other
-  non-ASCII text by separating Yjs UTF-16 offsets from editor scalar positions.
-- Hardened native selection and awareness synchronization, bounded image
-  loading, task-marker and viewer tap handling, schema admission, and atomic
-  rejection of invalid or oversized content.
-- Fixed dropped input and reduced typing latency during fast collaborative
-  editing on iOS and Android, including when local edits overlap remote content
-  or presence changes.
-- Fixed `onContentChange` and `onContentChangeJSON` after native editor changes
-  on iOS and Android.
-- Fixed iOS toolbar group menus so they stay anchored to their parent button,
-  open vertically, toggle closed on a second tap, and switch directly between
-  groups.
-- Fixed `NativeProseViewer` trailing-empty-paragraph collapse so every trailing
-  empty paragraph is removed, including when the entire document is empty.
-- Removed extra bottom space after the final viewer element and corrected
-  spacing at nested list boundaries.
+- Fixed collaboration document and cursor mapping around emoji and other non-ASCII text by separating Yjs UTF-16 offsets from editor scalar positions.
+- Hardened native selection and awareness synchronization, bounded image loading, task-marker and viewer tap handling, schema admission, and atomic rejection of invalid or oversized content.
+- Fixed dropped input and reduced typing latency during fast collaborative editing on iOS and Android, including when local edits overlap remote content or presence changes.
+- Fixed `onContentChange` and `onContentChangeJSON` after native editor changes on iOS and Android.
+- Fixed iOS toolbar group menus so they stay anchored to their parent button, open vertically, toggle closed on a second tap, and switch directly between groups.
+- Fixed `NativeProseViewer` trailing-empty-paragraph collapse so every trailing empty paragraph is removed, including when the entire document is empty.
+- Removed extra bottom space after the final viewer element and corrected spacing at nested list boundaries.
 
 ### Removed / migration
 
-- Removed legacy component-owned initialization and engine configuration.
-  Move `initialContent`/`initialJSON`, schema, `maxLength`, and base64-image
-  admission to `createNativeEditorDocumentHandle()` and configure the new
-  engine policies and limits there.
-- Removed JavaScript WebSocket/retry plumbing, raw collaboration-state APIs,
-  and document/selection mirroring through `editorBindings`. Use native
-  transport configuration, document snapshots, and the handle-bound bindings.
-- Removed Paper/Expo viewer registration, render-ops inputs, viewer render and
-  height-measurement module functions, width/content height caches, and
-  JavaScript mention render resolvers. Pass JSON or HTML directly to the Fabric
-  viewer or native facade with serializable configuration.
-- Removed `EditorTheme.mentions`. The mentions addon owns its own styling:
-  set a base style with `addons.mentions.theme` and vary it per suggestion with
-  `addons.mentions.resolveTheme`.
-- **Breaking:** `EditorMentionTheme` is grouped by the surface each property
-  styles instead of one flat set of keys. Use `node` for the mention rendered in
-  the document, `suggestions` for the container behind the suggestion list, and
-  `suggestions.option` for an individual row. The node and a suggestion row are
-  now styled independently; previously `backgroundColor`, `border*`, and
-  `fontWeight` silently drove both. `node.borderColor`, `node.borderWidth`, and
-  `node.borderRadius` are drawn by `NativeProseViewer`; the editor renders the
-  node with text spans and ignores them.
+- Removed legacy component-owned initialization and engine configuration. Move `initialContent`/`initialJSON`, schema, `maxLength`, and base64-image admission to `createNativeEditorDocumentHandle()` and configure the new engine policies and limits there.
+- Removed JavaScript WebSocket/retry plumbing, raw collaboration-state APIs, and document/selection mirroring through `editorBindings`. Use native transport configuration, document snapshots, and the handle-bound bindings.
+- Removed Paper/Expo viewer registration, render-ops inputs, viewer render and height-measurement module functions, width/content height caches, and JavaScript mention render resolvers. Pass JSON or HTML directly to the Fabric viewer or native facade with serializable configuration.
+- Removed `EditorTheme.mentions`. The mentions addon owns its own styling:set a base style with `addons.mentions.theme` and vary it per suggestion with`addons.mentions.resolveTheme`.
+- [**Breaking:**](./BREAKING_CHANGES.md) `EditorMentionTheme` is grouped by the surface each property styles instead of one flat set of keys. Use `node` for the mention rendered in the document, `suggestions` for the container behind the suggestion list, and`suggestions.option` for an individual row. The node and a suggestion row are now styled independently; previously `backgroundColor`, `border*`, and`fontWeight` silently drove both. `node.borderColor`, `node.borderWidth`, and`node.borderRadius` are drawn by `NativeProseViewer`; the editor renders the node with text spans and ignores them.
 
 ## [0.5.25] - 2026-06-28
 

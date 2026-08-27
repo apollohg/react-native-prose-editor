@@ -14,6 +14,9 @@ viewer boundary; compatibility adapters are not included. See the
 - Move existing document initialization, schema, collaboration fragment,
   length, and base64-image settings to handle creation; configure the new
   engine policies and limits there as needed.
+- To keep existing camelCase JSON and commands unchanged, pass
+  `tiptapCompatibleSchema` when creating or rendering documents. Migrate node
+  names to snake_case only when adopting the new default schema.
 - Pass the same handle to `NativeRichTextEditor`, `useNativeEditorDocument`, and
   `useYjsCollaboration` when they share a document.
 - Replace `createWebSocket` and JavaScript retry settings with
@@ -83,6 +86,99 @@ handle is created.
 Undo history is local-only: remote collaboration commits do not enter the
 local undo stack. `valueJSONUpdateMode='reset'` and `clearContent()` clear
 history.
+
+## Schema node names
+
+> **Simplest upgrade path:** Existing camelCase documents do not need to be
+> migrated. Pass `tiptapCompatibleSchema` when creating or rendering them and
+> keep their JSON and command node names unchanged.
+
+The default schema now uses ProseMirror's snake_case node names. The previous
+`tiptapSchema` export and the implicit camelCase default are removed;
+`defaultSchema` is the same schema as `prosemirrorSchema`.
+
+| 0.5.x camelCase name | 1.0.0 default name |
+| --- | --- |
+| `bulletList` | `bullet_list` |
+| `orderedList` | `ordered_list` |
+| `listItem` | `list_item` |
+| `hardBreak` | `hard_break` |
+| `horizontalRule` | `horizontal_rule` |
+
+This affects node `type` values in persisted JSON, local JSON initialization,
+inserted fragments, custom toolbar items, and direct editor commands. HTML tags,
+mark names, node attributes, and ordinary node names such as `doc`, `paragraph`,
+`heading`, `blockquote`, `image`, and `text` are unchanged.
+
+### Migrate to the new default
+
+Rewrite every affected node `type`, including nested list items. For example:
+
+```json
+{
+    "type": "doc",
+    "content": [
+        {
+            "type": "bullet_list",
+            "content": [
+                {
+                    "type": "list_item",
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": "Item" }]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
+```
+
+Update custom toolbar items and direct commands to use the same names:
+
+```ts
+editor.toggleList('bullet_list');
+editor.toggleList('ordered_list');
+editor.insertNode('hard_break');
+editor.insertNode('horizontal_rule');
+```
+
+Once JSON and commands are migrated, omit `schema` to use `defaultSchema`, or
+pass `defaultSchema` or `prosemirrorSchema` explicitly.
+
+### Keep existing Tiptap-compatible JSON
+
+If stored documents must retain camelCase node names, replace the removed
+`tiptapSchema` import with `tiptapCompatibleSchema` and pass it wherever the
+document is created or rendered:
+
+```tsx
+import {
+    createNativeEditorDocumentHandle,
+    NativeProseViewer,
+    tiptapCompatibleSchema,
+} from '@apollohg/react-native-prose-editor';
+
+const documentHandle = createNativeEditorDocumentHandle({
+    initialization: { type: 'localJson', json: existingDocument },
+    schema: tiptapCompatibleSchema,
+});
+
+const viewer = (
+    <NativeProseViewer
+        contentJSON={existingDocument}
+        schema={tiptapCompatibleSchema}
+    />
+);
+```
+
+The schema is part of a document handle's immutable contract and collaboration
+fingerprint. Existing rooms and snapshots that contain camelCase nodes must
+continue using `tiptapCompatibleSchema` until their content and schema metadata
+are migrated together. Do not connect handles using different naming
+conventions to the same room.
 
 ## Collaboration
 
@@ -245,6 +341,7 @@ HTML input.
 | Pre-1.0 API or behavior | 1.0.0 migration |
 | --- | --- |
 | `initialContent` / `initialJSON` | Use handle `initialization: { type: 'localHtml' | 'localJson', ... }`. |
+| `tiptapSchema` and implicit camelCase default node names | Migrate JSON and commands to the snake_case `defaultSchema`, or use `tiptapCompatibleSchema` consistently. |
 | Editor `schema`, `maxLength`, and `allowBase64Images` props | Move them to handle `schema` and `policy`. Configure the new `readOnly`/`inputFilter` policy and resource/editing/collaboration limits there too. |
 | `autoDetectLinks`, `preserveSelectionOnValueJSONReset`, and `selectionOnValueJSONReset` | Removed without replacements. |
 | Collaboration `schema`, `fragmentName`, and `initialDocumentJson` | Configure the room handle once; the server initializes new room content. |
