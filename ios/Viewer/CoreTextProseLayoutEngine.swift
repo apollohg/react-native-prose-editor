@@ -242,6 +242,7 @@ private struct PreparedAttributedBlock {
     let string: NSAttributedString
     let atoms: [PreparedAtomSpec]
     let semanticRanges: [PreparedSemanticRange]
+    let accessibilityRanges: [PreparedAccessibilityRange]
     let retainedBytes: Int
 }
 
@@ -254,6 +255,18 @@ private enum PreparedSemanticRange {
         case let .link(range, _, _), let .mention(range, _, _, _): range
         }
     }
+}
+
+private struct PreparedAccessibilityRange {
+    enum Role: Equatable {
+        case text
+        case link(semanticIndex: Int)
+        case mention(semanticIndex: Int)
+    }
+
+    let range: NSRange
+    let label: String
+    let role: Role
 }
 
 private struct PreparedListMarker {
@@ -340,12 +353,15 @@ final class CoreTextProseLayoutEngine {
                 warningSemanticGeneration: warningSemanticGeneration
             )
             blocks.append(prepared.block)
-            accessibilityNodes.append(contentsOf: makeAccessibilityNodes(
-                for: block,
-                preparedBlock: prepared.block,
-                interactions: prepared.interactions,
-                interactionIndexOffset: interactions.count
-            ))
+            let interactionIndexOffset = interactions.count
+            accessibilityNodes.append(contentsOf: prepared.accessibilityNodes.map { node in
+                PreparedProseAccessibilityNode(
+                    interactionIndex: node.interactionIndex.map { interactionIndexOffset + $0 },
+                    role: node.role,
+                    label: node.label,
+                    rects: node.rects
+                )
+            })
             interactions.append(contentsOf: prepared.interactions)
             if let attachment = prepared.attachment { imageAttachments.append(attachment) }
             cursorY = prepared.nextY
@@ -378,146 +394,6 @@ final class CoreTextProseLayoutEngine {
         return [ViewerListItemAncestor(identity: boundary.identity, context: context)]
     }
 
-    private func makeAccessibilityNodes(
-        for block: ViewerBlock,
-        preparedBlock: PreparedProseBlock,
-        interactions: [PreparedProseInteraction],
-        interactionIndexOffset: Int
-    ) -> [PreparedProseAccessibilityNode] {
-        if block.nodeType == "image" {
-            let imageLabel = block.inlines.compactMap { inline -> String? in
-                guard case let .atom(_, _, _, label) = inline else { return nil }
-                return label
-            }.first?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let accessibleImageLabel = imageLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "Image"
-            return [PreparedProseAccessibilityNode(
-                interactionIndex: nil,
-                role: .image,
-                label: accessibleImageLabel,
-                bounds: preparedBlock.bounds
-            )]
-        }
-        if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
-            return [PreparedProseAccessibilityNode(
-                interactionIndex: nil,
-                role: .separator,
-                label: "Separator",
-                bounds: preparedBlock.bounds
-            )]
-        }
-
-        var nodes: [PreparedProseAccessibilityNode] = []
-        var interactionCursor = 0
-        var pendingPlainText = ""
-        var pendingLinkText = ""
-        var pendingLinkHref: String?
-        var markerPending = block.listItemBoundary?.isFirstRenderableLeaf == true
-            ? block.listContext.map { context in
-                context.kind == "task" ? (context.checked ? "Checked" : "Unchecked") : "Item"
-            }
-            : nil
-
-        func labelWithMarker(_ rawLabel: String) -> String {
-            let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !label.isEmpty else { return "" }
-            guard let marker = markerPending else { return label }
-            markerPending = nil
-            return "\(marker), \(label)"
-        }
-
-        func nextInteraction(_ kind: PreparedProseInteraction.Kind) -> (Int, PreparedProseInteraction)? {
-            while interactions.indices.contains(interactionCursor) {
-                let index = interactionCursor
-                interactionCursor += 1
-                if interactions[index].kind == kind {
-                    return (interactionIndexOffset + index, interactions[index])
-                }
-            }
-            return nil
-        }
-
-        func appendPlainText() {
-            let label = labelWithMarker(pendingPlainText)
-            pendingPlainText = ""
-            guard !label.isEmpty else { return }
-            nodes.append(PreparedProseAccessibilityNode(
-                interactionIndex: nil,
-                role: block.nodeType == "heading" ? .heading : .text,
-                label: label,
-                bounds: preparedBlock.bounds
-            ))
-        }
-
-        func appendLink() {
-            guard !pendingLinkText.isEmpty else { return }
-            let label = labelWithMarker(pendingLinkText)
-            pendingLinkText = ""
-            pendingLinkHref = nil
-            guard !label.isEmpty else { return }
-            guard let (index, interaction) = nextInteraction(.link) else {
-                nodes.append(PreparedProseAccessibilityNode(
-                    interactionIndex: nil,
-                    role: .text,
-                    label: label,
-                    bounds: preparedBlock.bounds
-                ))
-                return
-            }
-            nodes.append(PreparedProseAccessibilityNode(
-                interactionIndex: index,
-                role: .link,
-                label: label,
-                bounds: interaction.rects.dropFirst().reduce(interaction.rects.first ?? .zero) {
-                    $0.union($1)
-                }
-            ))
-        }
-
-        for inline in block.inlines {
-            switch inline {
-            case let .text(text, marks):
-                if let linkHref = href(in: marks), !text.isEmpty {
-                    appendPlainText()
-                    if let pendingLinkHref, pendingLinkHref != linkHref {
-                        appendLink()
-                    }
-                    pendingLinkHref = linkHref
-                    pendingLinkText.append(text)
-                } else {
-                    appendLink()
-                    pendingPlainText.append(text)
-                }
-            case let .atom(nodeType, _, _, label) where nodeType == "mention":
-                appendPlainText()
-                appendLink()
-                let accessibleLabel = labelWithMarker(label)
-                guard !accessibleLabel.isEmpty else { continue }
-                guard let (index, interaction) = nextInteraction(.mention) else {
-                    pendingPlainText.append(accessibleLabel)
-                    continue
-                }
-                nodes.append(PreparedProseAccessibilityNode(
-                    interactionIndex: index,
-                    role: .mention,
-                    label: accessibleLabel,
-                    bounds: interaction.rects.dropFirst().reduce(interaction.rects.first ?? .zero) {
-                        $0.union($1)
-                    }
-                ))
-            case let .atom(nodeType, _, _, label):
-                appendLink()
-                if nodeType == "hardBreak" || nodeType == "hard_break" {
-                    appendPlainText()
-                } else {
-                    pendingPlainText.append(label)
-                }
-            }
-        }
-        appendLink()
-        appendPlainText()
-        return nodes
-    }
-
     private func prepareBlock(
         _ block: ViewerBlock,
         attachmentOrdinal: Int,
@@ -528,7 +404,7 @@ final class CoreTextProseLayoutEngine {
         disappearingListItemIdentities: Set<Int>,
         displayScale: CGFloat,
         warningSemanticGeneration: String
-    ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], attachment: ViewerImageAttachment?, nextY: CGFloat, retainedBytes: Int) {
+    ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], accessibilityNodes: [PreparedProseAccessibilityNode], attachment: ViewerImageAttachment?, nextY: CGFloat, retainedBytes: Int) {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
         let paint = theme.paint(for: block)
@@ -578,7 +454,18 @@ final class CoreTextProseLayoutEngine {
             let attachment = ViewerImageAttachment(ordinal: attachmentOrdinal, id: image.id, source: image.source, bounds: bounds, declaredSize: declared)
             let fragments = [PreparedProseFragment(kind: .image, bounds: bounds, color: UIColor.systemGray5.cgColor)]
             let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
-            return (prepared, [], attachment, bounds.maxY + itemSpacing, prepared.estimatedRetainedBytes + 192)
+            let imageLabel = block.inlines.compactMap { inline -> String? in
+                guard case let .atom(_, _, _, label) = inline else { return nil }
+                return label
+            }.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let accessibleImageLabel = imageLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "Image"
+            let node = PreparedProseAccessibilityNode(
+                interactionIndex: nil,
+                role: .image,
+                label: accessibleImageLabel,
+                bounds: bounds
+            )
+            return (prepared, [], [node], attachment, bounds.maxY + itemSpacing, prepared.estimatedRetainedBytes + 192)
         }
         if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
             let ruleX = contentX + listInset + quoteInset
@@ -606,7 +493,14 @@ final class CoreTextProseLayoutEngine {
             )
             return (
                 prepared,
-                [], nil,
+                [],
+                [PreparedProseAccessibilityNode(
+                    interactionIndex: nil,
+                    role: .separator,
+                    label: "Separator",
+                    bounds: bounds
+                )],
+                nil,
                 totalEnd + itemSpacing,
                 prepared.estimatedRetainedBytes
             )
@@ -618,6 +512,11 @@ final class CoreTextProseLayoutEngine {
         var location = 0
         var fragments: [PreparedProseFragment] = []
         var interactionRects: [[CGRect]] = Array(repeating: [], count: attributed.semanticRanges.count)
+        var accessibilityRects: [[CGRect]] = Array(repeating: [], count: attributed.accessibilityRanges.count)
+        let semanticGeometryRanges = attributed.semanticRanges.map(\.range)
+        let accessibilityGeometryRanges = attributed.accessibilityRanges.map(\.range)
+        var semanticGeometryCursor = 0
+        var accessibilityGeometryCursor = 0
         let codeTopInset = block.nodeType == "codeBlock" ? theme.codePaddingVertical : 0
         let firstLineHeight = max(paint.font.lineHeight, paint.lineHeight ?? 0)
         let markerTopProtection = marker.map {
@@ -644,42 +543,26 @@ final class CoreTextProseLayoutEngine {
                 lineOrigin: CGPoint(x: textX, y: baseline),
                 displayScale: displayScale
             ))
-            for (index, semantic) in attributed.semanticRanges.enumerated() {
-                // A single logical range can cross multiple visual Core Text
-                // runs (particularly around bidi boundaries). Intersect it with
-                // each shaped run instead of manufacturing one endpoint rect.
-                var visualPieces: [(rect: CGRect, rightToLeft: Bool)] = []
-                let glyphRuns = CTLineGetGlyphRuns(line) as? [CTRun] ?? []
-                for run in glyphRuns {
-                    let stringRange = CTRunGetStringRange(run)
-                    let runRange = NSRange(location: stringRange.location, length: stringRange.length)
-                    let overlap = NSIntersectionRange(NSIntersectionRange(semantic.range, lineRange), runRange)
-                    guard overlap.length > 0 else { continue }
-                    let start = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location, nil))
-                    let end = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location + overlap.length, nil))
-                    visualPieces.append((
-                        CGRect(
-                            x: textX + min(start, end),
-                            y: lineBounds.minY,
-                            width: max(1 / displayScale, abs(end - start)),
-                            height: lineBounds.height
-                        ),
-                        CTRunGetStatus(run).contains(.rightToLeft)
-                    ))
-                }
-                var priorDirection: Bool?
-                for piece in visualPieces.sorted(by: { PreparedProseInteractionGeometry.visualOrder($0.rect, $1.rect) }) {
-                    PreparedProseInteractionGeometry.appendSameLinePiece(
-                        piece.rect,
-                        to: &interactionRects[index],
-                        // Do not join adjacent opposite-direction runs: they
-                        // are separately shaped visual geometry even when their
-                        // x edges touch.
-                        mayMergeWithPrior: priorDirection == piece.rightToLeft
-                    )
-                    priorDirection = piece.rightToLeft
-                }
-            }
+            appendShapedRects(
+                ranges: semanticGeometryRanges,
+                line: line,
+                lineRange: lineRange,
+                lineBounds: lineBounds,
+                textX: textX,
+                displayScale: displayScale,
+                rangeCursor: &semanticGeometryCursor,
+                to: &interactionRects
+            )
+            appendShapedRects(
+                ranges: accessibilityGeometryRanges,
+                line: line,
+                lineRange: lineRange,
+                lineBounds: lineBounds,
+                textX: textX,
+                displayScale: displayScale,
+                rangeCursor: &accessibilityGeometryCursor,
+                to: &accessibilityRects
+            )
             if firstLineBounds == nil { firstLineBounds = lineBounds }
             for atom in attributed.atoms where NSIntersectionRange(atom.range, lineRange).length > 0 {
                 let offset = CGFloat(CTLineGetOffsetForStringIndex(line, atom.range.location, nil))
@@ -741,21 +624,112 @@ final class CoreTextProseLayoutEngine {
         let seedBounds = CGRect(x: contentX, y: cursorY, width: contentWidth, height: max(0, totalEnd - cursorY))
         let bounds = fragments.reduce(seedBounds) { $0.union($1.bounds) }
         let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
-        let interactions = zip(attributed.semanticRanges, interactionRects).compactMap { semantic, rects -> PreparedProseInteraction? in
-            guard !rects.isEmpty else { return nil }
+        var interactions: [PreparedProseInteraction] = []
+        var interactionIndexBySemanticIndex: [Int: Int] = [:]
+        for (semanticIndex, semantic) in attributed.semanticRanges.enumerated() {
+            let rects = interactionRects[semanticIndex]
+            guard !rects.isEmpty else { continue }
+            let interaction: PreparedProseInteraction
             switch semantic {
             case let .link(_, href, text):
-                return PreparedProseInteraction(kind: .link, rects: rects, href: href, visibleText: text, docPos: nil, label: text, attrsJSON: nil)
+                interaction = PreparedProseInteraction(kind: .link, rects: rects, href: href, visibleText: text, docPos: nil, label: text, attrsJSON: nil)
             case let .mention(_, docPos, label, attrsJSON):
-                return PreparedProseInteraction(kind: .mention, rects: rects, href: nil, visibleText: label, docPos: docPos, label: label, attrsJSON: attrsJSON)
+                interaction = PreparedProseInteraction(kind: .mention, rects: rects, href: nil, visibleText: label, docPos: docPos, label: label, attrsJSON: attrsJSON)
             }
+            interactionIndexBySemanticIndex[semanticIndex] = interactions.count
+            interactions.append(interaction)
+        }
+        var markerPending = block.listItemBoundary?.isFirstRenderableLeaf == true
+            ? block.listContext.map { context in
+                context.kind == "task" ? (context.checked ? "Checked" : "Unchecked") : "Item"
+            }
+            : nil
+        let accessibilityNodes = attributed.accessibilityRanges.enumerated().compactMap { index, range -> PreparedProseAccessibilityNode? in
+            let label = range.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty, !accessibilityRects[index].isEmpty else { return nil }
+            let accessibleLabel: String
+            if let marker = markerPending {
+                markerPending = nil
+                accessibleLabel = "\(marker), \(label)"
+            } else {
+                accessibleLabel = label
+            }
+            let interactionIndex: Int?
+            let role: PreparedProseAccessibilityNode.Role
+            switch range.role {
+            case .text:
+                interactionIndex = nil
+                role = block.nodeType == "heading" ? .heading : .text
+            case let .link(semanticIndex):
+                interactionIndex = interactionIndexBySemanticIndex[semanticIndex]
+                role = interactionIndex == nil ? .text : .link
+            case let .mention(semanticIndex):
+                interactionIndex = interactionIndexBySemanticIndex[semanticIndex]
+                role = interactionIndex == nil ? .text : .mention
+            }
+            return PreparedProseAccessibilityNode(
+                interactionIndex: interactionIndex,
+                role: role,
+                label: accessibleLabel,
+                rects: accessibilityRects[index]
+            )
         }
         return (
             prepared,
-            interactions, nil,
+            interactions,
+            accessibilityNodes,
+            nil,
             totalEnd + itemSpacing,
             256 + attributed.retainedBytes + prepared.estimatedRetainedBytes
         )
+    }
+
+    private func appendShapedRects(
+        ranges: [NSRange],
+        line: CTLine,
+        lineRange: NSRange,
+        lineBounds: CGRect,
+        textX: CGFloat,
+        displayScale: CGFloat,
+        rangeCursor: inout Int,
+        to rects: inout [[CGRect]]
+    ) {
+        let glyphRuns = CTLineGetGlyphRuns(line) as? [CTRun] ?? []
+        while ranges.indices.contains(rangeCursor), ranges[rangeCursor].upperBound <= lineRange.location {
+            rangeCursor += 1
+        }
+        var index = rangeCursor
+        while ranges.indices.contains(index), ranges[index].location < lineRange.upperBound {
+            let range = ranges[index]
+            var visualPieces: [(rect: CGRect, rightToLeft: Bool)] = []
+            for run in glyphRuns {
+                let stringRange = CTRunGetStringRange(run)
+                let runRange = NSRange(location: stringRange.location, length: stringRange.length)
+                let overlap = NSIntersectionRange(NSIntersectionRange(range, lineRange), runRange)
+                guard overlap.length > 0 else { continue }
+                let start = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location, nil))
+                let end = CGFloat(CTLineGetOffsetForStringIndex(line, overlap.location + overlap.length, nil))
+                visualPieces.append((
+                    CGRect(
+                        x: textX + min(start, end),
+                        y: lineBounds.minY,
+                        width: max(1 / displayScale, abs(end - start)),
+                        height: lineBounds.height
+                    ),
+                    CTRunGetStatus(run).contains(.rightToLeft)
+                ))
+            }
+            var priorDirection: Bool?
+            for piece in visualPieces.sorted(by: { PreparedProseInteractionGeometry.visualOrder($0.rect, $1.rect) }) {
+                PreparedProseInteractionGeometry.appendSameLinePiece(
+                    piece.rect,
+                    to: &rects[index],
+                    mayMergeWithPrior: priorDirection == piece.rightToLeft
+                )
+                priorDirection = piece.rightToLeft
+            }
+            index += 1
+        }
     }
 
     private func makeAttributedString(
@@ -767,23 +741,49 @@ final class CoreTextProseLayoutEngine {
         let result = NSMutableAttributedString()
         var atoms: [PreparedAtomSpec] = []
         var semanticRanges: [PreparedSemanticRange] = []
+        var accessibilityRanges: [PreparedAccessibilityRange] = []
+
+        func appendAccessibilityRange(_ range: NSRange, label: String, role: PreparedAccessibilityRange.Role) {
+            guard range.length > 0 else { return }
+            if let previous = accessibilityRanges.last,
+               previous.role == role,
+               previous.range.upperBound == range.location
+            {
+                accessibilityRanges[accessibilityRanges.count - 1] = PreparedAccessibilityRange(
+                    range: NSRange(location: previous.range.location, length: previous.range.length + range.length),
+                    label: previous.label + label,
+                    role: role
+                )
+            } else {
+                accessibilityRanges.append(PreparedAccessibilityRange(range: range, label: label, role: role))
+            }
+        }
+
         for inline in inlines {
             switch inline {
             case let .text(text: text, marks: marks):
                 let start = result.length
                 result.append(NSAttributedString(string: text, attributes: attributes(for: marks, paint: paint, theme: theme, warningSemanticGeneration: warningSemanticGeneration)))
+                let range = NSRange(location: start, length: (text as NSString).length)
                 if let href = href(in: marks), !text.isEmpty {
-                    let range = NSRange(location: start, length: (text as NSString).length)
+                    let semanticIndex: Int
                     if case let .link(previous, previousHref, previousText)? = semanticRanges.last,
                        previousHref == href, previous.upperBound == range.location {
                         semanticRanges[semanticRanges.count - 1] = .link(range: NSRange(location: previous.location, length: previous.length + range.length), href: href, text: previousText + text)
+                        semanticIndex = semanticRanges.count - 1
                     } else {
                         semanticRanges.append(.link(range: range, href: href, text: text))
+                        semanticIndex = semanticRanges.count - 1
                     }
+                    appendAccessibilityRange(range, label: text, role: .link(semanticIndex: semanticIndex))
+                } else {
+                    appendAccessibilityRange(range, label: text, role: .text)
                 }
             case let .atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJSON, label: label):
                 if nodeType == "hardBreak" || nodeType == "hard_break" {
+                    let range = NSRange(location: result.length, length: 1)
                     result.append(NSAttributedString(string: "\n", attributes: baseAttributes(paint)))
+                    appendAccessibilityRange(range, label: "\n", role: .text)
                     continue
                 }
                 let appearance = atomAppearance(
@@ -824,6 +824,13 @@ final class CoreTextProseLayoutEngine {
                 )
                 if nodeType == "mention" {
                     semanticRanges.append(.mention(range: range, docPos: docPos, label: displayLabel, attrsJSON: attrsJSON))
+                    appendAccessibilityRange(
+                        range,
+                        label: displayLabel,
+                        role: .mention(semanticIndex: semanticRanges.count - 1)
+                    )
+                } else {
+                    appendAccessibilityRange(range, label: displayLabel, role: .text)
                 }
             }
         }
@@ -835,7 +842,13 @@ final class CoreTextProseLayoutEngine {
         let atomBytes = atoms.reduce(0) { partial, atom in
             partial + 256 + atom.label.utf8.count.rendererSaturatingMultiply(2)
         }
-        return PreparedAttributedBlock(string: result, atoms: atoms, semanticRanges: semanticRanges, retainedBytes: 256 + stringBytes + attributeBytes + atomBytes)
+        return PreparedAttributedBlock(
+            string: result,
+            atoms: atoms,
+            semanticRanges: semanticRanges,
+            accessibilityRanges: accessibilityRanges,
+            retainedBytes: 256 + stringBytes + attributeBytes + atomBytes
+        )
     }
 
     private func href(in marks: [FfiViewerMark]) -> String? {

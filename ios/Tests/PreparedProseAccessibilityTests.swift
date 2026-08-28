@@ -144,13 +144,57 @@ final class PreparedProseAccessibilityTests: XCTestCase {
             retainedBytes: 64
         )
 
-        let layout = try prepare(document, width: 240)
+        let layout = try prepare(document, width: 400)
 
         XCTAssertEqual(layout.accessibilityNodes.map(\.role), [.text, .link, .text, .mention, .text])
         XCTAssertEqual(
             layout.accessibilityNodes.map(\.label),
             ["Before", "link", "between", "@Ada", "after"]
         )
+        let nodes = layout.accessibilityNodes
+        XCTAssertTrue(nodes.allSatisfy { $0.bounds != layout.blocks[0].bounds })
+        XCTAssertLessThanOrEqual(nodes[0].bounds.maxX, nodes[1].bounds.minX)
+        XCTAssertLessThanOrEqual(nodes[1].bounds.maxX, nodes[2].bounds.minX)
+        XCTAssertLessThanOrEqual(nodes[2].bounds.maxX, nodes[3].bounds.minX)
+        XCTAssertLessThanOrEqual(nodes[3].bounds.maxX, nodes[4].bounds.minX)
+        XCTAssertEqual(nodes[1].bounds, layout.interactions[0].rects.reduce(.null) { $0.union($1) })
+        XCTAssertEqual(nodes[3].bounds, layout.interactions[1].rects.reduce(.null) { $0.union($1) })
+    }
+
+    func testWrappedBidiAccessibilityNodeRetainsShapedFragments() throws {
+        let document = ViewerDocument(
+            semanticKey: "wrapped-bidi-accessibility",
+            blocks: [ViewerBlock(
+                nodeType: "paragraph",
+                depth: 0,
+                inBlockquote: false,
+                listContext: nil,
+                listItemBoundary: nil,
+                inlines: [
+                    .text(text: "Before ", marks: []),
+                    .text(
+                        text: String(repeating: "Latin \u{05E2}\u{05D1}\u{05E8}\u{05D9}\u{05EA} ", count: 4),
+                        marks: [FfiViewerMark(markType: "link", attrsJson: #"{"href":"https://example.test/bidi"}"#)]
+                    ),
+                    .text(text: "after", marks: [])
+                ]
+            )],
+            isEmpty: false,
+            retainedBytes: 64
+        )
+
+        let layout = try prepare(document, width: 110)
+        let link = try XCTUnwrap(layout.accessibilityNodes.first { $0.role == .link })
+        let interaction = try layout.interactions.single(where: { $0.kind == .link })
+
+        XCTAssertEqual(
+            layout.accessibilityNodes.map(\.label),
+            ["Before", interaction.label.trimmingCharacters(in: .whitespacesAndNewlines), "after"]
+        )
+        XCTAssertEqual(link.rects, interaction.rects)
+        XCTAssertGreaterThanOrEqual(link.rects.count, 2)
+        XCTAssertGreaterThan(Set(link.rects.map(\.minY)).count, 1)
+        XCTAssertTrue(layout.accessibilityNodes.allSatisfy { !$0.rects.isEmpty })
     }
 
     func testAccessibleDrawingViewLazilyMaterializesPermittedNodesAndRecycles() throws {
@@ -171,8 +215,13 @@ final class PreparedProseAccessibilityTests: XCTestCase {
 
         XCTAssertEqual(drawing.accessibilityElementCount(), 2)
         XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 0)
+        let enabledLink = try XCTUnwrap(
+            drawing.accessibilityElement(at: 0) as? UIAccessibilityElement
+        )
+        let enabledLinkFrame = enabledLink.accessibilityFrame
+        let enabledLinkPathBounds = try XCTUnwrap(enabledLink.accessibilityPath?.bounds)
         XCTAssertNotNil(drawing.accessibilityElement(at: 1))
-        XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 1)
+        XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 2)
         var activatedMention: UInt32?
         drawing.onActivateInteraction = { interaction in
             activatedMention = interaction.docPos
@@ -190,6 +239,9 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         )
         XCTAssertEqual(disabledLink.accessibilityLabel, "link")
         XCTAssertTrue(disabledLink.accessibilityTraits.contains(.staticText))
+        XCTAssertEqual(disabledLink.accessibilityFrame, enabledLinkFrame)
+        XCTAssertEqual(disabledLink.accessibilityPath?.bounds, enabledLinkPathBounds)
+        XCTAssertEqual(layout.accessibilityNodes[0].rects, layout.interactions[0].rects)
         XCTAssertFalse(disabledLink.accessibilityActivate())
 
         drawing.install(layout: nil)

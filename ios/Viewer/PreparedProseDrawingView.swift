@@ -318,7 +318,7 @@ public final class PreparedProseDrawingView: UIView {
                 interactionIndex: nil,
                 role: .text,
                 label: node.label,
-                bounds: node.bounds
+                rects: node.rects
             )
         } ?? []
     }
@@ -329,6 +329,18 @@ public final class PreparedProseDrawingView: UIView {
     ) -> CGRect {
         guard self.layout === layout else { return .zero }
         return UIAccessibility.convertToScreenCoordinates(node.bounds, in: self)
+    }
+
+    fileprivate func accessibilityPath(
+        for node: PreparedProseAccessibilityNode,
+        layout: PreparedProseLayout
+    ) -> UIBezierPath? {
+        guard self.layout === layout, !node.rects.isEmpty else { return nil }
+        let path = UIBezierPath()
+        for rect in node.rects {
+            path.append(UIBezierPath(rect: rect))
+        }
+        return UIAccessibility.convertToScreenCoordinates(path, in: self)
     }
 
     fileprivate func activateAccessibilityNode(
@@ -537,6 +549,13 @@ private final class PreparedProseDrawingAccessibilityElement: UIAccessibilityEle
         get {
             guard let drawingView, let layout else { return .zero }
             return drawingView.accessibilityFrame(for: node, layout: layout)
+        }
+        set { }
+    }
+    override var accessibilityPath: UIBezierPath? {
+        get {
+            guard let drawingView, let layout else { return nil }
+            return drawingView.accessibilityPath(for: node, layout: layout)
         }
         set { }
     }

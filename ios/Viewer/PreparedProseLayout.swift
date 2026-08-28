@@ -237,9 +237,22 @@ struct PreparedProseAccessibilityNode: Hashable {
     let interactionIndex: Int?
     let role: Role
     let label: String
-    let bounds: CGRect
+    let rects: [CGRect]
 
-    var estimatedRetainedBytes: Int { 96 + label.utf8.count * 2 }
+    init(interactionIndex: Int?, role: Role, label: String, bounds: CGRect) {
+        self.init(interactionIndex: interactionIndex, role: role, label: label, rects: [bounds])
+    }
+
+    init(interactionIndex: Int?, role: Role, label: String, rects: [CGRect]) {
+        self.interactionIndex = interactionIndex
+        self.role = role
+        self.label = label
+        self.rects = rects
+    }
+
+    var bounds: CGRect { rects.reduce(.null) { $0.union($1) } }
+
+    var estimatedRetainedBytes: Int { 96 + rects.count * 64 + label.utf8.count * 2 }
 }
 
 public final class PreparedProseLayout: NSObject {
