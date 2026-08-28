@@ -67,6 +67,15 @@ CGFloat NativeFontScale(const PreparedProseViewerShadowNode::ConcreteState::Shar
   return std::isfinite(value) && value > 0 ? static_cast<CGFloat>(value) : 1;
 }
 
+int32_t UserInterfaceStyle(const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
+  if (!state) return 0;
+  return state->getData().userInterfaceStyle;
+}
+
+int32_t EffectiveUserInterfaceStyle(UIView *view) {
+  return view.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 2 : 1;
+}
+
 uint64_t LeaseHandle(const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
   return state ? state->getData().leaseHandle : 0;
 }
@@ -163,6 +172,7 @@ int64_t ComponentTagFromState(
   id _fontEnvironmentObserver;
   uint64_t _lastFontEnvironmentRevision;
   CGFloat _fontEnvironmentScale;
+  int32_t _requestedUserInterfaceStyle;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -197,6 +207,7 @@ int64_t ComponentTagFromState(
     PREPViewerFontEnvironment *fontEnvironment = [PREPViewerFontEnvironment sharedEnvironment];
     [fontEnvironment refreshContentSizeCategory];
     _fontEnvironmentScale = [fontEnvironment currentFontScale];
+    _requestedUserInterfaceStyle = 0;
     _fontEnvironmentObserver = [[NSNotificationCenter defaultCenter]
         addObserverForName:PREPViewerFontEnvironment.didInvalidateNotification
                     object:fontEnvironment
@@ -282,6 +293,12 @@ int64_t ComponentTagFromState(
     [self beginNewGenerationTerminatingCurrentLease:leaseChanged];
   }
   _viewerState = nextState;
+  _requestedUserInterfaceStyle = UserInterfaceStyle(_viewerState);
+  const auto userInterfaceStyle = EffectiveUserInterfaceStyle(self);
+  if (UserInterfaceStyle(_viewerState) != userInterfaceStyle) {
+    [self invalidateUserInterfaceStyle:userInterfaceStyle];
+    return;
+  }
   if (NativeFontScale(_viewerState) != _fontEnvironmentScale) {
     [self invalidateNativeFontEnvironmentWithScale:_fontEnvironmentScale];
   }
@@ -332,6 +349,12 @@ int64_t ComponentTagFromState(
   [_drawingView updateConfiguredImagesForVisibleWindow];
 }
 
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection
+{
+  [super traitCollectionDidChange:previousTraitCollection];
+  [self invalidateUserInterfaceStyle:EffectiveUserInterfaceStyle(self)];
+}
+
 - (void)prepareForRecycle
 {
   [self releaseAllFabricOwnership];
@@ -380,7 +403,8 @@ int64_t ComponentTagFromState(
                  attachmentRevision:Revision(_viewerState, true)
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
-            fontEnvironmentRevision:FontEnvironmentRevision(props)];
+            fontEnvironmentRevision:FontEnvironmentRevision(props)
+               userInterfaceStyle:UserInterfaceStyle(_viewerState)];
   [_drawingView beginSemanticImageGeneration:semanticGeneration];
 }
 
@@ -466,7 +490,8 @@ int64_t ComponentTagFromState(
                  attachmentRevision:Revision(_viewerState, true)
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
-            fontEnvironmentRevision:FontEnvironmentRevision(props)];
+            fontEnvironmentRevision:FontEnvironmentRevision(props)
+               userInterfaceStyle:UserInterfaceStyle(_viewerState)];
   const auto measurementIdentityString = MeasurementIdentity(generation, width, scale, leaseHandle);
   const auto semanticGeneration = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       fabricSemanticGenerationIdentitySourceKind:SourceKind(props)
@@ -479,7 +504,8 @@ int64_t ComponentTagFromState(
                  attachmentRevision:Revision(_viewerState, true)
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
-               fontEnvironmentRevision:FontEnvironmentRevision(props)];
+               fontEnvironmentRevision:FontEnvironmentRevision(props)
+                  userInterfaceStyle:UserInterfaceStyle(_viewerState)];
   // This is the props/state commit boundary for the state-family handle.
   // Commit G2 before touching G1 ownership or attempting mount acquisition:
   // delayed G1 Yoga callbacks are rejected, while an already-running G2
@@ -546,7 +572,8 @@ int64_t ComponentTagFromState(
                    attachmentRevision:Revision(_viewerState, true)
                    nativeFontRevision:Revision(_viewerState, false)
                      nativeFontScale:NativeFontScale(_viewerState)
-               fontEnvironmentRevision:FontEnvironmentRevision(props)
+             fontEnvironmentRevision:FontEnvironmentRevision(props)
+                userInterfaceStyle:UserInterfaceStyle(_viewerState)
                           widthPoints:width
                                  scale:scale];
   if (!installed) {
@@ -614,6 +641,20 @@ int64_t ComponentTagFromState(
         auto nextData = oldData;
         nextData.nativeFontRevision += 1;
         nextData.nativeFontScale = std::isfinite(scale) && scale > 0 ? scale : 1;
+        return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
+      });
+}
+
+- (void)invalidateUserInterfaceStyle:(int32_t)userInterfaceStyle
+{
+  if (!_viewerState || _requestedUserInterfaceStyle == userInterfaceStyle) return;
+  _requestedUserInterfaceStyle = userInterfaceStyle;
+  _viewerState->updateState(
+      [userInterfaceStyle](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
+          -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
+        auto nextData = oldData;
+        nextData.nativeFontRevision += 1;
+        nextData.userInterfaceStyle = userInterfaceStyle;
         return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
       });
 }

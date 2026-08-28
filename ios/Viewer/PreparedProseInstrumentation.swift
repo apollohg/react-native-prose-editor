@@ -6,7 +6,7 @@ import QuartzCore
 /// Percentiles use nearest-rank: sorted[ceil(p * n) - 1].
 enum PreparedProseInstrumentation {
     enum Owner: String, CaseIterable { case compiled, unmountedLayout, fabricLeaseHandoff, directMounted, image, sidecars, other }
-    enum InvalidationReason: String { case content, width, attachment, font, memoryPressure, cacheReset, reuse }
+    enum InvalidationReason: String { case content, width, attachment, font, appearance, memoryPressure, cacheReset, reuse }
     enum TraversalPhase: String, CaseIterable { case cold, warm, imagesDisabled, reset }
     enum ViewerWorkKind: String, Codable { case layout, draw, lifecycle }
     struct ViewerWorkSpan: Equatable {

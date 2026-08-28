@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import CoreText
 
 final class PreparedProseRevisionTests: XCTestCase {
     private enum FixtureError: Error { case expected }
@@ -684,6 +685,109 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertGreaterThan(scaled.paragraph.font.pointSize, base.paragraph.font.pointSize)
     }
 
+    func testPreparedLayoutCacheSeparatesCurrentLightAndDarkAppearance() throws {
+        let document = ViewerDocument(
+            semanticKey: String(repeating: "a", count: 64),
+            paragraphs: [ViewerParagraph(text: "Appearance")],
+            isEmpty: false,
+            retainedBytes: 64
+        )
+        let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+        let lightTraits = UITraitCollection(userInterfaceStyle: .light)
+        let darkTraits = UITraitCollection(userInterfaceStyle: .dark)
+        var light: PreparedProseLayout!
+        lightTraits.performAsCurrent {
+            light = registry.measure(
+                request: ProseViewerRequest(source: .json("{}"), configuration: .init()),
+                widthPoints: 160,
+                scale: 2
+            )
+        }
+        var dark: PreparedProseLayout!
+        darkTraits.performAsCurrent {
+            dark = registry.measure(
+                request: ProseViewerRequest(source: .json("{}"), configuration: .init()),
+                widthPoints: 160,
+                scale: 2
+            )
+        }
+
+        XCTAssertNotEqual(light.key.generationIdentity, dark.key.generationIdentity)
+        XCTAssertEqual(light.key.semanticGenerationIdentity, dark.key.semanticGenerationIdentity)
+        XCTAssertEqual(try foregroundColor(in: light), UIColor.label.resolvedColor(with: lightTraits))
+        XCTAssertEqual(try foregroundColor(in: dark), UIColor.label.resolvedColor(with: darkTraits))
+    }
+
+    func testFabricAppearanceSeparatesLayoutGenerationButNotImagePublication() {
+        let registry = PreparedProseLayoutRegistry(compile: { _ in
+            ViewerDocument(
+                semanticKey: String(repeating: "a", count: 64),
+                paragraphs: [],
+                isEmpty: true,
+                retainedBytes: 0
+            )
+        })
+        func generation(style: UIUserInterfaceStyle) -> String {
+            registry.fabricGenerationIdentity(
+                sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil,
+                imagePolicyJSON: nil, imagesEnabled: true, collapsesWhenEmpty: true,
+                attachmentRevision: 0, nativeFontRevision: 0, nativeFontScale: 1,
+                fontEnvironmentRevision: 0, userInterfaceStyle: style.rawValue
+            ) as String
+        }
+        func semanticGeneration(style: UIUserInterfaceStyle) -> String {
+            registry.fabricSemanticGenerationIdentity(
+                sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil,
+                imagePolicyJSON: nil, imagesEnabled: true, collapsesWhenEmpty: true,
+                attachmentRevision: 0, nativeFontRevision: 0, nativeFontScale: 1,
+                fontEnvironmentRevision: 0, userInterfaceStyle: style.rawValue
+            ) as String
+        }
+
+        XCTAssertNotEqual(generation(style: .light), generation(style: .dark))
+        XCTAssertEqual(semanticGeneration(style: .light), semanticGeneration(style: .dark))
+    }
+
+    func testDirectViewerRepreparesWhenItsColorAppearanceChanges() throws {
+        let document = ViewerDocument(
+            semanticKey: String(repeating: "a", count: 64),
+            paragraphs: [ViewerParagraph(text: "Appearance")],
+            isEmpty: false,
+            retainedBytes: 64
+        )
+        let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+        let viewer = ProseViewerView(
+            frame: CGRect(x: 0, y: 0, width: 160, height: 80),
+            layoutRegistry: registry
+        )
+        let window = UIWindow(frame: viewer.bounds)
+        let host = UIViewController()
+        window.rootViewController = host
+        host.view.addSubview(viewer)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        viewer.overrideUserInterfaceStyle = .light
+        flushMain(until: { viewer.traitCollection.userInterfaceStyle == .light })
+        XCTAssertEqual(viewer.traitCollection.userInterfaceStyle, .light)
+        XCTAssertTrue(viewer.apply(source: .json("{}"), configuration: .init()))
+        _ = viewer.sizeThatFits(CGSize(width: 160, height: 80))
+        let light = try XCTUnwrap(viewer.drawingViewForTesting.layout)
+
+        let previousTraits = UITraitCollection(userInterfaceStyle: .light)
+        viewer.overrideUserInterfaceStyle = .dark
+        flushMain(until: { viewer.traitCollection.userInterfaceStyle == .dark })
+        viewer.traitCollectionDidChange(previousTraits)
+        XCTAssertEqual(viewer.traitCollection.userInterfaceStyle, .dark)
+        _ = viewer.sizeThatFits(CGSize(width: 160, height: 80))
+        let dark = try XCTUnwrap(viewer.drawingViewForTesting.layout)
+
+        XCTAssertFalse(light === dark)
+        XCTAssertEqual(
+            try foregroundColor(in: dark),
+            UIColor.label.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        )
+    }
+
     func testFabricInitialFontSnapshotUsesPublishedScaleBeforeFirstNativeRevision() {
         let document = ViewerDocument(
             semanticKey: String(repeating: "a", count: 64),
@@ -774,5 +878,15 @@ final class PreparedProseRevisionTests: XCTestCase {
         // but remains in the same semantic generation.
         XCTAssertFalse(state.beginSemanticGeneration("resource"))
         XCTAssertFalse(state.recordResourceFailure(for: 0))
+    }
+
+    private func foregroundColor(in layout: PreparedProseLayout) throws -> UIColor {
+        let line = try XCTUnwrap(layout.blocks.flatMap(\.fragments).compactMap(\.line).first)
+        let run = try XCTUnwrap((CTLineGetGlyphRuns(line) as? [CTRun])?.first)
+        let attributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any]
+        let color = try XCTUnwrap(
+            attributes?[kCTForegroundColorAttributeName as NSAttributedString.Key]
+        )
+        return UIColor(cgColor: color as! CGColor)
     }
 }

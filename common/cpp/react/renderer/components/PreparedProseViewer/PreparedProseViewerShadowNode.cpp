@@ -122,6 +122,7 @@ Size PreparedProseViewerShadowNode::measureContent(
       state.attachmentRevision,
       state.nativeFontRevision,
       state.nativeFontScale,
+      state.userInterfaceStyle,
       FontEnvironmentRevision(props),
       leaseHandle,
       state.leaseLifecycle);

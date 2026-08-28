@@ -155,17 +155,20 @@ public final class ProseViewerView: UIView {
     @discardableResult
     public func apply(source: ProseViewerSource, configuration: ProseViewerConfiguration) -> Bool {
         let fontRevision = fontEnvironment.revision
+        let appearance = currentAppearance
         if let request,
            request.source == source,
            request.configuration == configuration {
-            guard request.fontEnvironmentRevision != fontRevision else { return pendingError == nil }
+            guard request.fontEnvironmentRevision != fontRevision || request.appearance != appearance
+            else { return pendingError == nil }
             self.request = ProseViewerRequest(
                 source: request.source,
                 configuration: request.configuration,
                 nativeFontRevision: request.nativeFontRevision,
                 nativeFontScale: fontEnvironment.fontScale(for: fontRevision),
                 fontEnvironmentRevision: fontRevision,
-                attachmentRevision: request.attachmentRevision
+                attachmentRevision: request.attachmentRevision,
+                appearance: appearance
             )
             invalidateIntrinsicContentSize()
             setNeedsLayout()
@@ -176,7 +179,8 @@ public final class ProseViewerView: UIView {
             configuration: configuration,
             nativeFontScale: fontEnvironment.fontScale(for: fontRevision),
             fontEnvironmentRevision: fontRevision,
-            attachmentRevision: 0
+            attachmentRevision: 0,
+            appearance: appearance
         )
         PreparedProseInstrumentation.invalidated(.content)
         _ = attachmentRevisions.beginSemanticGeneration(nextRequest.semanticGenerationIdentity)
@@ -252,6 +256,11 @@ public final class ProseViewerView: UIView {
             layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, layout: ownedLayout)
         }
         requestVisibleImageAttachments()
+    }
+
+    public override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        applyAppearance()
     }
 
     /// Releases this surface's artifact ownership without clearing its delegate.
@@ -379,7 +388,8 @@ public final class ProseViewerView: UIView {
             nativeFontRevision: request.nativeFontRevision,
             nativeFontScale: request.nativeFontScale,
             fontEnvironmentRevision: request.fontEnvironmentRevision,
-            attachmentRevision: attachmentRevisions.revision
+            attachmentRevision: attachmentRevisions.revision,
+            appearance: request.appearance
         )
         PreparedProseInstrumentation.invalidated(.attachment)
         PreparedProseInstrumentation.retained(.sidecars, scope: "direct-\(ObjectIdentifier(self))", bytes: attachmentRevisions.retainedPublicationBytesForTesting)
@@ -397,9 +407,30 @@ public final class ProseViewerView: UIView {
             nativeFontRevision: request.nativeFontRevision,
             nativeFontScale: fontEnvironment.fontScale(for: revision),
             fontEnvironmentRevision: revision,
-            attachmentRevision: request.attachmentRevision
+            attachmentRevision: request.attachmentRevision,
+            appearance: request.appearance
         )
         PreparedProseInstrumentation.invalidated(.font)
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+    }
+
+    private var currentAppearance: ProseViewerAppearance {
+        ProseViewerAppearance(userInterfaceStyle: traitCollection.userInterfaceStyle)
+    }
+
+    private func applyAppearance() {
+        guard let request, request.appearance != currentAppearance else { return }
+        self.request = ProseViewerRequest(
+            source: request.source,
+            configuration: request.configuration,
+            nativeFontRevision: request.nativeFontRevision,
+            nativeFontScale: request.nativeFontScale,
+            fontEnvironmentRevision: request.fontEnvironmentRevision,
+            attachmentRevision: request.attachmentRevision,
+            appearance: currentAppearance
+        )
+        PreparedProseInstrumentation.invalidated(.appearance)
         invalidateIntrinsicContentSize()
         setNeedsLayout()
     }

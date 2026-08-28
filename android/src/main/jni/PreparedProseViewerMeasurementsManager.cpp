@@ -163,6 +163,7 @@ Size PreparedProseMeasurementsManager::measure(
     uint64_t attachmentRevision,
     uint64_t nativeFontRevision,
     double nativeFontScale,
+    int32_t /*userInterfaceStyle*/,
     uint64_t /*fontEnvironmentRevision*/,
     uint64_t leaseHandle,
     const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& /*leaseLifecycle*/) const {

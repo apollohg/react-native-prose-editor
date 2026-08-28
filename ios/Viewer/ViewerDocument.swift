@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import UIKit
 
 /// The source accepted by both the UIKit and Fabric viewer surfaces.
 public enum ProseViewerSource: Hashable {
@@ -52,6 +53,7 @@ struct ProseViewerRequest: Hashable {
     let nativeFontScale: CGFloat
     let fontEnvironmentRevision: UInt64
     let attachmentRevision: UInt64
+    let appearance: ProseViewerAppearance
 
     init(
         source: ProseViewerSource,
@@ -59,7 +61,8 @@ struct ProseViewerRequest: Hashable {
         nativeFontRevision: UInt64 = 0,
         nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64 = 0,
-        attachmentRevision: UInt64 = 0
+        attachmentRevision: UInt64 = 0,
+        appearance: ProseViewerAppearance = .current
     ) {
         self.source = source
         self.configuration = configuration
@@ -67,6 +70,7 @@ struct ProseViewerRequest: Hashable {
         self.nativeFontScale = nativeFontScale.isFinite && nativeFontScale > 0 ? nativeFontScale : 1
         self.fontEnvironmentRevision = fontEnvironmentRevision
         self.attachmentRevision = attachmentRevision
+        self.appearance = appearance
     }
 
     var compiledCacheKey: String {
@@ -109,6 +113,7 @@ struct ProseViewerRequest: Hashable {
             String(nativeFontRevision),
             String(Double(nativeFontScale).bitPattern),
             String(fontEnvironmentRevision),
+            String(appearance.rawValue),
         ].joined(separator: "\u{1F}"))
     }
 
@@ -120,6 +125,34 @@ struct ProseViewerRequest: Hashable {
         else { return nil }
         return ((root["mentions"] as? [String: Any])?["prefix"] as? String)
             ?? (root["mentionPrefix"] as? String)
+    }
+}
+
+enum ProseViewerAppearance: Int, Hashable {
+    case light = 1
+    case dark = 2
+
+    static var current: ProseViewerAppearance {
+        ProseViewerAppearance(userInterfaceStyle: UITraitCollection.current.userInterfaceStyle)
+    }
+
+    init(userInterfaceStyle: UIUserInterfaceStyle) {
+        self = userInterfaceStyle == .dark ? .dark : .light
+    }
+
+    init(rawUserInterfaceStyle: Int) {
+        if rawUserInterfaceStyle == UIUserInterfaceStyle.light.rawValue
+            || rawUserInterfaceStyle == UIUserInterfaceStyle.dark.rawValue,
+           let style = UIUserInterfaceStyle(rawValue: rawUserInterfaceStyle)
+        {
+            self.init(userInterfaceStyle: style)
+        } else {
+            self = .current
+        }
+    }
+
+    var traits: UITraitCollection {
+        UITraitCollection(userInterfaceStyle: self == .dark ? .dark : .light)
     }
 }
 

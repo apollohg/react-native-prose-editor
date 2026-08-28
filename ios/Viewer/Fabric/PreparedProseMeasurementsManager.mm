@@ -58,6 +58,7 @@ Size PreparedProseMeasurementsManager::measure(
     uint64_t attachmentRevision,
     uint64_t nativeFontRevision,
     double nativeFontScale,
+    int32_t userInterfaceStyle,
     uint64_t fontEnvironmentRevision,
     uint64_t leaseHandle,
     const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const {
@@ -77,6 +78,7 @@ Size PreparedProseMeasurementsManager::measure(
        nativeFontRevision:nativeFontRevision
           nativeFontScale:nativeFontScale
   fontEnvironmentRevision:(fontEnvironmentRevision)
+       userInterfaceStyle:userInterfaceStyle
               widthPoints:effectiveWidth
                      scale:pointScaleFactor];
     // A release may race a Yoga callback already in flight. The shadow state

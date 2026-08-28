@@ -299,14 +299,18 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 self.layoutPreparationCount += 1
                 self.lock.unlock()
                 do {
-                    let artifact: PreparedProseLayout
-                    if let imageMeasurementState {
-                        artifact = try FabricAttachmentSidecars.withMeasurementState(imageMeasurementState) {
-                            try self.prepare(document, key, canonicalWidth, scale)
+                    var prepared: Result<PreparedProseLayout, Error>!
+                    request.appearance.traits.performAsCurrent {
+                        prepared = Result {
+                            if let imageMeasurementState {
+                                return try FabricAttachmentSidecars.withMeasurementState(imageMeasurementState) {
+                                    try self.prepare(document, key, canonicalWidth, scale)
+                                }
+                            }
+                            return try self.prepare(document, key, canonicalWidth, scale)
                         }
-                    } else {
-                        artifact = try self.prepare(document, key, canonicalWidth, scale)
                     }
+                    let artifact = try prepared.get()
                     PreparedProseInstrumentation.laidOut(layoutStarted, generation: request.generationIdentity)
                     return artifact
                 } catch let error as ProseViewerError {
@@ -380,7 +384,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         }
     }
 
-    @objc(measureSurfaceId:componentTag:leaseHandle:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(measureSurfaceId:componentTag:leaseHandle:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:userInterfaceStyle:widthPoints:scale:)
     public func measure(
         surfaceId: Int64,
         componentTag: Int64,
@@ -396,6 +400,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         nativeFontRevision: UInt64,
         nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64,
+        userInterfaceStyle: Int = 0,
         widthPoints: CGFloat,
         scale: CGFloat
     ) -> CGSize {
@@ -410,7 +415,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
             nativeFontScale: nativeFontScale,
-            fontEnvironmentRevision: fontEnvironmentRevision
+            fontEnvironmentRevision: fontEnvironmentRevision,
+            userInterfaceStyle: userInterfaceStyle
         )
         return measure(
             request: request,
@@ -426,7 +432,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     /// The only Objective-C-visible generation identity boundary. Fabric must
     /// retain this exact SHA-256 key for every later release of its lease and
     /// compiler pin; native callers must not reconstruct it from props.
-    @objc(fabricGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:)
+    @objc(fabricGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:userInterfaceStyle:)
     public func fabricGenerationIdentity(
         sourceKind: NSString,
         source: NSString,
@@ -438,7 +444,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
         nativeFontScale: CGFloat = 1,
-        fontEnvironmentRevision: UInt64
+        fontEnvironmentRevision: UInt64,
+        userInterfaceStyle: Int = 0
     ) -> NSString {
         makeRequest(
             sourceKind: sourceKind,
@@ -451,14 +458,15 @@ public final class PreparedProseLayoutRegistry: NSObject {
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
             nativeFontScale: nativeFontScale,
-            fontEnvironmentRevision: fontEnvironmentRevision
+            fontEnvironmentRevision: fontEnvironmentRevision,
+            userInterfaceStyle: userInterfaceStyle
         ).generationIdentity as NSString
     }
 
     /// Fabric image publication/error state must use the same canonical
     /// semantic key as direct UIKit. Layout revisions are intentionally
     /// excluded so attachment/font reinstallation preserves that state.
-    @objc(fabricSemanticGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:)
+    @objc(fabricSemanticGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:userInterfaceStyle:)
     public func fabricSemanticGenerationIdentity(
         sourceKind: NSString,
         source: NSString,
@@ -470,7 +478,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
         nativeFontScale: CGFloat = 1,
-        fontEnvironmentRevision: UInt64
+        fontEnvironmentRevision: UInt64,
+        userInterfaceStyle: Int = 0
     ) -> NSString {
         makeRequest(
             sourceKind: sourceKind,
@@ -483,11 +492,12 @@ public final class PreparedProseLayoutRegistry: NSObject {
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
             nativeFontScale: nativeFontScale,
-            fontEnvironmentRevision: fontEnvironmentRevision
+            fontEnvironmentRevision: fontEnvironmentRevision,
+            userInterfaceStyle: userInterfaceStyle
         ).semanticGenerationIdentity as NSString
     }
 
-    @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:leaseHandle:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:leaseHandle:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:userInterfaceStyle:widthPoints:scale:)
     public func installCachedLayout(
         in drawingView: PreparedProseDrawingView,
         surfaceId: Int64,
@@ -504,6 +514,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         nativeFontRevision: UInt64,
         nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64,
+        userInterfaceStyle: Int = 0,
         widthPoints: CGFloat,
         scale: CGFloat
     ) -> Bool {
@@ -518,7 +529,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             attachmentRevision: attachmentRevision,
             nativeFontRevision: nativeFontRevision,
             nativeFontScale: nativeFontScale,
-            fontEnvironmentRevision: fontEnvironmentRevision
+            fontEnvironmentRevision: fontEnvironmentRevision,
+            userInterfaceStyle: userInterfaceStyle
         )
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
             return false
@@ -552,6 +564,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         nativeFontRevision: UInt64,
         nativeFontScale: CGFloat = 1,
         fontEnvironmentRevision: UInt64,
+        userInterfaceStyle: Int = 0,
         widthPoints: CGFloat,
         scale: CGFloat
     ) -> Bool {
@@ -571,6 +584,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             nativeFontRevision: nativeFontRevision,
             nativeFontScale: nativeFontScale,
             fontEnvironmentRevision: fontEnvironmentRevision,
+            userInterfaceStyle: userInterfaceStyle,
             widthPoints: widthPoints,
             scale: scale
         )
@@ -1236,11 +1250,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
             touchTheme(request.generationIdentity)
             return theme
         }
-        let theme = PreparedProseTheme.resolve(
-            themeJSON: request.configuration.themeJSON,
-            fontScale: request.nativeFontScale,
-            semanticGeneration: request.semanticGenerationIdentity
-        )
+        var theme: PreparedProseTheme!
+        request.appearance.traits.performAsCurrent {
+            theme = PreparedProseTheme.resolve(
+                themeJSON: request.configuration.themeJSON,
+                fontScale: request.nativeFontScale,
+                semanticGeneration: request.semanticGenerationIdentity
+            )
+        }
         themesByGeneration[request.generationIdentity] = theme
         themesRetainedBytes += theme.estimatedRetainedBytes
         touchTheme(request.generationIdentity)
@@ -1288,7 +1305,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         attachmentRevision: UInt64,
         nativeFontRevision: UInt64,
         nativeFontScale: CGFloat,
-        fontEnvironmentRevision: UInt64
+        fontEnvironmentRevision: UInt64,
+        userInterfaceStyle: Int
     ) -> ProseViewerRequest {
         ProseViewerRequest(
             source: sourceKind == "html" ? .html(source as String) : .json(source as String),
@@ -1302,7 +1320,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             nativeFontRevision: nativeFontRevision,
             nativeFontScale: nativeFontScale,
             fontEnvironmentRevision: fontEnvironmentRevision,
-            attachmentRevision: attachmentRevision
+            attachmentRevision: attachmentRevision,
+            appearance: ProseViewerAppearance(rawUserInterfaceStyle: userInterfaceStyle)
         )
     }
 
