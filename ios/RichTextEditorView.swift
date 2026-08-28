@@ -4726,6 +4726,13 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         allowAfterBlur: Bool,
         allowWhileIntercepting: Bool
     ) -> NativeTextMutationDrainResult {
+        if reconciliationWorkScheduled, textStorage.string != lastAuthorizedText {
+            let adoptedUpdateJSON = restoreRejectedNativeTextMutation()
+            return NativeTextMutationDrainResult(
+                ready: textStorage.string == lastAuthorizedText,
+                adoptedUpdateJSON: adoptedUpdateJSON
+            )
+        }
         guard nativeTextMutationCommitScheduled
                 || pendingNativeTextMutation != nil
                 || (!isComposing && markedTextRange == nil && textStorage.string != lastAuthorizedText)
@@ -4760,11 +4767,22 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: adoptedUpdateJSON)
         case .rejected:
             pendingNativeTextMutation = nil
-            return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: nil)
+            let adoptedUpdateJSON = restoreRejectedNativeTextMutation()
+            return NativeTextMutationDrainResult(
+                ready: textStorage.string == lastAuthorizedText,
+                adoptedUpdateJSON: adoptedUpdateJSON
+            )
         case .deferred:
             pendingNativeTextMutation = mutation
             return NativeTextMutationDrainResult(ready: false, adoptedUpdateJSON: nil)
         }
+    }
+
+    private func restoreRejectedNativeTextMutation() -> String? {
+        guard editorId != 0, textStorage.string != lastAuthorizedText else { return nil }
+        reconciliationWorkScheduled = false
+        let updateJSON = EditorV2Shadow.getCurrentState(id: editorId)
+        return applyUpdateJSON(updateJSON) ? updateJSON : nil
     }
 
     private func scheduleNativeTextMutationCommit(_ mutation: NativeTextMutation) {

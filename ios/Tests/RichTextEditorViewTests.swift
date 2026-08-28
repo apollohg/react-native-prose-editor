@@ -3811,6 +3811,39 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.textView.reconciliationCount, 1)
     }
 
+    func testRejectedBlurredMutationCannotBecomeAuthorizedAfterRefocus() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: "<p>Hello</p>")
+        setCollapsedSelection(in: view.textView, utf16Offset: 5)
+        flushMainQueue()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        XCTAssertTrue(view.textView.resignFirstResponder())
+        view.textView.expireNativeTextMutationAfterBlurDeadlineForTesting()
+
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 5, length: 0),
+            with: "x"
+        )
+        XCTAssertEqual(view.textView.textStorage.string, "Hellox")
+        XCTAssertEqual(view.textView.reconciliationCount, 1)
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        view.textView.insertText("!")
+        flushMainQueue()
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello!</p>")
+        XCTAssertEqual(view.textView.textStorage.string, "Hello!")
+    }
+
     func testBlurTimeAutocorrectAfterContentReplacementReconcilesInsteadOfCommitting() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
