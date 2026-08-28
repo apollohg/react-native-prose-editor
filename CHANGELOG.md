@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0-alpha.8] - 2026-08-28
+## [1.0.0] - 2026-08-28
 
 ### Changed
 
@@ -16,6 +16,8 @@
 - Exposed viewer content to VoiceOver in document order with shaped inline focus geometry, heading traits, and image alt text; kept disabled links readable as static text; and prevented stale accessibility elements from activating replacement-layout interactions.
 - Refreshed viewer image requests during ancestor scrolling, released offscreen and detached pixel references, and restored cached images when they re-enter the viewport on Fabric and direct UIKit viewers.
 - Rebuilt prepared viewer layouts for their effective light, dark, and accessibility-contrast appearance so dynamic system colors cannot be reused across incompatible cached artifacts.
+- Preserved the iOS caret through transient UIKit autocorrection selection changes.
+- Prevented delayed controlled HTML and JSON echoes from rolling back newer native edits and moving the caret to the start of the document.
 
 ## [1.0.0-alpha.7] - 2026-08-27
 
@@ -519,6 +521,7 @@ This is a hard cutover to shared native document, collaboration, and viewer boun
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.0]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.7...1.0.0
 [1.0.0-alpha.7]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.6...1.0.0-alpha.7
 [1.0.0-alpha.6]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.5...1.0.0-alpha.6
 [1.0.0-alpha.5]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.4...1.0.0-alpha.5
