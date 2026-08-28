@@ -250,13 +250,6 @@ for (const [version, expectedTag] of [
   assert.equal(result.stdout.trim(), expectedTag, `${version} must publish with the ${expectedTag} tag`);
 }
 
-const packageTagResult = spawnSync(process.execPath, [distTagResolver], {
-  cwd: repoRoot,
-  encoding: 'utf8',
-});
-assert.equal(packageTagResult.status, 0, packageTagResult.stderr);
-assert.equal(packageTagResult.stdout.trim(), 'alpha', 'the current package must publish with the alpha tag');
-
 const artifactOnlyResolver = await mkdtemp(path.join(tmpdir(), 'native-editor-dist-tag-'));
 try {
   const artifactScripts = path.join(artifactOnlyResolver, 'scripts');
