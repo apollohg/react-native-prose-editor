@@ -28,6 +28,103 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertEqual(pipeline.requestCountForTesting, 0)
     }
 
+    func testImageLeavingViewportCanBeRequestedAgainWhenItReturns() {
+        let pipeline = ViewerImagePipeline(policy: .default)
+        pipeline.begin(generation: "viewport-return", imagesEnabled: true)
+        let attachment = ViewerImageAttachment(
+            ordinal: 0,
+            id: "image",
+            source: imageDataURI(),
+            bounds: CGRect(x: 0, y: 0, width: 20, height: 20),
+            declaredSize: nil
+        )
+
+        pipeline.updateVisibleRect(CGRect(x: 0, y: 0, width: 20, height: 20), attachments: [attachment])
+        pipeline.updateVisibleRect(CGRect(x: 2_000, y: 2_000, width: 20, height: 20), attachments: [attachment])
+        pipeline.updateVisibleRect(CGRect(x: 0, y: 0, width: 20, height: 20), attachments: [attachment])
+
+        XCTAssertEqual(pipeline.requestCountForTesting, 2)
+    }
+
+    func testAncestorScrollRequestsNewlyVisibleImageWithoutManualRefresh() {
+        let attachment = ViewerImageAttachment(
+            ordinal: 0,
+            id: "scroll-image",
+            source: imageDataURI(),
+            bounds: CGRect(x: 0, y: 1_200, width: 20, height: 20),
+            declaredSize: CGSize(width: 20, height: 20)
+        )
+        let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: 200, height: 1_600))
+        drawing.install(layout: imageLayout(attachments: [attachment]))
+        drawing.configureImages(generation: "ancestor-scroll", imagesEnabled: true, policyJSON: nil)
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = drawing.bounds.size
+        scrollView.addSubview(drawing)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        window.addSubview(scrollView)
+        window.isHidden = false
+        defer {
+            drawing.cancelConfiguredImages()
+            window.isHidden = true
+        }
+
+        drawing.updateConfiguredImagesForVisibleWindow()
+        XCTAssertNil(drawing.imagePixels[attachment.id])
+        scrollView.contentOffset.y = 1_100
+        flushMain(until: { drawing.imagePixels[attachment.id] != nil })
+
+        XCTAssertNotNil(drawing.imagePixels[attachment.id])
+    }
+
+    func testVisibleWindowUpdateReleasesPixelsOutsidePrefetchRange() {
+        let visible = ViewerImageAttachment(
+            ordinal: 1,
+            id: "visible",
+            source: "visible",
+            bounds: CGRect(x: 0, y: 1_100, width: 20, height: 20),
+            declaredSize: nil
+        )
+        let offscreen = ViewerImageAttachment(
+            ordinal: 0,
+            id: "offscreen",
+            source: "offscreen",
+            bounds: CGRect(x: 0, y: 0, width: 20, height: 20),
+            declaredSize: nil
+        )
+        let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: 200, height: 1_600))
+        drawing.install(layout: imageLayout(attachments: [offscreen, visible]))
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = drawing.bounds.size
+        scrollView.addSubview(drawing)
+        scrollView.contentOffset.y = 1_100
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        window.addSubview(scrollView)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        drawing.imagePixels = [
+            offscreen.id: UIImage(),
+            visible.id: UIImage(),
+        ]
+
+        drawing.updateConfiguredImagesForVisibleWindow()
+
+        XCTAssertEqual(Set(drawing.imagePixels.keys), [visible.id])
+    }
+
+    func testWindowDetachmentReleasesMountedImagePixels() {
+        let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        drawing.install(layout: imageLayout(attachments: []))
+        let window = UIWindow(frame: drawing.bounds)
+        window.addSubview(drawing)
+        window.isHidden = false
+        drawing.imagePixels = ["mounted": UIImage()]
+
+        drawing.removeFromSuperview()
+
+        XCTAssertTrue(drawing.imagePixels.isEmpty)
+        window.isHidden = true
+    }
+
     func testKnownImagePixelsInvalidateWithoutAttachmentRevision() {
         let state = ViewerAttachmentRevisionState()
         XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "known", ordinal: 0, declaredSize: CGSize(width: 40, height: 20)))
@@ -152,6 +249,43 @@ final class PreparedProseRevisionTests: XCTestCase {
             PreparedProseImagePixelMapAccounting.retainedBytes(entryCount: 1)
         )
         XCTAssertEqual(PreparedProseImagePixelMapAccounting.retainedBytes(entryCount: 0), 0)
+    }
+
+    private func imageLayout(attachments: [ViewerImageAttachment]) -> PreparedProseLayout {
+        PreparedProseLayout(
+            key: ProseLayoutKey(
+                semanticKey: "image-layout",
+                widthPixels: 400,
+                themeDigest: "theme",
+                nativeFontRevision: 0,
+                fontEnvironmentRevision: 0,
+                displayScale: 2,
+                attachmentRevision: 0,
+                generationIdentity: "image-layout",
+                semanticGenerationIdentity: "image-layout"
+            ),
+            size: CGSize(width: 200, height: 1_600),
+            blocks: [],
+            imageAttachments: attachments,
+            retainedBytes: 0
+        )
+    }
+
+    private func flushMain(until condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(1)
+        repeat {
+            let flushed = expectation(description: "flush main queue")
+            DispatchQueue.main.async { flushed.fulfill() }
+            wait(for: [flushed], timeout: 1)
+        } while !condition() && Date() < deadline
+    }
+
+    private func imageDataURI() -> String {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        return "data:image/png;base64,\(image.pngData()!.base64EncodedString())"
     }
 
     func testFabricMeasurementScopeCannotConsultAnotherSurfaceSidecar() {

@@ -368,24 +368,32 @@ final class ViewerImagePipeline {
         return enabled && !self.generation.isEmpty && self.generation == generation
     }
 
-    func updateVisibleRect(_ visibleRect: CGRect, attachments: [ViewerImageAttachment]) {
+    @discardableResult
+    func updateVisibleRect(_ visibleRect: CGRect, attachments: [ViewerImageAttachment]) -> Set<String> {
         guard visibleRect.origin.x.isFinite, visibleRect.origin.y.isFinite,
               visibleRect.size.width.isFinite, visibleRect.size.height.isFinite,
-              !visibleRect.isNull, !visibleRect.isEmpty else { return }
+              !visibleRect.isNull, !visibleRect.isEmpty else { return [] }
         let expanded = visibleRect.insetBy(dx: -Self.prefetchMargin, dy: -Self.prefetchMargin)
         let eligible = attachments.filter { $0.ordinal >= 0 && !$0.source.isEmpty && $0.bounds.intersects(expanded) }
-        let start: (String, [ViewerImageAttachment])? = lock.withLock {
+        let eligibleIDs = Set(eligible.map(\.id))
+        let start: (String, [ViewerImageAttachment], [NativeImagePipeline.ImageLoadReceipt])? = lock.withLock {
             guard enabled, !generation.isEmpty else { return nil }
+            let leaving = requested.subtracting(eligibleIDs)
+            let cancellations = leaving.compactMap { receipts.removeValue(forKey: $0) }
+            requested.subtract(leaving)
             let next = eligible.filter { requested.insert($0.id).inserted }
             requestCountForTesting += next.count
-            return (generation, next)
+            return (generation, next, cancellations)
         }
-        guard let (currentGeneration, toStart) = start else { return }
+        guard let (currentGeneration, toStart, cancellations) = start else { return eligibleIDs }
+        cancellations.forEach { $0.cancel() }
         for attachment in toStart {
             let receipt = owner.startImageLoad(
                 source: attachment.source,
                 completion: { [weak self] image in
-                guard let self, self.acceptsCompletion(generation: currentGeneration) else { return }
+                guard let self,
+                      self.acceptsCompletion(generation: currentGeneration, attachmentID: attachment.id)
+                else { return }
                 guard let image else {
                     self.reportFailure(attachment, generation: currentGeneration)
                     return
@@ -397,7 +405,8 @@ final class ViewerImagePipeline {
                 }
                 PreparedProseInstrumentation.imageMetadataRead()
                 self.onIntrinsicMetadata?(attachment, size)
-                guard self.acceptsCompletion(generation: currentGeneration) else { return }
+                guard self.acceptsCompletion(generation: currentGeneration, attachmentID: attachment.id)
+                else { return }
                 PreparedProseInstrumentation.imageDecoded()
                 self.onPixels?(attachment, image)
                 },
@@ -413,6 +422,24 @@ final class ViewerImagePipeline {
             } else {
                 reportFailure(attachment, generation: currentGeneration)
             }
+        }
+        return eligibleIDs
+    }
+
+    func leaveViewport() {
+        let cancellations = lock.withLock {
+            let values = Array(receipts.values)
+            receipts.removeAll()
+            requested.removeAll()
+            return values
+        }
+        cancellations.forEach { $0.cancel() }
+    }
+
+    private func acceptsCompletion(generation: String, attachmentID: String) -> Bool {
+        lock.withLock {
+            enabled && !self.generation.isEmpty && self.generation == generation
+                && requested.contains(attachmentID)
         }
     }
 

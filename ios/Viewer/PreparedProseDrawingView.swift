@@ -58,6 +58,8 @@ public final class PreparedProseDrawingView: UIView {
     private var imageRevisions = ViewerAttachmentRevisionState()
     private var imageGeneration = ""
     private var imageConfiguration: (enabled: Bool, policy: ImageLoadingPolicy) = (false, .default)
+    private var scrollObservations: [NSKeyValueObservation] = []
+    private var observedScrollViewIDs: [ObjectIdentifier] = []
     var layout: PreparedProseLayout? {
         didSet {
             guard oldValue !== layout else { return }
@@ -128,12 +130,15 @@ public final class PreparedProseDrawingView: UIView {
     }
 
     @objc public func updateConfiguredImagesForVisibleWindow() {
-        guard let layout, let window, !isHidden, alpha > 0 else { return }
-        let visible = convert(window.bounds, from: window).intersection(bounds)
-        guard visible.origin.x.isFinite, visible.origin.y.isFinite,
-              visible.size.width.isFinite, visible.size.height.isFinite,
-              !visible.isNull, !visible.isEmpty else { return }
-        imagePipeline.updateVisibleRect(visible, attachments: layout.imageAttachments)
+        refreshScrollObservations()
+        guard let layout, let visible = configuredVisibleRect() else {
+            imagePipeline.leaveViewport()
+            if !imagePixels.isEmpty { imagePixels = [:] }
+            return
+        }
+        let retainedIDs = imagePipeline.updateVisibleRect(visible, attachments: layout.imageAttachments)
+        guard imagePixels.keys.contains(where: { !retainedIDs.contains($0) }) else { return }
+        imagePixels = imagePixels.filter { retainedIDs.contains($0.key) }
     }
 
     @objc public func cancelConfiguredImages() {
@@ -176,6 +181,16 @@ public final class PreparedProseDrawingView: UIView {
         addGestureRecognizer(tapRecognizer)
     }
 
+    public override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        updateConfiguredImagesForVisibleWindow()
+    }
+
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        updateConfiguredImagesForVisibleWindow()
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("PreparedProseDrawingView does not support NSCoder") }
 
@@ -199,6 +214,42 @@ public final class PreparedProseDrawingView: UIView {
         guard left > 0, right > 0 else { return 0 }
         guard left <= Int.max / right else { return Int.max }
         return left * right
+    }
+
+    private func configuredVisibleRect() -> CGRect? {
+        guard let window, !isHidden, alpha > 0 else { return nil }
+        var visible = convert(window.bounds, from: window).intersection(bounds)
+        var ancestor = superview
+        while let view = ancestor, view !== window {
+            guard !view.isHidden, view.alpha > 0 else { return nil }
+            if view.clipsToBounds {
+                visible = visible.intersection(convert(view.bounds, from: view))
+            }
+            ancestor = view.superview
+        }
+        guard visible.origin.x.isFinite, visible.origin.y.isFinite,
+              visible.size.width.isFinite, visible.size.height.isFinite,
+              !visible.isNull, !visible.isEmpty else { return nil }
+        return visible
+    }
+
+    private func refreshScrollObservations() {
+        var scrollViews: [UIScrollView] = []
+        var ancestor = superview
+        while let view = ancestor {
+            if let scrollView = view as? UIScrollView { scrollViews.append(scrollView) }
+            ancestor = view.superview
+        }
+        let activeScrollViews = window == nil ? [] : scrollViews
+        let nextIDs = activeScrollViews.map(ObjectIdentifier.init)
+        guard nextIDs != observedScrollViewIDs else { return }
+        scrollObservations.removeAll()
+        observedScrollViewIDs = nextIDs
+        scrollObservations = activeScrollViews.map { scrollView in
+            scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+                self?.updateConfiguredImagesForVisibleWindow()
+            }
+        }
     }
 
     func interaction(at point: CGPoint) -> PreparedProseInteraction? {
