@@ -1123,6 +1123,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private let nativeTextMutationAfterBlurGraceInterval: TimeInterval = 1.0
     /// Last selection known to match `lastAuthorizedText`, stored in that text's UTF-16 coordinates.
     private var lastAuthorizedSelectedUtf16Range: NSRange?
+    private var lastAuthorizedSelectionIsBackward = false
     private var logicalSelectionScalarRange: (anchor: UInt32, head: UInt32)?
     /// The UIKit selection `logicalSelectionScalarRange` was resolved to, after
     /// any empty-block autocapitalization nudge. Lets a deliberate nudge be
@@ -1727,6 +1728,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private func recordAuthorizedSelectionIfPossible() {
         guard editorId != 0 else {
             lastAuthorizedSelectedUtf16Range = nil
+            lastAuthorizedSelectionIsBackward = false
             return
         }
         let currentText = textStorage.string
@@ -1736,6 +1738,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             return
         }
         lastAuthorizedSelectedUtf16Range = selectedUtf16Range()
+        lastAuthorizedSelectionIsBackward = currentLogicalScalarSelection().map {
+            $0.anchor > $0.head
+        } ?? false
     }
 
     private func scalarRange(forUtf16Range range: NSRange) -> (from: UInt32, to: UInt32) {
@@ -4256,6 +4261,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 )
             )
         }
+        let preservesAuthorizedSelectionDirection = lastAuthorizedSelectionIsBackward
+            && rawSelectionUtf16Range.map { rawSelection in
+                authorizedSelectionUtf16Range.map {
+                    NSEqualRanges(rawSelection, $0)
+                } ?? false
+            } == true
         let capturedAfterBlur = canAdoptNativeTextMutationAfterBlur()
 
         return NativeTextMutation(
@@ -4265,8 +4276,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             replacementText: replacementText,
             resultingText: currentText,
             authorizedText: authorizedText,
-            selectionAnchor: selectedScalarRange?.from,
-            selectionHead: selectedScalarRange?.to,
+            selectionAnchor: preservesAuthorizedSelectionDirection
+                ? selectedScalarRange?.to
+                : selectedScalarRange?.from,
+            selectionHead: preservesAuthorizedSelectionDirection
+                ? selectedScalarRange?.from
+                : selectedScalarRange?.to,
             authorizedSelectionUtf16Range: authorizedSelectionUtf16Range,
             rawSelectionUtf16Range: rawSelectionUtf16Range,
             acceptedSpaceCaretUtf16Offset: preservesAcceptedSpace ? currentEnd : nil,
@@ -4595,6 +4610,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         isReplayingDeferredInsertText = false
         resetPendingNativeTextMutationState()
         lastAuthorizedSelectedUtf16Range = nil
+        lastAuthorizedSelectionIsBackward = false
         logicalSelectionScalarRange = nil
         logicalSelectionUtf16Range = nil
         clearPendingInputTraitRetry()

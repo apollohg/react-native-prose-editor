@@ -159,6 +159,47 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual((selection["head"] as? NSNumber)?.uint32Value, EditorV2Shadow.scalarToDoc(id: editorId, scalar: 1))
     }
 
+    func testNativeTextMutationPreservesAuthorizedBackwardSelectionDirection() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: "<p>abcdef</p>")
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        _ = EditorV2Shadow.setSelectionScalar(
+            id: editorId,
+            scalarAnchor: 5,
+            scalarHead: 1
+        )
+        view.textView.applyUpdateJSON(
+            EditorV2Shadow.getCurrentState(id: editorId),
+            notifyDelegate: false
+        )
+
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 1),
+            with: "A"
+        )
+        flushMainQueue()
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Abcdef</p>")
+        let selection = currentSelection(in: editorId)
+        XCTAssertEqual(
+            (selection["anchor"] as? NSNumber)?.uint32Value,
+            EditorV2Shadow.scalarToDoc(id: editorId, scalar: 5)
+        )
+        XCTAssertEqual(
+            (selection["head"] as? NSNumber)?.uint32Value,
+            EditorV2Shadow.scalarToDoc(id: editorId, scalar: 1)
+        )
+    }
+
     func testSelectionMismatchPublishesAuthoritativeRefreshedMapping() throws {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
