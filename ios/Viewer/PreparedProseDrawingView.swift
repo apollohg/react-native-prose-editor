@@ -312,7 +312,15 @@ public final class PreparedProseDrawingView: UIView {
     }
 
     private var accessibilityNodes: [PreparedProseAccessibilityNode] {
-        layout?.accessibilityNodes.filter { linkInteractionsEnabled || $0.role != .link } ?? []
+        layout?.accessibilityNodes.map { node in
+            guard !linkInteractionsEnabled, node.role == .link else { return node }
+            return PreparedProseAccessibilityNode(
+                interactionIndex: nil,
+                role: .text,
+                label: node.label,
+                bounds: node.bounds
+            )
+        } ?? []
     }
 
     fileprivate func accessibilityFrame(

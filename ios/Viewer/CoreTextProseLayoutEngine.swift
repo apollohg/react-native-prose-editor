@@ -297,6 +297,7 @@ final class CoreTextProseLayoutEngine {
         var cursorY = theme.contentInsets.top
         var blocks: [PreparedProseBlock] = []
         var interactions: [PreparedProseInteraction] = []
+        var accessibilityNodes: [PreparedProseAccessibilityNode] = []
         var imageAttachments: [ViewerImageAttachment] = []
         var retainedBytes = document.retainedBytes
         var listMarkersByIdentity: [Int: PreparedListMarker] = [:]
@@ -339,6 +340,12 @@ final class CoreTextProseLayoutEngine {
                 warningSemanticGeneration: warningSemanticGeneration
             )
             blocks.append(prepared.block)
+            accessibilityNodes.append(contentsOf: makeAccessibilityNodes(
+                for: block,
+                preparedBlock: prepared.block,
+                interactions: prepared.interactions,
+                interactionIndexOffset: interactions.count
+            ))
             interactions.append(contentsOf: prepared.interactions)
             if let attachment = prepared.attachment { imageAttachments.append(attachment) }
             cursorY = prepared.nextY
@@ -346,54 +353,6 @@ final class CoreTextProseLayoutEngine {
         }
         cursorY = (blocks.map(\.bounds.maxY).max() ?? cursorY) + theme.contentInsets.bottom
         let pixelHeight = ceil(cursorY * displayScale)
-        interactions.sort { lhs, rhs in
-            let left = lhs.rects.first ?? .zero
-            let right = rhs.rects.first ?? .zero
-            return PreparedProseInteractionGeometry.visualOrder(left, right)
-        }
-        var accessibilityNodes = zip(document.blocks, blocks).compactMap {
-            sourceBlock, preparedBlock -> PreparedProseAccessibilityNode? in
-            let role: PreparedProseAccessibilityNode.Role
-            let label: String
-            if sourceBlock.nodeType == "image" {
-                role = .image
-                let imageLabel = sourceBlock.inlines.compactMap { inline -> String? in
-                    guard case let .atom(_, _, _, label) = inline else { return nil }
-                    return label
-                }.first?.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let imageLabel, !imageLabel.isEmpty {
-                    label = imageLabel
-                } else {
-                    label = "Image"
-                }
-            } else if sourceBlock.nodeType == "horizontalRule"
-                || sourceBlock.nodeType == "horizontal_rule"
-            {
-                role = .separator
-                label = "Separator"
-            } else {
-                label = plainAccessibilityLabel(for: sourceBlock)
-                guard !label.isEmpty else { return nil }
-                role = sourceBlock.nodeType == "heading" ? .heading : .text
-            }
-            return PreparedProseAccessibilityNode(
-                interactionIndex: nil,
-                role: role,
-                label: label,
-                bounds: preparedBlock.bounds
-            )
-        }
-        accessibilityNodes.append(contentsOf: interactions.enumerated().map { index, interaction in
-            PreparedProseAccessibilityNode(
-                interactionIndex: index,
-                role: interaction.kind == .link ? .link : .mention,
-                label: interaction.kind == .link ? interaction.visibleText : interaction.label,
-                bounds: interaction.rects.dropFirst().reduce(interaction.rects.first ?? .zero) { $0.union($1) }
-            )
-        })
-        accessibilityNodes.sort {
-            PreparedProseInteractionGeometry.visualOrder($0.bounds, $1.bounds)
-        }
         retainedBytes += interactions.reduce(0) { $0 + $1.estimatedRetainedBytes }
             + accessibilityNodes.reduce(0) { $0 + $1.estimatedRetainedBytes }
         // Mounted image-publication sidecars are runtime surface ownership,
@@ -419,24 +378,144 @@ final class CoreTextProseLayoutEngine {
         return [ViewerListItemAncestor(identity: boundary.identity, context: context)]
     }
 
-    private func plainAccessibilityLabel(for block: ViewerBlock) -> String {
-        let text = block.inlines.reduce(into: "") { result, inline in
-            switch inline {
-            case let .text(value, marks):
-                guard !marks.contains(where: { $0.markType == "link" }) else { return }
-                result.append(value)
-            case let .atom(nodeType, _, _, label):
-                guard nodeType != "mention" else { return }
-                result.append(label)
-            }
-        }.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return "" }
-        let marker = block.listItemBoundary?.isFirstRenderableLeaf == true
+    private func makeAccessibilityNodes(
+        for block: ViewerBlock,
+        preparedBlock: PreparedProseBlock,
+        interactions: [PreparedProseInteraction],
+        interactionIndexOffset: Int
+    ) -> [PreparedProseAccessibilityNode] {
+        if block.nodeType == "image" {
+            let imageLabel = block.inlines.compactMap { inline -> String? in
+                guard case let .atom(_, _, _, label) = inline else { return nil }
+                return label
+            }.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let accessibleImageLabel = imageLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "Image"
+            return [PreparedProseAccessibilityNode(
+                interactionIndex: nil,
+                role: .image,
+                label: accessibleImageLabel,
+                bounds: preparedBlock.bounds
+            )]
+        }
+        if block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule" {
+            return [PreparedProseAccessibilityNode(
+                interactionIndex: nil,
+                role: .separator,
+                label: "Separator",
+                bounds: preparedBlock.bounds
+            )]
+        }
+
+        var nodes: [PreparedProseAccessibilityNode] = []
+        var interactionCursor = 0
+        var pendingPlainText = ""
+        var pendingLinkText = ""
+        var pendingLinkHref: String?
+        var markerPending = block.listItemBoundary?.isFirstRenderableLeaf == true
             ? block.listContext.map { context in
                 context.kind == "task" ? (context.checked ? "Checked" : "Unchecked") : "Item"
             }
             : nil
-        return marker.map { "\($0), \(text)" } ?? text
+
+        func labelWithMarker(_ rawLabel: String) -> String {
+            let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty else { return "" }
+            guard let marker = markerPending else { return label }
+            markerPending = nil
+            return "\(marker), \(label)"
+        }
+
+        func nextInteraction(_ kind: PreparedProseInteraction.Kind) -> (Int, PreparedProseInteraction)? {
+            while interactions.indices.contains(interactionCursor) {
+                let index = interactionCursor
+                interactionCursor += 1
+                if interactions[index].kind == kind {
+                    return (interactionIndexOffset + index, interactions[index])
+                }
+            }
+            return nil
+        }
+
+        func appendPlainText() {
+            let label = labelWithMarker(pendingPlainText)
+            pendingPlainText = ""
+            guard !label.isEmpty else { return }
+            nodes.append(PreparedProseAccessibilityNode(
+                interactionIndex: nil,
+                role: block.nodeType == "heading" ? .heading : .text,
+                label: label,
+                bounds: preparedBlock.bounds
+            ))
+        }
+
+        func appendLink() {
+            guard !pendingLinkText.isEmpty else { return }
+            let label = labelWithMarker(pendingLinkText)
+            pendingLinkText = ""
+            pendingLinkHref = nil
+            guard !label.isEmpty else { return }
+            guard let (index, interaction) = nextInteraction(.link) else {
+                nodes.append(PreparedProseAccessibilityNode(
+                    interactionIndex: nil,
+                    role: .text,
+                    label: label,
+                    bounds: preparedBlock.bounds
+                ))
+                return
+            }
+            nodes.append(PreparedProseAccessibilityNode(
+                interactionIndex: index,
+                role: .link,
+                label: label,
+                bounds: interaction.rects.dropFirst().reduce(interaction.rects.first ?? .zero) {
+                    $0.union($1)
+                }
+            ))
+        }
+
+        for inline in block.inlines {
+            switch inline {
+            case let .text(text, marks):
+                if let linkHref = href(in: marks), !text.isEmpty {
+                    appendPlainText()
+                    if let pendingLinkHref, pendingLinkHref != linkHref {
+                        appendLink()
+                    }
+                    pendingLinkHref = linkHref
+                    pendingLinkText.append(text)
+                } else {
+                    appendLink()
+                    pendingPlainText.append(text)
+                }
+            case let .atom(nodeType, _, _, label) where nodeType == "mention":
+                appendPlainText()
+                appendLink()
+                let accessibleLabel = labelWithMarker(label)
+                guard !accessibleLabel.isEmpty else { continue }
+                guard let (index, interaction) = nextInteraction(.mention) else {
+                    pendingPlainText.append(accessibleLabel)
+                    continue
+                }
+                nodes.append(PreparedProseAccessibilityNode(
+                    interactionIndex: index,
+                    role: .mention,
+                    label: accessibleLabel,
+                    bounds: interaction.rects.dropFirst().reduce(interaction.rects.first ?? .zero) {
+                        $0.union($1)
+                    }
+                ))
+            case let .atom(nodeType, _, _, label):
+                appendLink()
+                if nodeType == "hardBreak" || nodeType == "hard_break" {
+                    appendPlainText()
+                } else {
+                    pendingPlainText.append(label)
+                }
+            }
+        }
+        appendLink()
+        appendPlainText()
+        return nodes
     }
 
     private func prepareBlock(

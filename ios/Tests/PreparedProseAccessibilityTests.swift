@@ -104,7 +104,7 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         XCTAssertGreaterThan(layout.retainedBytes, document.retainedBytes)
     }
 
-    func testDisabledLinksAreAbsentButMentionsRemainAccessible() throws {
+    func testLayoutRetainsLinkAndMentionAccessibilityNodes() throws {
         let document = ViewerDocument(
             semanticKey: "disabled-link-fixture",
             blocks: [ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false, listContext: nil, listItemBoundary: nil, inlines: [
@@ -119,6 +119,38 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         XCTAssertEqual(layout.interactions.filter { $0.kind == .link }.count, 1)
         XCTAssertEqual(layout.accessibilityNodes.filter { $0.role == .link }.count, 1)
         XCTAssertEqual(layout.accessibilityNodes.filter { $0.role == .mention }.count, 1)
+    }
+
+    func testInlineAccessibilityNodesFollowDocumentOrder() throws {
+        let document = ViewerDocument(
+            semanticKey: "inline-accessibility-order",
+            blocks: [ViewerBlock(
+                nodeType: "paragraph",
+                depth: 0,
+                inBlockquote: false,
+                listContext: nil,
+                listItemBoundary: nil,
+                inlines: [
+                    .text(text: "Before ", marks: []),
+                    .text(text: "link", marks: [
+                        FfiViewerMark(markType: "link", attrsJson: #"{"href":"https://example.test"}"#)
+                    ]),
+                    .text(text: " between ", marks: []),
+                    .atom(nodeType: "mention", docPos: 9, attrsJSON: "{}", label: "@Ada"),
+                    .text(text: " after", marks: [])
+                ]
+            )],
+            isEmpty: false,
+            retainedBytes: 64
+        )
+
+        let layout = try prepare(document, width: 240)
+
+        XCTAssertEqual(layout.accessibilityNodes.map(\.role), [.text, .link, .text, .mention, .text])
+        XCTAssertEqual(
+            layout.accessibilityNodes.map(\.label),
+            ["Before", "link", "between", "@Ada", "after"]
+        )
     }
 
     func testAccessibleDrawingViewLazilyMaterializesPermittedNodesAndRecycles() throws {
@@ -151,8 +183,14 @@ final class PreparedProseAccessibilityTests: XCTestCase {
 
         drawing.linkInteractionsEnabled = false
         XCTAssertTrue(drawing.layout === layout)
-        XCTAssertEqual(drawing.accessibilityElementCount(), 1)
+        XCTAssertEqual(drawing.accessibilityElementCount(), 2)
         XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 0)
+        let disabledLink = try XCTUnwrap(
+            drawing.accessibilityElement(at: 0) as? UIAccessibilityElement
+        )
+        XCTAssertEqual(disabledLink.accessibilityLabel, "link")
+        XCTAssertTrue(disabledLink.accessibilityTraits.contains(.staticText))
+        XCTAssertFalse(disabledLink.accessibilityActivate())
 
         drawing.install(layout: nil)
         XCTAssertEqual(drawing.accessibilityElementCount(), 0)
