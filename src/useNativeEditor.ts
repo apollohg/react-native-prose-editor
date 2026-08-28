@@ -155,6 +155,14 @@ export function useNativeEditorDocument(
         lastContentKey: null as string | null,
         lastHistoryKey: null as string | null,
     });
+    const pendingControlledEchoesRef = useRef({
+        editorId,
+        keys: [] as string[],
+    });
+    const controlledKindRef = useRef<'html' | 'json' | null>(null);
+    controlledKindRef.current = value != null ? 'html' : valueJSON != null ? 'json' : null;
+    const ignoredControlledEchoRef = useRef<string | null>(null);
+    const lastControlledContentKeyRef = useRef<string | null>(null);
     if (readyRef.current.editorId !== editorId) {
         readyRef.current = { editorId, ready: false };
     }
@@ -165,6 +173,9 @@ export function useNativeEditorDocument(
             lastContentKey: null,
             lastHistoryKey: null,
         };
+        pendingControlledEchoesRef.current = { editorId, keys: [] };
+        ignoredControlledEchoRef.current = null;
+        lastControlledContentKeyRef.current = null;
     }
 
     const refresh = useCallback(
@@ -222,9 +233,25 @@ export function useNativeEditorDocument(
                     emitted.lastContentKey !== contentKey
                 ) {
                     if (snapshotHtml != null) {
+                        if (
+                            controlledKindRef.current === 'html' &&
+                            onContentChangeRef.current != null
+                        ) {
+                            const echoes = pendingControlledEchoesRef.current.keys;
+                            echoes.push(`html:${snapshotHtml}`);
+                            if (echoes.length > 32) echoes.shift();
+                        }
                         onContentChangeRef.current?.(snapshotHtml);
                     }
                     if (snapshotJson != null) {
+                        if (
+                            controlledKindRef.current === 'json' &&
+                            onContentChangeJSONRef.current != null
+                        ) {
+                            const echoes = pendingControlledEchoesRef.current.keys;
+                            echoes.push(`json:${contentKey}`);
+                            if (echoes.length > 32) echoes.shift();
+                        }
                         onContentChangeJSONRef.current?.(snapshotJson);
                     }
                 }
@@ -258,23 +285,51 @@ export function useNativeEditorDocument(
         const wantsJson = value == null && serializedControlledJson != null;
         if (!wantsHtml && !wantsJson) return;
 
+        const controlledContentKey = wantsHtml
+            ? `html:${value}`
+            : `json:${serializedControlledJson}`;
+        const controlledContentChanged =
+            lastControlledContentKeyRef.current !== controlledContentKey;
+        if (controlledContentChanged) {
+            lastControlledContentKeyRef.current = controlledContentKey;
+            ignoredControlledEchoRef.current = null;
+        }
+        if (ignoredControlledEchoRef.current === controlledContentKey) return;
+        if (!controlledContentChanged && pendingControlledEchoesRef.current.keys.length > 0) return;
+
         const snapshot = handle.bridge.getContentSnapshot();
         if (currentEditorIdRef.current !== editorId || emittedRef.current.editorId !== editorId) {
             return;
         }
         const currentJsonKey = JSON.stringify(snapshot.json);
         if (wantsHtml && snapshot.html === value) {
+            const echoIndex = pendingControlledEchoesRef.current.keys.indexOf(controlledContentKey);
+            if (echoIndex >= 0) {
+                pendingControlledEchoesRef.current.keys.splice(0, echoIndex + 1);
+            }
             emittedRef.current.lastRevision = engineView.documentRevision;
             emittedRef.current.lastContentKey = currentJsonKey;
             return;
         }
         if (wantsJson && currentJsonKey === serializedControlledJson) {
+            const echoIndex = pendingControlledEchoesRef.current.keys.indexOf(controlledContentKey);
+            if (echoIndex >= 0) {
+                pendingControlledEchoesRef.current.keys.splice(0, echoIndex + 1);
+            }
             emittedRef.current.lastRevision = engineView.documentRevision;
             emittedRef.current.lastContentKey = currentJsonKey;
             return;
         }
 
+        const echoIndex = pendingControlledEchoesRef.current.keys.indexOf(controlledContentKey);
+        if (echoIndex >= 0) {
+            pendingControlledEchoesRef.current.keys.splice(0, echoIndex + 1);
+            ignoredControlledEchoRef.current = controlledContentKey;
+            return;
+        }
+
         try {
+            pendingControlledEchoesRef.current.keys = [];
             handle.bridge.applyLocalApi({
                 ...(wantsHtml
                     ? { setHtml: value }

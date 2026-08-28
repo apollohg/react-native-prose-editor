@@ -1598,6 +1598,123 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('does not roll back a newer native commit when a prior controlled echo renders late', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const onContentChange = jest.fn();
+        const { getByTestId, rerender } = render(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                value='<p>hello</p>'
+                onContentChange={onContentChange}
+            />
+        );
+        mockNativeModule.editorV2ApplyLocalApi.mockClear();
+
+        const commit = (html: string) => {
+            handle.bridge.replaceDocument({ setHtml: html, history: 'undoableBoundary' });
+            getByTestId('native-editor-view').props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: renderUpdateValue(handle.editorId),
+                    documentRevision: handle.bridge.getState().documentRevision,
+                },
+            });
+        };
+
+        act(() => commit('<p>hello!</p>'));
+        expect(onContentChange).toHaveBeenLastCalledWith('<p>hello!</p>');
+        act(() => commit('<p>hello! </p>'));
+        expect(onContentChange).toHaveBeenLastCalledWith('<p>hello! </p>');
+        mockNativeModule.editorV2ApplyLocalApi.mockClear();
+
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                value='<p>hello!</p>'
+                onContentChange={onContentChange}
+            />
+        );
+
+        expect(mockNativeModule.editorV2ApplyLocalApi).not.toHaveBeenCalled();
+        expect(handle.bridge.getContentSnapshot().html).toBe('<p>hello! </p>');
+        expect(getByTestId('native-editor-view').props.editorUpdateJson).toBeUndefined();
+
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                value='<p>hello! </p>'
+                onContentChange={onContentChange}
+            />
+        );
+        expect(mockNativeModule.editorV2ApplyLocalApi).not.toHaveBeenCalled();
+
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                value='<p>hello!</p>'
+                onContentChange={onContentChange}
+            />
+        );
+        expect(mockNativeModule.editorV2ApplyLocalApi).toHaveBeenCalledTimes(1);
+        expect(handle.bridge.getContentSnapshot().html).toBe('<p>hello!</p>');
+        handle.destroy();
+    });
+
+    it('does not roll back a newer native commit when a prior controlled JSON echo renders late', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const onContentChangeJSON = jest.fn();
+        const { getByTestId, rerender } = render(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                valueJSON={V2_INITIAL_DOC}
+                onContentChangeJSON={onContentChangeJSON}
+            />
+        );
+        mockNativeModule.editorV2ApplyLocalApi.mockClear();
+
+        const commit = (json: DocumentJSON) => {
+            handle.bridge.replaceDocument({ setJson: json, history: 'undoableBoundary' });
+            getByTestId('native-editor-view').props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: renderUpdateValue(handle.editorId),
+                    documentRevision: handle.bridge.getState().documentRevision,
+                },
+            });
+        };
+
+        act(() => commit(V2_DOC_B));
+        act(() => commit(V2_DOC_C));
+
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                valueJSON={V2_DOC_B}
+                onContentChangeJSON={onContentChangeJSON}
+            />
+        );
+        expect(mockNativeModule.editorV2ApplyLocalApi).not.toHaveBeenCalled();
+        expect(handle.bridge.getContentSnapshot().json).toEqual(V2_DOC_C);
+
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                valueJSON={V2_DOC_C}
+                onContentChangeJSON={onContentChangeJSON}
+            />
+        );
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                valueJSON={V2_DOC_B}
+                onContentChangeJSON={onContentChangeJSON}
+            />
+        );
+        expect(mockNativeModule.editorV2ApplyLocalApi).toHaveBeenCalledTimes(1);
+        expect(handle.bridge.getContentSnapshot().json).toEqual(V2_DOC_B);
+        handle.destroy();
+    });
+
     it('emits content changes for incremental native commit snapshots', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const onContentChange = jest.fn();
