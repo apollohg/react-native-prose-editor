@@ -4253,6 +4253,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             currentEndUtf16: currentEnd + (preservesAcceptedSpace ? 1 : 0),
             currentTextUtf16Length: current.length + (preservesAcceptedSpace ? 1 : 0)
         )
+        let mappedAuthorizedSelectionUtf16Range = targetSelectionUtf16RangeForNativeTextMutation(
+            rawSelectionUtf16Range: authorizedSelectionUtf16Range,
+            authorizedSelectionUtf16Range: authorizedSelectionUtf16Range,
+            replacementStartUtf16: prefix,
+            authorizedEndUtf16: authorizedEnd,
+            currentEndUtf16: currentEnd + (preservesAcceptedSpace ? 1 : 0),
+            currentTextUtf16Length: current.length + (preservesAcceptedSpace ? 1 : 0)
+        )
         let authorizedReplacementUtf16Range = NSRange(
             location: prefix,
             length: authorizedEnd - prefix
@@ -4267,9 +4275,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             )
         }
         let preservesAuthorizedSelectionDirection = lastAuthorizedSelectionIsBackward
-            && rawSelectionUtf16Range.map { rawSelection in
-                authorizedSelectionUtf16Range.map {
-                    NSEqualRanges(rawSelection, $0)
+            && targetSelectionUtf16Range.map { targetSelection in
+                mappedAuthorizedSelectionUtf16Range.map {
+                    NSEqualRanges(targetSelection, $0)
                 } ?? false
             } == true
         let capturedAfterBlur = canAdoptNativeTextMutationAfterBlur()
@@ -4394,6 +4402,15 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 scalarRange(forUtf16Range: $0, in: selectionConversionStorage)
             }
             : nil
+        let preservesCapturedSelectionDirection = selectedScalarRange.map { selectedRange in
+            guard let anchor = mutation.selectionAnchor,
+                  let head = mutation.selectionHead,
+                  anchor > head
+            else {
+                return false
+            }
+            return selectedRange.from == head && selectedRange.to == anchor
+        } ?? false
         return NativeTextMutation(
             from: mutation.from,
             to: mutation.to,
@@ -4401,8 +4418,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             replacementText: mutation.replacementText,
             resultingText: mutation.resultingText,
             authorizedText: mutation.authorizedText,
-            selectionAnchor: selectedScalarRange?.from ?? mutation.selectionAnchor,
-            selectionHead: selectedScalarRange?.to ?? mutation.selectionHead,
+            selectionAnchor: preservesCapturedSelectionDirection
+                ? selectedScalarRange?.to
+                : selectedScalarRange?.from ?? mutation.selectionAnchor,
+            selectionHead: preservesCapturedSelectionDirection
+                ? selectedScalarRange?.from
+                : selectedScalarRange?.to ?? mutation.selectionHead,
             authorizedSelectionUtf16Range: mutation.authorizedSelectionUtf16Range,
             rawSelectionUtf16Range: shouldUseCurrentSelection
                 ? currentSelectionUtf16Range
