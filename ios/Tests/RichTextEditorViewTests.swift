@@ -10804,6 +10804,52 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertEqual(view.textView.currentLogicalScalarSelection()?.head, 6)
     }
 
+    func testNativeCorrectionDoesNotAdoptTransientBeginningSelection() {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        for character in "thueh" {
+            view.textView.insertText(String(character))
+        }
+
+        view.textView.textStorage.beginEditing()
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 4),
+            with: "thrus"
+        )
+        view.textView.selectedRange = NSRange(location: 0, length: 0)
+        view.textView.textStorage.endEditing()
+        flushMain()
+
+        XCTAssertEqual(v2DocumentText(adapter), "thrush")
+        XCTAssertEqual(view.textView.textStorage.string, "thrush")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 6, length: 0))
+        XCTAssertEqual(view.textView.currentLogicalScalarSelection()?.head, 6)
+    }
+
+    func testNativeCorrectionAdoptsSubsequentBeginningSelection() {
+        let (view, adapter, window) = makeBoundView(html: "<p></p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        for character in "thueh" {
+            view.textView.insertText(String(character))
+        }
+
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 4),
+            with: "thrus"
+        )
+        setCollapsedCaret(in: view.textView, utf16Offset: 0)
+        flushMain()
+
+        XCTAssertEqual(v2DocumentText(adapter), "thrush")
+        XCTAssertEqual(view.textView.textStorage.string, "thrush")
+        XCTAssertEqual(view.textView.selectedRange, NSRange(location: 0, length: 0))
+        XCTAssertEqual(view.textView.currentLogicalScalarSelection()?.head, 0)
+    }
+
     func testStagingAutocorrectPreservesAcceptedSpaceWhenNativeReplacementConsumesIt() {
         let (view, adapter, window) = makeBoundView(html: "<p></p>")
         defer { view.removeFromSuperview(); window.isHidden = true }

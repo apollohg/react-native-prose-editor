@@ -4372,7 +4372,25 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         } else {
             currentSelectionDiffersFromAuthorized = currentSelectionUtf16Range != nil
         }
+        let repeatsCapturedTransientBeginningSelection: Bool
+        if let currentSelectionUtf16Range,
+           let rawSelectionUtf16Range = mutation.rawSelectionUtf16Range,
+           let authorizedSelectionUtf16Range = mutation.authorizedSelectionUtf16Range,
+           NSEqualRanges(currentSelectionUtf16Range, rawSelectionUtf16Range) {
+            repeatsCapturedTransientBeginningSelection =
+                isTransientBeginningSelectionDuringNativeReplacement(
+                    currentSelectionUtf16Range,
+                    authorizedSelection: authorizedSelectionUtf16Range,
+                    replacementStartUtf16: mutation.authorizedReplacementUtf16Range.location,
+                    authorizedEndUtf16: NSMaxRange(mutation.authorizedReplacementUtf16Range),
+                    currentEndUtf16: mutation.authorizedReplacementUtf16Range.location
+                        + mutation.replacementText.utf16.count
+                )
+        } else {
+            repeatsCapturedTransientBeginningSelection = false
+        }
         let shouldUseCurrentSelection = currentSelectionUtf16Range != nil
+            && !repeatsCapturedTransientBeginningSelection
             && (
                 (didSelectionChangeAfterCapture && currentSelectionDiffersFromAuthorized)
                     || didCurrentRangeMoveAfterCapture
@@ -4456,6 +4474,13 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         if let rawSelection = rawSelectionUtf16Range,
            rawSelection.location != NSNotFound,
+           !isTransientBeginningSelectionDuringNativeReplacement(
+               rawSelection,
+               authorizedSelection: authorizedSelection,
+               replacementStartUtf16: replacementStartUtf16,
+               authorizedEndUtf16: authorizedEndUtf16,
+               currentEndUtf16: currentEndUtf16
+           ),
            !NSEqualRanges(rawSelection, authorizedSelection) {
             return clampedUtf16Range(rawSelection, length: currentTextUtf16Length)
         }
@@ -4490,6 +4515,21 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         let clampedStart = min(max(start, 0), currentTextUtf16Length)
         let clampedEnd = min(max(end, 0), currentTextUtf16Length)
         return NSRange(location: clampedStart, length: max(0, clampedEnd - clampedStart))
+    }
+
+    private func isTransientBeginningSelectionDuringNativeReplacement(
+        _ rawSelection: NSRange,
+        authorizedSelection: NSRange,
+        replacementStartUtf16: Int,
+        authorizedEndUtf16: Int,
+        currentEndUtf16: Int
+    ) -> Bool {
+        rawSelection.location == 0
+            && rawSelection.length == 0
+            && authorizedSelection.location > 0
+            && authorizedSelection.length == 0
+            && authorizedEndUtf16 > replacementStartUtf16
+            && currentEndUtf16 > replacementStartUtf16
     }
 
     private func clampedUtf16Range(_ range: NSRange?, length: Int) -> NSRange? {
