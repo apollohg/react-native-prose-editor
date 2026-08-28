@@ -2734,6 +2734,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             )
         }
 
+        _ = applyAttributedRender(
+            state.startingAuthorizedAttributedText,
+            usedPatch: false,
+            positionCacheUpdate: .scan
+        )
         guard let commit = commitMarkedTextWithNativeOutcome(
             state.latestText,
             replacementRange: replacementRange
