@@ -30,6 +30,15 @@ require_file() {
   [[ -s "$root/$relative_path" ]] || fail "missing or empty $relative_path under $root"
 }
 
+ios_deployment_target() {
+  ruby -e '
+    text = File.read(File.join(ARGV.fetch(0), "ReactNativeProseEditor.podspec"))
+    match = text.match(/s\.platforms\s*=\s*\{\s*:ios\s*=>\s*["\x27]([0-9]+(?:\.[0-9]+){1,2})["\x27]\s*\}/)
+    abort "podspec must declare one literal iOS deployment target" unless match
+    puts match[1]
+  ' "$1" || fail "could not resolve the podspec iOS deployment target"
+}
+
 resolve_single_artifact() {
   local directory="$1"
   local pattern="$2"
@@ -235,8 +244,10 @@ validate_archive_architectures() {
   local archive_path="$1"
   local expected_architectures="$2"
   local label="$3"
+  local deployment_target="$4"
   local architecture_info actual_architectures normalized_architectures architecture thin_archive
   local extracted_objects_dir
+  local load_commands
   local architecture_nm_output architecture_nm_status unexpected_nm_lines
 
   [[ -s "$archive_path" ]] || fail "$label archive is missing or empty"
@@ -268,6 +279,43 @@ validate_archive_architectures() {
         otool -hv "$object" 2>&1 | grep -q "Mach header" || exit 1
       done
     ) || fail "$label $architecture archive contains an unreadable Mach-O object member"
+    load_commands="$work_dir/${label//[^[:alnum:]]/_}-$architecture-load-commands.txt"
+    otool -l "$thin_archive" > "$load_commands" \
+      || fail "$label $architecture archive load commands cannot be read"
+    ruby -e '
+      target = ARGV.fetch(0).split(".").map(&:to_i)
+      target.fill(0, target.length...3)
+      label = ARGV.fetch(1)
+      objects = []
+      versions = {}
+      current = nil
+      pending = nil
+      File.foreach(ARGV.fetch(2)) do |line|
+        if (match = line.match(/\.a\((.+)\):\s*$/))
+          current = match[1]
+          objects << current
+          pending = nil
+          next
+        end
+        pending = :minos if line.match?(/^\s*cmd LC_BUILD_VERSION\s*$/)
+        pending = :version if line.match?(/^\s*cmd LC_VERSION_MIN_IPHONEOS\s*$/)
+        next unless pending && current
+        field = pending == :minos ? "minos" : "version"
+        next unless (match = line.match(/^\s*#{field}\s+([0-9]+(?:\.[0-9]+){0,2})/))
+        value = match[1]
+        parts = value.split(".").map(&:to_i)
+        parts.fill(0, parts.length...3)
+        if (parts <=> target) == 1
+          abort "#{label} object #{current} requires iOS #{value}, above #{ARGV.fetch(0)}"
+        end
+        versions[current] = value
+        pending = nil
+      end
+      abort "#{label} archive contains no Mach-O object members" if objects.empty?
+      missing = objects.uniq.reject { |object| versions.key?(object) }
+      abort "#{label} object #{missing.first} has no iOS deployment load command" unless missing.empty?
+    ' "$deployment_target" "$label $architecture" "$load_commands" \
+      || fail "$label $architecture archive deployment target validation failed"
     architecture_nm_status=0
     architecture_nm_output="$(nm -gU "$thin_archive" 2>&1)" || architecture_nm_status=$?
     if [[ "$architecture_nm_status" -ne 0 ]]; then
@@ -282,6 +330,7 @@ validate_archive_architectures() {
 
 validate_xcframework() {
   local xcframework_dir="$1"
+  local deployment_target="$2"
   local plist_path="$xcframework_dir/Info.plist"
   local plist_json="$work_dir/xcframework-info.json"
   [[ -s "$plist_path" ]] || fail "XCFramework Info.plist is missing or empty"
@@ -294,8 +343,8 @@ validate_xcframework() {
     ]
     abort "XCFramework AvailableLibraries must exactly describe the device and simulator slices" unless actual.sort_by { |entry| entry.fetch("LibraryIdentifier") } == expected.sort_by { |entry| entry.fetch("LibraryIdentifier") }
   ' "$plist_json" || fail "XCFramework slice metadata does not match the packaged libraries"
-  validate_archive_architectures "$xcframework_dir/ios-arm64/libeditor_core.a" "arm64" "iOS device"
-  validate_archive_architectures "$xcframework_dir/ios-arm64_x86_64-simulator/libeditor_core.a" "arm64 x86_64" "iOS simulator"
+  validate_archive_architectures "$xcframework_dir/ios-arm64/libeditor_core.a" "arm64" "iOS device" "$deployment_target"
+  validate_archive_architectures "$xcframework_dir/ios-arm64_x86_64-simulator/libeditor_core.a" "arm64 x86_64" "iOS simulator" "$deployment_target"
 }
 
 require_declaration_symbol() {
@@ -733,7 +782,7 @@ validate_packed_package_root() {
 
   validate_package_entries "$root"
   validate_abi_root "$root"
-  validate_xcframework "$root/ios/EditorCore.xcframework"
+  validate_xcframework "$root/ios/EditorCore.xcframework" "$(ios_deployment_target "$root")"
   for abi in arm64-v8a armeabi-v7a x86 x86_64; do
     validate_android_library "$root/rust/android/$abi/libeditor_core.so" "$abi"
   done
@@ -793,7 +842,7 @@ case "${1:-}" in
   --validate-xcframework)
     [[ "$#" == "2" ]] || fail "usage: $0 --validate-xcframework PATH"
     require_command ruby; require_command plutil; require_command lipo; require_command file; require_command nm
-    validate_xcframework "$2"
+    validate_xcframework "$2" "$(ios_deployment_target "$repo_root")"
     echo "XCFramework metadata and exact static archive ABI validation passed."
     exit 0
     ;;

@@ -115,17 +115,35 @@ printf 'not-a-mach-o-object' > "$fixture_root/invalid-object.o"
 ar -qS "$corrupt_member_fixture/ios-arm64/libeditor_core.a" "$fixture_root/invalid-object.o"
 assert_rejected "$corrupt_member_fixture" "a nonempty archive with a corrupt object member"
 
+supported_deployment_fixture="$fixture_root/supported deployment target.xcframework"
+cp -R "$repo_root/ios/EditorCore.xcframework" "$supported_deployment_fixture"
+printf 'int supported_deployment_target(void) { return 1; }\n' > "$fixture_root/supported-deployment.c"
+xcrun clang -target arm64-apple-ios16.4 -c "$fixture_root/supported-deployment.c" \
+  -o "$fixture_root/supported-deployment.o"
+ar -qS "$supported_deployment_fixture/ios-arm64/libeditor_core.a" \
+  "$fixture_root/supported-deployment.o"
+"$validator" --validate-xcframework "$supported_deployment_fixture"
+
+newer_deployment_fixture="$fixture_root/newer deployment target.xcframework"
+cp -R "$repo_root/ios/EditorCore.xcframework" "$newer_deployment_fixture"
+printf 'int newer_deployment_target(void) { return 1; }\n' > "$fixture_root/newer-deployment.c"
+xcrun clang -target arm64-apple-ios17.0 -c "$fixture_root/newer-deployment.c" \
+  -o "$fixture_root/newer-deployment.o"
+ar -qS "$newer_deployment_fixture/ios-arm64/libeditor_core.a" \
+  "$fixture_root/newer-deployment.o"
+assert_rejected "$newer_deployment_fixture" "an object member requiring iOS 17.0"
+
 missing_symbol_fixture="$fixture_root/missing symbols.xcframework"
 cp -R "$repo_root/ios/EditorCore.xcframework" "$missing_symbol_fixture"
 printf 'int unrelated_symbol(void) { return 1; }\n' > "$fixture_root/unrelated.c"
-xcrun clang -target arm64-apple-ios15.1 -c "$fixture_root/unrelated.c" -o "$fixture_root/unrelated.o"
+xcrun clang -target arm64-apple-ios16.4 -c "$fixture_root/unrelated.c" -o "$fixture_root/unrelated.o"
 ar -rcs "$fixture_root/unrelated.a" "$fixture_root/unrelated.o"
 cp "$fixture_root/unrelated.a" "$missing_symbol_fixture/ios-arm64/libeditor_core.a"
 assert_rejected "$missing_symbol_fixture" "an architecture-correct archive without structured-create symbols"
 
 mixed_symbol_fixture="$fixture_root/mixed per-architecture symbols.xcframework"
 cp -R "$repo_root/ios/EditorCore.xcframework" "$mixed_symbol_fixture"
-xcrun clang -target x86_64-apple-ios15.1-simulator -c "$fixture_root/unrelated.c" \
+xcrun clang -target x86_64-apple-ios16.4-simulator -c "$fixture_root/unrelated.c" \
   -o "$fixture_root/unrelated-x86_64.o"
 ar -rcs "$fixture_root/unrelated-x86_64.a" "$fixture_root/unrelated-x86_64.o"
 lipo -create \

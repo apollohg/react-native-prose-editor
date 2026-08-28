@@ -32,7 +32,7 @@ target 'NativeEditorTestHost' do
   )
 
   target 'NativeEditorTests' do
-    inherit! :complete
+    inherit! :search_paths
   end
 
   post_install do |installer|

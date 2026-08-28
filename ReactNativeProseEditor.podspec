@@ -13,7 +13,7 @@ Pod::Spec.new do |s|
   s.license        = { :type => 'Apache-2.0', :file => 'LICENSE' }
   s.author         = 'Apollo HG'
   s.homepage       = 'https://github.com/apollohg/react-native-prose-editor'
-  s.platforms      = { :ios => '15.1' }
+  s.platforms      = { :ios => '16.4' }
   s.swift_version  = '5.9'
   s.source         = { git: 'https://github.com/apollohg/react-native-prose-editor.git' }
   # UniFFI's generated Swift bindings import a companion Clang module

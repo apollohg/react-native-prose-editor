@@ -107,9 +107,11 @@ targets:
           - $(SRCROOT)/../ios/editor_coreFFI
         "OTHER_LDFLAGS[sdk=iphoneos*]":
           - $(inherited)
+          - $(PODS_CONFIGURATION_BUILD_DIR)/ReactCodegen/libReactCodegen.a
           - $(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64/libeditor_core.a
         "OTHER_LDFLAGS[sdk=iphonesimulator*]":
           - $(inherited)
+          - $(PODS_CONFIGURATION_BUILD_DIR)/ReactCodegen/libReactCodegen.a
           - $(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a
     dependencies: []
 

@@ -24,6 +24,7 @@ CRATE_DIR="$SCRIPT_DIR/editor-core"
 OUT_DIR="$SCRIPT_DIR/ios"
 PKG_IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/ios"
 LIB_NAME="libeditor_core.a"
+IOS_DEPLOYMENT_TARGET="16.4"
 
 source "$SCRIPT_DIR/toolchain.sh"
 TARGET_DIR="${CARGO_TARGET_DIR:-$CRATE_DIR/target}"
@@ -38,7 +39,8 @@ echo "==> Building editor-core for iOS targets..."
 
 for target in "${IOS_TARGETS[@]}"; do
     echo "  -> $target"
-    "$RUST_TOOLCHAIN_CARGO" build --manifest-path "$CRATE_DIR/Cargo.toml" --release \
+    IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+        "$RUST_TOOLCHAIN_CARGO" build --manifest-path "$CRATE_DIR/Cargo.toml" --release \
         --target "$target" --target-dir "$TARGET_DIR"
 done
 

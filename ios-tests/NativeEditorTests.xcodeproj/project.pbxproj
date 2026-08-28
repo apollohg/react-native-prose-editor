@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		109AE358027371C57610E495 /* OrderedListMarkerFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A50C4C90F9D98044CF98CF7 /* OrderedListMarkerFormatter.swift */; };
 		109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */; };
 		15DF0E47EE9EC526F7D5052F /* PreparedProseViewerShadowNode.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AD2EDD1353EF86CAD0E419CB /* PreparedProseViewerShadowNode.cpp */; };
 		191425460B07769B3AE268AC /* PREPPreparedProseViewerComponentView.mm in Sources */ = {isa = PBXBuildFile; fileRef = 9B53E618A4451AF063C952EB /* PREPPreparedProseViewerComponentView.mm */; };
@@ -14,20 +15,20 @@
 		21E6208ADEC776190F2D6C98 /* ProseViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B44533DC8D4FA27875F041AC /* ProseViewerView.swift */; };
 		25A847DC895BEC66CFACC067 /* EditorV2Shadow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */; };
 		2D4DE27F01FB5A5C12DD4366 /* security-contract-fixtures.json in Resources */ = {isa = PBXBuildFile; fileRef = 609456B67A174C7062F4C3C9 /* security-contract-fixtures.json */; };
-		2E8436AF2CA307062476A459 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 1A7E6CD42629DBBDF61EB061 /* PrivacyInfo.xcprivacy */; };
-		31D078FB420B0749B21638E9 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02518F4DD7302ECB426B98D9 /* ExpoModulesProvider.swift */; };
+		2D4E1FD862B9D34F9108CF65 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FED85E6F34BC6FB48B3EE3A5 /* ExpoModulesProvider.swift */; };
 		357A7584AD31CDA1E60C47E8 /* PreparedProseLayoutRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = E68C6EA2507831E8668E76D2 /* PreparedProseLayoutRegistry.swift */; };
 		3A6AEEFA6827371E8015A30F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6225248E2F347AD95F31C25 /* AppDelegate.swift */; };
 		3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */; };
 		3E7691BD09A616262AD0EECE /* PreparedProseRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */; };
+		3EF5937EBE001A1F6FC3CE56 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8C65DA9F4CA03D93F2636F /* ExpoModulesProvider.swift */; };
 		40373230CB2B4D39BD5350B6 /* PreparedProseMeasurementsManager.mm in Sources */ = {isa = PBXBuildFile; fileRef = A183A542FD912C410D3A2B03 /* PreparedProseMeasurementsManager.mm */; };
 		408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */; };
 		41CB569BDACE6252AAA1E146 /* EditorAddons.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA17728099475A1BA3392F9D /* EditorAddons.swift */; };
+		41D57FCA7CB45A181563B8DC /* libPods-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A73C3B3A56B96545251AA8A /* libPods-NativeEditorTests.a */; };
 		43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */; };
 		464AF0D70C477A92AE784052 /* RichTextEditorViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */; };
 		4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F15AFE005F23CA6452674D /* PositionBridgeTests.swift */; };
 		512B8F095CBF6793BD82B241 /* PreparedProseAccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FCFAF19E668BD6BAF3FE81E /* PreparedProseAccessibilityTests.swift */; };
-		54BDEF821BB992EF1598F3DF /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 4F3929BB39DFA1A7B65D4800 /* libPods-NativeEditorTestHost.a */; };
 		5642EBDE70DB95F3337A753E /* RenderBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */; };
 		56EEC26EE3197DA0363914DC /* prepared-prose-harness-static-fixtures.json in Resources */ = {isa = PBXBuildFile; fileRef = DD37D8C11947B70CF5213BE3 /* prepared-prose-harness-static-fixtures.json */; };
 		63686847E2C46533E28401AF /* RichTextEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1561A9AC095AC3464D02B016 /* RichTextEditorView.swift */; };
@@ -41,64 +42,62 @@
 		9E7DACEBB0DD1AD90F33066C /* EditorV2AdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80892297FFD41613BE083EF1 /* EditorV2AdapterTests.swift */; };
 		A5CC2A434974FCEBEC188106 /* viewer-performance-corpus.json in Resources */ = {isa = PBXBuildFile; fileRef = EAAEA72D6B36B64387DAC8D3 /* viewer-performance-corpus.json */; };
 		A82FEB7C023E95364769B61A /* PreparedProseLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E81F40EDFFF4ED5A11F4DF0C /* PreparedProseLayoutTests.swift */; };
-		A840A0FC1530BECF31ADD977 /* libPods-NativeEditorTestHost-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 1109E63E6746574FB05C0B84 /* libPods-NativeEditorTestHost-NativeEditorTests.a */; };
 		AC4EC346C4C73FCADFCEB1F4 /* PreparedProseLayoutCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCF83BC143D0A11E95F2C7A2 /* PreparedProseLayoutCache.swift */; };
 		B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */; };
 		B8B54E1CFD58906815926009 /* SharedNativeImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A255E0D6D0056A2815C3AF /* SharedNativeImagePipeline.swift */; };
 		CD2F0516C03F1703053D7129 /* PreparedProseRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B87A96C703617DB8635AEF2 /* PreparedProseRenderingTests.swift */; };
 		CF81434F1BF8598ADBF2A46E /* prepared-prose-benchmark-config.json in Resources */ = {isa = PBXBuildFile; fileRef = C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */; };
 		CFD4E81EA2D422B4EF4A965E /* PreparedProseDrawingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83DF91687ACD8DF8B0E18736 /* PreparedProseDrawingView.swift */; };
-		D0A492D1B89639CFE40CCABD /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AF7B2A2BB91749BEE1639A0 /* ExpoModulesProvider.swift */; };
 		D706191CC74381BEB84776D7 /* EditorLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */; };
 		D72F16B32016395EEF461106 /* EditorV2TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AE8E4E959B1D503CC50F1C7 /* EditorV2TestSupport.swift */; };
 		DAB688E56423DF3A525C7750 /* PreparedProseLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A498FA7F1B3DFE437AD093 /* PreparedProseLayout.swift */; };
 		DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */; };
 		E0497F12FE357FCA9190C51B /* NativeCollaborationTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B991A14504C9E29076097E /* NativeCollaborationTransport.swift */; };
 		ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */; };
-		E9203AB55BC24C58AC4A5DF300CAD857 /* OrderedListMarkerFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB458955B8F04E609FC85FCCF8CB9467 /* OrderedListMarkerFormatter.swift */; };
+		FA494E1FD4D112BBA6BDBC7C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 542F8BBC5410DE5DFB15900A /* PrivacyInfo.xcprivacy */; };
+		FF166FE6F4CB4E81B0144C80 /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 8124EA2F2AA895E829E051F4 /* libPods-NativeEditorTestHost.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		02518F4DD7302ECB426B98D9 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		073AA28E404CB1E78224E266 /* PreparedProseInstrumentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseInstrumentation.swift; sourceTree = "<group>"; };
-		073B9FCCE4A1911FCF12A6FD /* Pods-NativeEditorTestHost.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.release.xcconfig"; sourceTree = "<group>"; };
-		079D0C23AFE2D61B6BE7F541 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig"; sourceTree = "<group>"; };
 		08E2E15E6EE0B9E2C50A927D /* NativeEditorTestHost.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NativeEditorTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		1109E63E6746574FB05C0B84 /* libPods-NativeEditorTestHost-NativeEditorTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost-NativeEditorTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1561A9AC095AC3464D02B016 /* RichTextEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorView.swift; sourceTree = "<group>"; };
-		1A7E6CD42629DBBDF61EB061 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		1FCFAF19E668BD6BAF3FE81E /* PreparedProseAccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseAccessibilityTests.swift; sourceTree = "<group>"; };
 		2261CB51C233C88B5737A00A /* NativeCollaborationTransportRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCollaborationTransportRegistry.swift; sourceTree = "<group>"; };
 		22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorLayoutManager.swift; sourceTree = "<group>"; };
 		2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorTheme.swift; sourceTree = "<group>"; };
+		2AF7FE5F9D67FACA64BB199C /* Pods-NativeEditorTestHost.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.debug.xcconfig"; sourceTree = "<group>"; };
 		2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Generated_editor_core.swift; sourceTree = "<group>"; };
+		3A50C4C90F9D98044CF98CF7 /* OrderedListMarkerFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderedListMarkerFormatter.swift; sourceTree = "<group>"; };
+		3B4E700A3316152D66973DA4 /* Pods-NativeEditorTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTests.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTests/Pods-NativeEditorTests.release.xcconfig"; sourceTree = "<group>"; };
 		3C60AEDC0979CD17004D84BC /* PREPPreparedProseViewerComponentView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PREPPreparedProseViewerComponentView.h; sourceTree = "<group>"; };
 		3DB0694C3EBB885F034F0B30 /* NativeCollaborationSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCollaborationSocket.swift; sourceTree = "<group>"; };
 		4493157DC02C94D7F7D40FEB /* EditorV2Adapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2Adapter.swift; sourceTree = "<group>"; };
 		45F15AFE005F23CA6452674D /* PositionBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionBridgeTests.swift; sourceTree = "<group>"; };
 		47A255E0D6D0056A2815C3AF /* SharedNativeImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedNativeImagePipeline.swift; sourceTree = "<group>"; };
 		4AE8E4E959B1D503CC50F1C7 /* EditorV2TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2TestSupport.swift; sourceTree = "<group>"; };
-		4F3929BB39DFA1A7B65D4800 /* libPods-NativeEditorTestHost.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridge.swift; sourceTree = "<group>"; };
+		542F8BBC5410DE5DFB15900A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		5A73C3B3A56B96545251AA8A /* libPods-NativeEditorTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5B87A96C703617DB8635AEF2 /* PreparedProseRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRenderingTests.swift; sourceTree = "<group>"; };
 		609456B67A174C7062F4C3C9 /* security-contract-fixtures.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "security-contract-fixtures.json"; sourceTree = "<group>"; };
 		619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePerformanceTests.swift; sourceTree = "<group>"; };
-		6AF7B2A2BB91749BEE1639A0 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTestHost/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEditorExpoView.swift; sourceTree = "<group>"; };
-		790DBC5E0D5532780E1FD0A0 /* Pods-NativeEditorTestHost.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.debug.xcconfig"; sourceTree = "<group>"; };
 		7B442A5CDD350874561BF9F8 /* ViewerImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerImagePipeline.swift; sourceTree = "<group>"; };
 		80892297FFD41613BE083EF1 /* EditorV2AdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2AdapterTests.swift; sourceTree = "<group>"; };
+		8124EA2F2AA895E829E051F4 /* libPods-NativeEditorTestHost.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		819FD7108ECBB2F496A7CC4D /* Pods-NativeEditorTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTests.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTests/Pods-NativeEditorTests.debug.xcconfig"; sourceTree = "<group>"; };
 		83DF91687ACD8DF8B0E18736 /* PreparedProseDrawingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseDrawingView.swift; sourceTree = "<group>"; };
 		8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEditorModule.swift; sourceTree = "<group>"; };
+		8F8C65DA9F4CA03D93F2636F /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTests/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRevisionTests.swift; sourceTree = "<group>"; };
+		95E37E869FF564B0FCEFE911 /* Pods-NativeEditorTestHost.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.release.xcconfig"; sourceTree = "<group>"; };
 		9B53E618A4451AF063C952EB /* PREPPreparedProseViewerComponentView.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PREPPreparedProseViewerComponentView.mm; sourceTree = "<group>"; };
 		A183A542FD912C410D3A2B03 /* PreparedProseMeasurementsManager.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PreparedProseMeasurementsManager.mm; sourceTree = "<group>"; };
-		A32E78FEA46E64E7AB353E19 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig"; sourceTree = "<group>"; };
 		A6225248E2F347AD95F31C25 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridgeTests.swift; sourceTree = "<group>"; };
 		AAFA4DB42F32DDE95171E72A /* NativeEditorTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NativeEditorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD2EDD1353EF86CAD0E419CB /* PreparedProseViewerShadowNode.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PreparedProseViewerShadowNode.cpp; sourceTree = "<group>"; };
-		AB458955B8F04E609FC85FCCF8CB9467 /* OrderedListMarkerFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderedListMarkerFormatter.swift; sourceTree = "<group>"; };
 		B44533DC8D4FA27875F041AC /* ProseViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProseViewerView.swift; sourceTree = "<group>"; };
 		BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2Shadow.swift; sourceTree = "<group>"; };
 		C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "prepared-prose-benchmark-config.json"; sourceTree = "<group>"; };
@@ -115,22 +114,23 @@
 		EAAEA72D6B36B64387DAC8D3 /* viewer-performance-corpus.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "viewer-performance-corpus.json"; sourceTree = "<group>"; };
 		EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerFontEnvironment.swift; sourceTree = "<group>"; };
 		F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionBridge.swift; sourceTree = "<group>"; };
+		FED85E6F34BC6FB48B3EE3A5 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTestHost/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		6E613C8E592D24BDAD260755 /* Frameworks */ = {
+		307E3F245C91983E5D6FFDEF /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A840A0FC1530BECF31ADD977 /* libPods-NativeEditorTestHost-NativeEditorTests.a in Frameworks */,
+				FF166FE6F4CB4E81B0144C80 /* libPods-NativeEditorTestHost.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BA8452C879A9F89FF45E7551 /* Frameworks */ = {
+		DF09F16F06C01F798412DF45 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				54BDEF821BB992EF1598F3DF /* libPods-NativeEditorTestHost.a in Frameworks */,
+				41D57FCA7CB45A181563B8DC /* libPods-NativeEditorTests.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -161,7 +161,7 @@
 				2261CB51C233C88B5737A00A /* NativeCollaborationTransportRegistry.swift */,
 				786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */,
 				8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */,
-				AB458955B8F04E609FC85FCCF8CB9467 /* OrderedListMarkerFormatter.swift */,
+				3A50C4C90F9D98044CF98CF7 /* OrderedListMarkerFormatter.swift */,
 				F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */,
 				B44533DC8D4FA27875F041AC /* ProseViewerView.swift */,
 				516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */,
@@ -177,6 +177,15 @@
 				78028A79CB2A12347FF2D7FB /* components */,
 			);
 			path = renderer;
+			sourceTree = "<group>";
+		};
+		03AA45C535BDA332563A93EF /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				8124EA2F2AA895E829E051F4 /* libPods-NativeEditorTestHost.a */,
+				5A73C3B3A56B96545251AA8A /* libPods-NativeEditorTests.a */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		1F4B898E39618084B1EF4DD5 /* Products */ = {
@@ -203,6 +212,23 @@
 				7B442A5CDD350874561BF9F8 /* ViewerImagePipeline.swift */,
 			);
 			path = Viewer;
+			sourceTree = "<group>";
+		};
+		405E5CE3B1D6BD6374865515 /* NativeEditorTests */ = {
+			isa = PBXGroup;
+			children = (
+				8F8C65DA9F4CA03D93F2636F /* ExpoModulesProvider.swift */,
+			);
+			name = NativeEditorTests;
+			sourceTree = "<group>";
+		};
+		41B317F640FBE82D99EBDB1D /* ExpoModulesProviders */ = {
+			isa = PBXGroup;
+			children = (
+				CB70C61CAC9B04A9421FE828 /* NativeEditorTestHost */,
+				405E5CE3B1D6BD6374865515 /* NativeEditorTests */,
+			);
+			name = ExpoModulesProviders;
 			sourceTree = "<group>";
 		};
 		67EB2F510C128DFEA0BBF7E8 /* Fabric */ = {
@@ -239,28 +265,12 @@
 			path = scripts;
 			sourceTree = "<group>";
 		};
-		793BFA5E369AD5A2E65600BF /* NativeEditorTests */ = {
-			isa = PBXGroup;
-			children = (
-				02518F4DD7302ECB426B98D9 /* ExpoModulesProvider.swift */,
-			);
-			name = NativeEditorTests;
-			sourceTree = "<group>";
-		};
 		826B7C4721EE65856D6795B7 /* TestHost */ = {
 			isa = PBXGroup;
 			children = (
 				A6225248E2F347AD95F31C25 /* AppDelegate.swift */,
 			);
 			path = TestHost;
-			sourceTree = "<group>";
-		};
-		89665D05A57050CC5CFB9433 /* NativeEditorTestHost */ = {
-			isa = PBXGroup;
-			children = (
-				6AF7B2A2BB91749BEE1639A0 /* ExpoModulesProvider.swift */,
-			);
-			name = NativeEditorTestHost;
 			sourceTree = "<group>";
 		};
 		A1B0488D87C3F2E91B9D51E8 /* Tests */ = {
@@ -286,20 +296,19 @@
 				D31F7825094A62DBE5804174 /* native-editor */,
 				826B7C4721EE65856D6795B7 /* TestHost */,
 				1F4B898E39618084B1EF4DD5 /* Products */,
-				1A7E6CD42629DBBDF61EB061 /* PrivacyInfo.xcprivacy */,
-				EC59714130506CA5BDD25D4D /* Pods */,
-				AFAB30ED1BFD111CDC392476 /* Frameworks */,
-				EC8318EB6B3871B69836946B /* ExpoModulesProviders */,
+				542F8BBC5410DE5DFB15900A /* PrivacyInfo.xcprivacy */,
+				ED2EF3293AD48415F6C2A370 /* Pods */,
+				03AA45C535BDA332563A93EF /* Frameworks */,
+				41B317F640FBE82D99EBDB1D /* ExpoModulesProviders */,
 			);
 			sourceTree = "<group>";
 		};
-		AFAB30ED1BFD111CDC392476 /* Frameworks */ = {
+		CB70C61CAC9B04A9421FE828 /* NativeEditorTestHost */ = {
 			isa = PBXGroup;
 			children = (
-				4F3929BB39DFA1A7B65D4800 /* libPods-NativeEditorTestHost.a */,
-				1109E63E6746574FB05C0B84 /* libPods-NativeEditorTestHost-NativeEditorTests.a */,
+				FED85E6F34BC6FB48B3EE3A5 /* ExpoModulesProvider.swift */,
 			);
-			name = Frameworks;
+			name = NativeEditorTestHost;
 			sourceTree = "<group>";
 		};
 		CF01A22BEFE8BCA34CEF8261 /* PreparedProseViewer */ = {
@@ -332,25 +341,16 @@
 			path = tests;
 			sourceTree = "<group>";
 		};
-		EC59714130506CA5BDD25D4D /* Pods */ = {
+		ED2EF3293AD48415F6C2A370 /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				790DBC5E0D5532780E1FD0A0 /* Pods-NativeEditorTestHost.debug.xcconfig */,
-				073B9FCCE4A1911FCF12A6FD /* Pods-NativeEditorTestHost.release.xcconfig */,
-				079D0C23AFE2D61B6BE7F541 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */,
-				A32E78FEA46E64E7AB353E19 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */,
+				2AF7FE5F9D67FACA64BB199C /* Pods-NativeEditorTestHost.debug.xcconfig */,
+				95E37E869FF564B0FCEFE911 /* Pods-NativeEditorTestHost.release.xcconfig */,
+				819FD7108ECBB2F496A7CC4D /* Pods-NativeEditorTests.debug.xcconfig */,
+				3B4E700A3316152D66973DA4 /* Pods-NativeEditorTests.release.xcconfig */,
 			);
 			name = Pods;
 			path = Pods;
-			sourceTree = "<group>";
-		};
-		EC8318EB6B3871B69836946B /* ExpoModulesProviders */ = {
-			isa = PBXGroup;
-			children = (
-				89665D05A57050CC5CFB9433 /* NativeEditorTestHost */,
-				793BFA5E369AD5A2E65600BF /* NativeEditorTests */,
-			);
-			name = ExpoModulesProviders;
 			sourceTree = "<group>";
 		};
 		F3DE390C1EF4B540C1A61E8D /* cpp */ = {
@@ -368,13 +368,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F552DE382289921B2E97DDC7 /* Build configuration list for PBXNativeTarget "NativeEditorTests" */;
 			buildPhases = (
-				B31E5BE720E24FC377EFAE5B /* [CP] Check Pods Manifest.lock */,
-				88F2BCEFE3A8F11323B96D2F /* [Expo] Configure project */,
+				4917A3D5F8D2D6BAB01E4F63 /* [CP] Check Pods Manifest.lock */,
+				8D601AD8E2BB2DE9530BFC4E /* [Expo] Configure project */,
 				A8B845B3B6EC5F9072D2E478 /* Sources */,
 				83F6B0945787BF190B220E4E /* Resources */,
-				6E613C8E592D24BDAD260755 /* Frameworks */,
-				B206F5FEF48CB9A447E51442 /* [CP] Embed Pods Frameworks */,
-				F8DF9BEE631A729777295C4C /* [CP] Copy Pods Resources */,
+				DF09F16F06C01F798412DF45 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -389,13 +387,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 4CB6E8BE6741388FB1D0C6A8 /* Build configuration list for PBXNativeTarget "NativeEditorTestHost" */;
 			buildPhases = (
-				6FF0C49BDBDBA39F626B358A /* [CP] Check Pods Manifest.lock */,
-				3F66063720C77F982E00E981 /* [Expo] Configure project */,
+				C50B7C1A18166E31F510BA88 /* [CP] Check Pods Manifest.lock */,
+				427AFF0426D2BE1159EE67F2 /* [Expo] Configure project */,
 				A05115A3812E3122F2A470AA /* Sources */,
-				98D8768235780C2026D707E8 /* Resources */,
-				BA8452C879A9F89FF45E7551 /* Frameworks */,
-				EF9F923B082CD278BFE8498C /* [CP] Embed Pods Frameworks */,
-				18227800C38BC652855E16D6 /* [CP] Copy Pods Resources */,
+				BB89B79BFDDFDF799F986916 /* Resources */,
+				307E3F245C91983E5D6FFDEF /* Frameworks */,
+				E0AEA567DA30235BD1F69E05 /* [CP] Embed Pods Frameworks */,
+				F1CFCED174A425292A8C41E5 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -458,35 +456,18 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		98D8768235780C2026D707E8 /* Resources */ = {
+		BB89B79BFDDFDF799F986916 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2E8436AF2CA307062476A459 /* PrivacyInfo.xcprivacy in Resources */,
+				FA494E1FD4D112BBA6BDBC7C /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		18227800C38BC652855E16D6 /* [CP] Copy Pods Resources */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			name = "[CP] Copy Pods Resources";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		3F66063720C77F982E00E981 /* [Expo] Configure project */ = {
+		427AFF0426D2BE1159EE67F2 /* [Expo] Configure project */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -509,7 +490,52 @@
 			shellPath = /bin/sh;
 			shellScript = "# This script configures Expo modules and generates the modules provider file.\nbash -l -c \"./Pods/Target\\ Support\\ Files/Pods-NativeEditorTestHost/expo-configure-project.sh\"\n";
 		};
-		6FF0C49BDBDBA39F626B358A /* [CP] Check Pods Manifest.lock */ = {
+		4917A3D5F8D2D6BAB01E4F63 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-NativeEditorTests-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+		8D601AD8E2BB2DE9530BFC4E /* [Expo] Configure project */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/.xcode.env",
+				"$(SRCROOT)/.xcode.env.local",
+				"$(SRCROOT)/Pods/Target Support Files/Pods-NativeEditorTests/expo-configure-project.sh",
+			);
+			name = "[Expo] Configure project";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Pods/Target Support Files/Pods-NativeEditorTests/ExpoModulesProvider.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# This script configures Expo modules and generates the modules provider file.\nbash -l -c \"./Pods/Target\\ Support\\ Files/Pods-NativeEditorTests/expo-configure-project.sh\"\n";
+		};
+		C50B7C1A18166E31F510BA88 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -531,69 +557,7 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		88F2BCEFE3A8F11323B96D2F /* [Expo] Configure project */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(SRCROOT)/.xcode.env",
-				"$(SRCROOT)/.xcode.env.local",
-				"$(SRCROOT)/Pods/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/expo-configure-project.sh",
-			);
-			name = "[Expo] Configure project";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(SRCROOT)/Pods/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/ExpoModulesProvider.swift",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "# This script configures Expo modules and generates the modules provider file.\nbash -l -c \"./Pods/Target\\ Support\\ Files/Pods-NativeEditorTestHost-NativeEditorTests/expo-configure-project.sh\"\n";
-		};
-		B206F5FEF48CB9A447E51442 /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		B31E5BE720E24FC377EFAE5B /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-NativeEditorTestHost-NativeEditorTests-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-		EF9F923B082CD278BFE8498C /* [CP] Embed Pods Frameworks */ = {
+		E0AEA567DA30235BD1F69E05 /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -610,21 +574,21 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		F8DF9BEE631A729777295C4C /* [CP] Copy Pods Resources */ = {
+		F1CFCED174A425292A8C41E5 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -635,7 +599,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3A6AEEFA6827371E8015A30F /* AppDelegate.swift in Sources */,
-				D0A492D1B89639CFE40CCABD /* ExpoModulesProvider.swift in Sources */,
+				2D4E1FD862B9D34F9108CF65 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -658,8 +622,8 @@
 				B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */,
 				408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */,
 				3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */,
+				109AE358027371C57610E495 /* OrderedListMarkerFormatter.swift in Sources */,
 				191425460B07769B3AE268AC /* PREPPreparedProseViewerComponentView.mm in Sources */,
-				E9203AB55BC24C58AC4A5DF300CAD857 /* OrderedListMarkerFormatter.swift in Sources */,
 				109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */,
 				4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */,
 				512B8F095CBF6793BD82B241 /* PreparedProseAccessibilityTests.swift in Sources */,
@@ -682,7 +646,7 @@
 				81A987FAE78E964982371CDE /* ViewerDocument.swift in Sources */,
 				DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */,
 				97C50B5BFA0AA550E225668C /* ViewerImagePipeline.swift in Sources */,
-				31D078FB420B0749B21638E9 /* ExpoModulesProvider.swift in Sources */,
+				3EF5937EBE001A1F6FC3CE56 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -691,7 +655,7 @@
 /* Begin XCBuildConfiguration section */
 		1DC8ACECC9EAFD09CE1BD287 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 790DBC5E0D5532780E1FD0A0 /* Pods-NativeEditorTestHost.debug.xcconfig */;
+			baseConfigurationReference = 2AF7FE5F9D67FACA64BB199C /* Pods-NativeEditorTestHost.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -715,7 +679,7 @@
 		};
 		2B8ECBFC8174F7DBDC7F24BD /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A32E78FEA46E64E7AB353E19 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */;
+			baseConfigurationReference = 3B4E700A3316152D66973DA4 /* Pods-NativeEditorTests.release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -734,10 +698,12 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
+					"$(PODS_CONFIGURATION_BUILD_DIR)/ReactCodegen/libReactCodegen.a",
 					"$(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64/libeditor_core.a",
 				);
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
+					"$(PODS_CONFIGURATION_BUILD_DIR)/ReactCodegen/libReactCodegen.a",
 					"$(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/../ios/editor_coreFFI/module.modulemap -D EXPO_CONFIGURATION_RELEASE";
@@ -754,7 +720,7 @@
 		};
 		5713D6574C27C924197974FA /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 073B9FCCE4A1911FCF12A6FD /* Pods-NativeEditorTestHost.release.xcconfig */;
+			baseConfigurationReference = 95E37E869FF564B0FCEFE911 /* Pods-NativeEditorTestHost.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -939,7 +905,7 @@
 		};
 		F579126E2C089C48A85F156F /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 079D0C23AFE2D61B6BE7F541 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */;
+			baseConfigurationReference = 819FD7108ECBB2F496A7CC4D /* Pods-NativeEditorTests.debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -958,10 +924,12 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
+					"$(PODS_CONFIGURATION_BUILD_DIR)/ReactCodegen/libReactCodegen.a",
 					"$(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64/libeditor_core.a",
 				);
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
+					"$(PODS_CONFIGURATION_BUILD_DIR)/ReactCodegen/libReactCodegen.a",
 					"$(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/../ios/editor_coreFFI/module.modulemap -D EXPO_CONFIGURATION_DEBUG";
