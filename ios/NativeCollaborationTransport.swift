@@ -155,15 +155,19 @@ protocol NativeCollaborationTransportBackend {
 
 struct RustNativeCollaborationTransportBackend: NativeCollaborationTransportBackend {
     func drive(editorId: String, nowMillis: String) -> FfiJsonResult {
-        editorV2CollaborationDrive(editorId: editorId, nowMillis: nowMillis)
+        performEditorV2JsonOperation(editorId: editorId) {
+            editorV2CollaborationDrive(editorId: editorId, nowMillis: nowMillis)
+        }
     }
 
     func socketOpen(editorId: String, generation: String, nowMillis: String) -> FfiJsonResult {
-        editorV2CollaborationSocketOpen(
-            editorId: editorId,
-            generation: generation,
-            nowMillis: nowMillis
-        )
+        performEditorV2JsonOperation(editorId: editorId) {
+            editorV2CollaborationSocketOpen(
+                editorId: editorId,
+                generation: generation,
+                nowMillis: nowMillis
+            )
+        }
     }
 
     func receive(
@@ -172,12 +176,14 @@ struct RustNativeCollaborationTransportBackend: NativeCollaborationTransportBack
         message: Data,
         nowMillis: String
     ) -> FfiJsonResult {
-        editorV2CollaborationReceive(
-            editorId: editorId,
-            generation: generation,
-            message: message,
-            nowMillis: nowMillis
-        )
+        performEditorV2JsonOperation(editorId: editorId) {
+            editorV2CollaborationReceive(
+                editorId: editorId,
+                generation: generation,
+                message: message,
+                nowMillis: nowMillis
+            )
+        }
     }
 
     func socketClose(
@@ -187,41 +193,53 @@ struct RustNativeCollaborationTransportBackend: NativeCollaborationTransportBack
         reason: String?,
         nowMillis: String
     ) -> FfiJsonResult {
-        editorV2CollaborationSocketClose(
-            editorId: editorId,
-            generation: generation,
-            code: code,
-            reason: reason,
-            nowMillis: nowMillis
-        )
+        performEditorV2JsonOperation(editorId: editorId) {
+            editorV2CollaborationSocketClose(
+                editorId: editorId,
+                generation: generation,
+                code: code,
+                reason: reason,
+                nowMillis: nowMillis
+            )
+        }
     }
 
     func leaseOutbound(editorId: String, generation: String) -> FfiOutboundLeaseResult {
-        editorV2CollaborationLeaseOutbound(editorId: editorId, generation: generation)
+        performEditorV2OutboundLeaseOperation(editorId: editorId) {
+            editorV2CollaborationLeaseOutbound(editorId: editorId, generation: generation)
+        }
     }
 
     func ackOutbound(editorId: String, generation: String, leaseId: String) -> FfiJsonResult {
-        editorV2CollaborationAckOutbound(
-            editorId: editorId,
-            generation: generation,
-            leaseId: leaseId
-        )
+        performEditorV2JsonOperation(editorId: editorId) {
+            editorV2CollaborationAckOutbound(
+                editorId: editorId,
+                generation: generation,
+                leaseId: leaseId
+            )
+        }
     }
 
     func nackOutbound(editorId: String, generation: String, leaseId: String) -> FfiJsonResult {
-        editorV2CollaborationNackOutbound(
-            editorId: editorId,
-            generation: generation,
-            leaseId: leaseId
-        )
+        performEditorV2JsonOperation(editorId: editorId) {
+            editorV2CollaborationNackOutbound(
+                editorId: editorId,
+                generation: generation,
+                leaseId: leaseId
+            )
+        }
     }
 
     func detach(editorId: String) -> FfiUnitResult {
-        editorV2CollaborationDetach(editorId: editorId)
+        performEditorV2LifecycleUnitOperation(editorId: editorId) {
+            editorV2CollaborationDetach(editorId: editorId)
+        }
     }
 
     func reattach(editorId: String) -> FfiUnitResult {
-        editorV2CollaborationReattach(editorId: editorId)
+        performEditorV2UnitOperation(editorId: editorId) {
+            editorV2CollaborationReattach(editorId: editorId)
+        }
     }
 }
 

@@ -113,6 +113,9 @@ final class EditorV2AdapterTests: XCTestCase {
     private func makeAttachedAdapter(
         configJson: String,
         roomBound: Bool,
+        destroySession: @escaping (String) -> FfiUnitResult = {
+            editorV2Destroy(editorId: $0)
+        },
         setAwarenessSelection: @escaping (String, String) -> FfiJsonResult = {
             editorV2CollaborationSetAwarenessSelection(editorId: $0, selectionJson: $1)
         },
@@ -132,6 +135,7 @@ final class EditorV2AdapterTests: XCTestCase {
               let adapter = EditorV2Adapter.attach(
                 editorId: createdHandle.handle,
                 roomBound: roomBound,
+                destroySession: destroySession,
                 setAwarenessSelection: setAwarenessSelection,
                 collaborationWake: collaborationWake
               )
@@ -146,6 +150,92 @@ final class EditorV2AdapterTests: XCTestCase {
         }
         adapters.append(adapter)
         return adapter
+    }
+
+    func testDestroyWaitsForInFlightAdapterOperation() {
+        let awarenessEntered = expectation(description: "awareness operation entered")
+        let operationFinished = expectation(description: "awareness operation finished")
+        let destroyEntered = expectation(description: "destroy entered")
+        let destroyFinished = expectation(description: "destroy finished")
+        let releaseAwareness = DispatchSemaphore(value: 0)
+        let destroyEnteredSignal = DispatchSemaphore(value: 0)
+        let adapter = makeAttachedAdapter(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            roomBound: true,
+            destroySession: { editorId in
+                destroyEnteredSignal.signal()
+                destroyEntered.fulfill()
+                return editorV2Destroy(editorId: editorId)
+            },
+            setAwarenessSelection: { _, _ in
+                awarenessEntered.fulfill()
+                _ = releaseAwareness.wait(timeout: .now() + 1)
+                return FfiJsonResult(value: #"{"changed":false}"#, error: nil)
+            },
+            file: #filePath,
+            line: #line
+        )
+
+        DispatchQueue.global().async {
+            _ = adapter.syncSelection(anchor: 0, head: 0)
+            operationFinished.fulfill()
+        }
+        wait(for: [awarenessEntered], timeout: 1)
+
+        DispatchQueue.global().async {
+            _ = adapter.destroyForModuleTransaction()
+            destroyFinished.fulfill()
+        }
+        XCTAssertEqual(destroyEnteredSignal.wait(timeout: .now() + 0.05), .timedOut)
+
+        releaseAwareness.signal()
+        wait(for: [operationFinished, destroyEntered, destroyFinished], timeout: 1)
+    }
+
+    func testAdapterOperationStartedDuringDestroyDoesNotReachRust() {
+        let destroyEntered = expectation(description: "destroy entered")
+        let destroyFinished = expectation(description: "destroy finished")
+        let operationFinished = expectation(description: "operation finished")
+        let releaseDestroy = DispatchSemaphore(value: 0)
+        let operationFinishedSignal = DispatchSemaphore(value: 0)
+        let adapter = makeAttachedAdapter(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            roomBound: false,
+            destroySession: { editorId in
+                destroyEntered.fulfill()
+                _ = releaseDestroy.wait(timeout: .now() + 1)
+                return editorV2Destroy(editorId: editorId)
+            },
+            file: #filePath,
+            line: #line
+        )
+        let backendCallsBefore = adapter.backendEnvelopeCallCountForTesting
+        let resultLock = NSLock()
+        var operationResult: String?
+
+        DispatchQueue.global().async {
+            _ = adapter.destroyForModuleTransaction()
+            destroyFinished.fulfill()
+        }
+        wait(for: [destroyEntered], timeout: 1)
+
+        DispatchQueue.global().async {
+            let result = adapter.setContentHtml("<p>late</p>")
+            resultLock.lock()
+            operationResult = result
+            resultLock.unlock()
+            operationFinishedSignal.signal()
+            operationFinished.fulfill()
+        }
+        XCTAssertEqual(operationFinishedSignal.wait(timeout: .now() + 0.05), .timedOut)
+
+        releaseDestroy.signal()
+        wait(for: [destroyFinished, operationFinished], timeout: 1)
+        resultLock.lock()
+        let finalResult = operationResult
+        resultLock.unlock()
+        XCTAssertNil(finalResult)
+        XCTAssertEqual(adapter.backendEnvelopeCallCountForTesting, backendCallsBefore)
     }
 
     private func parseObject(_ json: String?, file: StaticString = #filePath, line: UInt = #line) -> [String: Any] {

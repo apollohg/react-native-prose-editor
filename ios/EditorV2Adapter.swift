@@ -38,6 +38,12 @@ struct EditorV2SelectionSync {
 /// The v2 session adapter backing one bound editor view. See the file
 /// header for the architecture and the render derivation notes.
 final class EditorV2Adapter {
+    private enum LifecycleState {
+        case active
+        case destroying
+        case destroyed
+    }
+
     /// Decimal-string v2 session handle.
     let editorId: String
     /// Whether the session is room-bound (owns a collaboration outbox).
@@ -94,13 +100,67 @@ final class EditorV2Adapter {
     private let destroySession: (String) -> FfiUnitResult
     private let setAwarenessSelection: (String, String) -> FfiJsonResult
     private let collaborationWake: (UInt64, CollaborationWakeReason) -> Void
+    private let runtimeLock = NSRecursiveLock()
+    private var lifecycleState = LifecycleState.active
     private var destroyed = false
 
     private static let nativeOwnerLock = NSLock()
     private static var nextNativeOwnerId: UInt64 = 0
 
     var isDestroyed: Bool {
-        destroyed
+        runtimeLock.lock()
+        defer { runtimeLock.unlock() }
+        return lifecycleState == .destroyed
+    }
+
+    private func beginRuntimeOperation() -> Bool {
+        runtimeLock.lock()
+        guard lifecycleState == .active else {
+            let destroying = lifecycleState == .destroying
+            emit(
+                FfiError(
+                    domain: "lifecycle",
+                    code: destroying ? "ENGINE_DESTROYING" : "ENGINE_DESTROYED",
+                    message: destroying
+                        ? "editor session is being destroyed"
+                        : "editor session is destroyed",
+                    requestId: nil,
+                    operationIndex: nil,
+                    limit: nil,
+                    actual: nil,
+                    detailsJson: nil
+                )
+            )
+            runtimeLock.unlock()
+            return false
+        }
+        return true
+    }
+
+    private func endRuntimeOperation() {
+        runtimeLock.unlock()
+    }
+
+    func performRuntimeOperation<Result>(
+        unavailable: @autoclosure () -> Result,
+        _ operation: () -> Result
+    ) -> Result {
+        guard beginRuntimeOperation() else { return unavailable() }
+        defer { endRuntimeOperation() }
+        return operation()
+    }
+
+    func performRuntimeLifecycleOperation<Result>(
+        unavailable: @autoclosure () -> Result,
+        _ operation: () -> Result
+    ) -> Result {
+        runtimeLock.lock()
+        guard lifecycleState != .destroyed else {
+            runtimeLock.unlock()
+            return unavailable()
+        }
+        defer { runtimeLock.unlock() }
+        return operation()
     }
 
     private init(
@@ -175,27 +235,64 @@ final class EditorV2Adapter {
     /// The public module transaction owns pairing removal and view teardown;
     /// this adapter owns only its local lifecycle and autonomous-error owner.
     @discardableResult
-    func destroyForModuleTransaction() -> FfiUnitResult {
+    func destroyForModuleTransaction(
+        beforeDestroy: () -> Void = {}
+    ) -> FfiUnitResult {
+        runtimeLock.lock()
+        switch lifecycleState {
+        case .destroying:
+            runtimeLock.unlock()
+            return FfiUnitResult(value: nil, error: v2DestroyAlreadyInProgressError())
+        case .destroyed:
+            runtimeLock.unlock()
+            return FfiUnitResult(
+                value: nil,
+                error: FfiError(
+                    domain: "lifecycle",
+                    code: "ENGINE_DESTROYED",
+                    message: "editor session is destroyed",
+                    requestId: nil,
+                    operationIndex: nil,
+                    limit: nil,
+                    actual: nil,
+                    detailsJson: nil
+                )
+            )
+        case .active:
+            lifecycleState = .destroying
+        }
+        runtimeLock.unlock()
+
+        beforeDestroy()
+
+        runtimeLock.lock()
         releaseNativeOwner()
         let result = destroySession(editorId)
+        let normalized: FfiUnitResult
         switch (result.value, result.error) {
         case let (value?, nil) where value:
             clearAutonomousErrorOwner()
             destroyed = true
-            return result
+            lifecycleState = .destroyed
+            normalized = result
         case let (nil, error?) where error.domain == "lifecycle"
             && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING"):
             clearAutonomousErrorOwner()
             destroyed = true
-            return result
+            lifecycleState = .destroyed
+            normalized = result
         case let (nil, error?):
-            return FfiUnitResult(value: nil, error: error)
+            lifecycleState = .active
+            normalized = FfiUnitResult(value: nil, error: error)
         default:
-            return FfiUnitResult(
+            lifecycleState = .active
+            normalized = FfiUnitResult(
                 value: nil,
                 error: contractError("v2 destroy result violates the frozen unit-result shape")
             )
         }
+        runtimeLock.unlock()
+        return normalized
     }
 
     /// Internal cleanup convenience. Public destroy routing must use
@@ -203,7 +300,6 @@ final class EditorV2Adapter {
     /// observable at the module boundary.
     @discardableResult
     func destroy() -> FfiError? {
-        if destroyed { return nil }
         let result = destroyForModuleTransaction()
         switch (result.value, result.error) {
         case let (value?, nil) where value:
@@ -266,6 +362,8 @@ final class EditorV2Adapter {
     /// engine call to classify. Route them through the same boundary error
     /// channel as a rejected external snapshot, once per discarded envelope.
     func rejectExternalRenderEnvelope(_ message: String) {
+        guard beginRuntimeOperation() else { return }
+        defer { endRuntimeOperation() }
         dispatchAutonomousError(Self.contractError(message))
     }
 
@@ -274,6 +372,8 @@ final class EditorV2Adapter {
     /// A later claim replaces the earlier owner. Clearing is conditional on
     /// the same token, so stale views cannot erase a newer binding.
     func bindAutonomousErrorOwner(token: UUID, _ callback: @escaping (FfiError) -> Void) {
+        guard beginRuntimeOperation() else { return }
+        defer { endRuntimeOperation() }
         claimNativeBinding(token: token, replaceExisting: true)
         autonomousErrorLock.lock()
         autonomousErrorOwnerToken = token
@@ -282,15 +382,23 @@ final class EditorV2Adapter {
     }
 
     func clearAutonomousErrorOwner(token: UUID) {
+        guard beginRuntimeOperation() else { return }
+        defer { endRuntimeOperation() }
         autonomousErrorLock.lock()
-        defer { autonomousErrorLock.unlock() }
-        guard autonomousErrorOwnerToken == token else { return }
+        guard autonomousErrorOwnerToken == token else {
+            autonomousErrorLock.unlock()
+            return
+        }
         autonomousErrorOwnerToken = nil
         autonomousErrorCallback = nil
-        releaseNativeBindingOwner(token: token)
+        autonomousErrorLock.unlock()
+        guard nativeOwnerToken == token else { return }
+        releaseNativeOwner()
     }
 
     func clearAutonomousErrorOwner() {
+        runtimeLock.lock()
+        defer { runtimeLock.unlock() }
         autonomousErrorLock.lock()
         if autonomousErrorOwnerToken != nil {
             autonomousErrorOwnerToken = nil
@@ -301,11 +409,15 @@ final class EditorV2Adapter {
     }
 
     func claimNativeBindingIfUnowned(token: UUID) {
+        guard beginRuntimeOperation() else { return }
+        defer { endRuntimeOperation() }
         claimNativeBinding(token: token, replaceExisting: false)
     }
 
     func isNativeBindingOwner(token: UUID) -> Bool {
-        nativeOwnerToken == token
+        guard beginRuntimeOperation() else { return false }
+        defer { endRuntimeOperation() }
+        return nativeOwnerToken == token
     }
 
     private func claimNativeBinding(token: UUID, replaceExisting: Bool) {
@@ -325,11 +437,15 @@ final class EditorV2Adapter {
     }
 
     func releaseNativeBindingOwner(token: UUID) {
+        guard beginRuntimeOperation() else { return }
+        defer { endRuntimeOperation() }
         guard nativeOwnerToken == token else { return }
         releaseNativeOwner()
     }
 
     func releaseCurrentNativeOwnerInRustForTesting() -> Bool {
+        guard beginRuntimeOperation() else { return false }
+        defer { endRuntimeOperation() }
         guard let ownerId = nativeOwnerId, positionEpoch != nil else { return false }
         let result = editorV2ReleaseNativeBinding(
             editorId: editorId,
@@ -411,6 +527,8 @@ final class EditorV2Adapter {
     }
 
     func setNextRequestIdForTesting(_ requestId: UInt64) {
+        guard beginRuntimeOperation() else { return }
+        defer { endRuntimeOperation() }
         nextRequestId = requestId
     }
 
@@ -941,6 +1059,8 @@ final class EditorV2Adapter {
     }
 
     func atomicRenderJSON(matchingDocumentRevision documentRevision: UInt64) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard cachedAtomicRenderDocumentRevision == documentRevision else { return nil }
         return cachedAtomicRenderJSON
     }
@@ -949,6 +1069,8 @@ final class EditorV2Adapter {
     /// native view accepts further input. The caller applies the returned
     /// payload synchronously in the same editor-scoped operation.
     func adoptExternalRender(_ renderJSON: String) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard !destroyed else {
             rejectExternalRenderEnvelope("external editor update adapter is destroyed")
             return nil
@@ -970,6 +1092,8 @@ final class EditorV2Adapter {
     /// still need to reject malformed envelopes exactly once before replacing
     /// that stale render with a current atomic refresh.
     func validateExternalRender(_ renderJSON: String) -> Bool {
+        guard beginRuntimeOperation() else { return false }
+        defer { endRuntimeOperation() }
         guard !destroyed else {
             rejectExternalRenderEnvelope("external editor update adapter is destroyed")
             return false
@@ -1071,10 +1195,14 @@ final class EditorV2Adapter {
 
     /// Public recovery entry (stale-revision recovery, external refresh).
     func refreshFromRustState(mirrorSelection: (anchor: UInt32, head: UInt32)?) -> String? {
-        refreshInternal(mirrorSelection: mirrorSelection)?.updateJSON
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return refreshInternal(mirrorSelection: mirrorSelection)?.updateJSON
     }
 
     func recoverNativeRender() -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if let ownerId = nativeOwnerId {
             positionEpoch = nil
             _ = editorV2ReleaseNativeBinding(editorId: editorId, ownerId: String(ownerId))
@@ -1085,6 +1213,8 @@ final class EditorV2Adapter {
     /// Synthesized current-state update (selection/activeState included,
     /// mirroring the legacy `editorGetCurrentState` contract).
     func currentStateJSON() -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         return refreshInternal(mirrorSelection: lastSyncedScalarSelection)?.updateJSON
     }
 
@@ -1092,10 +1222,14 @@ final class EditorV2Adapter {
     /// to the text view and toolbar, so it must not be replayed by a later
     /// independent current-state read.
     func initialUpdateJSON() -> String? {
-        refreshInternal(mirrorSelection: nil)?.updateJSON
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return refreshInternal(mirrorSelection: nil)?.updateJSON
     }
 
     func documentHtml() -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard !destroyed else { return nil }
         switch Self.normalizeJsonResult(editorV2GetDocumentHtml(editorId: editorId)) {
         case .failure(let error):
@@ -1114,12 +1248,16 @@ final class EditorV2Adapter {
 
     /// The authoritative v2 document JSON.
     func documentJson() -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard !destroyed else { return nil }
         return fetchDocumentJson()
     }
 
     /// The v2 content snapshot `{html, json}` (same frozen shape as legacy).
     func contentSnapshotJSON() -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard !destroyed else { return nil }
         switch Self.normalizeJsonResult(editorV2GetContentSnapshot(editorId: editorId)) {
         case .failure(let error):
@@ -1132,6 +1270,8 @@ final class EditorV2Adapter {
 
     /// Engine-owned history flags (module `editorCanUndo/editorCanRedo`).
     func historyFlags() -> (canUndo: Bool, canRedo: Bool)? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if let cachedHistoryState { return cachedHistoryState }
         guard refreshInternal(mirrorSelection: nil) != nil else { return nil }
         return cachedHistoryState
@@ -1139,6 +1279,8 @@ final class EditorV2Adapter {
 
     /// The resolved selection JSON (legacy `editorGetSelection` shape).
     func selectionJSON() -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let derived = refreshInternal(mirrorSelection: lastSyncedScalarSelection),
               let updateData = derived.updateJSON.data(using: .utf8),
               let update = try? JSONSerialization.jsonObject(with: updateData) as? [String: Any],
@@ -1223,6 +1365,8 @@ final class EditorV2Adapter {
     /// delegate callback requires.
     @discardableResult
     func syncSelection(anchor: UInt32, head: UInt32) -> EditorV2SelectionSync? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard !destroyed else {
             emit(
                 FfiError(
@@ -1323,6 +1467,8 @@ final class EditorV2Adapter {
 
     @discardableResult
     func syncSelectionQuiet(anchor: UInt32, head: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard !destroyed else { return nil }
         if nativeOwnerId != nil {
             let previousDocumentRevision = baseDocumentRevision
@@ -1410,6 +1556,8 @@ final class EditorV2Adapter {
     /// Lenient scalar→doc mapping through the v2 accessor (clamps at
     /// the document extent, exactly the legacy `editorScalarToDoc` semantics).
     func documentPosition(forScalar scalar: UInt32) -> UInt32? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         switch Self.normalizeJsonResult(editorV2ScalarToDoc(editorId: editorId, scalar: scalar)) {
         case .failure(let error):
             emit(error)
@@ -1427,6 +1575,8 @@ final class EditorV2Adapter {
     /// Lenient doc→scalar mapping through the v2 accessor (`docPos`
     /// of `UInt32.max` yields the document's scalar extent).
     func scalarPosition(forDoc docPos: UInt32) -> UInt32? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         switch Self.normalizeJsonResult(editorV2DocToScalar(editorId: editorId, docPos: docPos)) {
         case .failure(let error):
             emit(error)
@@ -1839,6 +1989,8 @@ final class EditorV2Adapter {
         with text: String,
         postSelection: (anchor: UInt32, head: UInt32)?
     ) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if nativeOwnerId != nil {
             var intent: [String: Any]
             if from == to {
@@ -1933,6 +2085,8 @@ final class EditorV2Adapter {
     }
 
     func insertText(_ text: String, atScalar scalarPos: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard !text.isEmpty else { return currentStateJSON() }
         if nativeOwnerId != nil {
             var intent = nativeIntent("insertText", anchor: scalarPos, head: scalarPos)
@@ -1951,6 +2105,8 @@ final class EditorV2Adapter {
     }
 
     func replaceTextRange(from: UInt32, to: UInt32, with text: String) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if text.isEmpty {
             return deleteScalarRange(from: from, to: to)
         }
@@ -1981,6 +2137,8 @@ final class EditorV2Adapter {
         to: UInt32,
         with text: String
     ) -> NativeMutationRender? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard nativeOwnerId != nil else { return nil }
         if text.isEmpty {
             guard from < to else {
@@ -2009,6 +2167,8 @@ final class EditorV2Adapter {
         _ text: String,
         atScalar scalarPos: UInt32
     ) -> NativeMutationRender? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard nativeOwnerId != nil else { return nil }
         guard !text.isEmpty else {
             return refreshUnchangedNativeOutcome(
@@ -2046,6 +2206,8 @@ final class EditorV2Adapter {
     }
 
     func deleteScalarRange(from: UInt32, to: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard from < to else { return currentStateJSON() }
         if nativeOwnerId != nil {
             return performNativeIntent(nativeIntent("deleteRange", anchor: from, head: to))?.updateJSON
@@ -2066,6 +2228,8 @@ final class EditorV2Adapter {
     }
 
     func deleteRange(fromDoc: UInt32, toDoc: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let from = scalarPosition(forDoc: fromDoc), let to = scalarPosition(forDoc: toDoc) else {
             return nil
         }
@@ -2073,6 +2237,8 @@ final class EditorV2Adapter {
     }
 
     func deleteBackward(anchor: UInt32, head: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if nativeOwnerId != nil {
             return performNativeIntent(
                 nativeIntent("deleteBackward", anchor: anchor, head: head)
@@ -2090,6 +2256,8 @@ final class EditorV2Adapter {
     }
 
     func splitBlock(atScalar scalarPos: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if nativeOwnerId != nil {
             return performNativeIntent(
                 nativeIntent("splitBlock", anchor: scalarPos, head: scalarPos)
@@ -2108,6 +2276,8 @@ final class EditorV2Adapter {
     }
 
     func deleteAndSplit(from: UInt32, to: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if nativeOwnerId != nil {
             return performNativeIntent(
                 nativeIntent("deleteAndSplit", anchor: from, head: to)
@@ -2124,6 +2294,8 @@ final class EditorV2Adapter {
     }
 
     func insertNode(_ nodeType: String, anchor: UInt32, head: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if nativeOwnerId != nil {
             return commandAtSelection(
                 ["type": "insertNode", "nodeType": nodeType],
@@ -2157,7 +2329,9 @@ final class EditorV2Adapter {
     }
 
     func insertContentHtml(_ html: String, anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(
             ["type": "insertContentHtml", "html": html],
             anchor: anchor,
             head: head
@@ -2167,6 +2341,8 @@ final class EditorV2Adapter {
     /// Paste-HTML path: the view pre-syncs the UIKit selection; the content
     /// insert applies at the engine selection.
     func insertContentHtmlAtEngineSelection(_ html: String) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         if nativeOwnerId != nil, let selection = cachedAuthoritativeScalarSelection {
             return commandAtSelection(
                 ["type": "insertContentHtml", "html": html],
@@ -2183,6 +2359,8 @@ final class EditorV2Adapter {
 
     /// Same as above for a JSON fragment (module `editorInsertContentJson`).
     func insertContentJsonAtEngineSelection(_ json: String) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let data = json.data(using: .utf8),
               let fragment = try? JSONSerialization.jsonObject(with: data)
         else {
@@ -2204,6 +2382,8 @@ final class EditorV2Adapter {
     }
 
     func insertContentJson(_ json: String, anchor: UInt32, head: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let data = json.data(using: .utf8),
               let fragment = try? JSONSerialization.jsonObject(with: data)
         else {
@@ -2230,10 +2410,14 @@ final class EditorV2Adapter {
     }
 
     func toggleMark(_ markType: String, anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "toggleMark", "markType": markType], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "toggleMark", "markType": markType], anchor: anchor, head: head)
     }
 
     func setMark(_ markType: String, attrsJson: String, anchor: UInt32, head: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let data = attrsJson.data(using: .utf8),
               let attrs = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
@@ -2248,23 +2432,33 @@ final class EditorV2Adapter {
     }
 
     func unsetMark(_ markType: String, anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "unsetMark", "markType": markType], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "unsetMark", "markType": markType], anchor: anchor, head: head)
     }
 
     func toggleHeading(level: UInt8, anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "toggleHeading", "level": Int(level)], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "toggleHeading", "level": Int(level)], anchor: anchor, head: head)
     }
 
     func toggleCodeBlock(anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "toggleCodeBlock"], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "toggleCodeBlock"], anchor: anchor, head: head)
     }
 
     func toggleBlockquote(anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "toggleBlockquote"], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "toggleBlockquote"], anchor: anchor, head: head)
     }
 
     func wrapInList(listType: String, itemType: String, anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(
             ["type": "wrapInList", "listType": listType, "itemType": itemType],
             anchor: anchor,
             head: head
@@ -2272,19 +2466,27 @@ final class EditorV2Adapter {
     }
 
     func unwrapFromList(anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "unwrapFromList"], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "unwrapFromList"], anchor: anchor, head: head)
     }
 
     func indentListItem(anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "indentListItem"], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "indentListItem"], anchor: anchor, head: head)
     }
 
     func outdentListItem(anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "outdentListItem"], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "outdentListItem"], anchor: anchor, head: head)
     }
 
     func toggleTaskItemChecked(anchor: UInt32, head: UInt32) -> String? {
-        commandAtSelection(["type": "toggleTaskItemChecked"], anchor: anchor, head: head)
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(["type": "toggleTaskItemChecked"], anchor: anchor, head: head)
     }
 
     private func commandAtSelection(_ command: [String: Any], anchor: UInt32, head: UInt32) -> String? {
@@ -2301,6 +2503,8 @@ final class EditorV2Adapter {
     }
 
     func resizeImage(atDocPos docPos: UInt32, width: UInt32, height: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let scalar = scalarPosition(forDoc: docPos) else { return nil }
         return performMutation {
             self.callWithEnvelope([
@@ -2317,13 +2521,17 @@ final class EditorV2Adapter {
     }
 
     func undo() -> String? {
-        performHistoryMutation { requestJson in
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return performHistoryMutation { requestJson in
             editorV2Undo(editorId: self.editorId, requestJson: requestJson)
         }
     }
 
     func redo() -> String? {
-        performHistoryMutation { requestJson in
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return performHistoryMutation { requestJson in
             editorV2Redo(editorId: self.editorId, requestJson: requestJson)
         }
     }
@@ -2331,7 +2539,9 @@ final class EditorV2Adapter {
     // MARK: - Controlled content (local-API, passes read-only per Source::Api parity)
 
     func setContentHtml(_ html: String) -> String? {
-        performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
             self.callWithEnvelope(["setHtml": html, "history": "resetAndClear"]) { requestJson in
                 editorV2ApplyLocalApi(editorId: self.editorId, requestJson: requestJson)
             }
@@ -2339,6 +2549,8 @@ final class EditorV2Adapter {
     }
 
     func setContentJson(_ json: String) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let data = json.data(using: .utf8),
               let document = try? JSONSerialization.jsonObject(with: data)
         else {
@@ -2355,7 +2567,9 @@ final class EditorV2Adapter {
     /// Undoable whole-document replace (legacy `editorReplaceHtml` parity:
     /// one undoable local-API boundary, selection preserved where possible).
     func replaceContentHtml(_ html: String) -> String? {
-        performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
             self.callWithEnvelope(["setHtml": html, "history": "undoableBoundary"]) { requestJson in
                 editorV2ApplyLocalApi(editorId: self.editorId, requestJson: requestJson)
             }
@@ -2365,6 +2579,8 @@ final class EditorV2Adapter {
     /// Undoable whole-document replace from JSON (legacy `editorReplaceJson`
     /// parity).
     func replaceContentJson(_ json: String) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
         guard let data = json.data(using: .utf8),
               let document = try? JSONSerialization.jsonObject(with: data)
         else {
@@ -2403,6 +2619,98 @@ func invokeDestroyTestingHook(
     } catch {
         // Destroy test hooks are observational and cannot alter the transaction.
     }
+}
+
+private func editorV2UnavailableOperationError() -> FfiError {
+    FfiError(
+        domain: "lifecycle",
+        code: "ENGINE_DESTROYED",
+        message: "editor session is not active",
+        requestId: nil,
+        operationIndex: nil,
+        limit: nil,
+        actual: nil,
+        detailsJson: nil
+    )
+}
+
+func performEditorV2JsonOperation(
+    editorId: String,
+    _ operation: () -> FfiJsonResult
+) -> FfiJsonResult {
+    guard let legacyId = UInt64(editorId),
+          let adapter = EditorV2Registry.adapter(forLegacyId: legacyId)
+    else {
+        return operation()
+    }
+    return adapter.performRuntimeOperation(
+        unavailable: FfiJsonResult(value: nil, error: editorV2UnavailableOperationError()),
+        operation
+    )
+}
+
+func performEditorV2UnitOperation(
+    editorId: String,
+    _ operation: () -> FfiUnitResult
+) -> FfiUnitResult {
+    guard let legacyId = UInt64(editorId),
+          let adapter = EditorV2Registry.adapter(forLegacyId: legacyId)
+    else {
+        return operation()
+    }
+    return adapter.performRuntimeOperation(
+        unavailable: FfiUnitResult(value: nil, error: editorV2UnavailableOperationError()),
+        operation
+    )
+}
+
+func performEditorV2LifecycleUnitOperation(
+    editorId: String,
+    _ operation: () -> FfiUnitResult
+) -> FfiUnitResult {
+    guard let legacyId = UInt64(editorId),
+          let adapter = EditorV2Registry.adapter(forLegacyId: legacyId)
+    else {
+        return operation()
+    }
+    return adapter.performRuntimeLifecycleOperation(
+        unavailable: FfiUnitResult(value: nil, error: editorV2UnavailableOperationError()),
+        operation
+    )
+}
+
+func performEditorV2SnapshotExportOperation(
+    editorId: String,
+    _ operation: () -> FfiSnapshotExportResult
+) -> FfiSnapshotExportResult {
+    guard let legacyId = UInt64(editorId),
+          let adapter = EditorV2Registry.adapter(forLegacyId: legacyId)
+    else {
+        return operation()
+    }
+    return adapter.performRuntimeOperation(
+        unavailable: FfiSnapshotExportResult(value: nil, error: editorV2UnavailableOperationError()),
+        operation
+    )
+}
+
+func performEditorV2OutboundLeaseOperation(
+    editorId: String,
+    _ operation: () -> FfiOutboundLeaseResult
+) -> FfiOutboundLeaseResult {
+    guard let legacyId = UInt64(editorId),
+          let adapter = EditorV2Registry.adapter(forLegacyId: legacyId)
+    else {
+        return operation()
+    }
+    return adapter.performRuntimeOperation(
+        unavailable: FfiOutboundLeaseResult(
+            value: nil,
+            empty: false,
+            error: editorV2UnavailableOperationError()
+        ),
+        operation
+    )
 }
 
 /// Maps the public (module-visible) editor id to the v2 adapter backing it.

@@ -173,6 +173,90 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertNil(EditorV2Registry.adapter(forLegacyId: 900003))
     }
 
+    func testModuleSessionOwnerDestroysEveryRemainingOwnedHandleOnce() {
+        let owner = NativeEditorModuleSessionOwner()
+        owner.insert("42")
+        owner.insert("7")
+        owner.insert("42")
+        owner.remove("7")
+        var destroyed: [String] = []
+
+        owner.destroyAll { editorId in
+            destroyed.append(editorId)
+            return FfiUnitResult(value: true, error: nil)
+        }
+
+        XCTAssertEqual(destroyed, ["42"])
+        XCTAssertEqual(owner.countForTesting, 0)
+    }
+
+    func testModuleSessionOwnerTeardownRemovesLiveAdapterPairing() {
+        let created = createEditorV2SessionFromModule(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil
+        )
+        guard let value = created["value"] as? String,
+              let handle = createdV2TestEditorHandle(value)
+        else {
+            XCTFail("expected module session creation")
+            return
+        }
+        let owner = NativeEditorModuleSessionOwner()
+        owner.insert(handle.handle)
+        defer {
+            EditorV2Registry.removePairing(forLegacyId: handle.nativeViewId)
+            NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: handle.nativeViewId)
+            _ = editorV2Destroy(editorId: handle.handle)
+        }
+
+        owner.destroyAll()
+
+        XCTAssertNil(EditorV2Registry.adapter(forLegacyId: handle.nativeViewId))
+        XCTAssertEqual(editorV2GetState(editorId: handle.handle).error?.code, "ENGINE_DESTROYED")
+        XCTAssertEqual(owner.countForTesting, 0)
+    }
+
+    func testDestroyPairedRoomRetiresTransportWithoutDeadlockingRuntimeGate() {
+        let created = createEditorV2SessionFromModule(
+            configJson: #"{"initialization":{"type":"room","documentId":"doc-runtime-gate","lineageId":"lineage-runtime-gate"}}"#,
+            snapshotState: nil
+        )
+        guard let value = created["value"] as? String,
+              let handle = createdV2TestEditorHandle(value)
+        else {
+            XCTFail("expected room session creation")
+            return
+        }
+        defer {
+            NativeCollaborationTransportRegistry.destroy(editorId: handle.nativeViewId)
+            EditorV2Registry.removePairing(forLegacyId: handle.nativeViewId)
+            NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: handle.nativeViewId)
+            _ = editorV2Destroy(editorId: handle.handle)
+        }
+        XCTAssertNil(NativeCollaborationTransportRegistry.configure(
+            editorId: handle.nativeViewId,
+            configJSON: #"{"url":"wss://example.com","connect":false}"#
+        ))
+        let finished = expectation(description: "destroy finished")
+        let resultLock = NSLock()
+        var result: FfiUnitResult?
+
+        DispatchQueue.global().async {
+            let destroyed = destroyEditorV2FromModule(editorId: handle.handle)
+            resultLock.lock()
+            result = destroyed
+            resultLock.unlock()
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 1)
+        resultLock.lock()
+        let finalResult = result
+        resultLock.unlock()
+        XCTAssertEqual(finalResult?.value, true)
+        XCTAssertNil(finalResult?.error)
+    }
+
     func testUnpairedDestroyReservesBeforeFfiAndFinalizesLifecycleAlreadyDestroyed() {
         let editorId: UInt64 = 900004
         let registry = NativeEditorViewRegistry.shared

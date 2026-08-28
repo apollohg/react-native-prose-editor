@@ -330,8 +330,15 @@ func destroyEditorV2FromModule(
 
     // Transport callbacks and retained sockets must lose ownership before
     // the Rust session can be destroyed or its numeric handle reused.
-    NativeCollaborationTransportRegistry.destroy(editorId: nativeViewId)
-    let result = adapter?.destroyForModuleTransaction() ?? destroy(editorId)
+    let result: FfiUnitResult
+    if let adapter {
+        result = adapter.destroyForModuleTransaction {
+            NativeCollaborationTransportRegistry.destroy(editorId: nativeViewId)
+        }
+    } else {
+        NativeCollaborationTransportRegistry.destroy(editorId: nativeViewId)
+        result = destroy(editorId)
+    }
     invokeDestroyTestingHook(
         EditorV2Registry.onDestroyFfiResultReceivedForTesting,
         editorId: nativeViewId
@@ -400,6 +407,51 @@ private func v2ConfigIndicatesRoomBinding(_ configJson: String) -> Bool {
     return initialization["type"] as? String == "room"
 }
 
+final class NativeEditorModuleSessionOwner {
+    private let lock = NSLock()
+    private var editorIds: Set<String> = []
+
+    var countForTesting: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return editorIds.count
+    }
+
+    func insert(_ editorId: String) {
+        guard let value = v2CanonicalUInt64String(editorId), value != "0" else { return }
+        lock.lock()
+        editorIds.insert(value)
+        lock.unlock()
+    }
+
+    func remove(_ editorId: String) {
+        lock.lock()
+        editorIds.remove(editorId)
+        lock.unlock()
+    }
+
+    func destroyAll(
+        _ destroy: (String) -> FfiUnitResult = {
+            destroyEditorV2FromModule(editorId: $0)
+        }
+    ) {
+        lock.lock()
+        let ownedEditorIds = editorIds.sorted()
+        editorIds.removeAll()
+        lock.unlock()
+        for editorId in ownedEditorIds {
+            _ = destroy(editorId)
+        }
+    }
+}
+
+private func isTerminalEditorV2DestroyResult(_ result: FfiUnitResult) -> Bool {
+    if result.value == true, result.error == nil { return true }
+    guard result.value == nil, let error = result.error else { return false }
+    return error.domain == "lifecycle"
+        && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING")
+}
+
 // `Module` is `BaseModule & AnyModule`; the conformance is spelled out so
 // `AnyModule` can carry `@preconcurrency`. That is what lets `definition()`
 // below be `@MainActor` even though the protocol requirement is nonisolated.
@@ -420,6 +472,7 @@ private func v2ConfigIndicatesRoomBinding(_ configJson: String) -> Bool {
 // Keep it pure definition building.
 public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
     private var collaborationLifecycleObservers: [NSObjectProtocol] = []
+    private let sessionOwner = NativeEditorModuleSessionOwner()
 
     @MainActor
     public func definition() -> ModuleDefinition {
@@ -474,6 +527,7 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             let center = NotificationCenter.default
             self.collaborationLifecycleObservers.forEach(center.removeObserver)
             self.collaborationLifecycleObservers.removeAll()
+            self.sessionOwner.destroyAll()
             NativeCollaborationTransportRegistry.destroyAll()
         }
 
@@ -485,60 +539,92 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
         // across the JS boundary; binaries travel as Data.
 
         Function("editorV2Create") { (configJson: String, snapshotState: Data?) -> [String: Any] in
-            createEditorV2SessionFromModule(configJson: configJson, snapshotState: snapshotState)
+            let result = createEditorV2SessionFromModule(configJson: configJson, snapshotState: snapshotState)
+            if let value = result["value"] as? String,
+               let handle = createdV2SessionHandle(value)
+            {
+                self.sessionOwner.insert(handle.handle)
+            }
+            return result
         }
         Function("editorV2Destroy") { (editorId: String) -> [String: Any] in
-            v2UnitResultDictionary(destroyEditorV2FromModule(editorId: editorId))
+            let result = destroyEditorV2FromModule(editorId: editorId)
+            if isTerminalEditorV2DestroyResult(result) {
+                self.sessionOwner.remove(editorId)
+            }
+            return v2UnitResultDictionary(result)
         }
         Function("editorV2GetState") { (editorId: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2GetState(editorId: editorId))
+            v2JsonResultDictionary(performEditorV2JsonOperation(editorId: editorId) {
+                editorV2GetState(editorId: editorId)
+            })
         }
         Function("editorV2GetDocumentJson") { (editorId: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2GetDocumentJson(editorId: editorId))
+            v2JsonResultDictionary(performEditorV2JsonOperation(editorId: editorId) {
+                editorV2GetDocumentJson(editorId: editorId)
+            })
         }
         Function("editorV2GetDocumentHtml") { (editorId: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2GetDocumentHtml(editorId: editorId))
+            v2JsonResultDictionary(performEditorV2JsonOperation(editorId: editorId) {
+                editorV2GetDocumentHtml(editorId: editorId)
+            })
         }
         Function("editorV2GetContentSnapshot") { (editorId: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2GetContentSnapshot(editorId: editorId))
+            v2JsonResultDictionary(performEditorV2JsonOperation(editorId: editorId) {
+                editorV2GetContentSnapshot(editorId: editorId)
+            })
         }
         Function("editorV2ReplaceDocument") { (editorId: String, requestJson: String) -> [String: Any] in
             v2MutationResultDictionary(
                 editorId: editorId,
-                result: editorV2ReplaceDocument(editorId: editorId, requestJson: requestJson)
+                result: performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2ReplaceDocument(editorId: editorId, requestJson: requestJson)
+                }
             )
         }
         Function("editorV2ApplyInput") { (editorId: String, requestJson: String) -> [String: Any] in
             v2MutationResultDictionary(
                 editorId: editorId,
-                result: editorV2ApplyInput(editorId: editorId, requestJson: requestJson)
+                result: performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2ApplyInput(editorId: editorId, requestJson: requestJson)
+                }
             )
         }
         Function("editorV2ApplyCommand") { (editorId: String, requestJson: String) -> [String: Any] in
             v2MutationResultDictionary(
                 editorId: editorId,
-                result: editorV2ApplyCommand(editorId: editorId, requestJson: requestJson)
+                result: performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2ApplyCommand(editorId: editorId, requestJson: requestJson)
+                }
             )
         }
         Function("editorV2ApplyLocalApi") { (editorId: String, requestJson: String) -> [String: Any] in
             v2MutationResultDictionary(
                 editorId: editorId,
-                result: editorV2ApplyLocalApi(editorId: editorId, requestJson: requestJson)
+                result: performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2ApplyLocalApi(editorId: editorId, requestJson: requestJson)
+                }
             )
         }
         Function("editorV2SetSelection") { (editorId: String, requestJson: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2SetSelection(editorId: editorId, requestJson: requestJson))
+            v2JsonResultDictionary(performEditorV2JsonOperation(editorId: editorId) {
+                editorV2SetSelection(editorId: editorId, requestJson: requestJson)
+            })
         }
         Function("editorV2Undo") { (editorId: String, requestJson: String) -> [String: Any] in
             v2MutationResultDictionary(
                 editorId: editorId,
-                result: editorV2Undo(editorId: editorId, requestJson: requestJson)
+                result: performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2Undo(editorId: editorId, requestJson: requestJson)
+                }
             )
         }
         Function("editorV2Redo") { (editorId: String, requestJson: String) -> [String: Any] in
             v2MutationResultDictionary(
                 editorId: editorId,
-                result: editorV2Redo(editorId: editorId, requestJson: requestJson)
+                result: performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2Redo(editorId: editorId, requestJson: requestJson)
+                }
             )
         }
         Function("editorV2RenderUpdate") { (editorId: String, mirrorScalarAnchor: Double?, mirrorScalarHead: Double?) -> [String: Any] in
@@ -551,11 +637,13 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
                 return v2InvalidResultDictionary("invalid render scalar position")
             }
             return v2JsonResultDictionary(
-                editorV2RenderUpdate(
-                    editorId: editorId,
-                    mirrorScalarAnchor: anchor,
-                    mirrorScalarHead: head
-                )
+                performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2RenderUpdate(
+                        editorId: editorId,
+                        mirrorScalarAnchor: anchor,
+                        mirrorScalarHead: head
+                    )
+                }
             )
         }
         Function("editorV2CollaborationConfigureTransport") {
@@ -594,10 +682,12 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             ))
         }
         Function("editorV2CollaborationSetAwareness") { (editorId: String, awarenessJson: String) -> [String: Any] in
-            let result = editorV2CollaborationSetAwareness(
-                editorId: editorId,
-                awarenessJson: awarenessJson
-            )
+            let result = performEditorV2UnitOperation(editorId: editorId) {
+                editorV2CollaborationSetAwareness(
+                    editorId: editorId,
+                    awarenessJson: awarenessJson
+                )
+            }
             if result.value == true, result.error == nil,
                let nativeEditorId = v2UInt64Argument(editorId)
             {
@@ -609,19 +699,25 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             return v2UnitResultDictionary(result)
         }
         Function("editorV2CollaborationPeers") { (editorId: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2CollaborationPeers(editorId: editorId))
+            v2JsonResultDictionary(performEditorV2JsonOperation(editorId: editorId) {
+                editorV2CollaborationPeers(editorId: editorId)
+            })
         }
         Function("editorV2SnapshotExport") { (editorId: String) -> [String: Any] in
-            v2SnapshotExportResultDictionary(editorV2SnapshotExport(editorId: editorId))
+            v2SnapshotExportResultDictionary(performEditorV2SnapshotExportOperation(editorId: editorId) {
+                editorV2SnapshotExport(editorId: editorId)
+            })
         }
         Function("editorV2SnapshotRestore") { (editorId: String, metadataJson: String, encodedState: Data) -> [String: Any] in
             v2MutationResultDictionary(
                 editorId: editorId,
-                result: editorV2SnapshotRestore(
-                    editorId: editorId,
-                    metadataJson: metadataJson,
-                    encodedState: encodedState
-                )
+                result: performEditorV2JsonOperation(editorId: editorId) {
+                    editorV2SnapshotRestore(
+                        editorId: editorId,
+                        metadataJson: metadataJson,
+                        encodedState: encodedState
+                    )
+                }
             )
         }
 

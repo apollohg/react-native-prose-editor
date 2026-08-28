@@ -262,7 +262,10 @@ enum NativeCollaborationTransportRegistry {
     }
 
     private static func state(editorId: UInt64) -> [String: Any]? {
-        let result = editorV2GetState(editorId: String(editorId))
+        let handle = String(editorId)
+        let result = performEditorV2JsonOperation(editorId: handle) {
+            editorV2GetState(editorId: handle)
+        }
         guard result.error == nil,
               let value = result.value,
               let data = value.data(using: .utf8),
@@ -274,7 +277,10 @@ enum NativeCollaborationTransportRegistry {
     }
 
     private static func peers(editorId: UInt64) -> Any {
-        let result = editorV2CollaborationPeers(editorId: String(editorId))
+        let handle = String(editorId)
+        let result = performEditorV2JsonOperation(editorId: handle) {
+            editorV2CollaborationPeers(editorId: handle)
+        }
         guard result.error == nil,
               let value = result.value,
               let data = value.data(using: .utf8),
