@@ -455,9 +455,10 @@ final class CoreTextProseLayoutEngine {
             let fragments = [PreparedProseFragment(kind: .image, bounds: bounds, color: UIColor.systemGray5.cgColor)]
             let prepared = PreparedProseBlock(fragments: fragments, bounds: bounds)
             let imageLabel = block.inlines.compactMap { inline -> String? in
-                guard case let .atom(_, _, _, label) = inline else { return nil }
-                return label
-            }.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard case let .atom("image", _, attrsJSON, _) = inline else { return nil }
+                let alt = jsonDictionary(attrsJSON)["alt"] as? String
+                return alt?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.first
             let accessibleImageLabel = imageLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "Image"
             let node = PreparedProseAccessibilityNode(
                 interactionIndex: nil,
@@ -513,8 +514,14 @@ final class CoreTextProseLayoutEngine {
         var fragments: [PreparedProseFragment] = []
         var interactionRects: [[CGRect]] = Array(repeating: [], count: attributed.semanticRanges.count)
         var accessibilityRects: [[CGRect]] = Array(repeating: [], count: attributed.accessibilityRanges.count)
-        let semanticGeometryRanges = attributed.semanticRanges.map(\.range)
-        let accessibilityGeometryRanges = attributed.accessibilityRanges.map(\.range)
+        let semanticGeometryRanges = attributed.semanticRanges.enumerated().map {
+            (index: $0.offset, range: $0.element.range)
+        }
+        let accessibilityGeometryRanges = attributed.accessibilityRanges.enumerated().compactMap {
+            index, range -> (index: Int, range: NSRange)? in
+            guard range.role == .text else { return nil }
+            return (index, range.range)
+        }
         var semanticGeometryCursor = 0
         var accessibilityGeometryCursor = 0
         let codeTopInset = block.nodeType == "codeBlock" ? theme.codePaddingVertical : 0
@@ -646,7 +653,7 @@ final class CoreTextProseLayoutEngine {
             : nil
         let accessibilityNodes = attributed.accessibilityRanges.enumerated().compactMap { index, range -> PreparedProseAccessibilityNode? in
             let label = range.label.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !label.isEmpty, !accessibilityRects[index].isEmpty else { return nil }
+            guard !label.isEmpty else { return nil }
             let accessibleLabel: String
             if let marker = markerPending {
                 markerPending = nil
@@ -656,22 +663,27 @@ final class CoreTextProseLayoutEngine {
             }
             let interactionIndex: Int?
             let role: PreparedProseAccessibilityNode.Role
+            let rects: [CGRect]
             switch range.role {
             case .text:
                 interactionIndex = nil
-                role = block.nodeType == "heading" ? .heading : .text
+                role = block.nodeType == "heading" || theme.headings[block.nodeType] != nil ? .heading : .text
+                rects = accessibilityRects[index]
             case let .link(semanticIndex):
                 interactionIndex = interactionIndexBySemanticIndex[semanticIndex]
                 role = interactionIndex == nil ? .text : .link
+                rects = interactionRects[semanticIndex]
             case let .mention(semanticIndex):
                 interactionIndex = interactionIndexBySemanticIndex[semanticIndex]
                 role = interactionIndex == nil ? .text : .mention
+                rects = interactionRects[semanticIndex]
             }
+            guard !rects.isEmpty else { return nil }
             return PreparedProseAccessibilityNode(
                 interactionIndex: interactionIndex,
                 role: role,
                 label: accessibleLabel,
-                rects: accessibilityRects[index]
+                rects: rects
             )
         }
         return (
@@ -685,7 +697,7 @@ final class CoreTextProseLayoutEngine {
     }
 
     private func appendShapedRects(
-        ranges: [NSRange],
+        ranges: [(index: Int, range: NSRange)],
         line: CTLine,
         lineRange: NSRange,
         lineBounds: CGRect,
@@ -694,13 +706,17 @@ final class CoreTextProseLayoutEngine {
         rangeCursor: inout Int,
         to rects: inout [[CGRect]]
     ) {
-        let glyphRuns = CTLineGetGlyphRuns(line) as? [CTRun] ?? []
-        while ranges.indices.contains(rangeCursor), ranges[rangeCursor].upperBound <= lineRange.location {
+        guard ranges.indices.contains(rangeCursor) else { return }
+        while ranges.indices.contains(rangeCursor), ranges[rangeCursor].range.upperBound <= lineRange.location {
             rangeCursor += 1
         }
+        guard ranges.indices.contains(rangeCursor) else { return }
+        guard ranges[rangeCursor].range.location < lineRange.upperBound else { return }
+        let glyphRuns = CTLineGetGlyphRuns(line) as? [CTRun] ?? []
         var index = rangeCursor
-        while ranges.indices.contains(index), ranges[index].location < lineRange.upperBound {
-            let range = ranges[index]
+        while ranges.indices.contains(index), ranges[index].range.location < lineRange.upperBound {
+            let geometryRange = ranges[index]
+            let range = geometryRange.range
             var visualPieces: [(rect: CGRect, rightToLeft: Bool)] = []
             for run in glyphRuns {
                 let stringRange = CTRunGetStringRange(run)
@@ -723,7 +739,7 @@ final class CoreTextProseLayoutEngine {
             for piece in visualPieces.sorted(by: { PreparedProseInteractionGeometry.visualOrder($0.rect, $1.rect) }) {
                 PreparedProseInteractionGeometry.appendSameLinePiece(
                     piece.rect,
-                    to: &rects[index],
+                    to: &rects[geometryRange.index],
                     mayMergeWithPrior: priorDirection == piece.rightToLeft
                 )
                 priorDirection = piece.rightToLeft

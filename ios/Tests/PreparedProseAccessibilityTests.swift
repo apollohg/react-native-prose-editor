@@ -271,6 +271,89 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         XCTAssertTrue(element.accessibilityTraits.contains(.staticText))
     }
 
+    func testHeadingBlocksAreExposedWithHeaderTrait() throws {
+        let headings = (1...6).map { level in
+            ViewerBlock(
+                nodeType: "h\(level)",
+                depth: 0,
+                inBlockquote: false,
+                listContext: nil,
+                listItemBoundary: nil,
+                inlines: [.text(text: "Heading \(level)", marks: [])]
+            )
+        }
+        let layout = try prepare(
+            ViewerDocument(
+                semanticKey: "heading-accessibility-fixture",
+                blocks: headings,
+                isEmpty: false,
+                retainedBytes: 64
+            ),
+            width: 180
+        )
+        let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: 180, height: 80))
+        drawing.install(layout: layout)
+
+        XCTAssertEqual(layout.accessibilityNodes.map(\.role), Array(repeating: .heading, count: 6))
+        for index in 0..<6 {
+            let element = try XCTUnwrap(
+                drawing.accessibilityElement(at: index) as? UIAccessibilityElement
+            )
+            XCTAssertTrue(element.accessibilityTraits.contains(.staticText))
+            XCTAssertTrue(element.accessibilityTraits.contains(.header))
+        }
+    }
+
+    func testImageAccessibilityUsesAuthoredAltText() throws {
+        let layout = try prepare(
+            ViewerDocument(
+                semanticKey: "image-alt-accessibility-fixture",
+                blocks: [ViewerBlock(
+                    nodeType: "image",
+                    depth: 0,
+                    inBlockquote: false,
+                    listContext: nil,
+                    listItemBoundary: nil,
+                    inlines: [.atom(
+                        nodeType: "image",
+                        docPos: 4,
+                        attrsJSON: #"{"src":"https://example.test/cat.png","alt":"A sleeping cat"}"#,
+                        label: "image"
+                    )]
+                )],
+                isEmpty: false,
+                retainedBytes: 64
+            ),
+            width: 180
+        )
+
+        XCTAssertEqual(layout.accessibilityNodes.map(\.role), [.image])
+        XCTAssertEqual(layout.accessibilityNodes.map(\.label), ["A sleeping cat"])
+
+        let fallbackLayout = try prepare(
+            ViewerDocument(
+                semanticKey: "image-fallback-accessibility-fixture",
+                blocks: [ViewerBlock(
+                    nodeType: "image",
+                    depth: 0,
+                    inBlockquote: false,
+                    listContext: nil,
+                    listItemBoundary: nil,
+                    inlines: [.atom(
+                        nodeType: "image",
+                        docPos: 4,
+                        attrsJSON: #"{"src":"https://example.test/cat.png","alt":""}"#,
+                        label: "image"
+                    )]
+                )],
+                isEmpty: false,
+                retainedBytes: 64
+            ),
+            width: 180
+        )
+        XCTAssertEqual(fallbackLayout.accessibilityNodes.map(\.label), ["Image"])
+    }
+
     func testAccessibilityElementFromReplacedLayoutCannotActivateNewNodeAtSameIndex() throws {
         func linkedDocument(key: String, href: String, text: String) -> ViewerDocument {
             ViewerDocument(
