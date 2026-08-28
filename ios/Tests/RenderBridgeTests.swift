@@ -277,7 +277,9 @@ final class RenderBridgeTests: XCTestCase {
             NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: handle.nativeViewId)
             _ = editorV2Destroy(editorId: handle.handle)
         }
+        let collaborationOwner = UUID()
         XCTAssertNil(NativeCollaborationTransportRegistry.configure(
+            owner: collaborationOwner,
             editorId: handle.nativeViewId,
             configJSON: #"{"url":"wss://example.com","connect":false}"#
         ))
@@ -299,6 +301,30 @@ final class RenderBridgeTests: XCTestCase {
         resultLock.unlock()
         XCTAssertEqual(finalResult?.value, true)
         XCTAssertNil(finalResult?.error)
+    }
+
+    func testRetiringModuleDoesNotClearReplacementCollaborationState() {
+        let firstOwner = UUID()
+        let replacementOwner = UUID()
+        var deliveredOwners: [String] = []
+
+        NativeCollaborationTransportRegistry.setEventEmitter(owner: firstOwner) { _ in
+            deliveredOwners.append("first")
+        }
+        NativeCollaborationTransportRegistry.setEventEmitter(owner: replacementOwner) { _ in
+            deliveredOwners.append("replacement")
+        }
+
+        NativeCollaborationTransportRegistry.setEventEmitter(owner: firstOwner, nil)
+        NativeCollaborationTransportRegistry.destroyAll(owner: firstOwner)
+        NativeCollaborationTransportRegistry.emitForTesting(["kind": "test"])
+
+        XCTAssertEqual(deliveredOwners, ["replacement"])
+        XCTAssertEqual(
+            NativeCollaborationTransportRegistry.eventEmitterOwnerForTesting,
+            replacementOwner
+        )
+        NativeCollaborationTransportRegistry.destroyAll(owner: replacementOwner)
     }
 
     func testUnpairedDestroyReservesBeforeFfiAndFinalizesLifecycleAlreadyDestroyed() {

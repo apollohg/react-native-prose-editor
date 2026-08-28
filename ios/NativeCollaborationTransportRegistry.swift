@@ -7,11 +7,13 @@ enum NativeCollaborationTransportRegistry {
         label: "com.apollohg.native-editor.collaboration-registry"
     )
     private static var transports: [UInt64: NativeCollaborationTransport] = [:]
+    private static var transportOwners: [UInt64: UUID] = [:]
     private static var transportTokens: [UInt64: UUID] = [:]
     private static var eventSequences: [UInt64: UInt64] = [:]
     private static var eventProcessors: [UInt64: CollaborationEventProcessor] = [:]
     private static var remoteRebases: [UInt64: RemoteRebaseState] = [:]
     private static var eventEmitter: EventEmitter?
+    private static var eventEmitterOwner: UUID?
 
     private struct RemoteRebaseState {
         let token: UUID
@@ -28,13 +30,19 @@ enum NativeCollaborationTransportRegistry {
         }
     }
 
-    static func setEventEmitter(_ emitter: EventEmitter?) {
+    static func setEventEmitter(owner: UUID, _ emitter: EventEmitter?) {
         queue.sync {
-            eventEmitter = emitter
+            if let emitter {
+                eventEmitter = emitter
+                eventEmitterOwner = owner
+            } else if eventEmitterOwner == owner {
+                eventEmitter = nil
+                eventEmitterOwner = nil
+            }
         }
     }
 
-    static func configure(editorId: UInt64, configJSON: String?) -> FfiError? {
+    static func configure(owner: UUID, editorId: UInt64, configJSON: String?) -> FfiError? {
         guard editorId > 0 else {
             return contractError("invalid editorId")
         }
@@ -53,6 +61,7 @@ enum NativeCollaborationTransportRegistry {
         return queue.sync {
             if parsed == nil {
                 let existing = transports.removeValue(forKey: editorId)
+                transportOwners.removeValue(forKey: editorId)
                 transportTokens.removeValue(forKey: editorId)
                 eventProcessors.removeValue(forKey: editorId)
                 remoteRebases.removeValue(forKey: editorId)
@@ -74,15 +83,18 @@ enum NativeCollaborationTransportRegistry {
                     }
                 )
                 transports[editorId] = transport
+                transportOwners[editorId] = owner
                 transportTokens[editorId] = token
                 eventProcessors[editorId] = CollaborationEventProcessor(editorId: editorId)
                 created = true
             }
+            transportOwners[editorId] = owner
             let error = transport.configure(parsed)
             if error != nil, created, transports[editorId] === transport {
                 // A rejected Rust lifecycle transition must not leave a new
                 // unusable owner registered. Existing owners remain intact.
                 transports.removeValue(forKey: editorId)
+                transportOwners.removeValue(forKey: editorId)
                 transportTokens.removeValue(forKey: editorId)
                 eventProcessors.removeValue(forKey: editorId)
                 transport.destroy()
@@ -126,6 +138,7 @@ enum NativeCollaborationTransportRegistry {
     static func destroy(editorId: UInt64) {
         queue.sync {
             transports.removeValue(forKey: editorId)?.destroy()
+            transportOwners.removeValue(forKey: editorId)
             transportTokens.removeValue(forKey: editorId)
             eventSequences.removeValue(forKey: editorId)
             eventProcessors.removeValue(forKey: editorId)
@@ -145,18 +158,36 @@ enum NativeCollaborationTransportRegistry {
         }
     }
 
-    static func destroyAll() {
+    static func destroyAll(owner: UUID) {
         queue.sync {
-            let owned = transports.values
-            transports.removeAll()
-            transportTokens.removeAll()
-            eventSequences.removeAll()
-            eventProcessors.removeAll()
-            remoteRebases.removeAll()
+            let ownedEditorIds = transportOwners.compactMap { editorId, registeredOwner in
+                registeredOwner == owner ? editorId : nil
+            }
+            let owned = ownedEditorIds.compactMap { transports.removeValue(forKey: $0) }
+            for editorId in ownedEditorIds {
+                transportOwners.removeValue(forKey: editorId)
+                transportTokens.removeValue(forKey: editorId)
+                eventSequences.removeValue(forKey: editorId)
+                eventProcessors.removeValue(forKey: editorId)
+                remoteRebases.removeValue(forKey: editorId)
+            }
             owned.forEach { $0.destroy() }
-            eventEmitter = nil
+            if eventEmitterOwner == owner {
+                eventEmitter = nil
+                eventEmitterOwner = nil
+            }
         }
     }
+
+#if DEBUG
+    static var eventEmitterOwnerForTesting: UUID? {
+        queue.sync { eventEmitterOwner }
+    }
+
+    static func emitForTesting(_ payload: [String: Any]) {
+        queue.sync { eventEmitter?(payload) }
+    }
+#endif
 
     private static func enqueue(
         event: NativeCollaborationTransportEvent,

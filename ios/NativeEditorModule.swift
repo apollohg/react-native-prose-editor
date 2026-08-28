@@ -472,6 +472,7 @@ private func isTerminalEditorV2DestroyResult(_ result: FfiUnitResult) -> Bool {
 // Keep it pure definition building.
 public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
     private var collaborationLifecycleObservers: [NSObjectProtocol] = []
+    private let collaborationOwner = UUID()
     private let sessionOwner = NativeEditorModuleSessionOwner()
 
     @MainActor
@@ -499,7 +500,7 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
         Events("onCollaborationTransportEvent")
 
         OnCreate {
-            NativeCollaborationTransportRegistry.setEventEmitter { [weak self] payload in
+            NativeCollaborationTransportRegistry.setEventEmitter(owner: self.collaborationOwner) { [weak self] payload in
                 DispatchQueue.main.async {
                     self?.sendEvent("onCollaborationTransportEvent", payload)
                 }
@@ -528,7 +529,7 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             self.collaborationLifecycleObservers.forEach(center.removeObserver)
             self.collaborationLifecycleObservers.removeAll()
             self.sessionOwner.destroyAll()
-            NativeCollaborationTransportRegistry.destroyAll()
+            NativeCollaborationTransportRegistry.destroyAll(owner: self.collaborationOwner)
         }
 
         // MARK: v2 UniFFI surface (production ABI)
@@ -652,6 +653,7 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
                 return v2InvalidResultDictionary("invalid editorId")
             }
             let error = NativeCollaborationTransportRegistry.configure(
+                owner: self.collaborationOwner,
                 editorId: nativeEditorId,
                 configJSON: configJsonOrNull
             )
