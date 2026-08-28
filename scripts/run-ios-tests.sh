@@ -100,9 +100,11 @@ if [[ ! -d "$workspace" ]]; then
   exit 1
 fi
 
-if grep -q 'path = "Pods/Target Support Files/Pods-NativeEditorTests/ExpoModulesProvider.swift"' \
-  "$repo_root/ios-tests/NativeEditorTests.xcodeproj/project.pbxproj"; then
-  echo "The iOS test bundle must not compile a second ExpoModulesProvider." >&2
+if grep -q 'Pods/Target Support Files/Pods-NativeEditorTests/ExpoModulesProvider.swift' \
+  "$repo_root/ios-tests/NativeEditorTests.xcodeproj/project.pbxproj" \
+  || grep -q 'Pods-NativeEditorTests/expo-configure-project.sh' \
+    "$repo_root/ios-tests/NativeEditorTests.xcodeproj/project.pbxproj"; then
+  echo "The iOS test bundle must not own Expo provider configuration." >&2
   exit 1
 fi
 
