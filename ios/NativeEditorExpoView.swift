@@ -2103,7 +2103,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var pendingEditorUpdateEditorId: String?
     private var pendingEditorUpdateRevision = 0
     private var appliedEditorUpdateRevision = 0
-    private var renderedDocumentRevision: UInt64?
+    private var renderedRevision: (document: UInt64, state: UInt64)?
     private var pendingEditorUpdateRetryScheduled = false
     private var pendingEditorUpdateRetryEditorId: UInt64?
     private var pendingEditorUpdateRetryGeneration: UInt64 = 0
@@ -2590,7 +2590,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         pendingEditorUpdateEditorId = nil
         pendingEditorUpdateRevision = 0
         appliedEditorUpdateRevision = 0
-        renderedDocumentRevision = nil
+        renderedRevision = nil
         pendingEditorUpdateRetryScheduled = false
         pendingEditorUpdateRetryEditorId = nil
         pendingEditorUpdateRetryGeneration &+= 1
@@ -3469,8 +3469,8 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
-        if let revision = documentVersion(fromUpdateJSON: updateJSON).flatMap(UInt64.init) {
-            renderedDocumentRevision = revision
+        if let revision = renderRevision(fromUpdateJSON: updateJSON) {
+            renderedRevision = revision
         }
         // Capture both fields from the same committed atomic update before
         // any view work can cause a rebind. The event must never relabel A's
@@ -3712,12 +3712,32 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private func isSupersededEditorUpdate(_ updateJSON: String) -> Bool {
-        guard let rendered = renderedDocumentRevision,
-              let incoming = documentVersion(fromUpdateJSON: updateJSON).flatMap(UInt64.init)
+        guard let rendered = renderedRevision,
+              let incoming = renderRevision(fromUpdateJSON: updateJSON)
         else {
             return false
         }
-        return incoming < rendered
+        if incoming.document != rendered.document {
+            return incoming.document < rendered.document
+        }
+        return incoming.state < rendered.state
+    }
+
+    private func renderRevision(
+        fromUpdateJSON updateJSON: String
+    ) -> (document: UInt64, state: UInt64)? {
+        guard let data = updateJSON.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let document = (raw["documentVersion"] as? String)
+                .flatMap(v2CanonicalUInt64String)
+                .flatMap(UInt64.init),
+              let state = (raw["stateRevision"] as? String)
+                .flatMap(v2CanonicalUInt64String)
+                .flatMap(UInt64.init)
+        else {
+            return nil
+        }
+        return (document: document, state: state)
     }
 
     private func documentVersion(fromUpdateJSON updateJSON: String?) -> String? {

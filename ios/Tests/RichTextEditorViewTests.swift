@@ -4135,6 +4135,47 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "\u{200B}")
     }
 
+    func testEqualDocumentRevisionCannotRollBackToOlderStateRevision() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>abcdef</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+
+        _ = EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 1, scalarHead: 1)
+        let olderState = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: String(editorId),
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value)
+        _ = EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 4, scalarHead: 4)
+        let newerState = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: String(editorId),
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value)
+        let older = parseJSONObject(olderState)
+        let newer = parseJSONObject(newerState)
+        XCTAssertEqual(older["documentVersion"] as? String, newer["documentVersion"] as? String)
+        XCTAssertLessThan(
+            try XCTUnwrap(UInt64(older["stateRevision"] as? String ?? "")),
+            try XCTUnwrap(UInt64(newer["stateRevision"] as? String ?? ""))
+        )
+
+        XCTAssertTrue(view.applyEditorUpdate(newerState))
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: view.richTextView.textView), 4)
+        XCTAssertTrue(view.applyEditorUpdate(olderState))
+
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: view.richTextView.textView), 4)
+    }
+
     func testPendingEditorUpdateRejectsStaleCrossEditorSourceWithoutRetrying() {
         let firstEditorId = makeV2Editor()
         let secondEditorId = makeV2Editor()
