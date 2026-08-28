@@ -770,6 +770,50 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertEqual(try foregroundColor(in: dark), UIColor.label.resolvedColor(with: darkTraits))
     }
 
+    func testPreparedLayoutCacheSeparatesNormalAndHighContrastAppearance() {
+        let document = ViewerDocument(
+            semanticKey: String(repeating: "c", count: 64),
+            paragraphs: [ViewerParagraph(text: "Contrast")],
+            isEmpty: false,
+            retainedBytes: 64
+        )
+        let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+        let normalTraits = UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: .light),
+            UITraitCollection(accessibilityContrast: .normal)
+        ])
+        let highTraits = UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: .light),
+            UITraitCollection(accessibilityContrast: .high)
+        ])
+        var normal: PreparedProseLayout!
+        normalTraits.performAsCurrent {
+            normal = registry.measure(
+                request: ProseViewerRequest(source: .json("{}"), configuration: .init()),
+                widthPoints: 160,
+                scale: 2
+            )
+        }
+        var high: PreparedProseLayout!
+        highTraits.performAsCurrent {
+            high = registry.measure(
+                request: ProseViewerRequest(source: .json("{}"), configuration: .init()),
+                widthPoints: 160,
+                scale: 2
+            )
+        }
+
+        XCTAssertNotEqual(normal.key.generationIdentity, high.key.generationIdentity)
+        XCTAssertEqual(normal.key.semanticGenerationIdentity, high.key.semanticGenerationIdentity)
+        XCTAssertEqual(
+            ProseViewerAppearance(
+                userInterfaceStyle: .light,
+                accessibilityContrast: .high
+            ).traits.accessibilityContrast,
+            .high
+        )
+    }
+
     func testFabricAppearanceSeparatesLayoutGenerationButNotImagePublication() {
         let registry = PreparedProseLayoutRegistry(compile: { _ in
             ViewerDocument(
@@ -798,6 +842,41 @@ final class PreparedProseRevisionTests: XCTestCase {
 
         XCTAssertNotEqual(generation(style: .light), generation(style: .dark))
         XCTAssertEqual(semanticGeneration(style: .light), semanticGeneration(style: .dark))
+    }
+
+    func testFabricContrastSeparatesLayoutGenerationButNotImagePublication() {
+        let registry = PreparedProseLayoutRegistry(compile: { _ in
+            ViewerDocument(
+                semanticKey: String(repeating: "c", count: 64),
+                paragraphs: [],
+                isEmpty: true,
+                retainedBytes: 0
+            )
+        })
+        func generation(contrast: UIAccessibilityContrast) -> String {
+            registry.fabricGenerationIdentity(
+                sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil,
+                imagePolicyJSON: nil, imagesEnabled: true, collapsesWhenEmpty: true,
+                attachmentRevision: 0, nativeFontRevision: 0, nativeFontScale: 1,
+                fontEnvironmentRevision: 0, userInterfaceStyle: UIUserInterfaceStyle.light.rawValue,
+                accessibilityContrast: contrast.rawValue
+            ) as String
+        }
+        func semanticGeneration(contrast: UIAccessibilityContrast) -> String {
+            registry.fabricSemanticGenerationIdentity(
+                sourceKind: "json", source: "{}", configJSON: "{}", themeJSON: nil,
+                imagePolicyJSON: nil, imagesEnabled: true, collapsesWhenEmpty: true,
+                attachmentRevision: 0, nativeFontRevision: 0, nativeFontScale: 1,
+                fontEnvironmentRevision: 0, userInterfaceStyle: UIUserInterfaceStyle.light.rawValue,
+                accessibilityContrast: contrast.rawValue
+            ) as String
+        }
+
+        XCTAssertNotEqual(generation(contrast: .normal), generation(contrast: .high))
+        XCTAssertEqual(
+            semanticGeneration(contrast: .normal),
+            semanticGeneration(contrast: .high)
+        )
     }
 
     func testDirectViewerRepreparesWhenItsColorAppearanceChanges() throws {

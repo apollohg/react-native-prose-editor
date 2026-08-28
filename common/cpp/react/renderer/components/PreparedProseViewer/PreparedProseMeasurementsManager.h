@@ -27,6 +27,7 @@ class PreparedProseMeasurementsManager {
       uint64_t nativeFontRevision,
       double nativeFontScale,
       int32_t userInterfaceStyle,
+      int32_t accessibilityContrast,
       uint64_t fontEnvironmentRevision,
       uint64_t leaseHandle,
       const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const;

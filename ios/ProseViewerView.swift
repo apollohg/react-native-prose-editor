@@ -415,7 +415,7 @@ public final class ProseViewerView: UIView {
     }
 
     private var currentAppearance: ProseViewerAppearance {
-        ProseViewerAppearance(userInterfaceStyle: traitCollection.userInterfaceStyle)
+        ProseViewerAppearance(traits: traitCollection)
     }
 
     private func applyAppearance() {

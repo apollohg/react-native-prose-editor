@@ -72,8 +72,17 @@ int32_t UserInterfaceStyle(const PreparedProseViewerShadowNode::ConcreteState::S
   return state->getData().userInterfaceStyle;
 }
 
+int32_t AccessibilityContrast(const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
+  if (!state) return 0;
+  return state->getData().accessibilityContrast;
+}
+
 int32_t EffectiveUserInterfaceStyle(UIView *view) {
   return view.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 2 : 1;
+}
+
+int32_t EffectiveAccessibilityContrast(UIView *view) {
+  return view.traitCollection.accessibilityContrast == UIAccessibilityContrastHigh ? 1 : 0;
 }
 
 uint64_t LeaseHandle(const PreparedProseViewerShadowNode::ConcreteState::Shared &state) {
@@ -173,6 +182,7 @@ int64_t ComponentTagFromState(
   uint64_t _lastFontEnvironmentRevision;
   CGFloat _fontEnvironmentScale;
   int32_t _requestedUserInterfaceStyle;
+  int32_t _requestedAccessibilityContrast;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -208,6 +218,7 @@ int64_t ComponentTagFromState(
     [fontEnvironment refreshContentSizeCategory];
     _fontEnvironmentScale = [fontEnvironment currentFontScale];
     _requestedUserInterfaceStyle = 0;
+    _requestedAccessibilityContrast = 0;
     _fontEnvironmentObserver = [[NSNotificationCenter defaultCenter]
         addObserverForName:PREPViewerFontEnvironment.didInvalidateNotification
                     object:fontEnvironment
@@ -294,9 +305,13 @@ int64_t ComponentTagFromState(
   }
   _viewerState = nextState;
   _requestedUserInterfaceStyle = UserInterfaceStyle(_viewerState);
+  _requestedAccessibilityContrast = AccessibilityContrast(_viewerState);
   const auto userInterfaceStyle = EffectiveUserInterfaceStyle(self);
-  if (UserInterfaceStyle(_viewerState) != userInterfaceStyle) {
-    [self invalidateUserInterfaceStyle:userInterfaceStyle];
+  const auto accessibilityContrast = EffectiveAccessibilityContrast(self);
+  if (UserInterfaceStyle(_viewerState) != userInterfaceStyle ||
+      AccessibilityContrast(_viewerState) != accessibilityContrast) {
+    [self invalidateAppearanceWithUserInterfaceStyle:userInterfaceStyle
+                              accessibilityContrast:accessibilityContrast];
     return;
   }
   if (NativeFontScale(_viewerState) != _fontEnvironmentScale) {
@@ -352,7 +367,8 @@ int64_t ComponentTagFromState(
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection
 {
   [super traitCollectionDidChange:previousTraitCollection];
-  [self invalidateUserInterfaceStyle:EffectiveUserInterfaceStyle(self)];
+  [self invalidateAppearanceWithUserInterfaceStyle:EffectiveUserInterfaceStyle(self)
+                            accessibilityContrast:EffectiveAccessibilityContrast(self)];
 }
 
 - (void)prepareForRecycle
@@ -404,7 +420,8 @@ int64_t ComponentTagFromState(
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
             fontEnvironmentRevision:FontEnvironmentRevision(props)
-               userInterfaceStyle:UserInterfaceStyle(_viewerState)];
+               userInterfaceStyle:UserInterfaceStyle(_viewerState)
+             accessibilityContrast:AccessibilityContrast(_viewerState)];
   [_drawingView beginSemanticImageGeneration:semanticGeneration];
 }
 
@@ -491,7 +508,8 @@ int64_t ComponentTagFromState(
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
             fontEnvironmentRevision:FontEnvironmentRevision(props)
-               userInterfaceStyle:UserInterfaceStyle(_viewerState)];
+               userInterfaceStyle:UserInterfaceStyle(_viewerState)
+             accessibilityContrast:AccessibilityContrast(_viewerState)];
   const auto measurementIdentityString = MeasurementIdentity(generation, width, scale, leaseHandle);
   const auto semanticGeneration = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       fabricSemanticGenerationIdentitySourceKind:SourceKind(props)
@@ -505,7 +523,8 @@ int64_t ComponentTagFromState(
                  nativeFontRevision:Revision(_viewerState, false)
                    nativeFontScale:NativeFontScale(_viewerState)
                fontEnvironmentRevision:FontEnvironmentRevision(props)
-                  userInterfaceStyle:UserInterfaceStyle(_viewerState)];
+                  userInterfaceStyle:UserInterfaceStyle(_viewerState)
+                accessibilityContrast:AccessibilityContrast(_viewerState)];
   // This is the props/state commit boundary for the state-family handle.
   // Commit G2 before touching G1 ownership or attempting mount acquisition:
   // delayed G1 Yoga callbacks are rejected, while an already-running G2
@@ -574,6 +593,7 @@ int64_t ComponentTagFromState(
                      nativeFontScale:NativeFontScale(_viewerState)
              fontEnvironmentRevision:FontEnvironmentRevision(props)
                 userInterfaceStyle:UserInterfaceStyle(_viewerState)
+              accessibilityContrast:AccessibilityContrast(_viewerState)
                           widthPoints:width
                                  scale:scale];
   if (!installed) {
@@ -645,16 +665,22 @@ int64_t ComponentTagFromState(
       });
 }
 
-- (void)invalidateUserInterfaceStyle:(int32_t)userInterfaceStyle
+- (void)invalidateAppearanceWithUserInterfaceStyle:(int32_t)userInterfaceStyle
+                            accessibilityContrast:(int32_t)accessibilityContrast
 {
-  if (!_viewerState || _requestedUserInterfaceStyle == userInterfaceStyle) return;
+  if (!_viewerState ||
+      (_requestedUserInterfaceStyle == userInterfaceStyle &&
+       _requestedAccessibilityContrast == accessibilityContrast)) return;
   _requestedUserInterfaceStyle = userInterfaceStyle;
+  _requestedAccessibilityContrast = accessibilityContrast;
   _viewerState->updateState(
-      [userInterfaceStyle](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
+      [userInterfaceStyle, accessibilityContrast](
+          const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
           -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
         auto nextData = oldData;
         nextData.nativeFontRevision += 1;
         nextData.userInterfaceStyle = userInterfaceStyle;
+        nextData.accessibilityContrast = accessibilityContrast;
         return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
       });
 }

@@ -62,6 +62,7 @@ struct PreparedProseViewerState final {
   // The JS revision can remain unchanged, so it cannot select this snapshot.
   double nativeFontScale{1.0};
   int32_t userInterfaceStyle{0};
+  int32_t accessibilityContrast{0};
   // Opaque, native-owned Fabric handoff incarnation. The shadow node mints it
   // once and component views must pass this exact value back to the registry.
   uint64_t leaseHandle{0};
@@ -81,6 +82,7 @@ struct PreparedProseViewerState final {
         nativeFontRevision(revisionValue(data, "nativeFontRevision")),
         nativeFontScale(scaleValue(data, "nativeFontScale")),
         userInterfaceStyle(previousState.userInterfaceStyle),
+        accessibilityContrast(previousState.accessibilityContrast),
         leaseHandle(handleValue(data, "leaseHandle", previousState.leaseHandle)),
         surfaceId(previousState.surfaceId),
         componentTag(previousState.componentTag),

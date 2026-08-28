@@ -113,7 +113,7 @@ struct ProseViewerRequest: Hashable {
             String(nativeFontRevision),
             String(Double(nativeFontScale).bitPattern),
             String(fontEnvironmentRevision),
-            String(appearance.rawValue),
+            appearance.identity,
         ].joined(separator: "\u{1F}"))
     }
 
@@ -128,31 +128,50 @@ struct ProseViewerRequest: Hashable {
     }
 }
 
-enum ProseViewerAppearance: Int, Hashable {
-    case light = 1
-    case dark = 2
+struct ProseViewerAppearance: Hashable {
+    let userInterfaceStyle: UIUserInterfaceStyle
+    let accessibilityContrast: UIAccessibilityContrast
 
     static var current: ProseViewerAppearance {
-        ProseViewerAppearance(userInterfaceStyle: UITraitCollection.current.userInterfaceStyle)
+        ProseViewerAppearance(traits: .current)
     }
 
-    init(userInterfaceStyle: UIUserInterfaceStyle) {
-        self = userInterfaceStyle == .dark ? .dark : .light
+    init(
+        userInterfaceStyle: UIUserInterfaceStyle,
+        accessibilityContrast: UIAccessibilityContrast = .normal
+    ) {
+        self.userInterfaceStyle = userInterfaceStyle == .dark ? .dark : .light
+        self.accessibilityContrast = accessibilityContrast == .high ? .high : .normal
     }
 
-    init(rawUserInterfaceStyle: Int) {
+    init(traits: UITraitCollection) {
+        self.init(
+            userInterfaceStyle: traits.userInterfaceStyle,
+            accessibilityContrast: traits.accessibilityContrast
+        )
+    }
+
+    init(rawUserInterfaceStyle: Int, rawAccessibilityContrast: Int = 0) {
+        let contrast = UIAccessibilityContrast(rawValue: rawAccessibilityContrast) ?? .normal
         if rawUserInterfaceStyle == UIUserInterfaceStyle.light.rawValue
             || rawUserInterfaceStyle == UIUserInterfaceStyle.dark.rawValue,
            let style = UIUserInterfaceStyle(rawValue: rawUserInterfaceStyle)
         {
-            self.init(userInterfaceStyle: style)
+            self.init(userInterfaceStyle: style, accessibilityContrast: contrast)
         } else {
             self = .current
         }
     }
 
+    var identity: String {
+        "\(userInterfaceStyle.rawValue):\(accessibilityContrast.rawValue)"
+    }
+
     var traits: UITraitCollection {
-        UITraitCollection(userInterfaceStyle: self == .dark ? .dark : .light)
+        UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: userInterfaceStyle),
+            UITraitCollection(accessibilityContrast: accessibilityContrast)
+        ])
     }
 }
 
