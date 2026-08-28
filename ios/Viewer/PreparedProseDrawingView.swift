@@ -134,9 +134,11 @@ public final class PreparedProseDrawingView: UIView {
         guard let layout, let visible = configuredVisibleRect() else {
             imagePipeline.leaveViewport()
             if !imagePixels.isEmpty { imagePixels = [:] }
+            onVisibleRectChange?(nil)
             return
         }
         let retainedIDs = imagePipeline.updateVisibleRect(visible, attachments: layout.imageAttachments)
+        onVisibleRectChange?(visible)
         guard imagePixels.keys.contains(where: { !retainedIDs.contains($0) }) else { return }
         imagePixels = imagePixels.filter { retainedIDs.contains($0.key) }
     }
@@ -159,6 +161,7 @@ public final class PreparedProseDrawingView: UIView {
     @objc public var errorMessage: String? { layout?.error?.message }
     /// The owner chooses its delivery channel (UIKit delegate or Fabric event).
     var onActivateInteraction: ((PreparedProseInteraction) -> Bool)?
+    var onVisibleRectChange: ((CGRect?) -> Void)?
     @objc public weak var interactionDelegate: PreparedProseDrawingViewInteractionDelegate?
     @objc public var linkInteractionsEnabled = true {
         didSet {

@@ -77,6 +77,58 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertNotNil(drawing.imagePixels[attachment.id])
     }
 
+    func testDirectViewerAncestorScrollRequestsNewlyVisibleImage() {
+        let attachment = ViewerImageAttachment(
+            ordinal: 0,
+            id: "direct-scroll-image",
+            source: imageDataURI(),
+            bounds: CGRect(x: 0, y: 1_200, width: 20, height: 20),
+            declaredSize: CGSize(width: 20, height: 20)
+        )
+        let registry = PreparedProseLayoutRegistry(
+            compile: { _ in
+                ViewerDocument(
+                    semanticKey: String(repeating: "a", count: 64),
+                    paragraphs: [],
+                    isEmpty: false,
+                    retainedBytes: 0
+                )
+            },
+            prepare: { _, key, _, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: 200, height: 1_600),
+                    blocks: [],
+                    imageAttachments: [attachment],
+                    retainedBytes: 0
+                )
+            }
+        )
+        let viewer = ProseViewerView(
+            frame: CGRect(x: 0, y: 0, width: 200, height: 1_600),
+            layoutRegistry: registry
+        )
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = viewer.bounds.size
+        scrollView.addSubview(viewer)
+        let window = UIWindow(frame: scrollView.bounds)
+        window.addSubview(scrollView)
+        window.isHidden = false
+        defer {
+            viewer.prepareForReuse()
+            window.isHidden = true
+        }
+        XCTAssertTrue(viewer.apply(source: .json("{}"), configuration: .init()))
+        viewer.setNeedsLayout()
+        viewer.layoutIfNeeded()
+        XCTAssertNil(viewer.drawingViewForTesting.imagePixels[attachment.id])
+
+        scrollView.contentOffset.y = 1_100
+        flushMain(until: { viewer.drawingViewForTesting.imagePixels[attachment.id] != nil })
+
+        XCTAssertNotNil(viewer.drawingViewForTesting.imagePixels[attachment.id])
+    }
+
     func testVisibleWindowUpdateReleasesPixelsOutsidePrefetchRange() {
         let visible = ViewerImageAttachment(
             ordinal: 1,

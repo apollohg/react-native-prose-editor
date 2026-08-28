@@ -75,6 +75,9 @@ public final class ProseViewerView: UIView {
         drawingView.isOpaque = false
         drawingView.linkInteractionsEnabled = linkTapsEnabled
         drawingView.onActivateInteraction = { [weak self] interaction in self?.activate(interaction) ?? false }
+        drawingView.onVisibleRectChange = { [weak self] visibleRect in
+            self?.requestVisibleImageAttachments(in: visibleRect)
+        }
         viewerImagePipeline.onPixels = { [weak self] attachment, image in
             guard let self, self.request?.semanticGenerationIdentity == self.viewerImageGeneration else { return }
             self.drawingView.imagePixels[attachment.id] = image
@@ -239,7 +242,7 @@ public final class ProseViewerView: UIView {
         } else {
             drawingView.install(layout: ownedLayout)
         }
-        requestVisibleImageAttachments()
+        drawingView.updateConfiguredImagesForVisibleWindow()
     }
 
     public override func didMoveToWindow() {
@@ -255,7 +258,7 @@ public final class ProseViewerView: UIView {
         if let ownedLayout {
             layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, layout: ownedLayout)
         }
-        requestVisibleImageAttachments()
+        drawingView.updateConfiguredImagesForVisibleWindow()
     }
 
     public override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -364,15 +367,11 @@ public final class ProseViewerView: UIView {
         )
     }
 
-    private func requestVisibleImageAttachments() {
-        guard let layout = ownedLayout, drawingView.window != nil,
-              !drawingView.isHidden, drawingView.alpha > 0,
-              let window = drawingView.window
-        else { return }
-        let visibleRect = drawingView.convert(window.bounds, from: window).intersection(drawingView.bounds)
-        guard visibleRect.origin.x.isFinite, visibleRect.origin.y.isFinite,
-              visibleRect.size.width.isFinite, visibleRect.size.height.isFinite,
-              !visibleRect.isNull, !visibleRect.isEmpty else { return }
+    private func requestVisibleImageAttachments(in visibleRect: CGRect?) {
+        guard let layout = ownedLayout, let visibleRect else {
+            viewerImagePipeline.leaveViewport()
+            return
+        }
         configureImageGeneration(for: layout)
         viewerImagePipeline.updateVisibleRect(visibleRect, attachments: layout.imageAttachments)
     }
