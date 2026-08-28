@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.0-alpha.8] - 2026-08-28
+
+### Changed
+
+- [**Breaking:**](./BREAKING_CHANGES.md) raised the minimum supported iOS version to 16.4 across the package, native test host, Rust artifacts, and packaged XCFramework validation.
+- Updated GitHub Actions dependencies to Node.js 24-compatible releases.
+
+### Fixed
+
+- Serialized iOS editor lifecycle and module teardown around Rust FFI access, kept replacement-module collaboration state alive during old-module teardown, and re-elected a surviving native view when a shared editor's active owner detaches.
+- Rejected stale equal-document render revisions, preserved backward native selections across shifted text ranges, and restored Rust content immediately when a UIKit text mutation is rejected.
+- Restored the authorized render baseline before committing iOS external text composition so immediate follow-up input cannot be blocked by provisional TextKit content.
+- Aligned native WebSocket frame admission with Rust collaboration limits and invalidated cleanly closed URL sessions.
+- Exposed viewer content to VoiceOver in document order with shaped inline focus geometry, heading traits, and image alt text; kept disabled links readable as static text; and prevented stale accessibility elements from activating replacement-layout interactions.
+- Refreshed viewer image requests during ancestor scrolling, released offscreen and detached pixel references, and restored cached images when they re-enter the viewport on Fabric and direct UIKit viewers.
+- Rebuilt prepared viewer layouts for their effective light, dark, and accessibility-contrast appearance so dynamic system colors cannot be reused across incompatible cached artifacts.
+
 ## [1.0.0-alpha.7] - 2026-08-27
 
 ### Added
