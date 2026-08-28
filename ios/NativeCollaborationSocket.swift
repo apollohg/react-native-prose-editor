@@ -40,12 +40,25 @@ struct URLSessionCollaborationSocketFactory: CollaborationSocketFactory {
 /// URLSession owns only WebSocket I/O. Generation admission, retry policy,
 /// ordering, and retained outbound bytes remain in Rust/the transport driver.
 final class NativeCollaborationSocket: NSObject, CollaborationSocket, URLSessionWebSocketDelegate {
+    static let maximumMessageBytes = 64 * 1_024 * 1_024
+
     private let callbacks: CollaborationSocketCallbacks
+    private let finishSession: (URLSession) -> Void
     private var session: URLSession!
     private var task: URLSessionWebSocketTask!
 
-    init(url: URL, protocols: [String], callbacks: CollaborationSocketCallbacks) {
+    var maximumMessageSizeForTesting: Int {
+        task.maximumMessageSize
+    }
+
+    init(
+        url: URL,
+        protocols: [String],
+        callbacks: CollaborationSocketCallbacks,
+        finishSession: @escaping (URLSession) -> Void = { $0.finishTasksAndInvalidate() }
+    ) {
         self.callbacks = callbacks
+        self.finishSession = finishSession
         super.init()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
@@ -55,6 +68,7 @@ final class NativeCollaborationSocket: NSObject, CollaborationSocket, URLSession
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         task = session.webSocketTask(with: url, protocols: protocols)
+        task.maximumMessageSize = Self.maximumMessageBytes
     }
 
     func resume() {
@@ -115,6 +129,7 @@ final class NativeCollaborationSocket: NSObject, CollaborationSocket, URLSession
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
+        finishSession(session)
         callbacks.didClose(closeCode, reason)
     }
 

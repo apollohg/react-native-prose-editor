@@ -4,6 +4,50 @@ import CoreText
 // MARK: - RenderBridge Tests
 
 final class RenderBridgeTests: XCTestCase {
+    func testNativeCollaborationSocketUsesRustHardMessageCeiling() {
+        let socket = NativeCollaborationSocket(
+            url: URL(string: "wss://example.com")!,
+            protocols: [],
+            callbacks: CollaborationSocketCallbacks(
+                didOpen: { _ in },
+                didClose: { _, _ in },
+                didFail: {}
+            )
+        )
+        defer { socket.cancel(code: .goingAway, reason: nil) }
+
+        XCTAssertEqual(socket.maximumMessageSizeForTesting, 64 * 1_024 * 1_024)
+    }
+
+    func testNativeCollaborationSocketInvalidatesSessionAfterCleanClose() {
+        var invalidatedSessions = 0
+        var closeCallbacks = 0
+        let socket = NativeCollaborationSocket(
+            url: URL(string: "wss://example.com")!,
+            protocols: [],
+            callbacks: CollaborationSocketCallbacks(
+                didOpen: { _ in },
+                didClose: { _, _ in closeCallbacks += 1 },
+                didFail: {}
+            ),
+            finishSession: { _ in invalidatedSessions += 1 }
+        )
+        defer { socket.cancel(code: .goingAway, reason: nil) }
+        let delegateSession = URLSession(configuration: .ephemeral)
+        let delegateTask = delegateSession.webSocketTask(with: URL(string: "wss://example.com")!)
+        defer { delegateSession.invalidateAndCancel() }
+
+        socket.urlSession(
+            delegateSession,
+            webSocketTask: delegateTask,
+            didCloseWith: .normalClosure,
+            reason: nil
+        )
+
+        XCTAssertEqual(invalidatedSessions, 1)
+        XCTAssertEqual(closeCallbacks, 1)
+    }
+
     private func securityFixtures() throws -> [String: Any] {
         // Resolution order: explicit env override, the copy bundled with the
         // test target (required on physical devices, where the repository
