@@ -5491,6 +5491,43 @@ final class RichTextEditorViewTests: XCTestCase {
         first.setEditorId(0)
     }
 
+    func testDetachedOwnerReelectsNewestAttachedSurvivorAndCatchesItUp() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Initial</p>")
+
+        let first = NativeEditorExpoView()
+        let second = NativeEditorExpoView()
+        let third = NativeEditorExpoView()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        [first, second, third].forEach {
+            $0.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+            viewController.view.addSubview($0)
+            $0.setEditorId(editorId)
+        }
+        defer {
+            [first, second, third].forEach {
+                $0.setEditorId(0)
+                $0.removeFromSuperview()
+            }
+            window.isHidden = true
+        }
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Updated</p>")
+        third.removeFromSuperview()
+
+        XCTAssertEqual(second.richTextView.textView.textStorage.string, "Updated")
+        XCTAssertEqual(first.richTextView.textView.textStorage.string, "Initial")
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Latest</p>")
+        second.removeFromSuperview()
+
+        XCTAssertEqual(first.richTextView.textView.textStorage.string, "Latest")
+    }
+
     func testDestroyBoundaryBlocksReentrantRegistrationAndCommandsUntilInvalidation() {
         let editorId = makeV2Editor()
         let registry = NativeEditorViewRegistry.shared

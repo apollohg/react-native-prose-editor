@@ -10,7 +10,18 @@ enum NativeEditorDestroyReservationResult: Equatable {
 final class NativeEditorViewRegistry {
     static let shared = NativeEditorViewRegistry()
 
-    private var viewsByEditorId: [UInt64: NSHashTable<NativeEditorExpoView>] = [:]
+    private final class RegisteredView {
+        weak var view: NativeEditorExpoView?
+        let order: UInt64
+
+        init(view: NativeEditorExpoView, order: UInt64) {
+            self.view = view
+            self.order = order
+        }
+    }
+
+    private var viewsByEditorId: [UInt64: [RegisteredView]] = [:]
+    private var nextRegistrationOrder: UInt64 = 0
     private var activeEditorIds: Set<UInt64> = []
     private var destroyingEditorIds: Set<UInt64> = []
     var onFinalizeDestroyForTesting: ((UInt64) throws -> Void)?
@@ -33,7 +44,7 @@ final class NativeEditorViewRegistry {
 
     func applyRemoteCommitRefresh(editorId: UInt64) {
         dispatchPrecondition(condition: .onQueue(.main))
-        viewsByEditorId[editorId]?.allObjects.forEach { $0.applyRemoteCommitRefresh() }
+        liveRegisteredViews(editorId: editorId).forEach { $0.view?.applyRemoteCommitRefresh() }
     }
 
     func isDestroyed(editorId: UInt64) -> Bool {
@@ -58,8 +69,10 @@ final class NativeEditorViewRegistry {
                 }
                 activeEditorIds.insert(editorId)
             }
-            let views = viewsByEditorId[editorId] ?? NSHashTable<NativeEditorExpoView>.weakObjects()
-            views.add(view)
+            var views = liveRegisteredViews(editorId: editorId)
+            guard !views.contains(where: { $0.view === view }) else { return true }
+            nextRegistrationOrder &+= 1
+            views.append(RegisteredView(view: view, order: nextRegistrationOrder))
             viewsByEditorId[editorId] = views
             return true
         }
@@ -68,11 +81,24 @@ final class NativeEditorViewRegistry {
     func unregister(editorId: UInt64, view: NativeEditorExpoView) {
         guard editorId != 0 else { return }
         performOnMain {
-            guard let views = viewsByEditorId[editorId] else { return }
-            views.remove(view)
-            if views.allObjects.isEmpty {
+            let views = liveRegisteredViews(editorId: editorId).filter { $0.view !== view }
+            if views.isEmpty {
                 viewsByEditorId.removeValue(forKey: editorId)
+            } else {
+                viewsByEditorId[editorId] = views
             }
+        }
+    }
+
+    func nativeOwnerReleased(editorId: UInt64, by view: NativeEditorExpoView) {
+        guard editorId != 0 else { return }
+        performOnMain {
+            guard !destroyingEditorIds.contains(editorId) else { return }
+            let survivor = liveRegisteredViews(editorId: editorId)
+                .reversed()
+                .compactMap(\.view)
+                .first { $0 !== view && $0.window != nil }
+            survivor?.claimNativeOwnershipAndCatchUp(editorId: editorId)
         }
     }
 
@@ -123,7 +149,7 @@ final class NativeEditorViewRegistry {
             guard destroyingEditorIds.contains(editorId) else { return }
             invokeDestroyTestingHook(onFinalizeDestroyForTesting, editorId: editorId)
             activeEditorIds.remove(editorId)
-            let views = viewsByEditorId.removeValue(forKey: editorId)?.allObjects ?? []
+            let views = viewsByEditorId.removeValue(forKey: editorId)?.compactMap(\.view) ?? []
             views.forEach { $0.handleEditorDestroyed(editorId) }
             destroyingEditorIds.remove(editorId)
         }
@@ -145,7 +171,10 @@ final class NativeEditorViewRegistry {
             {
                 return Self.commandPreparationJSON(ready: false, blockedReason: "destroyed")
             }
-            guard let view = self.viewsByEditorId[editorId]?.allObjects.first else {
+            let views = self.liveRegisteredViews(editorId: editorId).compactMap(\.view)
+            guard let view = views.reversed().first(where: {
+                $0.ownsNativeBinding(editorId: editorId)
+            }) ?? views.last else {
                 self.viewsByEditorId.removeValue(forKey: editorId)
                 return Self.commandPreparationJSON(ready: true)
             }
@@ -153,6 +182,16 @@ final class NativeEditorViewRegistry {
         }
 
         return performOnMain(prepare)
+    }
+
+    private func liveRegisteredViews(editorId: UInt64) -> [RegisteredView] {
+        let views = viewsByEditorId[editorId]?.filter { $0.view != nil } ?? []
+        if views.isEmpty {
+            viewsByEditorId.removeValue(forKey: editorId)
+        } else {
+            viewsByEditorId[editorId] = views
+        }
+        return views.sorted { $0.order < $1.order }
     }
 
     static func commandPreparationJSON(
@@ -2207,8 +2246,13 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         if let resultJSON = richTextView.textView.discardTransientNativeInputForEditorRebind() {
             dispatchExternalTextCompositionEnd(resultJSON)
         }
+        let editorId = richTextView.editorId
+        let releasedNativeOwner = ownsNativeBinding(editorId: editorId)
         clearAutonomousErrorBinding()
-        NativeEditorViewRegistry.shared.unregister(editorId: richTextView.editorId, view: self)
+        NativeEditorViewRegistry.shared.unregister(editorId: editorId, view: self)
+        if releasedNativeOwner {
+            NativeEditorViewRegistry.shared.nativeOwnerReleased(editorId: editorId, by: self)
+        }
         imageLoadOwner.cancelAll()
         NotificationCenter.default.removeObserver(self)
     }
@@ -2240,9 +2284,15 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil {
+            let editorId = richTextView.editorId
+            let releasedNativeOwner = ownsNativeBinding(editorId: editorId)
             clearAutonomousErrorBinding()
+            if releasedNativeOwner {
+                NativeEditorViewRegistry.shared.nativeOwnerReleased(editorId: editorId, by: self)
+            }
         } else {
             ensureAutonomousErrorBinding()
+            applyRemoteCommitRefresh()
         }
         if richTextView.textView.isFirstResponder {
             installOutsideTapRecognizerIfNeeded()
@@ -2302,8 +2352,15 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         }
         if previousEditorId != id {
             richTextView.textView.discardTransientNativeInputForEditorRebind()
+            let releasedNativeOwner = ownsNativeBinding(editorId: previousEditorId)
             clearAutonomousErrorBinding()
             NativeEditorViewRegistry.shared.unregister(editorId: previousEditorId, view: self)
+            if releasedNativeOwner {
+                NativeEditorViewRegistry.shared.nativeOwnerReleased(
+                    editorId: previousEditorId,
+                    by: self
+                )
+            }
             clearPendingEditorUpdateRetries()
             clearPendingViewCommandUpdateRetry()
             clearPendingEditableRetry()
@@ -2347,6 +2404,22 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     // MARK: - Autonomous adapter errors
+
+    func ownsNativeBinding(editorId: UInt64) -> Bool {
+        guard editorId != 0,
+              richTextView.editorId == editorId,
+              let adapter = EditorV2Registry.adapter(forLegacyId: editorId)
+        else { return false }
+        let autonomousOwner = autonomousErrorBindingAdapter === adapter
+            && autonomousErrorBindingToken.map { adapter.isNativeBindingOwner(token: $0) } == true
+        return autonomousOwner || richTextView.textView.ownsNativeBinding(adapter)
+    }
+
+    func claimNativeOwnershipAndCatchUp(editorId: UInt64) {
+        guard window != nil, richTextView.editorId == editorId else { return }
+        ensureAutonomousErrorBinding()
+        applyRemoteCommitRefresh()
+    }
 
     private func ensureAutonomousErrorBinding() {
         let editorId = richTextView.editorId
