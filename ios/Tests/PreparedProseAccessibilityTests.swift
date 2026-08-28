@@ -159,6 +159,71 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 0)
     }
 
+    func testPlainParagraphIsExposedAsStaticText() throws {
+        let layout = try prepare(
+            ViewerDocument(
+                semanticKey: "plain-accessibility-fixture",
+                paragraphs: [ViewerParagraph(text: "Readable plain prose")],
+                isEmpty: false,
+                retainedBytes: 64
+            ),
+            width: 180
+        )
+        let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: 180, height: 80))
+        drawing.install(layout: layout)
+
+        XCTAssertEqual(layout.accessibilityNodes.map(\.role), [.text])
+        XCTAssertEqual(drawing.accessibilityElementCount(), 1)
+        let element = try XCTUnwrap(
+            drawing.accessibilityElement(at: 0) as? UIAccessibilityElement
+        )
+        XCTAssertEqual(element.accessibilityLabel, "Readable plain prose")
+        XCTAssertTrue(element.accessibilityTraits.contains(.staticText))
+    }
+
+    func testAccessibilityElementFromReplacedLayoutCannotActivateNewNodeAtSameIndex() throws {
+        func linkedDocument(key: String, href: String, text: String) -> ViewerDocument {
+            ViewerDocument(
+                semanticKey: key,
+                blocks: [ViewerBlock(
+                    nodeType: "paragraph",
+                    depth: 0,
+                    inBlockquote: false,
+                    listContext: nil,
+                    listItemBoundary: nil,
+                    inlines: [
+                        .text(text: text, marks: [
+                            FfiViewerMark(markType: "link", attrsJson: #"{"href":"\#(href)"}"#)
+                        ])
+                    ]
+                )],
+                isEmpty: false,
+                retainedBytes: 64
+            )
+        }
+
+        let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: 180, height: 80))
+        drawing.install(layout: try prepare(
+            linkedDocument(key: "old-link", href: "https://old.example", text: "Old"),
+            width: 180
+        ))
+        let staleElement = try XCTUnwrap(
+            drawing.accessibilityElement(at: 0) as? UIAccessibilityElement
+        )
+        drawing.install(layout: try prepare(
+            linkedDocument(key: "new-link", href: "https://new.example", text: "New"),
+            width: 180
+        ))
+        var activatedHref: String?
+        drawing.onActivateInteraction = { interaction in
+            activatedHref = interaction.href
+            return true
+        }
+
+        XCTAssertFalse(staleElement.accessibilityActivate())
+        XCTAssertNil(activatedHref)
+    }
+
     private func prepare(_ document: ViewerDocument, width: CGFloat) throws -> PreparedProseLayout {
         let key = ProseLayoutKey(
             semanticKey: document.semanticKey,

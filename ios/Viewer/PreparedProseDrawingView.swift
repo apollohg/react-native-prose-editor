@@ -236,16 +236,23 @@ public final class PreparedProseDrawingView: UIView {
     public override func accessibilityElementCount() -> Int { accessibilityNodes.count }
 
     public override func accessibilityElement(at index: Int) -> Any? {
-        guard accessibilityNodes.indices.contains(index) else { return nil }
+        let nodes = accessibilityNodes
+        guard nodes.indices.contains(index), let layout else { return nil }
         if let existing = accessibilityElementsByIndex[index] { return existing }
-        let element = PreparedProseDrawingAccessibilityElement(container: self, index: index)
+        let element = PreparedProseDrawingAccessibilityElement(
+            container: self,
+            index: index,
+            node: nodes[index],
+            layout: layout
+        )
         accessibilityElementsByIndex[index] = element
         return element
     }
 
     public override func index(ofAccessibilityElement element: Any) -> Int {
         guard let element = element as? PreparedProseDrawingAccessibilityElement,
-              element.drawingView === self
+              element.drawingView === self,
+              element.belongs(to: layout)
         else { return NSNotFound }
         return element.index
     }
@@ -254,17 +261,21 @@ public final class PreparedProseDrawingView: UIView {
         layout?.accessibilityNodes.filter { linkInteractionsEnabled || $0.role != .link } ?? []
     }
 
-    fileprivate func accessibilityNode(at index: Int) -> PreparedProseAccessibilityNode? {
-        accessibilityNodes[safe: index]
+    fileprivate func accessibilityFrame(
+        for node: PreparedProseAccessibilityNode,
+        layout: PreparedProseLayout
+    ) -> CGRect {
+        guard self.layout === layout else { return .zero }
+        return UIAccessibility.convertToScreenCoordinates(node.bounds, in: self)
     }
 
-    fileprivate func accessibilityFrame(for node: PreparedProseAccessibilityNode) -> CGRect {
-        UIAccessibility.convertToScreenCoordinates(node.bounds, in: self)
-    }
-
-    fileprivate func activateAccessibilityNode(at index: Int) -> Bool {
-        guard let node = accessibilityNode(at: index),
-              let interaction = layout?.interactions[safe: node.interactionIndex]
+    fileprivate func activateAccessibilityNode(
+        _ node: PreparedProseAccessibilityNode,
+        layout: PreparedProseLayout
+    ) -> Bool {
+        guard self.layout === layout,
+              let interactionIndex = node.interactionIndex,
+              let interaction = layout.interactions[safe: interactionIndex]
         else { return false }
         return activate(interaction)
     }
@@ -418,34 +429,59 @@ public final class PreparedProseDrawingView: UIView {
 
 private final class PreparedProseDrawingAccessibilityElement: UIAccessibilityElement {
     weak var drawingView: PreparedProseDrawingView?
+    weak var layout: PreparedProseLayout?
     let index: Int
+    let node: PreparedProseAccessibilityNode
 
-    init(container: PreparedProseDrawingView, index: Int) {
+    init(
+        container: PreparedProseDrawingView,
+        index: Int,
+        node: PreparedProseAccessibilityNode,
+        layout: PreparedProseLayout
+    ) {
         drawingView = container
         self.index = index
+        self.node = node
+        self.layout = layout
         super.init(accessibilityContainer: container)
     }
 
-    private var node: PreparedProseAccessibilityNode? { drawingView?.accessibilityNode(at: index) }
+    func belongs(to layout: PreparedProseLayout?) -> Bool {
+        self.layout === layout
+    }
+
     override var accessibilityLabel: String? {
-        get { node?.label }
+        get { node.label }
         set { }
     }
     override var accessibilityTraits: UIAccessibilityTraits {
         get {
-            guard let node else { return .none }
-            return node.role == .link ? .link : .button
+            switch node.role {
+            case .text, .separator:
+                return .staticText
+            case .heading:
+                return [.staticText, .header]
+            case .link:
+                return .link
+            case .mention:
+                return .button
+            case .image:
+                return .image
+            }
         }
         set { }
     }
     override var accessibilityFrame: CGRect {
         get {
-            guard let drawingView, let node else { return .zero }
-            return drawingView.accessibilityFrame(for: node)
+            guard let drawingView, let layout else { return .zero }
+            return drawingView.accessibilityFrame(for: node, layout: layout)
         }
         set { }
     }
-    override func accessibilityActivate() -> Bool { drawingView?.activateAccessibilityNode(at: index) ?? false }
+    override func accessibilityActivate() -> Bool {
+        guard let drawingView, let layout else { return false }
+        return drawingView.activateAccessibilityNode(node, layout: layout)
+    }
 }
 
 private extension Array {

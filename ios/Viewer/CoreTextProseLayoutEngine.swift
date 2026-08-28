@@ -351,13 +351,48 @@ final class CoreTextProseLayoutEngine {
             let right = rhs.rects.first ?? .zero
             return PreparedProseInteractionGeometry.visualOrder(left, right)
         }
-        let accessibilityNodes = interactions.enumerated().map { index, interaction in
+        var accessibilityNodes = zip(document.blocks, blocks).compactMap {
+            sourceBlock, preparedBlock -> PreparedProseAccessibilityNode? in
+            let role: PreparedProseAccessibilityNode.Role
+            let label: String
+            if sourceBlock.nodeType == "image" {
+                role = .image
+                let imageLabel = sourceBlock.inlines.compactMap { inline -> String? in
+                    guard case let .atom(_, _, _, label) = inline else { return nil }
+                    return label
+                }.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let imageLabel, !imageLabel.isEmpty {
+                    label = imageLabel
+                } else {
+                    label = "Image"
+                }
+            } else if sourceBlock.nodeType == "horizontalRule"
+                || sourceBlock.nodeType == "horizontal_rule"
+            {
+                role = .separator
+                label = "Separator"
+            } else {
+                label = plainAccessibilityLabel(for: sourceBlock)
+                guard !label.isEmpty else { return nil }
+                role = sourceBlock.nodeType == "heading" ? .heading : .text
+            }
+            return PreparedProseAccessibilityNode(
+                interactionIndex: nil,
+                role: role,
+                label: label,
+                bounds: preparedBlock.bounds
+            )
+        }
+        accessibilityNodes.append(contentsOf: interactions.enumerated().map { index, interaction in
             PreparedProseAccessibilityNode(
                 interactionIndex: index,
                 role: interaction.kind == .link ? .link : .mention,
                 label: interaction.kind == .link ? interaction.visibleText : interaction.label,
                 bounds: interaction.rects.dropFirst().reduce(interaction.rects.first ?? .zero) { $0.union($1) }
             )
+        })
+        accessibilityNodes.sort {
+            PreparedProseInteractionGeometry.visualOrder($0.bounds, $1.bounds)
         }
         retainedBytes += interactions.reduce(0) { $0 + $1.estimatedRetainedBytes }
             + accessibilityNodes.reduce(0) { $0 + $1.estimatedRetainedBytes }
@@ -382,6 +417,26 @@ final class CoreTextProseLayoutEngine {
               let context = block.listContext
         else { return [] }
         return [ViewerListItemAncestor(identity: boundary.identity, context: context)]
+    }
+
+    private func plainAccessibilityLabel(for block: ViewerBlock) -> String {
+        let text = block.inlines.reduce(into: "") { result, inline in
+            switch inline {
+            case let .text(value, marks):
+                guard !marks.contains(where: { $0.markType == "link" }) else { return }
+                result.append(value)
+            case let .atom(nodeType, _, _, label):
+                guard nodeType != "mention" else { return }
+                result.append(label)
+            }
+        }.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        let marker = block.listItemBoundary?.isFirstRenderableLeaf == true
+            ? block.listContext.map { context in
+                context.kind == "task" ? (context.checked ? "Checked" : "Unchecked") : "Item"
+            }
+            : nil
+        return marker.map { "\($0), \(text)" } ?? text
     }
 
     private func prepareBlock(

@@ -232,9 +232,9 @@ struct PreparedProseInteraction: Hashable {
 /// A lightweight virtual-node descriptor. UIKit elements are deliberately
 /// created only when VoiceOver asks the container for an index.
 struct PreparedProseAccessibilityNode: Hashable {
-    enum Role: Hashable { case link, mention }
+    enum Role: Hashable { case text, heading, link, mention, image, separator }
 
-    let interactionIndex: Int
+    let interactionIndex: Int?
     let role: Role
     let label: String
     let bounds: CGRect
