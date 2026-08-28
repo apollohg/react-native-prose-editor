@@ -20,7 +20,6 @@
 		3A6AEEFA6827371E8015A30F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6225248E2F347AD95F31C25 /* AppDelegate.swift */; };
 		3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */; };
 		3E7691BD09A616262AD0EECE /* PreparedProseRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */; };
-		3EF5937EBE001A1F6FC3CE56 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8C65DA9F4CA03D93F2636F /* ExpoModulesProvider.swift */; };
 		40373230CB2B4D39BD5350B6 /* PreparedProseMeasurementsManager.mm in Sources */ = {isa = PBXBuildFile; fileRef = A183A542FD912C410D3A2B03 /* PreparedProseMeasurementsManager.mm */; };
 		408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */; };
 		41CB569BDACE6252AAA1E146 /* EditorAddons.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA17728099475A1BA3392F9D /* EditorAddons.swift */; };
@@ -89,7 +88,6 @@
 		819FD7108ECBB2F496A7CC4D /* Pods-NativeEditorTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTests.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTests/Pods-NativeEditorTests.debug.xcconfig"; sourceTree = "<group>"; };
 		83DF91687ACD8DF8B0E18736 /* PreparedProseDrawingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseDrawingView.swift; sourceTree = "<group>"; };
 		8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEditorModule.swift; sourceTree = "<group>"; };
-		8F8C65DA9F4CA03D93F2636F /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTests/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRevisionTests.swift; sourceTree = "<group>"; };
 		95E37E869FF564B0FCEFE911 /* Pods-NativeEditorTestHost.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.release.xcconfig"; sourceTree = "<group>"; };
 		9B53E618A4451AF063C952EB /* PREPPreparedProseViewerComponentView.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PREPPreparedProseViewerComponentView.mm; sourceTree = "<group>"; };
@@ -214,19 +212,10 @@
 			path = Viewer;
 			sourceTree = "<group>";
 		};
-		405E5CE3B1D6BD6374865515 /* NativeEditorTests */ = {
-			isa = PBXGroup;
-			children = (
-				8F8C65DA9F4CA03D93F2636F /* ExpoModulesProvider.swift */,
-			);
-			name = NativeEditorTests;
-			sourceTree = "<group>";
-		};
 		41B317F640FBE82D99EBDB1D /* ExpoModulesProviders */ = {
 			isa = PBXGroup;
 			children = (
 				CB70C61CAC9B04A9421FE828 /* NativeEditorTestHost */,
-				405E5CE3B1D6BD6374865515 /* NativeEditorTests */,
 			);
 			name = ExpoModulesProviders;
 			sourceTree = "<group>";
@@ -646,7 +635,6 @@
 				81A987FAE78E964982371CDE /* ViewerDocument.swift in Sources */,
 				DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */,
 				97C50B5BFA0AA550E225668C /* ViewerImagePipeline.swift in Sources */,
-				3EF5937EBE001A1F6FC3CE56 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

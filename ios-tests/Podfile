@@ -33,6 +33,13 @@ target 'NativeEditorTestHost' do
 
   target 'NativeEditorTests' do
     inherit! :search_paths
+    @current_target_definition.autolinking_manager = Expo::AutolinkingManager.new(
+      self,
+      @current_target_definition,
+      projectRoot: File.join(__dir__, '..', 'example'),
+      exclude: ['@apollohg/react-native-prose-editor'],
+      testsOnly: true,
+    )
   end
 
   post_install do |installer|
