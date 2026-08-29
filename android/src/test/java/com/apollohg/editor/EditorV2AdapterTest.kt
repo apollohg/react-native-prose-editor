@@ -817,6 +817,70 @@ class EditorV2AdapterTest {
     }
 
     @Test
+    fun `external adoption keeps the previous snapshot when epoch pinning fails`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>a</p>")
+        adapter.claimNativeBindingIfUnowned(99L)
+        val session = sessionOf(adapter)
+        val snapshotA = atomicRenderSnapshot("a", session.revision.toString(), selectionScalar = 0)
+        assertNotNull(adoptExternalRender(adapter, snapshotA))
+        val revisionA = adapter.baseDocumentRevision
+        val stateRevisionA = adapter.stateRevision
+        val epochA = session.positionEpochs.getValue("99")
+        val errors = mutableListOf<EditorV2Error>()
+        adapter.onAutonomousError = errors::add
+        val snapshotB = JSONObject(
+            atomicRenderSnapshot("bb", (revisionA + 1u).toString(), selectionScalar = 1),
+        )
+            .put("historyState", JSONObject().put("canUndo", false).put("canRedo", true))
+            .toString()
+        backend.nextPinPositionEpochResult = EditorV2CallResult.Err(
+            EditorV2Error("operation", "REVISION_MISMATCH", "stale"),
+        )
+
+        assertNull(adoptExternalRender(adapter, snapshotB))
+
+        assertEquals(revisionA, adapter.baseDocumentRevision)
+        assertEquals(stateRevisionA, adapter.stateRevision)
+        val cachedA = requireNotNull(adapter.atomicRenderJson(revisionA.toString()))
+        assertEquals("a", renderedText(cachedA))
+        assertEquals(0, JSONObject(cachedA).getJSONObject("selection").getInt("anchorScalar"))
+        assertFalse(JSONObject(cachedA).getJSONObject("activeState").getJSONObject("marks").getBoolean("bold"))
+        assertEquals(true, adapter.historyCanUndo())
+        assertEquals(false, adapter.historyCanRedo())
+        assertNull(adapter.atomicRenderJson((revisionA + 1u).toString()))
+        assertEquals(epochA, session.positionEpochs.getValue("99"))
+        assertEquals("REVISION_MISMATCH", errors.single().code)
+    }
+
+    @Test
+    fun `external adoption keeps the previous snapshot when epoch pin result is malformed`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>a</p>")
+        adapter.claimNativeBindingIfUnowned(99L)
+        val session = sessionOf(adapter)
+        val snapshotA = atomicRenderSnapshot("a", session.revision.toString(), selectionScalar = 0)
+        assertNotNull(adoptExternalRender(adapter, snapshotA))
+        val revisionA = adapter.baseDocumentRevision
+        val epochA = session.positionEpochs.getValue("99")
+        val errors = mutableListOf<EditorV2Error>()
+        adapter.onAutonomousError = errors::add
+        backend.nextPinPositionEpochResult = EditorV2CallResult.Ok("{}")
+
+        assertNull(
+            adoptExternalRender(
+                adapter,
+                atomicRenderSnapshot("bb", (revisionA + 1u).toString(), selectionScalar = 1),
+            ),
+        )
+
+        assertEquals(revisionA, adapter.baseDocumentRevision)
+        assertEquals("a", renderedText(adapter.atomicRenderJson(revisionA.toString())))
+        assertEquals(epochA, session.positionEpochs.getValue("99"))
+        assertEquals("FFI_RESULT_INVALID", errors.single().code)
+    }
+
+    @Test
     fun `atomic external snapshot rejects non canonical revision without changing adopted state`() {
         val adapter = makeAdapter()
         val valid = atomicRenderSnapshot("base", "7", selectionScalar = 1)

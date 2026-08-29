@@ -452,6 +452,11 @@ internal class EditorV2Adapter private constructor(
         val positionEpoch: String?,
     )
 
+    private data class PinnedAtomicRenderSnapshot(
+        val snapshot: AtomicRenderSnapshot,
+        val positionEpoch: String?,
+    )
+
     private fun parseAtomicRenderSnapshot(json: String): AtomicRenderSnapshot? {
         return try {
             val object_ = JSONObject(json)
@@ -500,6 +505,7 @@ internal class EditorV2Adapter private constructor(
         snapshot: AtomicRenderSnapshot,
         stripViewSelection: Boolean,
         engineOwnedSelection: Boolean,
+        resolvedPositionEpoch: String? = snapshot.positionEpoch,
     ): String {
         val update = JSONObject(snapshot.viewUpdateJson)
         if (stripViewSelection) update.remove("selection")
@@ -515,7 +521,7 @@ internal class EditorV2Adapter private constructor(
         cachedViewUpdateJson = updateJson
         cachedAtomicRenderJson = snapshot.atomicRenderJson
         cachedAtomicRenderDocumentRevision = snapshot.documentRevision
-        if (snapshot.positionEpoch != null) positionEpoch = snapshot.positionEpoch
+        if (resolvedPositionEpoch != null) positionEpoch = resolvedPositionEpoch
         return updateJson
     }
 
@@ -535,13 +541,18 @@ internal class EditorV2Adapter private constructor(
             emit(contractError("v2 atomic render snapshot violates the frozen shape"))
             return null
         }
-        val adopted = adopt(
-            snapshot,
+        val resolvedPositionEpoch = when {
+            snapshot.positionEpoch != null -> snapshot.positionEpoch
+            nativeOwnerId == null -> positionEpoch
+            else -> pinPositionEpochCandidate(snapshot.documentRevision) ?: return null
+        }
+        val pinned = PinnedAtomicRenderSnapshot(snapshot, resolvedPositionEpoch)
+        return adopt(
+            pinned.snapshot,
             stripViewSelection = false,
             engineOwnedSelection = true,
+            resolvedPositionEpoch = pinned.positionEpoch,
         )
-        if (snapshot.positionEpoch == null && !pinCurrentPositionEpoch(snapshot.documentRevision)) return null
-        return adopted
     }
 
     internal fun validateExternalRender(renderJson: String): Boolean {
@@ -609,21 +620,31 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
-    private fun pinCurrentPositionEpoch(documentRevision: ULong): Boolean {
-        val ownerId = nativeOwnerId ?: return true
+    private fun pinPositionEpochCandidate(documentRevision: ULong): String? {
+        val ownerId = nativeOwnerId ?: return positionEpoch
         return when (val result = backend.pinPositionEpoch(editorId, ownerId, documentRevision.toString())) {
             is EditorV2CallResult.Err -> {
                 emit(result.error)
-                false
+                null
             }
             is EditorV2CallResult.Ok -> try {
-                positionEpoch = canonicalV2U64(JSONObject(result.value).opt("positionEpoch") as? String)
-                positionEpoch != null
+                canonicalV2U64(JSONObject(result.value).opt("positionEpoch") as? String)
+                    ?: run {
+                        emit(contractError("v2 position epoch result violates the frozen shape"))
+                        null
+                    }
             } catch (_: Exception) {
                 emit(contractError("v2 position epoch result violates the frozen shape"))
-                false
+                null
             }
         }
+    }
+
+    private fun pinCurrentPositionEpoch(documentRevision: ULong): Boolean {
+        if (nativeOwnerId == null) return true
+        val candidate = pinPositionEpochCandidate(documentRevision) ?: return false
+        positionEpoch = candidate
+        return true
     }
 
     override fun refreshFromRustState(mirrorSelection: IntArray?): String? =

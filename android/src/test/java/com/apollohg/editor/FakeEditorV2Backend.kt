@@ -43,6 +43,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
     var awarenessSelectionResult: EditorV2CallResult<String> =
         EditorV2CallResult.Ok("""{"outboundChanged":false}""")
     var lastAwarenessSelectionJson: String? = null
+    var nextPinPositionEpochResult: EditorV2CallResult<String>? = null
 
     /** Generation `collaborationDrive` asks the transport to open, if any. */
     var collaborationGenerationToOpen: String? = null
@@ -671,6 +672,10 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         documentRevision: String,
     ): EditorV2CallResult<String> {
         calls.add("pinPositionEpoch")
+        nextPinPositionEpochResult?.let { result ->
+            nextPinPositionEpochResult = null
+            return result
+        }
         val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
         if (documentRevision != session.revision.toString()) {
             return EditorV2CallResult.Err(
