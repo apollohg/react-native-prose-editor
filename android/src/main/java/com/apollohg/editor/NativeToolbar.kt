@@ -25,6 +25,11 @@ import com.google.android.material.color.DynamicColors
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
+internal fun physicalToolbarBorderWidth(widthDp: Float, density: Float): Int = when {
+    widthDp <= 0f -> 0
+    else -> maxOf(1, (widthDp * density).roundToInt())
+}
+
 internal data class NativeToolbarState(
     val marks: Map<String, Boolean>,
     val nodes: Map<String, Boolean>,
@@ -952,7 +957,7 @@ internal class EditorKeyboardToolbarView(context: Context) : FrameLayout(context
         val strokeWidthPx = if (appearance == EditorToolbarAppearance.NATIVE) {
             0
         } else {
-            ((theme?.resolvedBorderWidth() ?: 1f) * density).roundToInt().coerceAtLeast(1)
+            physicalToolbarBorderWidth(theme?.resolvedBorderWidth() ?: 1f, density)
         }
         val drawable = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE

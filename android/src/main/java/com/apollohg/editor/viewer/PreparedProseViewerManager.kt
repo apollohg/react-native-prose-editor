@@ -56,6 +56,7 @@ internal class PreparedProseViewerManager :
             view.onFontConfigurationChanged = { configuration -> state.fontEnvironment.onConfigurationChanged(configuration) }
             view.onInteractionActivated = { interaction -> dispatchInteraction(view, interaction) }
             state.fontEnvironment.onInvalidated = { revision -> state.publishFontRevision(revision) }
+            state.fontEnvironment.activate(deliverPending = true)
             state.imagePipeline.onPixels = { attachment, lease ->
                 val request = state.requestOrNull()
                 if (request != null && state.imagePipeline.acceptsCompletion(request.semanticGenerationIdentity)) {
@@ -113,6 +114,7 @@ internal class PreparedProseViewerManager :
         stateWrapper: StateWrapper,
     ): Any? {
         val state = states.getOrPut(view, ::ViewState)
+        state.fontEnvironment.activate(deliverPending = true)
         state.replaceStateWrapper(stateWrapper, stateWrapper.stateData?.fabricRevisionsOrNull())
         state.beginSemanticImageGeneration(view)
         reconcile(view, state)
@@ -251,35 +253,64 @@ internal class PreparedProseViewerManager :
         val surface = FabricSurfaceToken(surfaceId, view.id)
         val generation = state.adopt(surface, request)
         state.bindFabricAttachmentState(generation)
-        val ticket = PreparedProseLayoutRegistry.shared.acquirePreparedMountTicket(generation)
+        val ticket = PreparedProseLayoutRegistry.shared.acquirePreparedMountTicket(
+            generation,
+            request.nativeFontRevision,
+        )
         if (ticket == null) {
             PreparedProseInstrumentation.trace("mount") { "miss: no final layout ticket for $generation" }
             PreparedProseLayoutRegistry.shared.prepareForFabricMount(generation) {
                 view.post {
                     val current = states[view] ?: return@post
                     if (current.generation != generation) return@post
-                    val prepared = PreparedProseLayoutRegistry.shared.acquirePreparedMountTicket(generation)
+                    val currentRequest = current.requestOrNull() ?: return@post
+                    val prepared = PreparedProseLayoutRegistry.shared.acquirePreparedMountTicket(
+                        generation,
+                        currentRequest.nativeFontRevision,
+                    )
                         ?: return@post
-                    installPreparedTicket(view, current, request, prepared)
+                    installPreparedTicket(view, current, prepared)
                 }
             }
             return
         }
-        installPreparedTicket(view, state, request, ticket)
+        installPreparedTicket(view, state, ticket)
     }
 
     private fun installPreparedTicket(
         view: PreparedProseDrawingView,
         state: ViewState,
-        request: ProseViewerRequest,
         ticket: PreparedMountTicket,
     ) {
+        val currentRequest = state.requestOrNull() ?: return
+        if (ticket.nativeFontRevision != currentRequest.nativeFontRevision) {
+            prepareCurrentTicket(view, state)
+            return
+        }
         PreparedProseInstrumentation.trace("mount") {
             "installed: ${ticket.generation} widthPx=${ticket.contentWidthPx} heightPx=${ticket.artifact.heightPx}"
         }
         state.installMountedReplacement(view, ticket)
-        state.beginImages(view, ticket.artifact, request)
-        ticket.artifact.error?.let { dispatchError(view, request, it) }
+        state.beginImages(view, ticket.artifact, currentRequest)
+        ticket.artifact.error?.let { dispatchError(view, currentRequest, it) }
+    }
+
+    private fun prepareCurrentTicket(view: PreparedProseDrawingView, state: ViewState) {
+        val generation = state.generation ?: return
+        PreparedProseLayoutRegistry.shared.prepareForFabricMount(generation) { prepared ->
+            if (!prepared) return@prepareForFabricMount
+            view.post {
+                val current = states[view] ?: return@post
+                if (current.generation != generation) return@post
+                val request = current.requestOrNull() ?: return@post
+                val ticket = PreparedProseLayoutRegistry.shared.acquirePreparedMountTicket(
+                    generation,
+                    request.nativeFontRevision,
+                )
+                    ?: return@post
+                installPreparedTicket(view, current, ticket)
+            }
+        }
     }
 
     private fun dispatchError(
@@ -398,13 +429,13 @@ internal class PreparedProseViewerManager :
     private fun ReadableMap.longOrNull(key: String): Long? =
         if (!hasKey(key) || isNull(key)) null else getDouble(key).toLong().coerceAtLeast(0)
 
-    private data class FabricStateRevisions(
+    internal data class FabricStateRevisions(
         val attachmentRevision: Long,
         val nativeFontRevision: Long,
         val leaseHandle: Long,
     )
 
-    private class ViewState(
+    internal class ViewState(
         var sourceKind: String = "json",
         var source: String = "",
         var configJson: String = "{}",
@@ -423,7 +454,9 @@ internal class PreparedProseViewerManager :
         val errorReporter: FabricErrorReporter = FabricErrorReporter(),
         private val replacementAccessibilityTransaction: FabricReplacementAccessibilityTransaction =
             FabricReplacementAccessibilityTransaction(),
+        private val createStateMap: () -> WritableMap = { Arguments.createMap() },
     ) {
+        private var pendingFontRevision = 0L
         fun requestOrNull(): ProseViewerRequest? = revisions?.let { revisions ->
             ProseViewerRequest(
                 source = if (sourceKind == "html") ProseViewerSource.Html(source) else ProseViewerSource.Json(source),
@@ -443,9 +476,37 @@ internal class PreparedProseViewerManager :
         fun replaceStateWrapper(next: StateWrapper, nextRevisions: FabricStateRevisions?) {
             if (stateWrapper !== next) stateWrapper?.destroyState()
             stateWrapper = next
+            val prior = revisions
             revisions = nextRevisions?.let { incoming ->
-                if (incoming.leaseHandle > 0) incoming
-                else revisions?.let { prior -> incoming.copy(leaseHandle = prior.leaseHandle) } ?: incoming
+                val leaseHandle = incoming.leaseHandle.takeIf { it > 0 }
+                    ?: prior?.leaseHandle
+                    ?: 0
+                if (leaseHandle > 0 && prior?.leaseHandle == leaseHandle) {
+                    incoming.copy(
+                        attachmentRevision = maxOf(
+                            incoming.attachmentRevision,
+                            prior.attachmentRevision,
+                        ),
+                        nativeFontRevision = maxOf(
+                            incoming.nativeFontRevision,
+                            prior.nativeFontRevision,
+                        ),
+                        leaseHandle = leaseHandle,
+                    )
+                } else {
+                    incoming.copy(leaseHandle = leaseHandle)
+                }
+            }
+            if (pendingFontRevision > 0 && revisions != null) {
+                pendingFontRevision = 0
+                val current = requireNotNull(revisions)
+                publishRevisions(
+                    FabricStateRevisions(
+                        current.attachmentRevision,
+                        current.nativeFontRevision + 1,
+                        current.leaseHandle,
+                    )
+                )
             }
         }
 
@@ -508,8 +569,12 @@ internal class PreparedProseViewerManager :
         }
 
         fun publishFontRevision(revision: Long) {
-            val current = revisions ?: return
             if (revision <= 0) return
+            val current = revisions
+            if (current == null) {
+                pendingFontRevision = maxOf(pendingFontRevision, revision)
+                return
+            }
             publishRevisions(FabricStateRevisions(current.attachmentRevision, current.nativeFontRevision + 1, current.leaseHandle))
         }
 
@@ -517,7 +582,7 @@ internal class PreparedProseViewerManager :
             val current = revisions
             if (current == next) return
             revisions = next
-            stateWrapper?.updateState(Arguments.createMap().apply {
+            stateWrapper?.updateState(createStateMap().apply {
                 putDouble("attachmentRevision", next.attachmentRevision.toDouble())
                 putDouble("nativeFontRevision", next.nativeFontRevision.toDouble())
             })
@@ -530,7 +595,6 @@ internal class PreparedProseViewerManager :
             generation = null
             releaseSidecarOwnership()
             imagePipeline.cancel()
-            fontEnvironment.deactivate()
             replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
             view.clearImageLeases()
             view.install(null)

@@ -514,7 +514,15 @@ class PreparedProseLayoutTest {
         )
         registry.activateFabricGeneration(generation)
 
+        assertEquals(
+            null,
+            registry.acquirePreparedMountTicket(
+                generation,
+                expectedNativeFontRevision = request.nativeFontRevision + 1,
+            ),
+        )
         val ticket = requireNotNull(registry.acquirePreparedMountTicket(generation))
+        assertEquals(request.nativeFontRevision, ticket.nativeFontRevision)
         assertEquals(896, ticket.contentWidthPx)
         assertEquals(17, ticket.contentOriginXPx)
         assertEquals(23, ticket.contentOriginYPx)

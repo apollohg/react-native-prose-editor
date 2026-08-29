@@ -2,10 +2,12 @@ package com.apollohg.editor
 
 import android.graphics.Color
 import android.graphics.Rect
+import android.content.res.Configuration
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.view.View
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -25,6 +27,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import kotlin.math.roundToInt
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -710,6 +713,24 @@ class NativeToolbarTest {
         assertEquals(20f * density, toolbar.appliedChromeCornerRadiusPx)
         assertEquals((2f * density).toInt().coerceAtLeast(1), toolbar.appliedChromeStrokeWidthPx)
         assertEquals(14f * density, toolbar.appliedButtonCornerRadiusPx)
+    }
+
+    @Test
+    fun `explicit zero toolbar border stays absent while positive hairlines remain visible`() {
+        val application = RuntimeEnvironment.getApplication()
+        listOf(0.75f, 1f, 2.625f, 4f).forEach { density ->
+            val configuration = Configuration(application.resources.configuration).apply {
+                densityDpi = (density * DisplayMetrics.DENSITY_DEFAULT).roundToInt()
+            }
+            val context = application.createConfigurationContext(configuration)
+            val toolbar = EditorKeyboardToolbarView(context)
+
+            toolbar.applyTheme(EditorToolbarTheme(borderWidth = 0f))
+            assertEquals(0, toolbar.appliedChromeStrokeWidthPx)
+
+            toolbar.applyTheme(EditorToolbarTheme(borderWidth = 0.25f))
+            assertEquals(1, toolbar.appliedChromeStrokeWidthPx)
+        }
     }
 
     @Test

@@ -8,6 +8,7 @@ import java.security.MessageDigest
 
 internal data class PreparedMountTicket(
     val generation: FabricGenerationToken,
+    val nativeFontRevision: Long,
     val contentWidthPx: Int,
     val contentOriginXPx: Int,
     val contentOriginYPx: Int,
@@ -68,6 +69,7 @@ internal class PreparedProseLayoutRegistry(
     )
     private data class PreparedMountTicketMetadata(
         val revision: Long,
+        val nativeFontRevision: Long,
         val contentWidthPx: Int,
         val contentOriginXPx: Int,
         val contentOriginYPx: Int,
@@ -278,6 +280,7 @@ internal class PreparedProseLayoutRegistry(
         }
         val metadata = PreparedMountTicketMetadata(
             spec.revision,
+            spec.request.nativeFontRevision,
             spec.widthPx,
             spec.contentOriginXPx,
             spec.contentOriginYPx,
@@ -294,9 +297,19 @@ internal class PreparedProseLayoutRegistry(
         return artifact
     }
 
-    fun acquirePreparedMountTicket(generation: FabricGenerationToken): PreparedMountTicket? {
+    fun acquirePreparedMountTicket(
+        generation: FabricGenerationToken,
+        expectedNativeFontRevision: Long? = null,
+    ): PreparedMountTicket? {
         val metadata = synchronized(fabricLeaseLock) {
-            if (isLeaseActiveLocked(generation)) preparedMountTickets[generation] else null
+            if (isLeaseActiveLocked(generation)) {
+                preparedMountTickets[generation]?.takeIf {
+                    expectedNativeFontRevision == null ||
+                        it.nativeFontRevision == expectedNativeFontRevision
+                }
+            } else {
+                null
+            }
         } ?: return null
         val artifact = layoutCache.acquireForFabricMount(
             generation,
@@ -309,6 +322,7 @@ internal class PreparedProseLayoutRegistry(
         } ?: return null
         return PreparedMountTicket(
             generation,
+            metadata.nativeFontRevision,
             metadata.contentWidthPx,
             metadata.contentOriginXPx,
             metadata.contentOriginYPx,
