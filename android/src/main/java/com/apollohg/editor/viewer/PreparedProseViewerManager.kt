@@ -167,6 +167,7 @@ internal class PreparedProseViewerManager :
         val density = context.resources.displayMetrics.density
         val fontScale = context.resources.configuration.fontScale
         val surface = localData?.let(::surfaceToken)
+        val finalLayout = FabricLeaseHandleBridge.currentFinalLayout()
         val leaseHandle = FabricLeaseHandleBridge.currentHandle()
         // A state snapshot can outlive its C++ family. Only the synchronous
         // native thread-local handle proves this Yoga callback still belongs
@@ -186,7 +187,18 @@ internal class PreparedProseViewerManager :
         val widthPx = fabricConstraintPixels(width)
         // The registry begins and scopes this exact surface/component sidecar
         // around preparation, so an LRU miss cannot borrow another surface.
-        val artifact = if (
+        val artifact = if (finalLayout != null && surface != null && widthPx != null) {
+            PreparedProseLayoutRegistry.shared.prepareFinalLayout(
+                request,
+                widthPx,
+                density,
+                finalLayout.contentOriginXPx,
+                finalLayout.contentOriginYPx,
+                surface,
+                leaseHandle,
+                fontScale,
+            )
+        } else if (
             (widthMode != YogaMeasureMode.EXACTLY && widthMode != YogaMeasureMode.AT_MOST) ||
             widthPx == null
         ) {
@@ -224,31 +236,43 @@ internal class PreparedProseViewerManager :
             return
         }
         val surfaceId = UIManagerHelper.getSurfaceId(view)
-        if (surfaceId < 0 || view.id <= 0 || view.width <= 0) {
-            PreparedProseInstrumentation.trace("mount") { "declined: surfaceId=$surfaceId tag=${view.id} width=${view.width}px height=${view.height}px" }
-            state.finishWithoutMountedReplacement(view)
-            return
-        }
-        val density = view.resources.displayMetrics.density
-        val widthPx = fabricConstraintPixels(view.width.toFloat()) ?: run {
-            PreparedProseInstrumentation.trace("mount") { "declined: unrepresentable width ${view.width}px (tag=${view.id})" }
+        if (surfaceId < 0 || view.id <= 0) {
+            PreparedProseInstrumentation.trace("mount") { "declined: surfaceId=$surfaceId tag=${view.id}" }
             state.finishWithoutMountedReplacement(view)
             return
         }
         val surface = FabricSurfaceToken(surfaceId, view.id)
         val generation = state.adopt(surface, request)
         state.bindFabricAttachmentState(generation)
-        val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(generation, request, widthPx, density)
-        if (artifact == null) {
-            PreparedProseInstrumentation.trace("mount") { "miss: no Yoga handoff for $generation at widthPx=$widthPx density=$density" }
-            PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation, widthPx, density)
-            state.finishWithoutMountedReplacement(view)
+        val ticket = PreparedProseLayoutRegistry.shared.acquirePreparedMountTicket(generation)
+        if (ticket == null) {
+            PreparedProseInstrumentation.trace("mount") { "miss: no final layout ticket for $generation" }
+            PreparedProseLayoutRegistry.shared.prepareForFabricMount(generation) {
+                view.post {
+                    val current = states[view] ?: return@post
+                    if (current.generation != generation) return@post
+                    val prepared = PreparedProseLayoutRegistry.shared.acquirePreparedMountTicket(generation)
+                        ?: return@post
+                    installPreparedTicket(view, current, request, prepared)
+                }
+            }
             return
         }
-        PreparedProseInstrumentation.trace("mount") { "installed: $generation widthPx=$widthPx heightPx=${artifact.heightPx}" }
-        state.installMountedReplacement(view, artifact)
-        state.beginImages(view, artifact, request)
-        artifact.error?.let { dispatchError(view, request, it) }
+        installPreparedTicket(view, state, request, ticket)
+    }
+
+    private fun installPreparedTicket(
+        view: PreparedProseDrawingView,
+        state: ViewState,
+        request: ProseViewerRequest,
+        ticket: PreparedMountTicket,
+    ) {
+        PreparedProseInstrumentation.trace("mount") {
+            "installed: ${ticket.generation} widthPx=${ticket.contentWidthPx} heightPx=${ticket.artifact.heightPx}"
+        }
+        state.installMountedReplacement(view, ticket)
+        state.beginImages(view, ticket.artifact, request)
+        ticket.artifact.error?.let { dispatchError(view, request, it) }
     }
 
     private fun dispatchError(
@@ -505,8 +529,8 @@ internal class PreparedProseViewerManager :
             view.install(null)
         }
 
-        fun installMountedReplacement(view: PreparedProseDrawingView, artifact: PreparedProseLayout) {
-            replacementAccessibilityTransaction.installMountedReplacement(view, artifact)
+        fun installMountedReplacement(view: PreparedProseDrawingView, ticket: PreparedMountTicket) {
+            replacementAccessibilityTransaction.installMountedReplacement(view, ticket)
         }
 
         fun finishWithoutMountedReplacement(view: PreparedProseDrawingView) {
@@ -621,10 +645,30 @@ internal class FabricReplacementAccessibilityTransaction {
         notificationOwner = NotificationOwner.FINAL_INSTALL
     }
 
+    fun installMountedReplacement(view: PreparedProseDrawingView, ticket: PreparedMountTicket) {
+        installMountedReplacement(
+            view,
+            ticket.artifact,
+            ticket.contentOriginXPx,
+            ticket.contentOriginYPx,
+        )
+    }
+
     fun installMountedReplacement(view: PreparedProseDrawingView, artifact: PreparedProseLayout) {
+        installMountedReplacement(view, artifact, 0, 0)
+    }
+
+    private fun installMountedReplacement(
+        view: PreparedProseDrawingView,
+        artifact: PreparedProseLayout,
+        contentOriginXPx: Int,
+        contentOriginYPx: Int,
+    ) {
         view.install(
             artifact,
             announceAccessibilitySubtree = notificationOwner != NotificationOwner.REMOVED_SUBTREE,
+            contentOriginXPx = contentOriginXPx,
+            contentOriginYPx = contentOriginYPx,
         )
         notificationOwner = NotificationOwner.NONE
     }

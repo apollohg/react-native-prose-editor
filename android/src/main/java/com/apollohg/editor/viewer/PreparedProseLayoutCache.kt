@@ -100,13 +100,26 @@ internal class PreparedProseLayoutCache(
     }
 
     /** Fabric consumes only the exact Yoga-created pending handoff. */
-    fun acquireForFabricMount(generation: FabricGenerationToken, widthPx: Int, densityBits: Long): PreparedProseLayout? = synchronized(lock) {
+    fun acquireForFabricMount(
+        generation: FabricGenerationToken,
+        widthPx: Int,
+        densityBits: Long,
+        shouldAcquire: () -> Boolean = { true },
+    ): PreparedProseLayout? = synchronized(lock) {
+        mountedLeases.entries.firstOrNull { (key, layout) ->
+            key.generation == generation && layout.key.densityBits == densityBits &&
+                abs(layout.key.widthPx - widthPx) <= PIXEL_GRID_ROUNDING_SLACK_PX
+        }?.let {
+            if (!shouldAcquire()) return@synchronized null
+            return@synchronized it.value
+        }
         val lease = pendingLeases.entries
             .filter { (key, layout) ->
                 key.generation == generation && layout.key.densityBits == densityBits &&
                     abs(layout.key.widthPx - widthPx) <= PIXEL_GRID_ROUNDING_SLACK_PX
             }
             .minByOrNull { abs(it.value.key.widthPx - widthPx) } ?: return@synchronized null
+        if (!shouldAcquire()) return@synchronized null
         pendingLeases.remove(lease.key)
         mountedLeases.keys
             .filter { it.owner == lease.key.owner && it != lease.key }

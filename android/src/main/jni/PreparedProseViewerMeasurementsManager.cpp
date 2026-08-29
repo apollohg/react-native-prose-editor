@@ -78,6 +78,8 @@ class AndroidLeaseLifecycleBridge final {
             "finalizeNativeLease")),
         beginNativeMeasure_(
             bridgeClass_->getStaticMethod<void(jlong)>("beginNativeMeasure")),
+        beginNativeFinalLayout_(bridgeClass_->getStaticMethod<void(jlong, jint, jint)>(
+            "beginNativeFinalLayout")),
         endNativeMeasure_(
             bridgeClass_->getStaticMethod<void()>("endNativeMeasure")) {}
 
@@ -97,6 +99,17 @@ class AndroidLeaseLifecycleBridge final {
     beginNativeMeasure_(bridgeClass_, static_cast<jlong>(leaseHandle));
   }
 
+  void beginNativeFinalLayout(
+      uint64_t leaseHandle,
+      int32_t contentOriginXPx,
+      int32_t contentOriginYPx) const {
+    beginNativeFinalLayout_(
+        bridgeClass_,
+        static_cast<jlong>(leaseHandle),
+        static_cast<jint>(contentOriginXPx),
+        static_cast<jint>(contentOriginYPx));
+  }
+
   void endNativeMeasure() const {
     endNativeMeasure_(bridgeClass_);
   }
@@ -106,6 +119,7 @@ class AndroidLeaseLifecycleBridge final {
   facebook::jni::JStaticMethod<void(jint, jint, jlong)> registerLease_;
   facebook::jni::JStaticMethod<void(jint, jint, jlong)> finalizeLease_;
   facebook::jni::JStaticMethod<void(jlong)> beginNativeMeasure_;
+  facebook::jni::JStaticMethod<void(jlong, jint, jint)> beginNativeFinalLayout_;
   facebook::jni::JStaticMethod<void()> endNativeMeasure_;
 };
 
@@ -235,6 +249,85 @@ Size PreparedProseMeasurementsManager::measure(
     // pass.  Returning an empty size is safe; never use a potentially
     // destroyed JNIEnv to try to balance the Java thread-local callback.
     return {};
+  }
+}
+
+void PreparedProseMeasurementsManager::prepareFinalLayout(
+    SurfaceId surfaceId,
+    Tag componentTag,
+    const PreparedProseViewerProps& props,
+    int32_t contentWidthPx,
+    int32_t contentOriginXPx,
+    int32_t contentOriginYPx,
+    Float /*pointScaleFactor*/,
+    uint64_t attachmentRevision,
+    uint64_t nativeFontRevision,
+    double nativeFontScale,
+    int32_t /*userInterfaceStyle*/,
+    int32_t /*accessibilityContrast*/,
+    uint64_t /*fontEnvironmentRevision*/,
+    uint64_t leaseHandle,
+    const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& /*leaseLifecycle*/) const {
+  if (!facebook::jni::Environment::isGlobalJvmAvailable() ||
+      leaseHandle == 0) {
+    return;
+  }
+  try {
+    facebook::jni::ThreadScope threadScope;
+    const auto& fabricUIManager =
+        contextContainer_->at<jni::global_ref<jobject>>("FabricUIManager");
+    static auto measure = facebook::jni::findClassStatic(
+                              "com/facebook/react/fabric/FabricUIManager")
+                              ->getMethod<jlong(
+                                  jint,
+                                  jstring,
+                                  ReadableMap::javaobject,
+                                  ReadableMap::javaobject,
+                                  ReadableMap::javaobject,
+                                  jfloat,
+                                  jfloat,
+                                  jfloat,
+                                  jfloat)>("measure");
+    folly::dynamic localData = folly::dynamic::object
+        ("surfaceId", static_cast<int64_t>(surfaceId))
+        ("componentTag", static_cast<int64_t>(componentTag))
+        ("leaseHandle", std::to_string(static_cast<int64_t>(leaseHandle)));
+    auto propsDynamic = toDynamic(props);
+    auto stateDynamic = toState(
+        attachmentRevision,
+        nativeFontRevision,
+        nativeFontScale,
+        leaseHandle);
+    const auto localDataNative = ReadableNativeMap::newObjectCxxArgs(localData);
+    const auto propsNative = ReadableNativeMap::newObjectCxxArgs(propsDynamic);
+    const auto stateNative = ReadableNativeMap::newObjectCxxArgs(stateDynamic);
+    const auto localDataMap = make_local(
+        reinterpret_cast<ReadableMap::javaobject>(localDataNative.get()));
+    const auto propsMap = make_local(
+        reinterpret_cast<ReadableMap::javaobject>(propsNative.get()));
+    const auto stateMap = make_local(
+        reinterpret_cast<ReadableMap::javaobject>(stateNative.get()));
+    const auto componentName = make_jstring("PreparedProseViewer");
+    auto& leaseBridge = AndroidLeaseLifecycleBridge::processLifetime();
+    leaseBridge.beginNativeFinalLayout(
+        leaseHandle, contentOriginXPx, contentOriginYPx);
+    try {
+      measure(
+          fabricUIManager,
+          surfaceId,
+          componentName.get(),
+          localDataMap.get(),
+          propsMap.get(),
+          stateMap.get(),
+          static_cast<jfloat>(contentWidthPx),
+          static_cast<jfloat>(contentWidthPx),
+          0,
+          std::numeric_limits<Float>::infinity());
+      leaseBridge.endNativeMeasure();
+    } catch (...) {
+      leaseBridge.endNativeMeasure();
+    }
+  } catch (...) {
   }
 }
 

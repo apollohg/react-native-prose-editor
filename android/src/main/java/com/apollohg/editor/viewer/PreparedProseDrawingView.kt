@@ -57,6 +57,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private var pendingTap: PendingTap? = null
     private var focusedVirtualId = View.NO_ID
+    private var contentOriginXPx = 0
+    private var contentOriginYPx = 0
 
     internal companion object {
         const val IMAGE_PIXEL_MAP_RETAINED_BYTES = 48L
@@ -89,9 +91,17 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     fun install(
         layout: PreparedProseLayout?,
         announceAccessibilitySubtree: Boolean = true,
+        contentOriginXPx: Int = 0,
+        contentOriginYPx: Int = 0,
     ) {
-        if (preparedLayout === layout) return
+        if (
+            preparedLayout === layout &&
+            this.contentOriginXPx == contentOriginXPx &&
+            this.contentOriginYPx == contentOriginYPx
+        ) return
         preparedLayout = layout
+        this.contentOriginXPx = contentOriginXPx
+        this.contentOriginYPx = contentOriginYPx
         clearVirtualAccessibilityFocus()
         if (announceAccessibilitySubtree) announceAccessibilitySubtreeChanged()
         invalidate()
@@ -100,17 +110,24 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val artifact = preparedLayout ?: return
-        recordPreparedProseDraw {
-            onVisibleRectChanged?.invoke(Rect(canvas.clipBounds))
-            val visible = mutableListOf<PreparedProseFragment>()
-            var visibleBlockCount = 0
-            artifact.forEachBlockIntersecting(canvas.clipBounds) { block -> visible += block.fragments; visibleBlockCount += 1 }
-            // Phases stay global across blocks: later code backgrounds cannot cover
-            // an earlier quote border, and text/labels always remain foreground.
-            visible.forEach { drawBackground(canvas, it) }
-            visible.forEach { drawBorderOrRule(canvas, it) }
-            visible.forEach { drawForeground(canvas, it) }
-            visibleBlockCount
+        val saved = canvas.save()
+        canvas.translate(contentOriginXPx.toFloat(), contentOriginYPx.toFloat())
+        canvas.clipRect(0, 0, artifact.widthPx, artifact.heightPx)
+        try {
+            recordPreparedProseDraw {
+                onVisibleRectChanged?.invoke(Rect(canvas.clipBounds))
+                val visible = mutableListOf<PreparedProseFragment>()
+                var visibleBlockCount = 0
+                artifact.forEachBlockIntersecting(canvas.clipBounds) { block -> visible += block.fragments; visibleBlockCount += 1 }
+                // Phases stay global across blocks: later code backgrounds cannot cover
+                // an earlier quote border, and text/labels always remain foreground.
+                visible.forEach { drawBackground(canvas, it) }
+                visible.forEach { drawBorderOrRule(canvas, it) }
+                visible.forEach { drawForeground(canvas, it) }
+                visibleBlockCount
+            }
+        } finally {
+            canvas.restoreToCount(saved)
         }
     }
 
@@ -208,8 +225,12 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        val contentX = event.x - contentOriginXPx
+        val contentY = event.y - contentOriginYPx
         fun targetAt(): PreparedProseInteraction? = preparedLayout?.interactions?.firstOrNull { interaction ->
-            (linkInteractionsEnabled || interaction.kind != PreparedProseInteraction.Kind.LINK) && interaction.rects.any { it.contains(event.x.toInt(), event.y.toInt()) }
+            if (contentX < 0f || contentY < 0f) return@firstOrNull false
+            (linkInteractionsEnabled || interaction.kind != PreparedProseInteraction.Kind.LINK) &&
+                interaction.rects.any { it.contains(contentX.toInt(), contentY.toInt()) }
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -256,7 +277,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         override fun createAccessibilityNodeInfo(id: Int): AccessibilityNodeInfo? {
             if (id == View.NO_ID) return AccessibilityNodeInfo.obtain(this@PreparedProseDrawingView).also(::onInitializeAccessibilityNodeInfo)
             val node = nodes().getOrNull(id - 1) ?: return null
-            val screen = RectF(node.bounds).let { rect -> android.graphics.Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()) }
+            val parentBounds = Rect(node.bounds).apply { offset(contentOriginXPx, contentOriginYPx) }
+            val screen = Rect(parentBounds)
             val location = IntArray(2)
             getLocationOnScreen(location)
             screen.offset(location[0], location[1])
@@ -271,7 +293,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                 isFocusable = true
                 AndroidApiCompat.setScreenReaderFocusable(this, true)
                 isAccessibilityFocused = id == focusedVirtualId
-                setBoundsInParent(node.bounds)
+                setBoundsInParent(parentBounds)
                 setBoundsInScreen(screen)
                 addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK)
                 addAction(if (isAccessibilityFocused) AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS else AccessibilityNodeInfo.AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS)

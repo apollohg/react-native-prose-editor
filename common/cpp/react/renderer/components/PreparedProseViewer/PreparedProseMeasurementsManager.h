@@ -32,6 +32,23 @@ class PreparedProseMeasurementsManager {
       uint64_t leaseHandle,
       const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const;
 
+  void prepareFinalLayout(
+      SurfaceId surfaceId,
+      Tag componentTag,
+      const PreparedProseViewerProps& props,
+      int32_t contentWidthPx,
+      int32_t contentOriginXPx,
+      int32_t contentOriginYPx,
+      Float pointScaleFactor,
+      uint64_t attachmentRevision,
+      uint64_t nativeFontRevision,
+      double nativeFontScale,
+      int32_t userInterfaceStyle,
+      int32_t accessibilityContrast,
+      uint64_t fontEnvironmentRevision,
+      uint64_t leaseHandle,
+      const std::shared_ptr<PreparedProseViewerLeaseLifecycle>& leaseLifecycle) const;
+
   void bindLeaseLifecycle(
       SurfaceId surfaceId,
       Tag componentTag,

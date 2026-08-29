@@ -5,6 +5,7 @@
 #include <cmath>
 #include <atomic>
 #include <limits>
+#include <optional>
 
 namespace facebook::react {
 
@@ -24,6 +25,23 @@ bool HasRepresentablePhysicalWidth(Float width, Float scale) {
       static_cast<double>(std::numeric_limits<long long>::max()), 0.0);
   return std::isfinite(roundedWidth) && roundedWidth > 0 &&
       roundedWidth <= largestConvertible;
+}
+
+std::optional<int32_t> CheckedPhysicalPixel(
+    Float value,
+    Float scale,
+    bool allowZero) {
+  if (!std::isfinite(value) || !std::isfinite(scale) || scale <= 0) {
+    return std::nullopt;
+  }
+  const auto physical = std::round(
+      static_cast<double>(value) * static_cast<double>(scale));
+  if (!std::isfinite(physical) || (!allowZero && physical <= 0) ||
+      physical < static_cast<double>(std::numeric_limits<int32_t>::min()) ||
+      physical > static_cast<double>(std::numeric_limits<int32_t>::max())) {
+    return std::nullopt;
+  }
+  return static_cast<int32_t>(physical);
 }
 
 uint64_t FontEnvironmentRevision(const PreparedProseViewerProps &props) {
@@ -119,6 +137,48 @@ Size PreparedProseViewerShadowNode::measureContent(
       props,
       effectiveWidth,
       pointScaleFactor,
+      state.attachmentRevision,
+      state.nativeFontRevision,
+      state.nativeFontScale,
+      state.userInterfaceStyle,
+      state.accessibilityContrast,
+      FontEnvironmentRevision(props),
+      leaseHandle,
+      state.leaseLifecycle);
+}
+
+void PreparedProseViewerShadowNode::layout(LayoutContext layoutContext) {
+  ConcreteViewShadowNode::layout(layoutContext);
+  if (!measurementsManager_) {
+    return;
+  }
+  const auto metrics = getLayoutMetrics();
+  const auto contentFrame = getLayoutMetrics().getContentFrame();
+  const auto scale = metrics.pointScaleFactor;
+  const auto widthPx = CheckedPhysicalPixel(contentFrame.size.width, scale, false);
+  const auto originXPx = CheckedPhysicalPixel(contentFrame.origin.x, scale, true);
+  const auto originYPx = CheckedPhysicalPixel(contentFrame.origin.y, scale, true);
+  if (!widthPx || !originXPx || !originYPx) {
+    return;
+  }
+  const auto& props = getConcreteProps();
+  const auto& state = getStateData();
+  const auto leaseHandle = state.leaseLifecycle && state.leaseLifecycle->isActive()
+      ? state.leaseHandle
+      : 0;
+  if (leaseHandle == 0) {
+    return;
+  }
+  measurementsManager_->bindLeaseLifecycle(
+      getSurfaceId(), getTag(), leaseHandle, state.leaseLifecycle);
+  measurementsManager_->prepareFinalLayout(
+      getSurfaceId(),
+      getTag(),
+      props,
+      *widthPx,
+      *originXPx,
+      *originYPx,
+      scale,
       state.attachmentRevision,
       state.nativeFontRevision,
       state.nativeFontScale,

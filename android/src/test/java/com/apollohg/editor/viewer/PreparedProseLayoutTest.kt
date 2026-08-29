@@ -393,6 +393,111 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `final Fabric ticket replaces earlier widths with content box geometry`() {
+        val engine = CountingLayoutEngine()
+        val registry = testRegistry(engine)
+        val request = request("final content box")
+        val surface = FabricSurfaceToken(surfaceId = 51, componentTag = 510)
+        val generation = FabricGenerationToken(surface, request.generationIdentity, 51)
+
+        registry.registerFabricLease(surface, generation.leaseHandle)
+        registry.measure(request, 895, 2.625f, surface, generation.leaseHandle)
+        registry.measure(request, 897, 2.625f, surface, generation.leaseHandle)
+        val prepared = registry.prepareFinalLayout(
+            request = request,
+            widthPx = 896,
+            density = 2.625f,
+            contentOriginXPx = 17,
+            contentOriginYPx = 23,
+            fabricSurface = surface,
+            fabricLeaseHandle = generation.leaseHandle,
+        )
+        registry.activateFabricGeneration(generation)
+
+        val ticket = requireNotNull(registry.acquirePreparedMountTicket(generation))
+        assertEquals(896, ticket.contentWidthPx)
+        assertEquals(17, ticket.contentOriginXPx)
+        assertEquals(23, ticket.contentOriginYPx)
+        assertEquals(2.625f.toRawBits(), ticket.densityBits)
+        assertTrue(ticket.artifact === prepared)
+        assertEquals(3, engine.preparationCount)
+    }
+
+    @Test
+    fun `final Fabric ticket rebuilds after cache pressure and rejects a stale generation`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val surface = FabricSurfaceToken(surfaceId = 52, componentTag = 520)
+        val handle = 52L
+        val firstRequest = request("first final ticket")
+        val secondRequest = request("second final ticket")
+        val first = FabricGenerationToken(surface, firstRequest.generationIdentity, handle)
+        val second = FabricGenerationToken(surface, secondRequest.generationIdentity, handle)
+
+        registry.registerFabricLease(surface, handle)
+        registry.prepareFinalLayout(firstRequest, 320, 1f, 4, 5, surface, handle)
+        registry.prepareFinalLayout(secondRequest, 321, 1f, 6, 7, surface, handle)
+        registry.activateFabricGeneration(second)
+        registry.didReceiveMemoryWarning()
+
+        assertEquals(null, registry.acquirePreparedMountTicket(first))
+        assertEquals(null, registry.acquirePreparedMountTicket(second))
+        val completion = java.util.concurrent.CountDownLatch(1)
+        var prepared = false
+        assertTrue(registry.prepareForFabricMount(second) { succeeded ->
+            prepared = succeeded
+            completion.countDown()
+        })
+        assertTrue(completion.await(5, TimeUnit.SECONDS))
+        assertTrue(prepared)
+        val ticket = requireNotNull(registry.acquirePreparedMountTicket(second))
+        assertEquals(321, ticket.contentWidthPx)
+        assertEquals(6, ticket.contentOriginXPx)
+        assertEquals(7, ticket.contentOriginYPx)
+    }
+
+    @Test
+    fun `slower final Fabric preparation cannot overwrite newer same-generation geometry`() {
+        val firstStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseFirst = java.util.concurrent.CountDownLatch(1)
+        val delegate = CountingLayoutEngine()
+        val engine = object : AndroidProseLayoutEngine {
+            override fun prepare(
+                document: ViewerDocument,
+                key: ProseLayoutKey,
+                theme: PreparedProseTheme,
+                widthPx: Int,
+                density: Float,
+                collapsesWhenEmpty: Boolean,
+            ): PreparedProseLayout {
+                if (widthPx == 320) {
+                    firstStarted.countDown()
+                    assertTrue(releaseFirst.await(5, TimeUnit.SECONDS))
+                }
+                return delegate.prepare(document, key, theme, widthPx, density, collapsesWhenEmpty)
+            }
+        }
+        val registry = testRegistry(engine)
+        val request = request("same generation race")
+        val surface = FabricSurfaceToken(53, 530)
+        val generation = FabricGenerationToken(surface, request.generationIdentity, 53)
+        registry.registerFabricLease(surface, generation.leaseHandle)
+
+        val older = java.util.concurrent.CompletableFuture.supplyAsync {
+            registry.prepareFinalLayout(request, 320, 1f, 3, 4, surface, generation.leaseHandle)
+        }
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS))
+        registry.prepareFinalLayout(request, 321, 1f, 7, 8, surface, generation.leaseHandle)
+        releaseFirst.countDown()
+        older.get(5, TimeUnit.SECONDS)
+        registry.activateFabricGeneration(generation)
+
+        val ticket = requireNotNull(registry.acquirePreparedMountTicket(generation))
+        assertEquals(321, ticket.contentWidthPx)
+        assertEquals(7, ticket.contentOriginXPx)
+        assertEquals(8, ticket.contentOriginYPx)
+    }
+
+    @Test
     fun `Fabric mount rejects a width beyond the pixel grid rounding slack`() {
         val engine = CountingLayoutEngine()
         val registry = testRegistry(engine)
@@ -715,6 +820,43 @@ class PreparedProseLayoutTest {
         cache.releaseLease(second)
         cache.registerDirectMount("direct", artifact)
         assertTrue(cache.value(key) { error("direct owner must be reused") } === artifact)
+    }
+
+    @Test
+    fun `terminal cleanup cannot be followed by a stale Fabric mount publication`() {
+        val cache = PreparedProseLayoutCache()
+        val key = testLayoutKey("terminal acquisition race")
+        val generation = FabricGenerationToken(
+            FabricSurfaceToken(54, 540),
+            key.generationIdentity,
+            54,
+        )
+        val owner = FabricLeaseOwner(generation.surface, generation.leaseHandle)
+        cache.value(key, generation) { testArtifact(key, retainedBytes = 1) }
+        val predicateEntered = java.util.concurrent.CountDownLatch(1)
+        val releasePredicate = java.util.concurrent.CountDownLatch(1)
+        val cleanupStarted = java.util.concurrent.CountDownLatch(1)
+        val active = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        val acquisition = java.util.concurrent.CompletableFuture.supplyAsync {
+            cache.acquireForFabricMount(generation, key.widthPx, key.densityBits) {
+                predicateEntered.countDown()
+                assertTrue(releasePredicate.await(5, TimeUnit.SECONDS))
+                active.get()
+            }
+        }
+        assertTrue(predicateEntered.await(5, TimeUnit.SECONDS))
+        val cleanup = java.util.concurrent.CompletableFuture.runAsync {
+            active.set(false)
+            cleanupStarted.countDown()
+            cache.releaseOwner(owner)
+        }
+        assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS))
+        releasePredicate.countDown()
+
+        assertEquals(null, acquisition.get(5, TimeUnit.SECONDS))
+        cleanup.get(5, TimeUnit.SECONDS)
+        assertFalse(cache.hasLease(generation))
     }
 
     @Test

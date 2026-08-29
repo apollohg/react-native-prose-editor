@@ -52,6 +52,30 @@ function visitCorpusNode(
 }
 
 describe('prepared prose native lifecycle contracts', () => {
+    it('publishes Android Fabric mount tickets from final content-box layout metrics', () => {
+        const shadowHeader = readSource(
+            'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.h'
+        );
+        const shadow = readSource(
+            'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseViewerShadowNode.cpp'
+        );
+        const manager = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseViewerManager.kt');
+        const drawing = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseDrawingView.kt');
+        const mount = manager.slice(manager.indexOf('private fun installCachedLayout('), manager.indexOf('private fun dispatchError('));
+
+        expect(shadowHeader).toContain('void layout(LayoutContext layoutContext) override;');
+        expect(shadow).toContain('const auto contentFrame = getLayoutMetrics().getContentFrame();');
+        expect(shadow).toContain('measurementsManager_->prepareFinalLayout(');
+        expect(shadow).toContain('props,\n      *widthPx,');
+        expect(shadow).not.toContain('static_cast<Float>(*widthPx) / scale');
+        expect(mount).toContain('acquirePreparedMountTicket(generation)');
+        expect(mount).toContain('prepareForFabricMount(generation)');
+        expect(mount).not.toContain('view.width');
+        expect(mount).not.toContain('releaseFabricMountMiss');
+        expect(drawing).toContain('contentOriginXPx');
+        expect(drawing).toContain('canvas.translate(contentOriginXPx.toFloat(), contentOriginYPx.toFloat())');
+    });
+
     it('injects the raw host JNA JAR into JVM Test tasks without contaminating Android resolution', () => {
         const androidBuild = readSource('android/build.gradle');
 

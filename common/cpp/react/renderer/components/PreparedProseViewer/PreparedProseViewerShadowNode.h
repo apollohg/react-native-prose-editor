@@ -37,6 +37,8 @@ class PreparedProseViewerShadowNode final
       const LayoutContext& layoutContext,
       const LayoutConstraints& layoutConstraints) const override;
 
+  void layout(LayoutContext layoutContext) override;
+
  private:
   std::shared_ptr<PreparedProseMeasurementsManager> measurementsManager_;
 };
