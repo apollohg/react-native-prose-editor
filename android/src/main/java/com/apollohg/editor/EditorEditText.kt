@@ -354,6 +354,9 @@ class EditorEditText @JvmOverloads constructor(
     private var recentHandledHardwareKeyDownUptimeMs: Long = 0L
     private var activeInputConnection: EditorInputConnection? = null
     private var inputConnectionGeneration: Long = 0L
+    private var imeTextCoordinateRevision: Long = 0L
+    private var cachedImeTextCoordinateRevision: Long = -1L
+    private var cachedImeTextCoordinateMapper: ImeTextCoordinateMapper? = null
     private var composingText: String? = null
     private var composingReplacementStartUtf16: Int? = null
     private var composingReplacementEndUtf16: Int? = null
@@ -712,8 +715,9 @@ class EditorEditText @JvmOverloads constructor(
             reqModes = outAttrs.inputType,
             baseCapsMode = outAttrs.initialCapsMode
         )
-        val initialSurroundingText = applyInitialSurroundingTextForIme(outAttrs)
         val generation = nextInputConnectionGenerationForEditor()
+        val mapper = imeTextCoordinateMapperForEditor(generation) ?: return null
+        val initialSurroundingText = applyInitialSurroundingTextForIme(outAttrs, mapper)
         NativeEditorViewRegistry.registerInputView(editorId, this)
         recordImeTraceForTesting(
             "createInputConnection",
@@ -723,14 +727,23 @@ class EditorEditText @JvmOverloads constructor(
                 "imeContextRawSel=${initialSurroundingText?.originalSelectionStart ?: selectionStart}..${initialSurroundingText?.originalSelectionEnd ?: selectionEnd} " +
                 "imeContextBeforeTail=\"${initialSurroundingText?.textBeforeSelectionTailForImeLog() ?: ""}\""
         )
-        return EditorInputConnection(this, baseConnection, editorId, generation).also {
+        return EditorInputConnection(
+            this,
+            baseConnection,
+            editorId,
+            generation,
+            mapper.generation,
+        ).also {
             activeInputConnection = it
         }
     }
 
-    private fun applyInitialSurroundingTextForIme(outAttrs: EditorInfo): ImeInitialSurroundingText? {
+    private fun applyInitialSurroundingTextForIme(
+        outAttrs: EditorInfo,
+        mapper: ImeTextCoordinateMapper,
+    ): ImeInitialSurroundingText? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        val initialText = initialSurroundingTextForImeForEditor() ?: return null
+        val initialText = initialSurroundingTextForImeForEditor(mapper) ?: return null
 
         outAttrs.initialSelStart = initialText.selectionStart
         outAttrs.initialSelEnd = initialText.selectionEnd
@@ -2017,12 +2030,14 @@ class EditorEditText @JvmOverloads constructor(
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
+        invalidateImeTextCoordinateMapperForEditor()
     }
 
     private fun removeTransientComposingTextStyleSpans(editable: Editable) {
         editable
             .getSpans(0, editable.length, TransientComposingTextStyleSpan::class.java)
             .forEach(editable::removeSpan)
+        invalidateImeTextCoordinateMapperForEditor()
     }
 
     internal fun composingTextFromVisibleReplacementForEditor(): String? {
@@ -2061,6 +2076,10 @@ class EditorEditText @JvmOverloads constructor(
         clearCompositionTrackingForEditor()
         clearCompositionInvalidationForEditor()
         clearNativeComposingSpans()
+    }
+
+    internal fun retireInputConnectionForHostDetach() {
+        retireInputConnectionForEditor()
     }
 
     internal fun isEditorDestroyedForInput(): Boolean =
@@ -2131,11 +2150,33 @@ class EditorEditText @JvmOverloads constructor(
                 )
                 return@post
             }
+            val mapper = imeTextCoordinateMapperForEditor() ?: return@post
+            val imeStart = mapper.rawToIme(start)
+            val imeEnd = mapper.rawToIme(end)
+            val editable = text
+            val rawComposingStart = editable?.let(BaseInputConnection::getComposingSpanStart) ?: -1
+            val rawComposingEnd = editable?.let(BaseInputConnection::getComposingSpanEnd) ?: -1
+            val imeComposingStart = if (rawComposingStart >= 0) {
+                mapper.rawToIme(rawComposingStart)
+            } else {
+                -1
+            }
+            val imeComposingEnd = if (rawComposingEnd >= 0) {
+                mapper.rawToIme(rawComposingEnd)
+            } else {
+                -1
+            }
             val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            imm?.updateSelection(this, start, end, -1, -1)
+            imm?.updateSelection(
+                this,
+                imeStart,
+                imeEnd,
+                imeComposingStart,
+                imeComposingEnd,
+            )
             recordImeTraceForTesting(
                 "updateSelectionAfterRestart",
-                "source=$source sel=$start..$end"
+                "source=$source sel=$imeStart..$imeEnd"
             )
         }
     }
@@ -2179,8 +2220,32 @@ class EditorEditText @JvmOverloads constructor(
 
     private fun invalidateInputConnectionsForEditor() {
         inputConnectionGeneration += 1L
+        cachedImeTextCoordinateMapper = null
         recordImeTraceForTesting("invalidateInputConnections", "nextGen=$inputConnectionGeneration")
         activeInputConnection = null
+    }
+
+    internal fun imeTextCoordinateMapperForEditor(
+        boundGeneration: Long = inputConnectionGeneration,
+    ): ImeTextCoordinateMapper? {
+        if (boundGeneration != inputConnectionGeneration) return null
+        val cached = cachedImeTextCoordinateMapper
+        if (
+            cached != null &&
+            cached.generation == boundGeneration &&
+            cachedImeTextCoordinateRevision == imeTextCoordinateRevision
+        ) {
+            return cached
+        }
+        return ImeTextCoordinateMapper.build(text ?: "", boundGeneration).also { mapper ->
+            cachedImeTextCoordinateMapper = mapper
+            cachedImeTextCoordinateRevision = imeTextCoordinateRevision
+        }
+    }
+
+    private fun invalidateImeTextCoordinateMapperForEditor() {
+        imeTextCoordinateRevision += 1L
+        cachedImeTextCoordinateMapper = null
     }
 
     private fun clearNativeComposingSpans() {
@@ -2386,8 +2451,9 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun handleCorrectionCommit(
-        offsetUtf16: Int,
-        oldText: String,
+        startUtf16: Int,
+        endUtf16: Int,
+        renderedOldText: String,
         newText: String
     ): Boolean {
         if (!isEditable) return true
@@ -2395,47 +2461,46 @@ class EditorEditText @JvmOverloads constructor(
         if (!hasLiveEditor()) return false
 
         val authorizedText = lastAuthorizedText
-        if (offsetUtf16 < 0) {
+        if (startUtf16 < 0 || endUtf16 < startUtf16) {
             recordImeTraceForTesting(
                 "correctionExplicitNoop",
-                "reason=invalidOffset offset=$offsetUtf16 oldLength=${oldText.length} newLength=${newText.length}"
+                "reason=invalidRange range=$startUtf16..$endUtf16 oldLength=${renderedOldText.length} newLength=${newText.length}"
             )
             return false
         }
-        val endUtf16 = offsetUtf16 + oldText.length
-        if (endUtf16 < offsetUtf16 || endUtf16 > authorizedText.length) {
+        if (endUtf16 > authorizedText.length) {
             recordImeTraceForTesting(
                 "correctionExplicitNoop",
-                "reason=outOfBounds offset=$offsetUtf16 oldLength=${oldText.length} authorizedLength=${authorizedText.length}"
+                "reason=outOfBounds range=$startUtf16..$endUtf16 authorizedLength=${authorizedText.length}"
             )
             return false
         }
-        if (authorizedText.substring(offsetUtf16, endUtf16) != oldText) {
+        if (authorizedText.substring(startUtf16, endUtf16) != renderedOldText) {
             recordImeTraceForTesting(
                 "correctionExplicitNoop",
-                "reason=staleText offset=$offsetUtf16 oldLength=${oldText.length} newLength=${newText.length}"
+                "reason=staleText range=$startUtf16..$endUtf16 oldLength=${renderedOldText.length} newLength=${newText.length}"
             )
             return false
         }
 
-        val (startUtf16, snappedEndUtf16) = PositionBridge.snapRangeToScalarBoundaries(
-            offsetUtf16,
+        val (snappedStartUtf16, snappedEndUtf16) = PositionBridge.snapRangeToScalarBoundaries(
+            startUtf16,
             endUtf16,
             authorizedText
         )
         if (
-            startUtf16 != offsetUtf16 ||
+            snappedStartUtf16 != startUtf16 ||
             snappedEndUtf16 != endUtf16 ||
-            startUtf16 > snappedEndUtf16
+            snappedStartUtf16 > snappedEndUtf16
         ) {
             recordImeTraceForTesting(
                 "correctionExplicitNoop",
-                "reason=unsnappedScalarBoundary range=$offsetUtf16..$endUtf16 snapped=$startUtf16..$snappedEndUtf16"
+                "reason=unsnappedScalarBoundary range=$startUtf16..$endUtf16 snapped=$snappedStartUtf16..$snappedEndUtf16"
             )
             return false
         }
 
-        val scalarStart = PositionBridge.utf16ToScalar(startUtf16, authorizedText)
+        val scalarStart = PositionBridge.utf16ToScalar(snappedStartUtf16, authorizedText)
         val scalarEnd = PositionBridge.utf16ToScalar(snappedEndUtf16, authorizedText)
         recordImeTraceForTesting(
             "correctionExplicitApply",
@@ -2446,7 +2511,9 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun handleMissingOldTextCorrectionCommit(
-        offsetUtf16: Int,
+        startUtf16: Int,
+        endUtf16: Int,
+        renderedOldText: String,
         newText: String
     ): Boolean {
         if (!isEditable) return true
@@ -2454,15 +2521,18 @@ class EditorEditText @JvmOverloads constructor(
         if (!hasLiveEditor()) return false
 
         val authorizedText = lastAuthorizedText
-        val tokenRange = missingOldTextCorrectionTokenRange(authorizedText, offsetUtf16)
-            ?: run {
-                recordImeTraceForTesting(
-                    "correctionInferredNoop",
-                    "reason=noToken offset=$offsetUtf16 newLength=${newText.length}"
-                )
-                return false
-            }
-        val (startUtf16, endUtf16) = tokenRange
+        if (
+            startUtf16 < 0 ||
+            endUtf16 <= startUtf16 ||
+            endUtf16 > authorizedText.length ||
+            authorizedText.substring(startUtf16, endUtf16) != renderedOldText
+        ) {
+            recordImeTraceForTesting(
+                "correctionInferredNoop",
+                "reason=staleRange range=$startUtf16..$endUtf16 newLength=${newText.length}"
+            )
+            return false
+        }
 
         val (snappedStartUtf16, snappedEndUtf16) = PositionBridge.snapRangeToScalarBoundaries(
             startUtf16,
@@ -2487,7 +2557,7 @@ class EditorEditText @JvmOverloads constructor(
         return true
     }
 
-    private fun missingOldTextCorrectionTokenRange(
+    internal fun missingOldTextCorrectionTokenRangeForEditor(
         text: String,
         offsetUtf16: Int
     ): Pair<Int, Int>? {
@@ -3552,7 +3622,7 @@ class EditorEditText @JvmOverloads constructor(
             start > 0 -> Character.offsetByCodePoints(currentText, start, -1)
             else -> return null
         }
-        val tokenRange = missingOldTextCorrectionTokenRange(currentText, probe) ?: return null
+        val tokenRange = missingOldTextCorrectionTokenRangeForEditor(currentText, probe) ?: return null
         return if (start < end) {
             tokenRange.takeIf { it.first <= start && it.second >= end }
         } else {
@@ -4101,57 +4171,23 @@ class EditorEditText @JvmOverloads constructor(
         return baseCapsMode or sentenceCapsMode
     }
 
-    internal fun textBeforeCursorForImeContextForEditor(n: Int, flags: Int): CharSequence? {
-        if (n <= 0) return ""
-        val content = text ?: return null
-        val start = selectionStart
-        val end = selectionEnd
-        if (start < 0 || end < 0) return null
-        val cursor = minOf(start, end).coerceIn(0, content.length)
-        var effectiveCursor = cursor
-        while (
-            effectiveCursor > 0 &&
-            content[effectiveCursor - 1] == LayoutConstants.SYNTHETIC_PLACEHOLDER_CHARACTER[0]
-        ) {
-            effectiveCursor -= 1
-        }
-        val contextStart = maxOf(0, effectiveCursor - n)
-        val context = content.subSequence(contextStart, effectiveCursor)
-        return if ((flags and InputConnection.GET_TEXT_WITH_STYLES) != 0) {
-            context
-        } else {
-            context.toString()
-        }
-    }
-
-    internal fun initialSurroundingTextForImeForEditor(): ImeInitialSurroundingText? {
-        val rawText = text?.toString() ?: return null
-        val placeholder = LayoutConstants.SYNTHETIC_PLACEHOLDER_CHARACTER[0]
-        if (rawText.indexOf(placeholder) < 0) return null
+    internal fun initialSurroundingTextForImeForEditor(
+        mapper: ImeTextCoordinateMapper? = null,
+    ): ImeInitialSurroundingText? {
+        val coordinateMapper = mapper ?: imeTextCoordinateMapperForEditor() ?: return null
+        val rawText = text ?: return null
+        val removedCount = rawText.length - coordinateMapper.visibleText.length
+        if (removedCount == 0) return null
         val start = selectionStart
         val end = selectionEnd
         if (start < 0 || end < 0) return null
         val rawSelectionStart = start.coerceIn(0, rawText.length)
         val rawSelectionEnd = end.coerceIn(0, rawText.length)
 
-        val sanitized = StringBuilder(rawText.length)
-        var removedCount = 0
-        var removedBeforeSelectionStart = 0
-        var removedBeforeSelectionEnd = 0
-        rawText.forEachIndexed { index, ch ->
-            if (ch == placeholder) {
-                removedCount += 1
-                if (index < rawSelectionStart) removedBeforeSelectionStart += 1
-                if (index < rawSelectionEnd) removedBeforeSelectionEnd += 1
-            } else {
-                sanitized.append(ch)
-            }
-        }
-
         return ImeInitialSurroundingText(
-            text = sanitized.toString(),
-            selectionStart = rawSelectionStart - removedBeforeSelectionStart,
-            selectionEnd = rawSelectionEnd - removedBeforeSelectionEnd,
+            text = coordinateMapper.visibleText.toString(),
+            selectionStart = coordinateMapper.rawToIme(rawSelectionStart),
+            selectionEnd = coordinateMapper.rawToIme(rawSelectionEnd),
             originalSelectionStart = rawSelectionStart,
             originalSelectionEnd = rawSelectionEnd,
             removedPlaceholderCount = removedCount
@@ -5662,6 +5698,7 @@ class EditorEditText @JvmOverloads constructor(
         }
 
         override fun afterTextChanged(s: Editable?) {
+            invalidateImeTextCoordinateMapperForEditor()
             if (isApplyingRustState) return
             if (!hasLiveEditor()) return
 

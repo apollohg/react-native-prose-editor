@@ -40,6 +40,20 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NativeEditorExpoViewTest {
     @Test
+    fun `host detach retires the active input connection before teardown`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        editText.setText("abc")
+        editText.setSelection(3)
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        view.handleDetachedFromWindowForTesting()
+
+        assertEquals("", inputConnection.getTextBeforeCursor(3, 0).toString())
+    }
+
+    @Test
     fun `accessibility hint does not consume editor long press as a tooltip`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)

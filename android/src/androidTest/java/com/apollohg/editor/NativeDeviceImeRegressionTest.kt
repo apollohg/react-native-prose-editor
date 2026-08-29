@@ -89,6 +89,25 @@ class NativeDeviceImeRegressionTest {
     }
 
     @Test
+    fun syntheticPlaceholdersUseImeVisibleCoordinatesAndRetiredConnectionsAreInert() {
+        runOnMainSyncWithResult {
+            val editText = createEditor("ab", selectionStart = 2, selectionEnd = 2)
+            editText.setText("\u200Bab\u200Bcd")
+            editText.setSelection(3)
+            val inputConnection = createInputConnection(editText)
+
+            assertEquals("ab", inputConnection.getTextBeforeCursor(20, 0).toString())
+            assertEquals("cd", inputConnection.getTextAfterCursor(20, 0).toString())
+            assertTrue(inputConnection.setSelection(0, 2))
+            assertEquals(1, editText.selectionStart)
+            assertEquals(3, editText.selectionEnd)
+
+            editText.retireInputConnectionForHostDetach()
+            assertEquals("", inputConnection.getTextBeforeCursor(20, 0).toString())
+        }
+    }
+
+    @Test
     fun visibleCompositionCorrectionCommitDeleteAndPreflightAreRouted() {
         // Mid-composition corrections are applied on a deferred main-looper turn
         // (EditorInputConnection.rememberPendingCompositionCorrectionCommit), so the

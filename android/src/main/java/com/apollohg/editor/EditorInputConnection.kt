@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.text.Selection
+import android.text.Spanned
 import android.view.KeyEvent
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.CompletionInfo
@@ -38,7 +39,8 @@ class EditorInputConnection(
     private val editorView: EditorEditText,
     baseConnection: InputConnection,
     private val boundEditorId: Long,
-    private val boundGeneration: Long
+    private val boundGeneration: Long,
+    private val boundMapperGeneration: Long,
 ) : InputConnectionWrapper(baseConnection, true) {
     private data class SurroundingDeleteRange(
         val utf16Start: Int,
@@ -208,17 +210,41 @@ class EditorInputConnection(
     }
 
     override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence? {
-        if (!isCurrentInputSession()) return super.getTextBeforeCursor(n, flags)
-        val textBeforeCursor = editorView.textBeforeCursorForImeContextForEditor(n, flags)
-            ?: return super.getTextBeforeCursor(n, flags)
-        val raw = super.getTextBeforeCursor(n, flags)
-        if (raw?.toString() != textBeforeCursor.toString()) {
-            editorView.recordImeTraceForTesting(
-                "getTextBeforeCursorAdjusted",
-                "requested=$n rawLength=${raw?.length ?: -1} adjustedLength=${textBeforeCursor.length}"
-            )
-        }
-        return textBeforeCursor
+        val mapper = currentMapper() ?: return ""
+        val cursor = minOf(editorView.selectionStart, editorView.selectionEnd)
+        if (cursor < 0) return ""
+        val end = mapper.rawToIme(cursor)
+        return imeTextSlice(mapper, maxOf(0, end - n.coerceAtLeast(0)), end, flags)
+    }
+
+    override fun getTextAfterCursor(n: Int, flags: Int): CharSequence? {
+        val mapper = currentMapper() ?: return ""
+        val cursor = maxOf(editorView.selectionStart, editorView.selectionEnd)
+        if (cursor < 0) return ""
+        val start = mapper.rawToIme(cursor)
+        return imeTextSlice(
+            mapper,
+            start,
+            minOf(mapper.visibleText.length, start + n.coerceAtLeast(0)),
+            flags,
+        )
+    }
+
+    override fun getSelectedText(flags: Int): CharSequence? {
+        val mapper = currentMapper() ?: return ""
+        val rawStart = editorView.selectionStart
+        val rawEnd = editorView.selectionEnd
+        if (rawStart < 0 || rawEnd < 0) return ""
+        if (rawStart == rawEnd) return null
+        val imeStart = mapper.rawToIme(minOf(rawStart, rawEnd))
+        val imeEnd = mapper.rawToIme(maxOf(rawStart, rawEnd))
+        if (imeStart == imeEnd) return null
+        return imeTextSlice(
+            mapper,
+            imeStart,
+            imeEnd,
+            flags,
+        )
     }
 
     override fun commitCorrection(correctionInfo: CorrectionInfo?): Boolean {
@@ -250,11 +276,78 @@ class EditorInputConnection(
             return true
         }
         val oldText = correctionInfo.oldText?.toString()
-        val offset = correctionInfo.offset
-        val applied = if (oldText != null && offset >= 0) {
-            editorView.handleCorrectionCommit(offset, oldText, newText)
+        val imeOffset = correctionInfo.offset
+        val mapper = currentMapper()
+        val applied = if (oldText != null && mapper != null) {
+            val validOffset = imeOffset in 0..mapper.visibleText.length
+            val imeEnd = if (
+                validOffset &&
+                oldText.length <= mapper.visibleText.length - imeOffset
+            ) {
+                imeOffset + oldText.length
+            } else {
+                -1
+            }
+            if (
+                imeEnd >= 0 &&
+                mapper.visibleText.subSequence(imeOffset, imeEnd).toString() == oldText
+            ) {
+                val rawStart = mapper.imeToRaw(
+                    imeOffset,
+                    ImeTextCoordinateMapper.Affinity.AFTER,
+                )
+                val rawEnd = mapper.imeToRaw(
+                    imeEnd,
+                    ImeTextCoordinateMapper.Affinity.BEFORE,
+                )
+                val renderedOldText = editorView.text
+                    ?.subSequence(rawStart, rawEnd)
+                    ?.toString()
+                    ?: ""
+                editorView.handleCorrectionCommit(
+                    rawStart,
+                    rawEnd,
+                    renderedOldText,
+                    newText,
+                )
+            } else {
+                editorView.recordImeTraceForTesting(
+                    "correctionExplicitNoop",
+                    "reason=staleVisibleText offset=$imeOffset oldLength=${oldText.length}",
+                )
+                false
+            }
         } else if (oldText == null) {
-            editorView.handleMissingOldTextCorrectionCommit(offset, newText)
+            val visibleText = mapper?.visibleText?.toString()
+            val tokenRange = visibleText?.let {
+                editorView.missingOldTextCorrectionTokenRangeForEditor(it, imeOffset)
+            }
+            if (mapper != null && tokenRange != null) {
+                val rawStart = mapper.imeToRaw(
+                    tokenRange.first,
+                    ImeTextCoordinateMapper.Affinity.AFTER,
+                )
+                val rawEnd = mapper.imeToRaw(
+                    tokenRange.second,
+                    ImeTextCoordinateMapper.Affinity.BEFORE,
+                )
+                val renderedOldText = editorView.text
+                    ?.subSequence(rawStart, rawEnd)
+                    ?.toString()
+                    ?: ""
+                editorView.handleMissingOldTextCorrectionCommit(
+                    rawStart,
+                    rawEnd,
+                    renderedOldText,
+                    newText,
+                )
+            } else {
+                editorView.recordImeTraceForTesting(
+                    "correctionInferredNoop",
+                    "reason=noVisibleToken offset=$imeOffset newLength=${newText.length}",
+                )
+                false
+            }
         } else {
             false
         }
@@ -438,21 +531,11 @@ class EditorInputConnection(
             return true
         }
         if (trackedCompositionReplacementRange() != null) {
-            val beforeText = editorView.text?.toString()
-            var didFallbackDelete = false
-            val result = editorView.runWithTransientInputMutationGuard {
-                val baseResult = super.deleteSurroundingText(beforeLength, afterLength)
-                if (
-                    beforeText != null &&
-                    beforeText == editorView.text?.toString() &&
-                    (beforeLength > 0 || afterLength > 0)
-                ) {
-                    didFallbackDelete = deleteTransientTextAroundSelection(beforeLength, afterLength)
-                }
-                baseResult
-            }
-            refreshComposingTextFromEditable()
-            return result || didFallbackDelete
+            return performMappedCompositionSurroundingDelete(
+                beforeLength,
+                afterLength,
+                deleteInCodePoints = false,
+            )
         }
         if (shouldDeferPlainSurroundingDelete(beforeLength, afterLength)) {
             return performDeferredPlainSurroundingDelete(
@@ -486,24 +569,11 @@ class EditorInputConnection(
             return true
         }
         if (trackedCompositionReplacementRange() != null) {
-            val beforeText = editorView.text?.toString()
-            var didFallbackDelete = false
-            val result = editorView.runWithTransientInputMutationGuard {
-                val baseResult = super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
-                if (
-                    beforeText != null &&
-                    beforeText == editorView.text?.toString() &&
-                    (beforeLength > 0 || afterLength > 0)
-                ) {
-                    didFallbackDelete = deleteTransientTextAroundSelectionInCodePoints(
-                        beforeLength,
-                        afterLength
-                    )
-                }
-                baseResult
-            }
-            refreshComposingTextFromEditable()
-            return result || didFallbackDelete
+            return performMappedCompositionSurroundingDelete(
+                beforeLength,
+                afterLength,
+                deleteInCodePoints = true,
+            )
         }
         if (shouldDeferPlainSurroundingDelete(beforeLength, afterLength)) {
             return performDeferredPlainSurroundingDelete(
@@ -534,25 +604,82 @@ class EditorInputConnection(
     private fun shouldDeferPlainSurroundingDelete(beforeLength: Int, afterLength: Int): Boolean =
         beforeLength.coerceAtLeast(0) + afterLength.coerceAtLeast(0) > 0
 
+    private fun performMappedCompositionSurroundingDelete(
+        beforeLength: Int,
+        afterLength: Int,
+        deleteInCodePoints: Boolean,
+    ): Boolean {
+        val mapper = currentMapper() ?: return true
+        val rawStart = editorView.selectionStart
+        val rawEnd = editorView.selectionEnd
+        if (rawStart < 0 || rawEnd < 0) return true
+        val imeStart = mapper.rawToIme(minOf(rawStart, rawEnd))
+        val imeEnd = mapper.rawToIme(maxOf(rawStart, rawEnd))
+        val visibleText = mapper.visibleText.toString()
+        val beforeUtf16Length = if (deleteInCodePoints) {
+            codePointsToUtf16Length(visibleText, imeStart, beforeLength, forward = false)
+        } else {
+            beforeLength
+        }
+        val afterUtf16Length = if (deleteInCodePoints) {
+            codePointsToUtf16Length(visibleText, imeEnd, afterLength, forward = true)
+        } else {
+            afterLength
+        }
+        val imeDeleteStart = if (imeStart != imeEnd) {
+            imeStart
+        } else {
+            maxOf(0, imeStart - beforeUtf16Length.coerceAtLeast(0))
+        }
+        val imeDeleteEnd = if (imeStart != imeEnd) {
+            imeEnd
+        } else {
+            minOf(visibleText.length, imeEnd + afterUtf16Length.coerceAtLeast(0))
+        }
+        val rawDeleteStart = mapper.imeToRaw(
+            imeDeleteStart,
+            ImeTextCoordinateMapper.Affinity.AFTER,
+        )
+        val rawDeleteEnd = mapper.imeToRaw(
+            imeDeleteEnd,
+            ImeTextCoordinateMapper.Affinity.BEFORE,
+        )
+        editorView.runWithTransientInputMutationGuard {
+            deleteVisibleTextInRawRange(rawDeleteStart, rawDeleteEnd, imeDeleteStart)
+        }
+        refreshComposingTextFromEditable()
+        return true
+    }
+
     private fun performDeferredPlainSurroundingDelete(
         beforeLength: Int,
         afterLength: Int,
         deleteInCodePoints: Boolean
     ): Boolean {
         val beforeText = editorView.text?.toString() ?: return true
+        val mapper = currentMapper() ?: return true
+        val rawSelectionStart = editorView.selectionStart
+        val rawSelectionEnd = editorView.selectionEnd
+        if (rawSelectionStart < 0 || rawSelectionEnd < 0) return true
+        val normalizedRawStart = minOf(rawSelectionStart, rawSelectionEnd)
+            .coerceIn(0, beforeText.length)
+        val normalizedRawEnd = maxOf(rawSelectionStart, rawSelectionEnd)
+            .coerceIn(0, beforeText.length)
+        val imeSelectionStart = mapper.rawToIme(normalizedRawStart)
+        val imeSelectionEnd = mapper.rawToIme(normalizedRawEnd)
         val beforeUtf16Length: Int
         val afterUtf16Length: Int
         if (deleteInCodePoints) {
-            val cursor = editorView.selectionStart.coerceAtLeast(0)
+            val visibleText = mapper.visibleText.toString()
             beforeUtf16Length = codePointsToUtf16Length(
-                text = beforeText,
-                fromUtf16Offset = cursor,
+                text = visibleText,
+                fromUtf16Offset = imeSelectionStart,
                 codePointCount = beforeLength,
                 forward = false
             )
             afterUtf16Length = codePointsToUtf16Length(
-                text = beforeText,
-                fromUtf16Offset = editorView.selectionEnd.coerceAtLeast(cursor),
+                text = visibleText,
+                fromUtf16Offset = imeSelectionEnd,
                 codePointCount = afterLength,
                 forward = true
             )
@@ -560,15 +687,58 @@ class EditorInputConnection(
             beforeUtf16Length = beforeLength
             afterUtf16Length = afterLength
         }
+        val imeDeleteStart: Int
+        val imeDeleteEnd: Int
+        if (imeSelectionStart != imeSelectionEnd) {
+            imeDeleteStart = imeSelectionStart
+            imeDeleteEnd = imeSelectionEnd
+        } else {
+            imeDeleteStart = maxOf(0, imeSelectionStart - beforeUtf16Length.coerceAtLeast(0))
+            imeDeleteEnd = minOf(
+                mapper.visibleText.length,
+                imeSelectionEnd + afterUtf16Length.coerceAtLeast(0),
+            )
+        }
+        val rawDeleteStart = mapper.imeToRaw(
+            imeDeleteStart,
+            ImeTextCoordinateMapper.Affinity.AFTER,
+        )
+        val rawDeleteEnd = mapper.imeToRaw(
+            imeDeleteEnd,
+            ImeTextCoordinateMapper.Affinity.BEFORE,
+        )
         val deleteRange = surroundingDeleteRange(
             text = beforeText,
-            beforeUtf16Length = beforeUtf16Length,
-            afterUtf16Length = afterUtf16Length
+            rawDeleteStart = rawDeleteStart,
+            rawDeleteEnd = rawDeleteEnd,
+            selectionStart = normalizedRawStart,
+            selectionEnd = normalizedRawEnd,
         )
         val isCollapsedBackwardDelete =
             beforeLength == 1 &&
                 afterLength == 0 &&
                 editorView.selectionStart == editorView.selectionEnd
+
+        if (isCollapsedBackwardDelete) {
+            val hiddenGapStart = mapper.imeToRaw(
+                imeSelectionStart,
+                ImeTextCoordinateMapper.Affinity.BEFORE,
+            )
+            if (
+                hiddenGapStart < normalizedRawStart &&
+                editorView.renderedRangeContainsGeneratedStructure(
+                    hiddenGapStart,
+                    normalizedRawStart,
+                )
+            ) {
+                editorView.recordImeTraceForTesting(
+                    "structuralSurroundingDelete",
+                    "before=$beforeLength after=$afterLength codePoints=$deleteInCodePoints hiddenGap=true",
+                )
+                editorView.handleStructuralBackspace()
+                return true
+            }
+        }
 
         if (
             deleteRange != null &&
@@ -599,26 +769,9 @@ class EditorInputConnection(
             "before=$beforeLength after=$afterLength codePoints=$deleteInCodePoints utf16=$beforeUtf16Length,$afterUtf16Length scalar=${deleteRange?.scalarStart}..${deleteRange?.scalarEnd}"
         )
 
-        var didFallbackDelete = false
-        val result = editorView.runWithTransientInputMutationGuard {
-            val baseResult = if (deleteInCodePoints) {
-                super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
-            } else {
-                super.deleteSurroundingText(beforeLength, afterLength)
-            }
-            if (
-                beforeText == editorView.text?.toString() &&
-                (beforeLength > 0 || afterLength > 0)
-            ) {
-                didFallbackDelete = if (deleteInCodePoints) {
-                    deleteTransientTextAroundSelectionInCodePoints(beforeLength, afterLength)
-                } else {
-                    deleteTransientTextAroundSelection(beforeLength, afterLength)
-                }
-            }
-            baseResult
+        val didDeleteVisibleText = editorView.runWithTransientInputMutationGuard {
+            deleteVisibleTextInRawRange(rawDeleteStart, rawDeleteEnd, imeDeleteStart)
         }
-        val didDeleteVisibleText = editorView.text?.toString() != beforeText
         if (didDeleteVisibleText && deleteRange != null) {
             editorView.authorizeCurrentVisibleTextForPendingImeOperationForEditor(
                 logicalCursorAfter = deleteRange.scalarStart
@@ -632,32 +785,18 @@ class EditorInputConnection(
         }
         editorView.recordImeTraceForTesting(
             "deferredSurroundingDeleteEnd",
-            "result=$result fallback=$didFallbackDelete visibleDeleted=$didDeleteVisibleText visibleLength=${editorView.text?.length ?: -1}"
+            "visibleDeleted=$didDeleteVisibleText visibleLength=${editorView.text?.length ?: -1}"
         )
-        return result || didFallbackDelete
+        return true
     }
 
     private fun surroundingDeleteRange(
         text: String,
-        beforeUtf16Length: Int,
-        afterUtf16Length: Int
+        rawDeleteStart: Int,
+        rawDeleteEnd: Int,
+        selectionStart: Int,
+        selectionEnd: Int,
     ): SurroundingDeleteRange? {
-        val rawStart = editorView.selectionStart
-        val rawEnd = editorView.selectionEnd
-        if (rawStart < 0 || rawEnd < 0) return null
-        val selectionStart = rawStart.coerceIn(0, text.length)
-        val selectionEnd = rawEnd.coerceIn(0, text.length)
-        val normalizedStart = minOf(selectionStart, selectionEnd)
-        val normalizedEnd = maxOf(selectionStart, selectionEnd)
-        val rawDeleteStart: Int
-        val rawDeleteEnd: Int
-        if (normalizedStart != normalizedEnd) {
-            rawDeleteStart = normalizedStart
-            rawDeleteEnd = normalizedEnd
-        } else {
-            rawDeleteStart = maxOf(0, normalizedStart - beforeUtf16Length.coerceAtLeast(0))
-            rawDeleteEnd = minOf(text.length, normalizedEnd + afterUtf16Length.coerceAtLeast(0))
-        }
         val (deleteStart, deleteEnd) = PositionBridge.snapRangeToScalarBoundaries(
             rawDeleteStart,
             rawDeleteEnd,
@@ -670,8 +809,8 @@ class EditorInputConnection(
             if (logicalStart != logicalEnd) {
                 return SurroundingDeleteRange(deleteStart, deleteEnd, logicalStart, logicalEnd)
             }
-            val deletedBefore = text.codePointCount(deleteStart, normalizedStart)
-            val deletedAfter = text.codePointCount(normalizedEnd, deleteEnd)
+            val deletedBefore = visibleCodePointCount(text, deleteStart, selectionStart)
+            val deletedAfter = visibleCodePointCount(text, selectionEnd, deleteEnd)
             val scalarStart = (logicalStart - deletedBefore).coerceAtLeast(0)
             val scalarEnd = logicalEnd + deletedAfter
             if (scalarStart < scalarEnd) {
@@ -682,6 +821,49 @@ class EditorInputConnection(
         val scalarEnd = PositionBridge.utf16ToScalar(deleteEnd, text)
         if (scalarStart >= scalarEnd) return null
         return SurroundingDeleteRange(deleteStart, deleteEnd, scalarStart, scalarEnd)
+    }
+
+    private fun visibleCodePointCount(text: String, start: Int, end: Int): Int {
+        val visible = text
+            .substring(minOf(start, end), maxOf(start, end))
+            .replace(LayoutConstants.SYNTHETIC_PLACEHOLDER_CHARACTER, "")
+        return visible.codePointCount(0, visible.length)
+    }
+
+    private fun deleteVisibleTextInRawRange(
+        rawStart: Int,
+        rawEnd: Int,
+        imeCursorAfter: Int,
+    ): Boolean {
+        val editable = editorView.text ?: return false
+        val start = rawStart.coerceIn(0, editable.length)
+        val end = rawEnd.coerceIn(start, editable.length)
+        var chunkEnd = end
+        var index = end - 1
+        var didDelete = false
+        while (index >= start) {
+            if (editable[index] == LayoutConstants.SYNTHETIC_PLACEHOLDER_CHARACTER[0]) {
+                if (index + 1 < chunkEnd) {
+                    editable.delete(index + 1, chunkEnd)
+                    didDelete = true
+                }
+                chunkEnd = index
+            }
+            index -= 1
+        }
+        if (start < chunkEnd) {
+            editable.delete(start, chunkEnd)
+            didDelete = true
+        }
+        if (didDelete) {
+            val updatedMapper = currentMapper()
+            val rawCursor = updatedMapper?.imeToRaw(
+                imeCursorAfter,
+                ImeTextCoordinateMapper.Affinity.AFTER,
+            ) ?: start.coerceIn(0, editable.length)
+            Selection.setSelection(editable, rawCursor.coerceIn(0, editable.length))
+        }
+        return didDelete
     }
 
     /**
@@ -746,13 +928,16 @@ class EditorInputConnection(
         if (!isCurrentInputSessionFor("setComposingRegion")) return true
         if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
         if (!editorView.isEditable) return true
-        if (editorView.editorId == 0L) return super.setComposingRegion(start, end)
+        val rawRange = rawRangeForIme(start, end) ?: return true
+        if (editorView.editorId == 0L) {
+            return super.setComposingRegion(rawRange.first, rawRange.second)
+        }
         if (editorView.hasInvalidatedCompositionReplacementRangeForEditor()) {
             return finishStaleComposingUpdateAfterInvalidation()
         }
         val currentText = editorView.text?.toString().orEmpty()
-        val requestedStart = minOf(start, end).coerceIn(0, currentText.length)
-        val requestedEnd = maxOf(start, end).coerceIn(0, currentText.length)
+        val requestedStart = minOf(rawRange.first, rawRange.second).coerceIn(0, currentText.length)
+        val requestedEnd = maxOf(rawRange.first, rawRange.second).coerceIn(0, currentText.length)
         val contentRange = editorView.compositionContentRangeForEditor(requestedStart, requestedEnd)
         if (contentRange == null) {
             generatedCompositionAdjustment = null
@@ -791,20 +976,21 @@ class EditorInputConnection(
     override fun setSelection(start: Int, end: Int): Boolean {
         if (!isCurrentInputSessionFor("setSelection")) return true
         if (!editorView.commitExternalTextCompositionBeforeInteractionIfNeeded()) return true
+        val rawRange = rawRangeForIme(start, end) ?: return true
         if (!editorView.isEditable) {
             consumeInvalidatedCompositionReplacementRangeAndRestore()
             return true
         }
         if (editorView.isApplyingRustState) {
-            return super.setSelection(start, end)
+            return super.setSelection(rawRange.first, rawRange.second)
         }
         if (editorView.editorId == 0L) {
-            return super.setSelection(start, end)
+            return super.setSelection(rawRange.first, rawRange.second)
         }
         if (editorView.hasInvalidatedCompositionReplacementRangeForEditor()) {
             return finishStaleComposingUpdateAfterInvalidation()
         }
-        return super.setSelection(start, end)
+        return super.setSelection(rawRange.first, rawRange.second)
     }
 
     /**
@@ -947,6 +1133,38 @@ class EditorInputConnection(
     private fun isCurrentInputSession(): Boolean =
         editorView.isInputConnectionCurrentForEditor(boundEditorId, boundGeneration)
 
+    private fun currentMapper(): ImeTextCoordinateMapper? =
+        editorView.imeTextCoordinateMapperForEditor(boundMapperGeneration)
+
+    private fun imeTextSlice(
+        mapper: ImeTextCoordinateMapper,
+        start: Int,
+        end: Int,
+        flags: Int,
+    ): CharSequence {
+        val slice = mapper.visibleText.subSequence(start, end)
+        return if ((flags and InputConnection.GET_TEXT_WITH_STYLES) != 0 && slice is Spanned) {
+            slice
+        } else {
+            slice.toString()
+        }
+    }
+
+    private fun rawRangeForIme(start: Int, end: Int): Pair<Int, Int>? {
+        val mapper = currentMapper() ?: return null
+        if (start == end) {
+            val raw = mapper.imeToRaw(start, ImeTextCoordinateMapper.Affinity.AFTER)
+            return raw to raw
+        }
+        return if (start < end) {
+            mapper.imeToRaw(start, ImeTextCoordinateMapper.Affinity.AFTER) to
+                mapper.imeToRaw(end, ImeTextCoordinateMapper.Affinity.BEFORE)
+        } else {
+            mapper.imeToRaw(start, ImeTextCoordinateMapper.Affinity.BEFORE) to
+                mapper.imeToRaw(end, ImeTextCoordinateMapper.Affinity.AFTER)
+        }
+    }
+
     private fun nanosToMicros(nanos: Long): Long = nanos / 1_000L
 
     private fun isCurrentInputSessionFor(event: String): Boolean {
@@ -964,7 +1182,11 @@ class EditorInputConnection(
         val editable = editorView.text ?: return
         val visibleReplacementText = editorView.composingTextFromVisibleReplacementForEditor()
         if (visibleReplacementText != null) {
-            editorView.setComposingTextForEditor(visibleReplacementText)
+            editorView.setComposingTextForEditor(
+                ImeTextCoordinateMapper.build(visibleReplacementText, boundMapperGeneration)
+                    .visibleText
+                    .toString()
+            )
             return
         }
         val start = BaseInputConnection.getComposingSpanStart(editable)
@@ -973,7 +1195,16 @@ class EditorInputConnection(
             editorView.setComposingTextForEditor(null)
             return
         }
-        editorView.setComposingTextForEditor(editable.subSequence(start, end).toString())
+        val mapper = currentMapper()
+        val composingText = if (mapper != null) {
+            mapper.visibleText.subSequence(
+                mapper.rawToIme(start),
+                mapper.rawToIme(end),
+            ).toString()
+        } else {
+            editable.subSequence(start, end).toString()
+        }
+        editorView.setComposingTextForEditor(composingText)
     }
 
     private fun deleteTransientTextAroundSelection(beforeLength: Int, afterLength: Int): Boolean {

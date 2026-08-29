@@ -11,6 +11,8 @@ import android.os.Bundle
 import android.os.Looper
 import android.provider.Settings
 import android.text.Selection
+import android.text.SpannableStringBuilder
+import android.text.Spanned
 import android.text.InputType
 import android.text.style.AbsoluteSizeSpan
 import android.view.KeyEvent
@@ -21,6 +23,7 @@ import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.CorrectionInfo
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -1098,6 +1101,188 @@ class EditorInputConnectionTest {
 
         assertEquals("\n", inputConnection!!.getTextBeforeCursor(1, 0).toString())
         assertEquals("Hello\n", inputConnection.getTextBeforeCursor(20, 0).toString())
+    }
+
+    @Test
+    fun `all surrounding text queries use placeholder free coordinates and retain styles`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val raw = SpannableStringBuilder("\u200Ba\uD83D\uDE00\u200Bb").apply {
+            setSpan(AbsoluteSizeSpan(30), 1, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        editText.setText(raw)
+        editText.setSelection(5)
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        val before = requireNotNull(
+            inputConnection.getTextBeforeCursor(20, InputConnection.GET_TEXT_WITH_STYLES),
+        )
+        assertEquals("a\uD83D\uDE00", before.toString())
+        assertTrue(before is Spanned)
+        assertEquals(1, (before as Spanned).getSpans(0, before.length, AbsoluteSizeSpan::class.java).size)
+        assertEquals("b", inputConnection.getTextAfterCursor(20, 0).toString())
+
+        editText.setSelection(1, 6)
+        assertEquals("a\uD83D\uDE00b", inputConnection.getSelectedText(0).toString())
+
+        editText.setSelection(1)
+        assertNull(inputConnection.getSelectedText(0))
+
+        editText.setSelection(0, 1)
+        assertNull(inputConnection.getSelectedText(0))
+    }
+
+    @Test
+    fun `IME selection and composition ranges map around invisible placeholders`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.setText("\u200Bab\u200Bcd")
+        editText.setSelection(1)
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        assertTrue(inputConnection.setSelection(0, 2))
+        assertEquals(1, editText.selectionStart)
+        assertEquals(3, editText.selectionEnd)
+
+        assertTrue(inputConnection.setSelection(4, 2))
+        assertEquals(6, editText.selectionStart)
+        assertEquals(4, editText.selectionEnd)
+
+        assertTrue(inputConnection.setComposingRegion(0, 2))
+        assertEquals(1, BaseInputConnection.getComposingSpanStart(editText.text!!))
+        assertEquals(3, BaseInputConnection.getComposingSpanEnd(editText.text!!))
+    }
+
+    @Test
+    fun `correction offsets map past synthetic placeholders`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyUpdateJSON(renderUpdateJson("\u200Bteh"), notifyListener = false)
+        editText.editorId = 1
+        editText.setSelection(editText.text!!.length)
+        var replacement: Triple<Int, Int, String>? = null
+        editText.onReplaceTextInRustForTesting = { from, to, text ->
+            replacement = Triple(from, to, text)
+        }
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        assertTrue(inputConnection.commitCorrection(CorrectionInfo(0, "teh", "the")))
+
+        assertEquals(Triple(1, 4, "the"), replacement)
+    }
+
+    @Test
+    fun `explicit correction maps both ends around an interior synthetic placeholder`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyUpdateJSON(renderUpdateJson("te\u200Bh"), notifyListener = false)
+        editText.editorId = 1
+        editText.setSelection(editText.text!!.length)
+        var replacement: Triple<Int, Int, String>? = null
+        editText.onReplaceTextInRustForTesting = { from, to, text ->
+            replacement = Triple(from, to, text)
+        }
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        assertTrue(inputConnection.commitCorrection(CorrectionInfo(0, "teh", "the")))
+
+        assertEquals(Triple(0, 4, "the"), replacement)
+    }
+
+    @Test
+    fun `inferred correction maps its visible token around an interior synthetic placeholder`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyUpdateJSON(renderUpdateJson("te\u200Bh "), notifyListener = false)
+        editText.editorId = 1
+        editText.setSelection(editText.text!!.length)
+        var replacement: Triple<Int, Int, String>? = null
+        editText.onReplaceTextInRustForTesting = { from, to, text ->
+            replacement = Triple(from, to, text)
+        }
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        assertTrue(inputConnection.commitCorrection(CorrectionInfo(2, null, "the")))
+
+        assertEquals(Triple(0, 4, "the"), replacement)
+    }
+
+    @Test
+    fun `composition deletion uses visible coordinates around synthetic placeholders`() {
+        listOf(false, true).forEach { deleteInCodePoints ->
+            val editText = EditorEditText(RuntimeEnvironment.getApplication())
+            editText.applyUpdateJSON(renderUpdateJson("a\u200Bb"), notifyListener = false)
+            editText.editorId = 1
+            editText.setSelection(2)
+            val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+            assertTrue(inputConnection.setComposingRegion(0, 2))
+
+            val deleted = if (deleteInCodePoints) {
+                inputConnection.deleteSurroundingTextInCodePoints(1, 0)
+            } else {
+                inputConnection.deleteSurroundingText(1, 0)
+            }
+
+            assertTrue(deleted)
+            assertEquals("\u200Bb", editText.text.toString())
+            assertEquals(1, editText.selectionStart)
+            assertEquals("b", editText.composingTextForEditor())
+        }
+    }
+
+    @Test
+    fun `surrounding deletion skips invisible placeholders`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.setText("a\u200Bb")
+        editText.setSelection(2)
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        assertTrue(inputConnection.deleteSurroundingText(1, 0))
+
+        assertEquals("\u200Bb", editText.text.toString())
+        assertEquals(1, editText.selectionStart)
+    }
+
+    @Test
+    fun `surrounding deletion preserves invisible placeholders inside the visible range`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.setText("a\u200Bb")
+        editText.setSelection(3)
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+
+        assertTrue(inputConnection.deleteSurroundingText(2, 0))
+
+        assertEquals("\u200B", editText.text.toString())
+        assertEquals(1, editText.selectionStart)
+    }
+
+    @Test
+    fun `styled IME queries rebuild after composing spans change`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.setText("abc")
+        editText.setSelection(0, 3)
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+        BaseInputConnection.setComposingSpans(editText.text!!)
+
+        editText.applyTransientComposingTextStyleForEditor()
+
+        val selected = requireNotNull(
+            inputConnection.getSelectedText(InputConnection.GET_TEXT_WITH_STYLES),
+        ) as Spanned
+        assertEquals(1, selected.getSpans(0, selected.length, AbsoluteSizeSpan::class.java).size)
+    }
+
+    @Test
+    fun `selection updates after restart use IME visible coordinates`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editText = EditorEditText(activity)
+        activity.setContentView(editText)
+        editText.setText("\u200Ba")
+        editText.setSelection(2)
+        assertTrue(editText.requestFocus())
+
+        editText.setPrivateImeOptionsForEditor("mapped-selection")
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val trace = editText.imeTraceSnapshotForTesting()
+        assertTrue(trace.toString(), trace.any {
+            it.contains("updateSelectionAfterRestart:source=privateImeOptions sel=1..1")
+        })
     }
 
     @Test
