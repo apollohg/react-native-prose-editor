@@ -17,6 +17,7 @@ import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
+import com.apollohg.editor.AndroidApiCompat
 
 /** Rendering-only consumer of fully prepared StaticLayout and geometry fragments. */
 internal class PreparedProseDrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
@@ -268,7 +269,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                 contentDescription = node.label
                 isClickable = true
                 isFocusable = true
-                isScreenReaderFocusable = true
+                AndroidApiCompat.setScreenReaderFocusable(this, true)
                 isAccessibilityFocused = id == focusedVirtualId
                 setBoundsInParent(node.bounds)
                 setBoundsInScreen(screen)

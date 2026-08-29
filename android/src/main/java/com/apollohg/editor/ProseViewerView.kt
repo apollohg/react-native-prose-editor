@@ -552,7 +552,7 @@ class ProseViewerView @JvmOverloads constructor(
             contentDescription = node.label
             isClickable = true
             isFocusable = true
-            isScreenReaderFocusable = true
+            AndroidApiCompat.setScreenReaderFocusable(this, true)
             isAccessibilityFocused = virtualViewId == accessibilityFocusedVirtualId
             setBoundsInParent(parentBounds)
             setBoundsInScreen(screenBounds)

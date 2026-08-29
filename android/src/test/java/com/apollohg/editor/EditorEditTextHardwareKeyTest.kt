@@ -1,6 +1,10 @@
 package com.apollohg.editor
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -14,6 +18,27 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class EditorEditTextHardwareKeyTest {
+
+    @Test
+    @Config(sdk = [29])
+    fun `custom cursor drawing is safe before API 34`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.layoutParams = ViewGroup.LayoutParams(320, 80)
+        editText.setText("line")
+        editText.setSelection(editText.length())
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(80, View.MeasureSpec.EXACTLY),
+        )
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val textLayout = requireNotNull(editText.layout)
+        val line = textLayout.getLineForOffset(editText.selectionEnd)
+        val drawable = requireNotNull(editText.textCursorDrawable)
+        drawable.setBounds(24, textLayout.getLineTop(line), 26, textLayout.getLineBottom(line))
+
+        drawable.draw(Canvas(Bitmap.createBitmap(320, 80, Bitmap.Config.ARGB_8888)))
+    }
 
     @Test
     fun `hardware backspace deletes on first key press in dev mode`() {

@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -28,6 +29,17 @@ import kotlin.math.min
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class PreparedProseAccessibilityTest {
+    @Test
+    @Config(sdk = [24])
+    fun `virtual accessibility nodes are screen reader focusable on API 24`() {
+        val view = PreparedProseDrawingView(RuntimeEnvironment.getApplication())
+        view.install(preparedArtifact("api-24"))
+
+        val node = requireNotNull(view.accessibilityNodeProvider.createAccessibilityNodeInfo(1))
+
+        assertTrue(AccessibilityNodeInfoCompat.wrap(node).isScreenReaderFocusable)
+    }
+
     @Test
     fun `selection fragments merge edge-touching pieces on one visual line`() {
         assertEquals(

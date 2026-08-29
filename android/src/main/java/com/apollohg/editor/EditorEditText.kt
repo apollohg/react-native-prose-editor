@@ -549,7 +549,7 @@ class EditorEditText @JvmOverloads constructor(
             val line = textLayout.getLineForOffset(offset)
             val hasEditorBounds =
                 bounds.top == textLayout.getLineTop(line) &&
-                    bounds.bottom == textLayout.getLineBottom(line, false)
+                    bounds.bottom == AndroidApiCompat.lineBottomWithoutSpacing(textLayout, line)
             val top = if (hasEditorBounds) rect.top else bounds.top.toFloat()
             val bottom = if (hasEditorBounds) rect.bottom else bounds.bottom.toFloat()
             cursorPaint.color = caretColor
