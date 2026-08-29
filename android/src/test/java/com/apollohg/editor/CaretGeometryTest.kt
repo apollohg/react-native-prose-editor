@@ -1,10 +1,13 @@
 package com.apollohg.editor
 
 import android.graphics.Color
+import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.style.AbsoluteSizeSpan
+import android.text.style.StyleSpan
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -101,6 +104,88 @@ class CaretGeometryTest {
             plainBounds.bottom,
             spacedBounds.bottom,
             TOLERANCE_PX
+        )
+    }
+
+    @Test
+    fun `caret uses active metric spans without inheriting paragraph spacer descent`() {
+        val text = SpannableStringBuilder("Large\nNext")
+        text.setSpan(AbsoluteSizeSpan(32), 0, 5, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        text.setSpan(StyleSpan(Typeface.BOLD), 0, 5, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        text.setSpan(
+            ParagraphSpacerSpan(
+                spacingPx = SPACER_PX,
+                baseFontSize = FONT_SIZE_PX,
+                textColor = Color.BLACK,
+            ),
+            5,
+            6,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        val fallbackPaint = TextPaint().apply { textSize = FONT_SIZE_PX.toFloat() }
+        val layout = layoutFor(text, fallbackPaint)
+        val expectedPaint = TextPaint(fallbackPaint).apply {
+            textSize = 32f
+            typeface = Typeface.create(typeface, Typeface.BOLD)
+        }
+
+        val bounds = CaretGeometry.verticalBounds(
+            layout,
+            offset = 5,
+            fallbackPaint = fallbackPaint,
+            text = text,
+        )
+
+        assertEquals(
+            layout.getLineBaseline(0) + expectedPaint.fontMetrics.descent,
+            bounds.bottom,
+            TOLERANCE_PX,
+        )
+        assertTrue(bounds.bottom < layout.getLineBottom(0))
+    }
+
+    @Test
+    fun `caret at a metric run boundary keeps the preceding run metrics`() {
+        val text = SpannableStringBuilder("Bigsmall")
+        text.setSpan(AbsoluteSizeSpan(32), 0, 3, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        text.setSpan(AbsoluteSizeSpan(12), 3, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val fallbackPaint = TextPaint().apply { textSize = FONT_SIZE_PX.toFloat() }
+        val layout = layoutFor(text, fallbackPaint)
+        val precedingPaint = TextPaint(fallbackPaint).apply { textSize = 32f }
+
+        val bounds = CaretGeometry.verticalBounds(
+            layout,
+            offset = 3,
+            fallbackPaint = fallbackPaint,
+            text = text,
+        )
+
+        assertEquals(
+            layout.getLineBaseline(0) + precedingPaint.fontMetrics.descent,
+            bounds.bottom,
+            TOLERANCE_PX,
+        )
+    }
+
+    @Test
+    fun `caret at a line start uses the following run metrics`() {
+        val text = SpannableStringBuilder("First\nLarge")
+        text.setSpan(AbsoluteSizeSpan(32), 6, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val fallbackPaint = TextPaint().apply { textSize = FONT_SIZE_PX.toFloat() }
+        val layout = layoutFor(text, fallbackPaint)
+        val followingPaint = TextPaint(fallbackPaint).apply { textSize = 32f }
+
+        val bounds = CaretGeometry.verticalBounds(
+            layout,
+            offset = 6,
+            fallbackPaint = fallbackPaint,
+            text = text,
+        )
+
+        assertEquals(
+            layout.getLineBaseline(1) + followingPaint.fontMetrics.descent,
+            bounds.bottom,
+            TOLERANCE_PX,
         )
     }
 

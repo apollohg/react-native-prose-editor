@@ -54,19 +54,32 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
 
     init {
         setWillNotDraw(false)
-        visibility = INVISIBLE
+        visibility = GONE
     }
 
     fun bind(editorView: RichTextEditorView) {
+        if (this.editorView !== editorView) cancelActiveResize()
         this.editorView = editorView
     }
 
     fun refresh() {
-        currentGeometry = editorView?.selectedImageGeometry()
-        visibility = if (currentGeometry == null) INVISIBLE else VISIBLE
-        if (currentGeometry != null) {
-            bringToFront()
+        val nextGeometry = editorView?.selectedImageGeometry()
+        if (nextGeometry == null) {
+            cancelActiveResize()
+            return
         }
+        if (currentGeometry?.docPos != nextGeometry.docPos) cancelActiveResize()
+        currentGeometry = nextGeometry
+        visibility = VISIBLE
+        bringToFront()
+        invalidate()
+    }
+
+    fun cancelActiveResize() {
+        dragState = null
+        currentGeometry = null
+        parent?.requestDisallowInterceptTouchEvent(false)
+        visibility = GONE
         invalidate()
     }
 
@@ -138,6 +151,11 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
         }
 
         return false
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelActiveResize()
+        super.onDetachedFromWindow()
     }
 
     private fun cornerAt(x: Float, y: Float, rect: RectF): Corner? {

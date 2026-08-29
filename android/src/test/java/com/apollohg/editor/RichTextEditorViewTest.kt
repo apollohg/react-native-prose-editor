@@ -61,6 +61,12 @@ class RichTextEditorViewTest {
         val editText: EditorEditText
     )
 
+    private data class ImageResizeGestureFixture(
+        val parent: InterceptAwareFrameLayout,
+        val view: RichTextEditorView,
+        val resizeCommands: MutableList<Triple<Int, Int, Int>>,
+    )
+
     private fun autoGrowCaretVisibilityFixture(
         editorFocused: Boolean = true,
         bottomClearance: Int = 0
@@ -191,6 +197,35 @@ class RichTextEditorViewTest {
           {"type":"blockEnd"}
         ]
     """.trimIndent()
+
+    private fun imageResizeGestureFixture(renderJson: String): ImageResizeGestureFixture {
+        val context = RuntimeEnvironment.getApplication()
+        val parent = InterceptAwareFrameLayout(context)
+        val view = RichTextEditorView(context)
+        view.setEditorIdWhileDetached(1)
+        view.editorEditText.editorId = 1
+        view.editorEditText.applyRenderJSON(renderJson)
+        val resizeCommands = mutableListOf<Triple<Int, Int, Int>>()
+        view.editorEditText.onResizeImageAtDocPosForTesting = { docPos, width, height ->
+            resizeCommands += Triple(docPos, width, height)
+        }
+        parent.addView(
+            view,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY)
+        parent.measure(widthSpec, heightSpec)
+        parent.layout(0, 0, parent.measuredWidth, parent.measuredHeight)
+        val text = view.editorEditText.text as Spanned
+        val first = text.getSpans(0, text.length, BlockImageSpan::class.java).first()
+        view.editorEditText.setSelection(text.getSpanStart(first), text.getSpanEnd(first))
+        view.editorEditText.onSelectionOrContentMayChange?.invoke()
+        return ImageResizeGestureFixture(parent, view, resizeCommands)
+    }
 
     private fun imageRenderJson(): String = """
         [
@@ -1184,6 +1219,66 @@ class RichTextEditorViewTest {
         overlayRect ?: return
         assertEquals(140f, overlayRect.width(), 1f)
         assertEquals(80f, overlayRect.height(), 1f)
+    }
+
+    @Test
+    fun `semantic overlay transitions cancel active image resize gestures`() {
+        val transitions = listOf<Pair<String, (ImageResizeGestureFixture) -> Unit>>(
+            "render refresh" to { fixture ->
+                fixture.view.editorEditText.applyRenderJSON(imageRenderJson())
+            },
+            "image policy rebuild" to { fixture ->
+                fixture.view.editorEditText.setImageLoadingPolicyJson("""{"readTimeoutMs":1234}""")
+            },
+            "editor rebind" to { fixture ->
+                fixture.view.setEditorIdWhileDetached(2)
+            },
+            "overlay hide" to { fixture ->
+                fixture.view.setImageResizingEnabled(false)
+            },
+            "image identity replacement" to { fixture ->
+                val text = fixture.view.editorEditText.text as Spanned
+                val spans = text.getSpans(0, text.length, BlockImageSpan::class.java)
+                fixture.view.editorEditText.setSelection(
+                    text.getSpanStart(spans[1]),
+                    text.getSpanEnd(spans[1]),
+                )
+                fixture.view.editorEditText.onSelectionOrContentMayChange?.invoke()
+            },
+        )
+
+        transitions.forEach { (name, transition) ->
+            val fixture = imageResizeGestureFixture(
+                if (name == "image identity replacement") twoImageRenderJson() else imageRenderJson(),
+            )
+            val rect = requireNotNull(fixture.view.imageResizeOverlayRectForTesting())
+            val down = MotionEvent.obtain(
+                0,
+                0,
+                MotionEvent.ACTION_DOWN,
+                rect.right,
+                rect.bottom,
+                0,
+            )
+            assertTrue(name, fixture.view.dispatchImageResizeTouchForTesting(down))
+            down.recycle()
+            assertTrue(name, fixture.parent.disallowInterceptRequested)
+
+            transition(fixture)
+
+            assertFalse(name, fixture.parent.disallowInterceptRequested)
+            val up = MotionEvent.obtain(
+                0,
+                16,
+                MotionEvent.ACTION_UP,
+                rect.right + 20f,
+                rect.bottom + 20f,
+                0,
+            )
+            fixture.view.dispatchImageResizeTouchForTesting(up)
+            up.recycle()
+            assertTrue(name, fixture.resizeCommands.isEmpty())
+        }
     }
 
     @Test

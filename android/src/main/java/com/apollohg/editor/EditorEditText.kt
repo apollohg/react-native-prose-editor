@@ -406,6 +406,8 @@ class EditorEditText @JvmOverloads constructor(
     internal var onDeleteAndSplitScalarInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onInsertContentHtmlInRustForTesting: ((String) -> Unit)? = null
     internal var onInsertContentJsonAtSelectionScalarForTesting: ((Int, Int, String) -> Unit)? = null
+    internal var onResizeImageAtDocPosForTesting: ((Int, Int, Int) -> Unit)? = null
+    internal var onBeforeRenderRefresh: (() -> Unit)? = null
     internal var blockExternalEditorUpdatePreparationForTesting = false
     internal var blockExternalEditorCommandPreparationForTesting = false
     internal var throwOnNextApplyUpdateForTesting: Throwable? = null
@@ -542,7 +544,7 @@ class EditorEditText @JvmOverloads constructor(
     internal fun nativeCursorDrawRect(): RectF? {
         val textLayout = layout ?: return null
         val offset = selectionEnd.coerceIn(0, textLayout.text.length)
-        val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint)
+        val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint, textLayout.text)
         val left = textLayout.getPrimaryHorizontal(offset)
         return RectF(left, bounds.top, left + caretWidthPx, bounds.bottom)
     }
@@ -867,7 +869,7 @@ class EditorEditText @JvmOverloads constructor(
         if (!CaretGeometry.shouldRender(isFocused, hasWindowFocus(), selectionStart, selectionEnd)) return
         val textLayout = layout ?: return
         val offset = selectionEnd.coerceIn(0, textLayout.text.length)
-        val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint)
+        val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint, textLayout.text)
         val lineBottom = textLayout.getLineBottom(textLayout.getLineForOffset(offset)).toFloat()
         if (bounds.bottom >= lineBottom) return
 
@@ -1340,7 +1342,12 @@ class EditorEditText @JvmOverloads constructor(
         val caretLeft = textLayout.getPrimaryHorizontal(clampedOffset)
         // Clip the caret to the rendered glyph height so a ParagraphSpacerSpan's
         // inflated descent does not stretch it into the inter-block gap.
-        val bounds = CaretGeometry.verticalBounds(textLayout, clampedOffset, paint)
+        val bounds = CaretGeometry.verticalBounds(
+            textLayout,
+            clampedOffset,
+            paint,
+            textLayout.text,
+        )
         val left = totalPaddingLeft + caretLeft - scrollX
         val top = totalPaddingTop + bounds.top - scrollY
         val bottom = totalPaddingTop + bounds.bottom - scrollY
@@ -4465,6 +4472,10 @@ class EditorEditText @JvmOverloads constructor(
         val density = resources.displayMetrics.density
         val widthDp = maxOf(48, (widthPx / density).roundToInt())
         val heightDp = maxOf(48, (heightPx / density).roundToInt())
+        onResizeImageAtDocPosForTesting?.let { callback ->
+            callback(docPos, widthDp, heightDp)
+            return
+        }
         v2Driver?.let { driver ->
             driver.resizeImageAtDocPos(docPos, widthDp, heightDp)?.let { applyUpdateJSON(it) }
         }
@@ -4603,6 +4614,7 @@ class EditorEditText @JvmOverloads constructor(
         usedPatch: Boolean,
         preserveInputConnectionForExternalUpdate: Boolean = false
     ) {
+        onBeforeRenderRefresh?.invoke()
         val startedAt = System.nanoTime()
         val previousScrollX = scrollX
         val previousScrollY = scrollY

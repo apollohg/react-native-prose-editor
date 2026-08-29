@@ -103,6 +103,7 @@ class RichTextEditorView @JvmOverloads constructor(
         )
         remoteSelectionOverlayView.bind(this)
         imageResizeOverlayView.bind(this)
+        editorEditText.onBeforeRenderRefresh = imageResizeOverlayView::cancelActiveResize
         editorScrollView.setOnScrollChangeListener { _, _, _, _, _ ->
             refreshOverlays()
         }
@@ -200,6 +201,9 @@ class RichTextEditorView @JvmOverloads constructor(
         imageResizeOverlayView.simulateResizeForTesting(widthPx, heightPx)
     }
 
+    internal fun dispatchImageResizeTouchForTesting(event: MotionEvent): Boolean =
+        imageResizeOverlayView.onTouchEvent(event)
+
     fun remoteSelectionDebugSnapshotsForTesting(): List<RemoteSelectionDebugSnapshot> =
         remoteSelectionOverlayView.debugSnapshotsForTesting()
 
@@ -264,6 +268,7 @@ class RichTextEditorView @JvmOverloads constructor(
     private fun setEditorId(value: Long, bindEditor: Boolean, notifyListener: Boolean = true) {
         val targetBoundEditorId = if (bindEditor) value else 0L
         if (currentEditorId == value && editorEditText.editorId == targetBoundEditorId) return
+        imageResizeOverlayView.cancelActiveResize()
         if (currentEditorId != value || editorEditText.editorId != targetBoundEditorId) {
             editorEditText.discardTransientNativeInputForEditorRebind()
         }
@@ -284,6 +289,7 @@ class RichTextEditorView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         onBeforeDetachedFromWindow?.invoke()
+        imageResizeOverlayView.cancelActiveResize()
         super.onDetachedFromWindow()
         if (editorId != 0L && !deferEditorUnbindOnDetach) {
             editorEditText.unbindEditor()

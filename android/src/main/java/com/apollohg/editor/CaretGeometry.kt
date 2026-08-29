@@ -2,6 +2,9 @@ package com.apollohg.editor
 
 import android.graphics.Paint
 import android.text.Layout
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.style.MetricAffectingSpan
 
 /**
  * Vertical geometry for the text caret, clipped to the rendered glyph height.
@@ -39,12 +42,45 @@ object CaretGeometry {
         selectionStart == selectionEnd
 
     fun verticalBounds(layout: Layout, offset: Int, paint: Paint): VerticalBounds {
+        return verticalBounds(layout, offset, paint, layout.text)
+    }
+
+    fun verticalBounds(
+        layout: Layout,
+        offset: Int,
+        fallbackPaint: Paint,
+        text: CharSequence,
+    ): VerticalBounds {
         val line = layout.getLineForOffset(offset.coerceIn(0, layout.text.length))
         val top = layout.getLineTop(line).toFloat()
-        // Anchor the bottom at the glyph descent below the baseline. The baseline
-        // is independent of any ReplacementSpan descent inflation, so this clips
-        // the caret to the rendered text height instead of the inflated line bottom.
-        val bottom = layout.getLineBaseline(line) + paint.fontMetrics.descent
+        val resolvedPaint = resolvedPaintAtOffset(
+            fallbackPaint,
+            text,
+            offset,
+            layout.getLineStart(line),
+        )
+        val bottom = layout.getLineBaseline(line) + resolvedPaint.fontMetrics.descent
         return VerticalBounds(top, bottom)
+    }
+
+    private fun resolvedPaintAtOffset(
+        fallbackPaint: Paint,
+        text: CharSequence,
+        offset: Int,
+        lineStart: Int,
+    ): TextPaint {
+        val resolved = TextPaint(fallbackPaint)
+        val spanned = text as? Spanned ?: return resolved
+        if (spanned.isEmpty()) return resolved
+        val clampedOffset = offset.coerceIn(0, spanned.length)
+        val probe = if (clampedOffset > lineStart) {
+            clampedOffset - 1
+        } else {
+            clampedOffset.coerceAtMost(spanned.length - 1)
+        }
+        spanned.getSpans(probe, probe + 1, MetricAffectingSpan::class.java)
+            .filterNot { it is ParagraphSpacerSpan }
+            .forEach { it.updateMeasureState(resolved) }
+        return resolved
     }
 }
