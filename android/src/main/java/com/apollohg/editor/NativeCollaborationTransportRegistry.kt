@@ -2,21 +2,50 @@ package com.apollohg.editor
 
 import android.util.Base64
 import org.json.JSONObject
+import java.util.concurrent.CompletableFuture
 
 internal object NativeCollaborationTransportRegistry {
     private val lock = Any()
     private val transports = mutableMapOf<String, AndroidCollaborationTransport>()
     private val transportTokens = mutableMapOf<String, Any>()
+    private val retirements = mutableMapOf<String, CompletableFuture<Unit>>()
     private val eventSequences = mutableMapOf<String, ULong>()
+    private val configureLocks = Array(64) { Any() }
     private var eventEmitter: ((Map<String, Any?>) -> Unit)? = null
+    private var hostState = AndroidCollaborationTransport.HostState.FOREGROUND
+    private var runtimeActive = true
+    private var runtimeToken = Any()
+    @Volatile
+    internal var transportFactoryForTesting: ((
+        String,
+        (AndroidCollaborationTransportEvent) -> Unit,
+    ) -> AndroidCollaborationTransport)? = null
 
-    fun setEventEmitter(emitter: ((Map<String, Any?>) -> Unit)?) {
+    fun setEventEmitter(
+        ownerToken: Any,
+        emitter: ((Map<String, Any?>) -> Unit)?,
+    ) {
         synchronized(lock) {
+            if (!runtimeActive || runtimeToken !== ownerToken) return
             eventEmitter = emitter
         }
     }
 
-    fun configure(editorId: String, configJson: String?): EditorV2Error? {
+    fun activateRuntime(): Any = synchronized(lock) {
+        Any().also {
+            runtimeActive = true
+            runtimeToken = it
+        }
+    }
+
+    fun configure(
+        ownerToken: Any?,
+        editorId: String,
+        configJson: String?,
+    ): EditorV2Error? {
+        synchronized(lock) {
+            if (!runtimeActive || runtimeToken !== ownerToken) return runtimeDestroyedError()
+        }
         val canonical = canonicalV2U64(editorId)?.takeIf { it != "0" }
             ?: return contractError("invalid editorId")
         val config = if (configJson == null) {
@@ -27,41 +56,52 @@ internal object NativeCollaborationTransportRegistry {
             )
         }
 
-        if (config == null) {
-            val removed = synchronized(lock) {
-                transportTokens.remove(canonical)
-                transports.remove(canonical)
-            }
-            removed?.destroy()
-            return null
-        }
-        val (transport, created) = synchronized(lock) {
-            val created = !transports.containsKey(canonical)
-            val transport = transports.getOrPut(canonical) {
-                val token = Any()
-                transportTokens[canonical] = token
-                AndroidCollaborationTransport(
-                    editorId = canonical,
-                    eventSink = { event -> enqueueEvent(canonical, token, event) },
-                )
-            }
-            transport to created
-        }
-        val error = transport.configure(config)
-        if (error != null && created) {
-            val removed = synchronized(lock) {
-                if (transports[canonical] === transport) {
+        return synchronized(configureLock(canonical)) {
+            val operationToken = synchronized(lock) {
+                if (!runtimeActive || runtimeToken !== ownerToken) return@synchronized null
+                ownerToken
+            } ?: return@synchronized runtimeDestroyedError()
+            if (config == null) {
+                synchronized(lock) {
                     transportTokens.remove(canonical)
-                    transports.remove(canonical)
-                } else {
-                    null
+                    transports.remove(canonical)?.let { retireLocked(canonical, it) }
+                }
+                return@synchronized null
+            }
+            awaitRetirement(canonical)
+            val owned = synchronized(lock) {
+                if (!runtimeActive || runtimeToken !== operationToken) return@synchronized null
+                val created = !transports.containsKey(canonical)
+                val transport = transports.getOrPut(canonical) {
+                    val token = Any()
+                    transportTokens[canonical] = token
+                    val sink = { event: AndroidCollaborationTransportEvent ->
+                        enqueueEvent(canonical, token, event)
+                    }
+                    (transportFactoryForTesting?.invoke(canonical, sink)
+                        ?: AndroidCollaborationTransport(editorId = canonical, eventSink = sink)).also {
+                        it.requestHostState(hostState)
+                    }
+                }
+                transport to created
+            } ?: return@synchronized runtimeDestroyedError()
+            val (transport, created) = owned
+            val error = transport.configure(config)
+            val stillCurrent = synchronized(lock) {
+                runtimeActive && runtimeToken === operationToken &&
+                    transports[canonical] === transport
+            }
+            if (!stillCurrent) return@synchronized runtimeDestroyedError()
+            if (error != null && created) {
+                synchronized(lock) {
+                    if (transports[canonical] === transport) {
+                        transportTokens.remove(canonical)
+                        transports.remove(canonical)?.let { retireLocked(canonical, it) }
+                    }
                 }
             }
-            if (removed != null) {
-                transport.destroy()
-            }
+            error
         }
-        return error
     }
 
     fun notifyOutboundAvailable(editorId: String, reason: CollaborationWakeReason) {
@@ -72,11 +112,15 @@ internal object NativeCollaborationTransportRegistry {
     }
 
     fun resolveProtocolAdapter(
+        ownerToken: Any?,
         editorId: String,
         attemptId: String,
         eventId: String,
         responseJson: String,
     ): EditorV2Error? {
+        synchronized(lock) {
+            if (!runtimeActive || runtimeToken !== ownerToken) return runtimeDestroyedError()
+        }
         val canonical = canonicalV2U64(editorId)?.takeIf { it != "0" }
             ?: return contractError("invalid editorId")
         val response = parseProtocolAdapterResponse(responseJson)
@@ -84,41 +128,116 @@ internal object NativeCollaborationTransportRegistry {
         if (attemptId.isEmpty() || canonicalV2U64(eventId) == null) {
             return contractError("invalid collaboration protocol adapter response")
         }
-        val transport = synchronized(lock) { transports[canonical] } ?: return null
+        val transport = synchronized(lock) {
+            if (!runtimeActive || runtimeToken !== ownerToken) return runtimeDestroyedError()
+            transports[canonical]
+        } ?: return null
         return transport.resolveProtocolAdapter(attemptId, eventId, response)
     }
 
     fun destroy(editorId: String) {
         val canonical = canonicalV2U64(editorId) ?: return
-        synchronized(lock) {
-            transportTokens.remove(canonical)
-            transports.remove(canonical)
-        }?.destroy()
-        synchronized(lock) {
-            eventSequences.remove(canonical)
+        synchronized(configureLock(canonical)) {
+            synchronized(lock) {
+                transportTokens.remove(canonical)
+                transports.remove(canonical)?.let { retireLocked(canonical, it) }
+                eventSequences.remove(canonical)
+            }
         }
     }
 
-    fun enterBackground() {
-        val owned = synchronized(lock) { transports.values.toList() }
-        owned.forEach(AndroidCollaborationTransport::enterBackground)
-    }
+    fun enterBackground(ownerToken: Any) = requestHostState(
+        ownerToken,
+        AndroidCollaborationTransport.HostState.BACKGROUND,
+    )
 
-    fun enterForeground() {
-        val owned = synchronized(lock) { transports.values.toList() }
-        owned.forEach(AndroidCollaborationTransport::enterForeground)
-    }
+    fun attachHost(ownerToken: Any) = requestHostState(
+        ownerToken,
+        AndroidCollaborationTransport.HostState.FOREGROUND,
+    )
 
-    fun destroyAll() {
+    fun detachHost(ownerToken: Any) = requestHostState(
+        ownerToken,
+        AndroidCollaborationTransport.HostState.DETACHED,
+    )
+
+    private fun requestHostState(
+        ownerToken: Any,
+        requestedState: AndroidCollaborationTransport.HostState,
+    ) {
         val owned = synchronized(lock) {
-            val values = transports.values.toList()
+            if (!runtimeActive || runtimeToken !== ownerToken) return
+            hostState = requestedState
+            transports.values.toList()
+        }
+        owned.forEach {
+            it.requestHostState(requestedState)
+        }
+    }
+
+    fun destroyRuntime(ownerToken: Any) {
+        synchronized(lock) {
+            if (!runtimeActive || runtimeToken !== ownerToken) return
+            runtimeActive = false
+            runtimeToken = Any()
+            transports.forEach { (editorId, transport) -> retireLocked(editorId, transport) }
             transports.clear()
             transportTokens.clear()
             eventSequences.clear()
             eventEmitter = null
-            values
+            hostState = AndroidCollaborationTransport.HostState.DETACHED
         }
-        owned.forEach(AndroidCollaborationTransport::destroy)
+    }
+
+    private fun configureLock(editorId: String): Any =
+        configureLocks[(editorId.hashCode() and Int.MAX_VALUE) % configureLocks.size]
+
+    private fun runtimeDestroyedError() =
+        EditorV2Error("lifecycle", "ENGINE_DESTROYED", "collaboration runtime is destroyed")
+
+    private fun retireLocked(
+        editorId: String,
+        transport: AndroidCollaborationTransport,
+    ) {
+        val completion = transport.destroyAsync()
+        retirements[editorId] = completion
+        completion.whenComplete { _, _ ->
+            synchronized(lock) {
+                if (retirements[editorId] === completion) retirements.remove(editorId)
+            }
+        }
+    }
+
+    private fun awaitRetirement(editorId: String) {
+        while (true) {
+            val completion = synchronized(lock) { retirements[editorId] } ?: return
+            runCatching { completion.get() }
+        }
+    }
+
+    internal fun containsForTesting(editorId: String): Boolean {
+        val canonical = canonicalV2U64(editorId) ?: return false
+        return synchronized(lock) { canonical in transports }
+    }
+
+    internal fun identityForTesting(editorId: String): Any? {
+        val canonical = canonicalV2U64(editorId) ?: return null
+        return synchronized(lock) { transports[canonical] }
+    }
+
+    internal fun hasEventEmitterForTesting(): Boolean = synchronized(lock) {
+        eventEmitter != null
+    }
+
+    internal fun awaitIdleForTesting(editorId: String) {
+        val canonical = canonicalV2U64(editorId) ?: return
+        synchronized(lock) { transports[canonical] }?.awaitIdleForTesting()
+    }
+
+    internal fun emitErrorForTesting(editorId: String, error: EditorV2Error) {
+        val canonical = canonicalV2U64(editorId) ?: return
+        val token = synchronized(lock) { transportTokens[canonical] } ?: return
+        enqueueEvent(canonical, token, AndroidCollaborationTransportEvent.Error(error, null))
     }
 
     private fun enqueueEvent(

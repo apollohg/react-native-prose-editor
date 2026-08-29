@@ -47,6 +47,9 @@ internal class FakeEditorV2Backend : EditorV2Backend {
     var nextApplyNativeIntentResult: EditorV2CallResult<String>? = null
     var nextRenderUpdateResult: EditorV2CallResult<String>? = null
     var onApplyNativeIntent: (() -> Unit)? = null
+    var nextCollaborationDetachError: EditorV2Error? = null
+    var nextCollaborationReattachError: EditorV2Error? = null
+    var onCollaborationReattach: (() -> Unit)? = null
 
     /** Generation `collaborationDrive` asks the transport to open, if any. */
     var collaborationGenerationToOpen: String? = null
@@ -543,11 +546,20 @@ internal class FakeEditorV2Backend : EditorV2Backend {
 
     override fun collaborationDetach(editorId: String): EditorV2Error? {
         calls.add("collaborationDetach")
+        nextCollaborationDetachError?.let {
+            nextCollaborationDetachError = null
+            return it
+        }
         return if (liveSession(editorId) == null) destroyedError() else null
     }
 
     override fun collaborationReattach(editorId: String): EditorV2Error? {
         calls.add("collaborationReattach")
+        onCollaborationReattach?.invoke()
+        nextCollaborationReattachError?.let {
+            nextCollaborationReattachError = null
+            return it
+        }
         return if (liveSession(editorId) == null) destroyedError() else null
     }
 

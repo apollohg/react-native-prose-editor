@@ -75,7 +75,6 @@ internal fun destroyEditorV2FromModule(
             return invalidDestroyResult("v2 destroy could not reserve its native view")
         }
 
-        NativeCollaborationTransportRegistry.destroy(canonicalHandle)
         val result = destroy(canonicalHandle)
         invokeDestroyTestingHook(
             EditorV2Registry.onDestroyFfiResultReceivedForTesting,
@@ -97,6 +96,7 @@ internal fun destroyEditorV2FromModule(
             }
         }
 
+        NativeCollaborationTransportRegistry.destroy(canonicalHandle)
         // The owner clears callback ownership and removes the pairing while
         // both reservations still gate callbacks and view commands.
         EditorV2Registry.dropPair(canonicalHandle)
@@ -270,6 +270,8 @@ private fun mutationResult(
 }
 
 class NativeEditorModule : Module() {
+    private var collaborationRuntimeToken: Any? = null
+
     override fun definition() = ModuleDefinition {
         Name("NativeEditor")
         // Benchmark controls remain outside measurement/drawing paths.
@@ -295,21 +297,28 @@ class NativeEditorModule : Module() {
         Events("onCollaborationTransportEvent")
 
         OnCreate {
-            NativeCollaborationTransportRegistry.setEventEmitter { payload ->
+            val ownerToken = NativeCollaborationTransportRegistry.activateRuntime()
+            collaborationRuntimeToken = ownerToken
+            NativeCollaborationTransportRegistry.setEventEmitter(ownerToken) { payload ->
                 sendEvent("onCollaborationTransportEvent", payload)
             }
+            NativeCollaborationTransportRegistry.attachHost(ownerToken)
         }
         OnActivityEntersBackground {
-            NativeCollaborationTransportRegistry.enterBackground()
+            collaborationRuntimeToken?.let(
+                NativeCollaborationTransportRegistry::enterBackground,
+            )
         }
         OnActivityEntersForeground {
-            NativeCollaborationTransportRegistry.enterForeground()
+            collaborationRuntimeToken?.let(NativeCollaborationTransportRegistry::attachHost)
         }
         OnActivityDestroys {
-            NativeCollaborationTransportRegistry.destroyAll()
+            collaborationRuntimeToken?.let(NativeCollaborationTransportRegistry::detachHost)
         }
         OnDestroy {
-            NativeCollaborationTransportRegistry.destroyAll()
+            val ownerToken = collaborationRuntimeToken
+            collaborationRuntimeToken = null
+            ownerToken?.let(NativeCollaborationTransportRegistry::destroyRuntime)
         }
 
 
@@ -369,6 +378,7 @@ class NativeEditorModule : Module() {
             editorId: String,
             configJsonOrNull: String? ->
             val error = NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
                 editorId,
                 configJsonOrNull,
             )
@@ -383,6 +393,7 @@ class NativeEditorModule : Module() {
             eventId: String,
             responseJson: String ->
             val error = NativeCollaborationTransportRegistry.resolveProtocolAdapter(
+                collaborationRuntimeToken,
                 editorId,
                 attemptId,
                 eventId,

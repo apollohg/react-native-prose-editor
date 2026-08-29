@@ -7,10 +7,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 import java.util.ArrayDeque
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 internal data class NativeCollaborationTransportConfig(
@@ -131,7 +134,13 @@ internal class AndroidCollaborationTransport(
         CollaborationMonotonicClock(SystemClock::elapsedRealtime),
     private val eventSink: (AndroidCollaborationTransportEvent) -> Unit = {},
 ) {
+    internal enum class HostState { FOREGROUND, BACKGROUND, DETACHED }
+
     private val workerThread = AtomicReference<Thread?>()
+    private val submissionLock = Any()
+    private val desiredHostState = AtomicReference(HostState.FOREGROUND)
+    private val terminal = AtomicBoolean(false)
+    private val destroyedFuture = CompletableFuture<Unit>()
     private val executor = ScheduledThreadPoolExecutor(1) { runnable ->
         Thread(runnable, "native-editor-collaboration-$editorId").also {
             it.isDaemon = true
@@ -156,31 +165,54 @@ internal class AndroidCollaborationTransport(
     private var negotiatedProtocol: String? = null
     private val bufferedProtocolFrames = ArrayDeque<NativeCollaborationProtocolFrame>()
     private var closeReported = false
-    private var backgrounded = false
+    private var hostState = HostState.FOREGROUND
+    private var nativeAttached = true
     private var destroyed = false
 
-    fun configure(newConfig: NativeCollaborationTransportConfig?): EditorV2Error? = onWorker {
-        if (destroyed) return@onWorker lifecycleError("collaboration transport is destroyed")
-        if (config == newConfig) {
-            if (newConfig?.connect == true && !backgrounded) drive(CollaborationWakeReason.REATTACH)
-            return@onWorker null
+    fun configure(newConfig: NativeCollaborationTransportConfig?): EditorV2Error? {
+        if (terminal.get()) return lifecycleError("collaboration transport is destroyed")
+        return onWorker({ lifecycleError("collaboration transport is destroyed") }) {
+            if (destroyed || terminal.get()) {
+                return@onWorker lifecycleError("collaboration transport is destroyed")
+            }
+            if (config == newConfig) {
+                val alreadyDrivable = canDrive()
+                val error = reconcileDesiredState()
+                if (error == null && alreadyDrivable && canDrive()) {
+                    drive(CollaborationWakeReason.REATTACH)
+                }
+                return@onWorker error
+            }
+            hostState = desiredHostState.get()
+            retireNativeResources()
+            detachNative()?.let {
+                emit(it)
+                return@onWorker it
+            }
+            if (newConfig?.connect == true && hostState == HostState.FOREGROUND) {
+                reattachNative()?.let {
+                    emit(it)
+                    return@onWorker it
+                }
+            }
+            config = newConfig
+            if (newConfig?.connect == true && hostState == HostState.FOREGROUND) {
+                drive(CollaborationWakeReason.REATTACH)
+            }
+            null
         }
-        retireNativeResources()
-        backend.collaborationDetach(editorId)?.let {
-            emit(it)
-            return@onWorker it
+    }
+
+    fun requestHostState(state: HostState) {
+        if (terminal.get()) return
+        desiredHostState.set(state)
+        enqueue {
+            reconcileDesiredState()?.let(::emit)
         }
-        config = newConfig
-        if (newConfig?.connect != true || backgrounded) return@onWorker null
-        backend.collaborationReattach(editorId)?.let {
-            emit(it)
-            return@onWorker it
-        }
-        drive(CollaborationWakeReason.REATTACH)
-        null
     }
 
     fun notifyOutboundAvailable(reason: CollaborationWakeReason) {
+        if (terminal.get()) return
         enqueue {
             if (canDrive()) drive(reason)
         }
@@ -190,67 +222,112 @@ internal class AndroidCollaborationTransport(
         attemptId: String,
         eventId: String,
         response: NativeCollaborationProtocolAdapterResponse,
-    ): EditorV2Error? = onWorker {
-        if (destroyed) return@onWorker lifecycleError("collaboration transport is destroyed")
-        val activeGeneration = generation
-        val activeSocket = socket
-        if (
-            protocolAttemptId != attemptId ||
-            pendingProtocolEventId != eventId ||
-            activeGeneration == null ||
-            activeSocket == null
-        ) {
-            return@onWorker null
-        }
-        pendingProtocolEventId = null
-        if (!sendProtocolAdapterFrames(activeSocket, response.frames)) {
-            failCurrentSocket(socketToken, activeGeneration, null)
-            return@onWorker null
-        }
-        when (response.action) {
-            NativeCollaborationProtocolAdapterAction.CONTINUE ->
-                emitNextBufferedProtocolFrame(socketToken, activeGeneration)
-            NativeCollaborationProtocolAdapterAction.READY -> {
-                activateYjs(socketToken, activeGeneration)
-                drainBufferedFramesAfterReady(socketToken, activeGeneration)
+    ): EditorV2Error? {
+        if (terminal.get()) return lifecycleError("collaboration transport is destroyed")
+        return onWorker({ lifecycleError("collaboration transport is destroyed") }) {
+            if (destroyed || terminal.get()) {
+                return@onWorker lifecycleError("collaboration transport is destroyed")
             }
-            NativeCollaborationProtocolAdapterAction.REJECT ->
-                failCurrentSocket(socketToken, activeGeneration, 1008)
-        }
-        null
-    }
-
-    fun enterBackground() = onWorker {
-        if (!destroyed && !backgrounded) {
-            backgrounded = true
-            retireNativeResources()
-            backend.collaborationDetach(editorId)?.let(::emit)
+            val activeGeneration = generation
+            val activeSocket = socket
+            if (
+                protocolAttemptId != attemptId ||
+                pendingProtocolEventId != eventId ||
+                activeGeneration == null ||
+                activeSocket == null
+            ) {
+                return@onWorker null
+            }
+            pendingProtocolEventId = null
+            if (!sendProtocolAdapterFrames(activeSocket, response.frames)) {
+                failCurrentSocket(socketToken, activeGeneration, null)
+                return@onWorker null
+            }
+            when (response.action) {
+                NativeCollaborationProtocolAdapterAction.CONTINUE ->
+                    emitNextBufferedProtocolFrame(socketToken, activeGeneration)
+                NativeCollaborationProtocolAdapterAction.READY -> {
+                    activateYjs(socketToken, activeGeneration)
+                    drainBufferedFramesAfterReady(socketToken, activeGeneration)
+                }
+                NativeCollaborationProtocolAdapterAction.REJECT ->
+                    failCurrentSocket(socketToken, activeGeneration, 1008)
+            }
+            null
         }
     }
 
-    fun enterForeground() = onWorker {
-        if (!destroyed && backgrounded) {
-            backgrounded = false
-            if (config?.connect == true) {
-                val error = backend.collaborationReattach(editorId)
-                if (error != null) emit(error) else drive(CollaborationWakeReason.REATTACH)
+    fun enterBackground() = requestHostState(HostState.BACKGROUND)
+
+    fun enterForeground() = requestHostState(HostState.FOREGROUND)
+
+    fun destroyAsync(): CompletableFuture<Unit> {
+        synchronized(submissionLock) {
+            if (!terminal.compareAndSet(false, true)) return destroyedFuture
+            desiredHostState.set(HostState.DETACHED)
+            try {
+                executor.execute {
+                    try {
+                        destroyed = true
+                        hostState = HostState.DETACHED
+                        retireNativeResources()
+                        detachNative()?.let(::emit)
+                        config = null
+                    } finally {
+                        executor.shutdown()
+                        destroyedFuture.complete(Unit)
+                    }
+                }
+            } catch (_: RejectedExecutionException) {
+                executor.shutdownNow()
+                destroyedFuture.complete(Unit)
             }
         }
+        return destroyedFuture
     }
 
     fun destroy() {
-        onWorker {
-            if (!destroyed) {
-                destroyed = true
-                retireNativeResources()
-                backend.collaborationDetach(editorId)?.let(::emit)
-                config = null
-            }
-        }
-        executor.shutdownNow()
+        val completion = destroyAsync()
+        if (Thread.currentThread() === workerThread.get()) return
+        completion.get()
     }
 
-    private fun canDrive(): Boolean = !destroyed && !backgrounded && config?.connect == true
+    private fun canDrive(): Boolean =
+        !destroyed && !terminal.get() && hostState == HostState.FOREGROUND &&
+            nativeAttached && config?.connect == true
+
+    private fun reconcileDesiredState(): EditorV2Error? {
+        if (destroyed || terminal.get()) return null
+        val desired = desiredHostState.get()
+        val previous = hostState
+        hostState = desired
+        if (desired != HostState.FOREGROUND) {
+            retireNativeResources()
+            return detachNative()
+        }
+        if (config?.connect != true) return null
+        if (!nativeAttached) {
+            reattachNative()?.let { return it }
+            drive(CollaborationWakeReason.REATTACH)
+        } else if (previous != HostState.FOREGROUND) {
+            drive(CollaborationWakeReason.REATTACH)
+        }
+        return null
+    }
+
+    private fun detachNative(): EditorV2Error? {
+        if (!nativeAttached) return null
+        val error = backend.collaborationDetach(editorId)
+        if (error == null) nativeAttached = false
+        return error
+    }
+
+    private fun reattachNative(): EditorV2Error? {
+        if (nativeAttached) return null
+        val error = backend.collaborationReattach(editorId)
+        if (error == null) nativeAttached = true
+        return error
+    }
 
     private fun drive(reason: CollaborationWakeReason) {
         if (!canDrive()) return
@@ -664,7 +741,7 @@ internal class AndroidCollaborationTransport(
     }
 
     private fun isCurrent(token: Long, callbackGeneration: String): Boolean =
-        !destroyed && token == socketToken && generation == callbackGeneration
+        !destroyed && !terminal.get() && token == socketToken && generation == callbackGeneration
 
     private fun parseDirective(json: String): AndroidCollaborationDirective? {
         val objectValue = runCatching { JSONObject(json) }.getOrNull() ?: return null
@@ -721,15 +798,37 @@ internal class AndroidCollaborationTransport(
     }
 
     private fun enqueue(operation: () -> Unit) {
-        if (executor.isShutdown) return
+        if (terminal.get() || executor.isShutdown) return
         runCatching { executor.execute(operation) }
     }
 
-    private fun <T> onWorker(operation: () -> T): T {
+    private fun <T> onWorker(rejected: () -> T, operation: () -> T): T {
         if (Thread.currentThread() === workerThread.get()) return operation()
-        val future: Future<T> = executor.submit<T> { operation() }
+        val future: Future<T> = synchronized(submissionLock) {
+            if (terminal.get() || executor.isShutdown) return rejected()
+            try {
+                executor.submit<T> { operation() }
+            } catch (_: RejectedExecutionException) {
+                return rejected()
+            }
+        }
         return future.get()
     }
+
+    internal fun enqueueForTesting(operation: () -> Unit) {
+        executor.execute(operation)
+    }
+
+    internal fun awaitIdleForTesting() {
+        onWorker({ Unit }) { Unit }
+    }
+
+    internal fun awaitDestroyedForTesting(): Boolean =
+        runCatching { destroyedFuture.get(2, TimeUnit.SECONDS) }.isSuccess
+
+    internal fun hostStateForTesting(): HostState = onWorker({ desiredHostState.get() }) { hostState }
+
+    internal fun configForTesting(): NativeCollaborationTransportConfig? = onWorker({ null }) { config }
 
     internal companion object {
         const val WEBSOCKET_CLOSE_GOING_AWAY = 1001

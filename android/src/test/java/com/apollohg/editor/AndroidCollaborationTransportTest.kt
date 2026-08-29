@@ -8,6 +8,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Every teardown path must emit the close handshake that reaps peer presence. */
 @RunWith(RobolectricTestRunner::class)
@@ -99,6 +101,7 @@ class AndroidCollaborationTransportTest {
         val (transport, _) = connectedTransport(factory)
 
         transport.enterBackground()
+        transport.awaitIdleForTesting()
 
         assertEquals(goingAwayClose(), factory.sockets.single().events)
         transport.destroy()
@@ -139,6 +142,79 @@ class AndroidCollaborationTransportTest {
         assertTrue(
             "the native session must be detached on teardown",
             backend.calls.contains("collaborationDetach"),
+        )
+    }
+
+    @Test
+    fun `host state requests never wait for a blocked worker`() {
+        val factory = RecordingSocketFactory()
+        val (transport, _) = connectedTransport(factory)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        transport.enqueueForTesting {
+            entered.countDown()
+            release.await(2, TimeUnit.SECONDS)
+        }
+        assertTrue(entered.await(2, TimeUnit.SECONDS))
+
+        val startedAt = System.nanoTime()
+        transport.requestHostState(AndroidCollaborationTransport.HostState.BACKGROUND)
+        transport.requestHostState(AndroidCollaborationTransport.HostState.DETACHED)
+        transport.requestHostState(AndroidCollaborationTransport.HostState.FOREGROUND)
+        val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+
+        assertTrue("lifecycle callbacks must return immediately", elapsedMillis < 100)
+        release.countDown()
+        transport.awaitIdleForTesting()
+        assertEquals(
+            AndroidCollaborationTransport.HostState.FOREGROUND,
+            transport.hostStateForTesting(),
+        )
+        transport.destroyAsync()
+        assertTrue(transport.awaitDestroyedForTesting())
+    }
+
+    @Test
+    fun `failed replacement remains retryable and publishes config only after reattach`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(ROOM_CONFIG_JSON, null) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val transport = AndroidCollaborationTransport(
+            editorId = editorId,
+            backend = backend,
+            socketFactory = RecordingSocketFactory(),
+            clock = CollaborationMonotonicClock { 0L },
+        )
+        val retained = config(RETIRED_URL, connect = false)
+        val replacement = config(CONNECTED_URL, connect = true)
+        assertEquals(null, transport.configure(retained))
+        backend.nextCollaborationReattachError = EditorV2Error(
+            "transport",
+            "REATTACH_FAILED",
+            "retry",
+        )
+
+        assertEquals("REATTACH_FAILED", transport.configure(replacement)?.code)
+        assertEquals(retained, transport.configForTesting())
+        assertEquals(null, transport.configure(replacement))
+        assertEquals(replacement, transport.configForTesting())
+        transport.destroyAsync()
+        assertTrue(transport.awaitDestroyedForTesting())
+    }
+
+    @Test
+    fun `destroy async is idempotent`() {
+        val factory = RecordingSocketFactory()
+        val (transport, backend) = connectedTransport(factory)
+        val detachCountBeforeDestroy = backend.calls.count { it == "collaborationDetach" }
+
+        transport.destroyAsync()
+        transport.destroyAsync()
+
+        assertTrue(transport.awaitDestroyedForTesting())
+        assertEquals(
+            detachCountBeforeDestroy + 1,
+            backend.calls.count { it == "collaborationDetach" },
         )
     }
 

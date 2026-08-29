@@ -11,6 +11,7 @@ import expo.modules.kotlin.ModulesProvider
 import expo.modules.kotlin.modules.Module
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -22,7 +23,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import uniffi.editor_core.FfiError
 import uniffi.editor_core.FfiJsonResult
 import uniffi.editor_core.FfiUnitResult
@@ -30,6 +34,17 @@ import uniffi.editor_core.FfiUnitResult
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class NativeEditorModuleTest {
+    private var collaborationRuntimeToken =
+        NativeCollaborationTransportRegistry.activateRuntime()
+
+    @After
+    fun resetCollaborationRegistry() {
+        NativeCollaborationTransportRegistry.destroyRuntime(collaborationRuntimeToken)
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = null
+        collaborationRuntimeToken = NativeCollaborationTransportRegistry.activateRuntime()
+        NativeCollaborationTransportRegistry.attachHost(collaborationRuntimeToken)
+    }
+
     @Test
     fun `module create with both result sides cleans extractable session without registering it`() {
         val cleanupHandles = mutableListOf<String>()
@@ -129,6 +144,414 @@ class NativeEditorModuleTest {
             EditorV2Registry.remove(adapter.editorId)
             NativeEditorViewRegistry.invalidateDestroyedEditor(viewToken)
         }
+    }
+
+    @Test
+    fun `module destroy retains collaboration transport for retryable and malformed results`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"room\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = { id, sink ->
+            AndroidCollaborationTransport(
+                editorId = id,
+                backend = backend,
+                socketFactory = neverSocketFactory(),
+                eventSink = sink,
+            )
+        }
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                "{\"url\":\"wss://collab.example/room\",\"connect\":false}",
+            )
+        )
+        val retryable = FfiUnitResult(
+            null,
+            FfiError("operation", "OPERATION_INVALID", "retry", null, null, null, null, null),
+        )
+
+        assertEquals(retryable, destroyEditorV2FromModule(editorId) { retryable })
+        assertTrue(NativeCollaborationTransportRegistry.containsForTesting(editorId))
+        val malformed = destroyEditorV2FromModule(editorId) {
+            FfiUnitResult(true, retryable.error)
+        }
+        assertEquals("FFI_RESULT_INVALID", malformed.error?.code)
+        assertTrue(NativeCollaborationTransportRegistry.containsForTesting(editorId))
+
+        val terminal = destroyEditorV2FromModule(editorId) { FfiUnitResult(true, null) }
+        assertEquals(true, terminal.value)
+        assertFalse(NativeCollaborationTransportRegistry.containsForTesting(editorId))
+
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                "{\"url\":\"wss://collab.example/room\",\"connect\":false}",
+            )
+        )
+        val alreadyTerminal = destroyEditorV2FromModule(editorId) {
+            FfiUnitResult(
+                null,
+                FfiError(
+                    "lifecycle",
+                    "ENGINE_DESTROYED",
+                    "already destroyed",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                ),
+            )
+        }
+        assertEquals("ENGINE_DESTROYED", alreadyTerminal.error?.code)
+        assertFalse(NativeCollaborationTransportRegistry.containsForTesting(editorId))
+    }
+
+    @Test
+    fun `activity detach preserves collaboration identity sequence and emitter`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"room\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = { id, sink ->
+            AndroidCollaborationTransport(
+                editorId = id,
+                backend = backend,
+                socketFactory = neverSocketFactory(),
+                eventSink = sink,
+            )
+        }
+        val events = mutableListOf<Map<String, Any?>>()
+        NativeCollaborationTransportRegistry.setEventEmitter(
+            collaborationRuntimeToken,
+            events::add,
+        )
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                "{\"url\":\"wss://collab.example/room\",\"connect\":false}",
+            )
+        )
+        val identity = requireNotNull(
+            NativeCollaborationTransportRegistry.identityForTesting(editorId)
+        ) as AndroidCollaborationTransport
+        val retainedConfig = identity.configForTesting()
+        NativeCollaborationTransportRegistry.emitErrorForTesting(
+            editorId,
+            EditorV2Error("transport", "FIRST", "first"),
+        )
+
+        NativeCollaborationTransportRegistry.detachHost(collaborationRuntimeToken)
+        NativeCollaborationTransportRegistry.attachHost(collaborationRuntimeToken)
+        NativeCollaborationTransportRegistry.awaitIdleForTesting(editorId)
+        NativeCollaborationTransportRegistry.emitErrorForTesting(
+            editorId,
+            EditorV2Error("transport", "SECOND", "second"),
+        )
+
+        assertEquals(identity, NativeCollaborationTransportRegistry.identityForTesting(editorId))
+        assertEquals(retainedConfig, identity.configForTesting())
+        assertTrue(NativeCollaborationTransportRegistry.hasEventEmitterForTesting())
+        assertEquals(listOf("1", "2"), events.map { it["eventSequence"] })
+    }
+
+    @Test
+    fun `transport created while host is detached stays detached until attach`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"room\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = { id, sink ->
+            AndroidCollaborationTransport(
+                editorId = id,
+                backend = backend,
+                socketFactory = neverSocketFactory(),
+                eventSink = sink,
+            )
+        }
+        NativeCollaborationTransportRegistry.detachHost(collaborationRuntimeToken)
+
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                "{\"url\":\"wss://collab.example/room\",\"connect\":true}",
+            )
+        )
+        NativeCollaborationTransportRegistry.awaitIdleForTesting(editorId)
+        val transport = requireNotNull(
+            NativeCollaborationTransportRegistry.identityForTesting(editorId)
+        ) as AndroidCollaborationTransport
+        assertEquals(
+            AndroidCollaborationTransport.HostState.DETACHED,
+            transport.hostStateForTesting(),
+        )
+
+        NativeCollaborationTransportRegistry.attachHost(collaborationRuntimeToken)
+        NativeCollaborationTransportRegistry.awaitIdleForTesting(editorId)
+        assertEquals(
+            AndroidCollaborationTransport.HostState.FOREGROUND,
+            transport.hostStateForTesting(),
+        )
+    }
+
+    @Test
+    fun `stale runtime lifecycle cannot mutate replacement runtime`() {
+        val staleToken = collaborationRuntimeToken
+        val currentToken = NativeCollaborationTransportRegistry.activateRuntime()
+        collaborationRuntimeToken = currentToken
+        NativeCollaborationTransportRegistry.attachHost(currentToken)
+
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"room\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = { id, sink ->
+            AndroidCollaborationTransport(
+                editorId = id,
+                backend = backend,
+                socketFactory = neverSocketFactory(),
+                eventSink = sink,
+            )
+        }
+        val currentEvents = mutableListOf<Map<String, Any?>>()
+        val staleEvents = mutableListOf<Map<String, Any?>>()
+        NativeCollaborationTransportRegistry.setEventEmitter(currentToken, currentEvents::add)
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                currentToken,
+                editorId,
+                "{\"url\":\"wss://collab.example/room\",\"connect\":false}",
+            )
+        )
+
+        NativeCollaborationTransportRegistry.setEventEmitter(staleToken, staleEvents::add)
+        assertEquals(
+            "ENGINE_DESTROYED",
+            NativeCollaborationTransportRegistry.configure(staleToken, editorId, null)?.code,
+        )
+        assertEquals(
+            "ENGINE_DESTROYED",
+            NativeCollaborationTransportRegistry.resolveProtocolAdapter(
+                staleToken,
+                editorId,
+                "stale-attempt",
+                "1",
+                "{\"action\":\"reject\"}",
+            )?.code,
+        )
+        NativeCollaborationTransportRegistry.detachHost(staleToken)
+        NativeCollaborationTransportRegistry.destroyRuntime(staleToken)
+        NativeCollaborationTransportRegistry.awaitIdleForTesting(editorId)
+        val transport = requireNotNull(
+            NativeCollaborationTransportRegistry.identityForTesting(editorId)
+        ) as AndroidCollaborationTransport
+        NativeCollaborationTransportRegistry.emitErrorForTesting(
+            editorId,
+            EditorV2Error("transport", "CURRENT", "current"),
+        )
+
+        assertTrue(NativeCollaborationTransportRegistry.containsForTesting(editorId))
+        assertEquals(
+            AndroidCollaborationTransport.HostState.FOREGROUND,
+            transport.hostStateForTesting(),
+        )
+        assertEquals(1, currentEvents.size)
+        assertTrue(staleEvents.isEmpty())
+    }
+
+    @Test
+    fun `replacement waits for retired transport to detach`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"room\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val transports = mutableListOf<AndroidCollaborationTransport>()
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = { id, sink ->
+            AndroidCollaborationTransport(
+                editorId = id,
+                backend = backend,
+                socketFactory = neverSocketFactory(),
+                eventSink = sink,
+            ).also(transports::add)
+        }
+        val config = "{\"url\":\"wss://collab.example/room\",\"connect\":true}"
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                config,
+            )
+        )
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        transports.single().enqueueForTesting {
+            entered.countDown()
+            release.await(2, TimeUnit.SECONDS)
+        }
+        assertTrue(entered.await(2, TimeUnit.SECONDS))
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                null,
+            )
+        )
+
+        val replacementDone = CountDownLatch(1)
+        val replacementError = AtomicReference<EditorV2Error?>()
+        Thread {
+            replacementError.set(
+                NativeCollaborationTransportRegistry.configure(
+                    collaborationRuntimeToken,
+                    editorId,
+                    config,
+                )
+            )
+            replacementDone.countDown()
+        }.start()
+
+        assertFalse(replacementDone.await(100, TimeUnit.MILLISECONDS))
+        release.countDown()
+        assertTrue(replacementDone.await(2, TimeUnit.SECONDS))
+        assertNull(replacementError.get())
+        assertEquals(2, transports.size)
+    }
+
+    @Test
+    fun `concurrent configure failure cannot remove a later success`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"room\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = { id, sink ->
+            AndroidCollaborationTransport(
+                editorId = id,
+                backend = backend,
+                socketFactory = neverSocketFactory(),
+                eventSink = sink,
+            )
+        }
+        val reattachEntered = CountDownLatch(1)
+        val releaseReattach = CountDownLatch(1)
+        backend.nextCollaborationReattachError = EditorV2Error(
+            "transport",
+            "REATTACH_FAILED",
+            "retry",
+        )
+        backend.onCollaborationReattach = {
+            backend.onCollaborationReattach = null
+            reattachEntered.countDown()
+            releaseReattach.await(2, TimeUnit.SECONDS)
+        }
+        val firstResult = AtomicReference<EditorV2Error?>()
+        val secondResult = AtomicReference<EditorV2Error?>()
+        val firstDone = CountDownLatch(1)
+        val secondDone = CountDownLatch(1)
+        Thread {
+            firstResult.set(
+                NativeCollaborationTransportRegistry.configure(
+                    collaborationRuntimeToken,
+                    editorId,
+                    "{\"url\":\"wss://collab.example/first\",\"connect\":true}",
+                )
+            )
+            firstDone.countDown()
+        }.start()
+        assertTrue(reattachEntered.await(2, TimeUnit.SECONDS))
+        Thread {
+            secondResult.set(
+                NativeCollaborationTransportRegistry.configure(
+                    collaborationRuntimeToken,
+                    editorId,
+                    "{\"url\":\"wss://collab.example/second\",\"connect\":true}",
+                )
+            )
+            secondDone.countDown()
+        }.start()
+
+        releaseReattach.countDown()
+        assertTrue(firstDone.await(2, TimeUnit.SECONDS))
+        assertTrue(secondDone.await(2, TimeUnit.SECONDS))
+        assertEquals("REATTACH_FAILED", firstResult.get()?.code)
+        assertNull(secondResult.get())
+        assertTrue(NativeCollaborationTransportRegistry.containsForTesting(editorId))
+    }
+
+    @Test
+    fun `runtime destroy invalidates configure waiting on retirement`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"room\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val transports = mutableListOf<AndroidCollaborationTransport>()
+        NativeCollaborationTransportRegistry.transportFactoryForTesting = { id, sink ->
+            AndroidCollaborationTransport(
+                editorId = id,
+                backend = backend,
+                socketFactory = neverSocketFactory(),
+                eventSink = sink,
+            ).also(transports::add)
+        }
+        val config = "{\"url\":\"wss://collab.example/room\",\"connect\":true}"
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                config,
+            )
+        )
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        transports.single().enqueueForTesting {
+            entered.countDown()
+            release.await(2, TimeUnit.SECONDS)
+        }
+        assertTrue(entered.await(2, TimeUnit.SECONDS))
+        assertNull(
+            NativeCollaborationTransportRegistry.configure(
+                collaborationRuntimeToken,
+                editorId,
+                null,
+            )
+        )
+        val replacementResult = AtomicReference<EditorV2Error?>()
+        val replacementDone = CountDownLatch(1)
+        Thread {
+            replacementResult.set(
+                NativeCollaborationTransportRegistry.configure(
+                    collaborationRuntimeToken,
+                    editorId,
+                    config,
+                )
+            )
+            replacementDone.countDown()
+        }.start()
+
+        NativeCollaborationTransportRegistry.destroyRuntime(collaborationRuntimeToken)
+        release.countDown()
+        assertTrue(replacementDone.await(2, TimeUnit.SECONDS))
+        assertEquals("ENGINE_DESTROYED", replacementResult.get()?.code)
+        assertFalse(NativeCollaborationTransportRegistry.containsForTesting(editorId))
+        assertEquals(1, transports.size)
     }
 
     @Test
@@ -857,6 +1280,14 @@ class NativeEditorModuleTest {
         val context: Context,
         val appContext: AppContext,
     )
+
+    private fun neverSocketFactory() = object : CollaborationSocketFactory {
+        override fun makeSocket(
+            url: String,
+            protocols: List<String>,
+            callbacks: CollaborationSocketCallbacks,
+        ): CollaborationSocket = error("socket must not connect")
+    }
 
     private fun testExpoContext(context: Context): TestExpoContext {
         val reactContext = Class
