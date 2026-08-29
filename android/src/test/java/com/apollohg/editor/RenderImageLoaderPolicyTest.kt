@@ -654,6 +654,7 @@ class RenderImageLoaderPolicyTest {
 
     @Test
     fun `actual decoded bitmap is constrained when decoder dimensions are approximate`() {
+        DecodedBitmapBudget.shared(org.robolectric.RuntimeEnvironment.getApplication())
         val oversized = Bitmap.createBitmap(4_097, 2_048, Bitmap.Config.ARGB_8888)
         RenderImageDecoder.bitmapDecoderOverride = { _, _ -> oversized }
 

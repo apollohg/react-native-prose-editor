@@ -441,8 +441,9 @@ internal object RenderImageDecoder {
             val reservation = DecodedBitmapBudget.shared().reserve(
                 bytesRetained,
                 priority,
-            ) ?: return null
-            val lease = reservation.commit(bitmap, bytesRetained) ?: return null
+            ) ?: return constrainUnbudgetedBitmap(bitmap, bytesRetained, policy, priority)
+            val lease = reservation.commit(bitmap, bytesRetained)
+                ?: return constrainUnbudgetedBitmap(bitmap, bytesRetained, policy, priority)
             return constrainDecodedLease(lease, policy, priority)
         }
         val bounds = BitmapFactory.Options().apply {
@@ -480,8 +481,80 @@ internal object RenderImageDecoder {
             reservation.close()
             return null
         }
-        val lease = reservation.commit(bitmap, decodedAllocationBytes(bitmap)) ?: return null
+        val decodedBytes = decodedAllocationBytes(bitmap)
+        val lease = reservation.commit(bitmap, decodedBytes)
+            ?: return constrainUnbudgetedBitmap(bitmap, decodedBytes, policy, priority)
         return constrainDecodedLease(lease, policy, priority)
+    }
+
+    private data class ConstrainedBitmapTarget(
+        val width: Int,
+        val height: Int,
+        val estimatedBytes: Long,
+    )
+
+    private fun constrainedBitmapTarget(
+        bitmap: Bitmap,
+        decodedBytes: Long,
+        policy: ImageLoadingPolicy,
+    ): ConstrainedBitmapTarget? {
+        val maximumDimension = policy.maxDecodeDimensionPx
+        val dimensionScale = minOf(
+            1.0,
+            maximumDimension.toDouble() / bitmap.width.toDouble(),
+            maximumDimension.toDouble() / bitmap.height.toDouble()
+        )
+        val byteScale = if (decodedBytes > policy.maxDecodedBytes.toLong()) {
+            kotlin.math.sqrt(policy.maxDecodedBytes.toDouble() / decodedBytes.toDouble())
+        } else {
+            1.0
+        }
+        val scale = minOf(dimensionScale, byteScale)
+        if (scale >= 1.0) return null
+        val targetWidth = kotlin.math.floor(bitmap.width.toDouble() * scale)
+            .toInt()
+            .coerceIn(1, maximumDimension)
+        val targetHeight = kotlin.math.floor(bitmap.height.toDouble() * scale)
+            .toInt()
+            .coerceIn(1, maximumDimension)
+        return ConstrainedBitmapTarget(
+            targetWidth,
+            targetHeight,
+            estimatedArgbBytes(targetWidth, targetHeight, 1),
+        )
+    }
+
+    private fun constrainUnbudgetedBitmap(
+        bitmap: Bitmap,
+        decodedBytes: Long,
+        policy: ImageLoadingPolicy,
+        priority: DecodedBitmapPriority,
+    ): DecodedBitmapLease? {
+        val target = constrainedBitmapTarget(bitmap, decodedBytes, policy) ?: return null
+        val reservation = DecodedBitmapBudget.shared().reserve(
+            target.estimatedBytes,
+            priority,
+        ) ?: return null
+        val constrained = try {
+            Bitmap.createScaledBitmap(bitmap, target.width, target.height, true)
+        } catch (_: RuntimeException) {
+            null
+        } catch (_: OutOfMemoryError) {
+            null
+        } ?: run {
+            reservation.close()
+            return null
+        }
+        if (constrained === bitmap) {
+            reservation.close()
+            return null
+        }
+        val lease = reservation.commit(constrained, decodedAllocationBytes(constrained)) ?: return null
+        if (lease.byteCount > policy.maxDecodedBytes.toLong()) {
+            lease.close()
+            return null
+        }
+        return lease
     }
 
     private fun constrainDecodedLease(
@@ -490,35 +563,17 @@ internal object RenderImageDecoder {
         priority: DecodedBitmapPriority = DecodedBitmapPriority.VISIBLE,
     ): DecodedBitmapLease? {
         val bitmap = lease.bitmap
-        val maximumDimension = policy.maxDecodeDimensionPx
-        val dimensionScale = minOf(
-            1.0,
-            maximumDimension.toDouble() / bitmap.width.toDouble(),
-            maximumDimension.toDouble() / bitmap.height.toDouble()
-        )
-        val byteScale = if (lease.byteCount > policy.maxDecodedBytes.toLong()) {
-            kotlin.math.sqrt(policy.maxDecodedBytes.toDouble() / lease.byteCount.toDouble())
-        } else {
-            1.0
-        }
-        val scale = minOf(dimensionScale, byteScale)
-        if (scale >= 1.0) return lease
-        val targetWidth = kotlin.math.floor(bitmap.width.toDouble() * scale)
-            .toInt()
-            .coerceIn(1, maximumDimension)
-        val targetHeight = kotlin.math.floor(bitmap.height.toDouble() * scale)
-            .toInt()
-            .coerceIn(1, maximumDimension)
-        val targetBytes = estimatedArgbBytes(targetWidth, targetHeight, 1)
+        val decodedBytes = lease.byteCount
+        val target = constrainedBitmapTarget(bitmap, decodedBytes, policy) ?: return lease
         val reservation = DecodedBitmapBudget.shared().reserve(
-            targetBytes,
+            target.estimatedBytes,
             priority,
         ) ?: run {
             lease.close()
-            return null
+            return constrainUnbudgetedBitmap(bitmap, decodedBytes, policy, priority)
         }
         val constrained = try {
-            Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+            Bitmap.createScaledBitmap(bitmap, target.width, target.height, true)
         } catch (_: RuntimeException) {
             null
         } catch (_: OutOfMemoryError) {
