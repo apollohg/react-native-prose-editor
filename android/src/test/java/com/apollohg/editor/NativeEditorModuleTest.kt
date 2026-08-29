@@ -264,6 +264,38 @@ class NativeEditorModuleTest {
     }
 
     @Test
+    fun `collaboration state and peers recursively bridge nested JSON values`() {
+        val state = jsonValueToJs(
+            JSONObject()
+                .put(
+                    "nested",
+                    JSONArray()
+                        .put(JSONObject().put("values", JSONArray().put(1).put(JSONObject.NULL)))
+                        .put(true),
+                )
+        ) as Map<*, *>
+        val peers = jsonValueToJs(
+            JSONArray().put(
+                JSONObject().put(
+                    "awareness",
+                    JSONObject().put("cursor", JSONArray().put(4).put(7)),
+                )
+            )
+        ) as List<*>
+
+        assertEquals(
+            listOf(mapOf("values" to listOf(1, null)), true),
+            state["nested"],
+        )
+        assertEquals(
+            listOf(mapOf("awareness" to mapOf("cursor" to listOf(4, 7)))),
+            peers,
+        )
+        assertFalse(containsOrgJsonValue(state))
+        assertFalse(containsOrgJsonValue(peers))
+    }
+
+    @Test
     fun `transport created while host is detached stays detached until attach`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create(
@@ -1287,6 +1319,13 @@ class NativeEditorModuleTest {
             protocols: List<String>,
             callbacks: CollaborationSocketCallbacks,
         ): CollaborationSocket = error("socket must not connect")
+    }
+
+    private fun containsOrgJsonValue(value: Any?): Boolean = when (value) {
+        is JSONObject, is JSONArray -> true
+        is Map<*, *> -> value.values.any(::containsOrgJsonValue)
+        is List<*> -> value.any(::containsOrgJsonValue)
+        else -> false
     }
 
     private fun testExpoContext(context: Context): TestExpoContext {

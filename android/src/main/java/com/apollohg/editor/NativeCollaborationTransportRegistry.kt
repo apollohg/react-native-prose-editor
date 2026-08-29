@@ -1,6 +1,7 @@
 package com.apollohg.editor
 
 import android.util.Base64
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CompletableFuture
 
@@ -320,7 +321,7 @@ internal object NativeCollaborationTransportRegistry {
     private fun state(editorId: String): Map<String, Any?>? {
         val result = UniffiEditorV2Backend.getState(editorId)
         if (result !is EditorV2CallResult.Ok) return null
-        return runCatching { JSONObject(result.value).toMap() }.getOrNull()
+        return runCatching { JSONObject(result.value).toJsMap() }.getOrNull()
     }
 
     private fun peers(editorId: String): Any {
@@ -328,11 +329,7 @@ internal object NativeCollaborationTransportRegistry {
         if (result !is EditorV2CallResult.Ok) return emptyList<Any>()
         return runCatching {
             val objectValue = JSONObject(result.value)
-            val peers = objectValue.getJSONArray("peers")
-            List(peers.length()) { index ->
-                val value = peers.get(index)
-                if (value is JSONObject) value.toMap() else value
-            }
+            jsonValueToJs(objectValue.getJSONArray("peers")) ?: emptyList<Any>()
         }.getOrDefault(emptyList<Any>())
     }
 
@@ -461,15 +458,17 @@ internal object NativeCollaborationTransportRegistry {
         return NativeCollaborationProtocolAdapterResponse(action, frames)
     }
 
-    private fun JSONObject.toMap(): Map<String, Any?> =
-        keys().asSequence().associateWith { key ->
-            when (val value = get(key)) {
-                JSONObject.NULL -> null
-                is JSONObject -> value.toMap()
-                else -> value
-            }
-        }
-
     private fun contractError(message: String) =
         EditorV2Error("boundary", "FFI_RESULT_INVALID", message)
+}
+
+private fun JSONObject.toJsMap(): Map<String, Any?> =
+    keys().asSequence().associateWith { key -> jsonValueToJs(get(key)) }
+
+internal fun jsonValueToJs(value: Any?): Any? = when (value) {
+    null, JSONObject.NULL -> null
+    is JSONObject -> value.toJsMap()
+    is JSONArray -> List(value.length()) { index -> jsonValueToJs(value.get(index)) }
+    is String, is Boolean, is Number -> value
+    else -> throw IllegalArgumentException("unsupported JSON value")
 }

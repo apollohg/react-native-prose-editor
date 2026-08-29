@@ -31,6 +31,14 @@ class AndroidCollaborationTransportTest {
 
         override fun send(text: String): Boolean = true
 
+        fun peerClosing(code: Int) {
+            callbacks.onClosing(code)
+        }
+
+        fun peerClosed(code: Int) {
+            callbacks.onClosed(code)
+        }
+
         override fun close(code: Int, reason: String?): Boolean {
             events.add("close($code)")
             return closeSucceeds
@@ -130,6 +138,22 @@ class AndroidCollaborationTransportTest {
             goingAwayClose() + "cancel",
             factory.sockets.single().events,
         )
+    }
+
+    @Test
+    fun `peer closing retains ownership until closed`() {
+        val factory = RecordingSocketFactory()
+        val (transport, backend) = connectedTransport(factory)
+        val socket = factory.sockets.single()
+
+        socket.peerClosing(1000)
+        transport.awaitIdleForTesting()
+        assertEquals(0, backend.calls.count { it == "collaborationSocketClose" })
+
+        socket.peerClosed(1000)
+        transport.awaitIdleForTesting()
+        assertEquals(1, backend.calls.count { it == "collaborationSocketClose" })
+        transport.destroy()
     }
 
     @Test

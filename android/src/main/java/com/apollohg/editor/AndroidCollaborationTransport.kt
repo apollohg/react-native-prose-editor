@@ -392,7 +392,8 @@ internal class AndroidCollaborationTransport(
                 onTextMessage = { text ->
                     enqueue { socketDidReceiveText(token, newGeneration, text) }
                 },
-                onClose = { code ->
+                onClosing = {},
+                onClosed = { code ->
                     enqueue { socketDidClose(token, newGeneration, code) }
                 },
                 onFailure = {

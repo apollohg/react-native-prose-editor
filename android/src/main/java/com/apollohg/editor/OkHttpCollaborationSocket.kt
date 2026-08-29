@@ -11,7 +11,8 @@ internal data class CollaborationSocketCallbacks(
     val onOpen: (negotiatedProtocol: String?) -> Unit,
     val onBinaryMessage: (ByteArray) -> Unit,
     val onTextMessage: (String) -> Unit,
-    val onClose: (Int) -> Unit,
+    val onClosing: (Int) -> Unit,
+    val onClosed: (Int) -> Unit,
     val onFailure: () -> Unit,
 )
 
@@ -72,11 +73,12 @@ private class OkHttpCollaborationSocket(
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                    callbacks.onClose(code)
+                    webSocket.close(code, reason)
+                    callbacks.onClosing(code)
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    callbacks.onClose(code)
+                    callbacks.onClosed(code)
                 }
 
                 override fun onFailure(webSocket: WebSocket, error: Throwable, response: Response?) {
