@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <issue id="NewApi">
+        <ignore path="../rust/bindings/kotlin/uniffi/editor_core/editor_core.kt" />
+    </issue>
+    <issue id="WrongConstant">
+        <ignore path="src/main/java/com/apollohg/editor/viewer/AndroidProseLayoutEngine.kt" />
+    </issue>
+</lint>

@@ -92,6 +92,12 @@ tasks.withType(Test).configureEach {
 
 android {
     namespace = "com.apollohg.editor"
+    lint {
+        abortOnError true
+        xmlReport true
+        xmlOutput file("$buildDir/reports/lint-results-debug.xml")
+        lintConfig file('lint.xml')
+    }
     buildFeatures {
         // The performance collector uses this explicit build-type constant;
         // no implicit/generated DEBUG field is relied on by release drawing.

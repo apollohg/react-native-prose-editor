@@ -72,6 +72,52 @@ jobs:
       - name: Run Android unit tests
         run: npm run test:android
 
+      - name: Run Android lint
+        run: npm run lint:android
+
+      - name: Assemble release AAR
+        run: ./gradlew :apollohg_react-native-prose-editor:assembleRelease
+        working-directory: example/android
+
+  android-api-24:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            example/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install example dependencies
+        run: npm --prefix example ci
+
+      - name: Run API 24 instrumentation smoke test
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: 24
+          arch: x86_64
+          disable-animations: true
+          script: npm run test:android:api24
+
   ios:
     runs-on: macos-latest
     timeout-minutes: 45
