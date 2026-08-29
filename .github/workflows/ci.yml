@@ -29,6 +29,15 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Setup Android NDK
+        run: sdkmanager --install 'ndk;27.1.12297006'
+
+      - name: Setup RN 0.76 Android SDK
+        run: sdkmanager --install 'platforms;android-36' 'build-tools;34.0.0'
+
       # editor-core owns the document model, CRDT convergence, awareness,
       # and the transport state machine. Its suite is the primary gate on
       # this package's correctness and must run on every change.
@@ -68,6 +77,19 @@ jobs:
 
       - name: Validate npm package contents
         run: npm pack --dry-run
+
+      - name: Pack Android release candidate
+        run: |
+          mkdir -p release-artifact
+          npm pack --ignore-scripts --pack-destination release-artifact
+
+      - name: Validate React Native 0.76 release consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
+          tarball="$(find release-artifact -maxdepth 1 -type f -name '*.tgz' -print)"
+          RELEASE_TARBALL="$tarball" npm run validate:package:android:rn076
 
       - name: Run Android unit tests
         run: npm run test:android

@@ -358,7 +358,7 @@ internal class PreparedProseViewerManager :
 
     private fun dispatchViewerEvent(view: PreparedProseDrawingView, eventName: String, payload: WritableMap) {
         val context = UIManagerHelper.getReactContext(view)
-        UIManagerHelper.getEventDispatcher(context)?.dispatchEvent(
+        UIManagerHelper.getEventDispatcherForReactTag(context, view.id)?.dispatchEvent(
             PreparedProseViewerEvent(UIManagerHelper.getSurfaceId(view), view.id, eventName, payload)
         )
     }

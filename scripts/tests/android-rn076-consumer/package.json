@@ -1,0 +1,19 @@
+{
+  "name": "native-editor-rn076-consumer",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "@expo/vector-icons": "14.0.4",
+    "expo": "~52.0.49",
+    "react": "18.3.1",
+    "react-native": "0.76.9"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@react-native-community/cli": "15.0.1",
+    "@react-native-community/cli-platform-android": "15.0.1",
+    "@react-native/babel-preset": "0.76.9",
+    "@react-native/metro-config": "0.76.9"
+  }
+}

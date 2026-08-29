@@ -3,8 +3,12 @@ import groovy.json.JsonSlurper
 plugins {
     id 'com.android.library'
     id 'com.facebook.react'
-    id 'expo-module-gradle-plugin'
 }
+
+def expoModulesCorePlugin = new File(project(':expo-modules-core').projectDir, 'ExpoModulesCorePlugin.gradle')
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
 
 def packageJson = new JsonSlurper().parse(file('../package.json'))
 def repositoryRoot = file('..').canonicalFile
@@ -91,6 +95,7 @@ tasks.withType(Test).configureEach {
 }
 
 android {
+    compileSdkVersion safeExtGet('compileSdkVersion', 35)
     namespace = "com.apollohg.editor"
     lint {
         abortOnError true
@@ -123,6 +128,8 @@ android {
         }
     }
     defaultConfig {
+        minSdkVersion safeExtGet('minSdkVersion', 24)
+        targetSdkVersion safeExtGet('targetSdkVersion', 35)
         versionCode = 1
         versionName = packageJson.version
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

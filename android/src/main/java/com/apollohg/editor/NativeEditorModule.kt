@@ -30,9 +30,9 @@ private fun destroyAlreadyInProgressResult(): FfiUnitResult = FfiUnitResult(
 internal fun destroyEditorThenInvalidate(
     editorHandle: String,
     viewToken: Long,
-    destroy: (String) -> Unit = ::editorV2Destroy,
+    destroy: (String) -> Unit = { handle -> editorV2Destroy(handle) },
     beginDestroy: (Long) -> Boolean = NativeEditorViewRegistry::beginDestroy,
-    finalizeDestroy: (Long) -> Unit = NativeEditorViewRegistry::finalizeDestroy
+    finalizeDestroy: (Long) -> Unit = { token -> NativeEditorViewRegistry.finalizeDestroy(token) }
 ) {
     val canonicalHandle = canonicalV2U64(editorHandle) ?: return
     if (!beginDestroy(viewToken)) return

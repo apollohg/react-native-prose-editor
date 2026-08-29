@@ -781,6 +781,7 @@ validate_packed_package_root() {
   local ffi_header_count modulemap_count
 
   validate_package_entries "$root"
+  "$repo_root/scripts/validate-android-rn076-consumer.sh" --validate-package-root "$root"
   validate_abi_root "$root"
   validate_xcframework "$root/ios/EditorCore.xcframework" "$(ios_deployment_target "$root")"
   for abi in arm64-v8a armeabi-v7a x86 x86_64; do

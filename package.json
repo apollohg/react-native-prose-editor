@@ -77,6 +77,7 @@
         "validate:package:ios:negative": "VALIDATE_PACKED_PACKAGE_GROUP=ios-consumer node scripts/tests/validate-packed-package.test.mjs",
         "validate:package:android:positive": "bash ./scripts/validate-packed-package.sh --validate-android-tarball \"$RELEASE_TARBALL\"",
         "validate:package:android:negative": "VALIDATE_PACKED_PACKAGE_GROUP=android-consumer node scripts/tests/validate-packed-package.test.mjs",
+        "validate:package:android:rn076": "bash ./scripts/validate-android-rn076-consumer.sh \"${RELEASE_TARBALL:-}\"",
         "validate:security": "node scripts/tests/validate-security-contracts.mjs",
         "version": "npm run sync:version"
     },
@@ -125,6 +126,7 @@
         "!src/type-tests",
         "android/build.gradle",
         "android/consumer-rules.pro",
+        "android/expo",
         "android/src/debug",
         "android/src/main",
         "android/src/release",

@@ -5,7 +5,7 @@
     "podspecPath": "./ReactNativeProseEditor.podspec"
   },
   "android": {
-    "name": "apollohg_react-native-prose-editor",
+    "gradlePath": "android/expo/build.gradle",
     "modules": ["com.apollohg.editor.NativeEditorModule"]
   }
 }

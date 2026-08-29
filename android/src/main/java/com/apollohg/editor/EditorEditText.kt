@@ -1333,7 +1333,7 @@ class EditorEditText @JvmOverloads constructor(
                     caretVisibilityLocationOnScreen[1] + ancestor.height - occlusionTop
                 )
             }
-            ancestor = ancestor.parent
+            ancestor = (ancestor as View).parent
         }
         return if (foundScrollableAncestor) clearance.coerceAtLeast(0) else viewportBottomInsetPx
     }

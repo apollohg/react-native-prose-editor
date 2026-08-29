@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const validator = join(repoRoot, "scripts", "validate-packed-package.sh");
+const rn076Validator = join(repoRoot, "scripts", "validate-android-rn076-consumer.sh");
 const checksumValidator = join(repoRoot, "scripts", "validate-uniffi-checksum-values.rb");
 const checksumManifest = join(repoRoot, "scripts", "package-abi-manifest.json");
 const validatorSource = readFileSync(validator, "utf8");
@@ -16,12 +17,13 @@ const failures = [];
 const fixtureGroup = process.env.VALIDATE_PACKED_PACKAGE_GROUP ?? "all";
 
 assert.ok(
-  new Set(["all", "static", "ios-consumer", "android-consumer"]).has(fixtureGroup),
+  new Set(["all", "static", "ios-consumer", "android-consumer", "android-rn076-consumer"]).has(fixtureGroup),
   `unknown packed-package fixture group: ${fixtureGroup}`,
 );
 
 assert.ok(packageManifest.files.includes("android/src/debug"), "package must include Android debug draw instrumentation");
 assert.ok(packageManifest.files.includes("android/src/release"), "package must include Android release draw instrumentation");
+assert.ok(packageManifest.files.includes("android/expo"), "package must include the Expo Android facade");
 assert.match(
   validatorSource,
   /npm install --ignore-scripts --no-audit --no-fund --offline --package-lock=false --legacy-peer-deps/,
@@ -88,9 +90,11 @@ function makeFixture(name) {
     "ios",
     "android/build.gradle",
     "android/consumer-rules.pro",
+    "android/expo",
     "android/src/debug",
     "android/src/main",
     "android/src/release",
+    "common/cpp",
     "rust/android",
     "rust/ios",
     "rust/bindings/kotlin",
@@ -136,6 +140,16 @@ function replaceBytes(path, from, to) {
 
 function run(...args) {
   const result = spawnSync("bash", [validator, ...args], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, NODE_COMPILE_CACHE: join(workDir, "node-compile-cache") },
+  });
+  return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
+}
+
+function runRn076Validator(...args) {
+  const result = spawnSync("bash", [rn076Validator, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -383,6 +397,86 @@ function runAndroidConsumerFixture() {
   );
 }
 
+function runRn076ConsumerFixtures() {
+  const root = join(workDir, "rn076-package");
+  mkdirSync(root, { recursive: true });
+  for (const path of [
+    "package.json",
+    "expo-module.config.json",
+    "react-native.config.js",
+    "android/build.gradle",
+    "android/expo",
+    "android/src/main/jni",
+    "common/cpp",
+    "src/specs",
+    "rust/android",
+  ]) {
+    copyPath(repoRoot, root, path);
+  }
+
+  const cppPath = join(root, "common/cpp");
+  rmSync(cppPath, { recursive: true });
+  expectFailure(
+    "RN 0.76 consumer without Android C++ sources",
+    runRn076Validator("--validate-package-root", root),
+    /RN 0\.76 package is missing common\/cpp\/react\/renderer\/components\/PreparedProseViewer\/PreparedProseViewerShadowNode\.cpp/,
+  );
+  copyPath(repoRoot, root, "common/cpp");
+
+  const abiPath = join(root, "rust/android/x86_64/libeditor_core.so");
+  rmSync(abiPath);
+  expectFailure(
+    "RN 0.76 consumer without every Rust ABI",
+    runRn076Validator("--validate-package-root", root),
+    /RN 0\.76 package is missing rust\/android\/x86_64\/libeditor_core\.so/,
+  );
+  copyPath(repoRoot, root, "rust/android/x86_64/libeditor_core.so");
+
+  const androidBuildPath = join(root, "android/build.gradle");
+  const androidBuildSource = readFileSync(androidBuildPath, "utf8");
+  writeFileSync(
+    androidBuildPath,
+    androidBuildSource.replace("ExpoModulesCorePlugin.gradle", "MissingExpoModulesCorePlugin.gradle"),
+  );
+  expectFailure(
+    "RN 0.76 consumer without Expo 52 Gradle compatibility",
+    runRn076Validator("--validate-package-root", root),
+    /RN 0\.76 package must use the Expo Modules Core compatibility plugin/,
+  );
+  writeFileSync(androidBuildPath, androidBuildSource);
+
+  const expoConfigPath = join(root, "expo-module.config.json");
+  const expoConfigSource = readFileSync(expoConfigPath, "utf8");
+  const expoConfig = JSON.parse(expoConfigSource);
+  expoConfig.android.gradlePath = "android/build.gradle";
+  writeFileSync(expoConfigPath, `${JSON.stringify(expoConfig, null, 2)}\n`);
+  expectFailure(
+    "RN 0.76 consumer without the Expo Android facade",
+    runRn076Validator("--validate-package-root", root),
+    /RN 0\.76 package must route Expo autolinking through the Android facade/,
+  );
+  expoConfig.android.gradlePath = "android/expo/build.gradle";
+  expoConfig.android.modules = [];
+  writeFileSync(expoConfigPath, `${JSON.stringify(expoConfig, null, 2)}\n`);
+  expectFailure(
+    "RN 0.76 consumer without Expo module entry",
+    runRn076Validator("--validate-package-root", root),
+    /RN 0\.76 package Expo module entry is missing com\.apollohg\.editor\.NativeEditorModule/,
+  );
+  writeFileSync(expoConfigPath, expoConfigSource);
+
+  const manifestPath = join(root, "package.json");
+  const manifestSource = readFileSync(manifestPath, "utf8");
+  const manifest = JSON.parse(manifestSource);
+  delete manifest.codegenConfig;
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  expectFailure(
+    "RN 0.76 consumer without PreparedProseViewer codegen",
+    runRn076Validator("--validate-package-root", root),
+    /RN 0\.76 package codegen must expose the PreparedProseViewer component/,
+  );
+}
+
 try {
   if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "fixture-scope") {
     runFixtureScopeCheck();
@@ -396,6 +490,8 @@ try {
     runIosConsumerFixture();
   } else if (fixtureGroup === "android-consumer") {
     runAndroidConsumerFixture();
+  } else if (fixtureGroup === "android-rn076-consumer") {
+    runRn076ConsumerFixtures();
   } else {
     const baseline = makeFixture("baseline");
     expectPass("baseline ABI", run("--validate-abi-root", baseline));

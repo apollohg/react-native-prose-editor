@@ -558,6 +558,102 @@ jobs:
             - name: Validate negative Android consumer
               run: npm run validate:package:android:negative
 
+    android-release-validation:
+        needs: build-package
+        runs-on: macos-14
+        timeout-minutes: 60
+        env:
+            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/android-release-validation
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      example/package-lock.json
+
+            - name: Setup Java
+              uses: actions/setup-java@v5
+              with:
+                  distribution: temurin
+                  java-version: 17
+
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@1.95.0
+
+            - name: Cache Cargo
+              uses: actions/cache@v5
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      rust/editor-core/target
+                  key: cargo-android-release-${{ runner.os }}-rust-1.95.0-${{ hashFiles('rust/editor-core/Cargo.lock') }}
+                  restore-keys: cargo-android-release-${{ runner.os }}-rust-1.95.0-
+
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v4
+
+            - name: Setup Android NDK
+              run: sdkmanager --install 'ndk;27.1.12297006'
+
+            - name: Setup RN 0.76 Android SDK
+              run: sdkmanager --install 'platforms;android-36' 'build-tools;34.0.0'
+
+            - name: Cache Gradle
+              uses: actions/cache@v5
+              with:
+                  path: |
+                      ${{ env.GRADLE_USER_HOME }}/caches
+                      ${{ env.GRADLE_USER_HOME }}/wrapper
+                  key: gradle-android-release-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts', 'scripts/tests/android-rn076-consumer/package.json') }}
+                  restore-keys: gradle-android-release-${{ runner.os }}-
+
+            - name: Install dependencies
+              run: |
+                  npm ci
+                  npm --prefix example ci
+
+            - name: Download release artifact
+              uses: actions/download-artifact@v8
+              with:
+                  name: ${{ env.RELEASE_ARTIFACT_NAME }}
+                  path: .
+
+            - name: Resolve release tarball
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d '[:space:]')" = 1
+                  tarball="$(find release-artifact -maxdepth 1 -type f -name '*.tgz' -print)"
+                  echo "RELEASE_TARBALL=$(cd "$(dirname "$tarball")" && pwd -P)/$(basename "$tarball")" >> "$GITHUB_ENV"
+
+            - name: Run Android JVM tests
+              run: npm run test:android
+
+            - name: Run Android lint
+              run: npm run lint:android
+
+            - name: Assemble release AAR
+              run: ./gradlew :apollohg_react-native-prose-editor:assembleRelease
+              working-directory: example/android
+
+            - name: Validate React Native 0.76 release consumer
+              run: npm run validate:package:android:rn076
+
+            - name: Run API 24 instrumentation smoke test
+              uses: reactivecircus/android-emulator-runner@v2.38.0
+              with:
+                  api-level: 24
+                  arch: x86_64
+                  disable-animations: true
+                  script: npm run test:android:api24
+
     publish:
         needs:
             - build-package
@@ -569,6 +665,7 @@ jobs:
             - ios-consumer-negative
             - android-consumer-positive
             - android-consumer-negative
+            - android-release-validation
         runs-on: ubuntu-latest
         timeout-minutes: 5
         permissions:

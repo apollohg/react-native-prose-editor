@@ -1,0 +1,17 @@
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    compileSdkVersion rootProject.ext.has('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 35
+    namespace = 'com.apollohg.editor.expo'
+
+    defaultConfig {
+        minSdkVersion rootProject.ext.has('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+        targetSdkVersion rootProject.ext.has('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 35
+    }
+}
+
+dependencies {
+    api project(':apollohg_react-native-prose-editor')
+}

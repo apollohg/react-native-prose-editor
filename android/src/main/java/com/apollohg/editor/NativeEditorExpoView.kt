@@ -645,7 +645,7 @@ private object NativeEditorOutsideTapDispatcher {
         private fun ensureCallbackReconciler() {
             val window = windowRef.get() ?: return
             val currentObserver = callbackTreeObserver
-            val nextObserver = window.decorView.viewTreeObserver
+            val nextObserver = window.decorView.viewTreeObserver ?: return
             if (currentObserver === nextObserver && currentObserver.isAlive) return
             removeCallbackReconciler()
             if (nextObserver.isAlive) {
@@ -3911,7 +3911,7 @@ class NativeEditorExpoView(
                 if (ancestor is ScrollView || ancestor is NestedScrollView) {
                     includeScrollViewport(ancestor)
                 }
-                ancestor = ancestor.parent
+                ancestor = (ancestor as View).parent
             }
         }
 

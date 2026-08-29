@@ -68,7 +68,7 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(shadow).toContain('measurementsManager_->prepareFinalLayout(');
         expect(shadow).toContain('props,\n      *widthPx,');
         expect(shadow).not.toContain('static_cast<Float>(*widthPx) / scale');
-        expect(mount).toContain('acquirePreparedMountTicket(generation)');
+        expect(mount).toContain('generation,\n            request.nativeFontRevision,');
         expect(mount).toContain('prepareForFabricMount(generation)');
         expect(mount).not.toContain('view.width');
         expect(mount).not.toContain('releaseFabricMountMiss');
@@ -190,7 +190,8 @@ describe('prepared prose native lifecycle contracts', () => {
     it('drops Android Fabric sidecars through the exact persisted generation after view tags mutate', () => {
         const android = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseViewerManager.kt');
         const drop = android.slice(android.indexOf('override fun onDropViewInstance'), android.indexOf('override fun onSurfaceStopped'));
-        const viewState = android.slice(android.indexOf('private class ViewState'), android.indexOf('\n    companion object'));
+        const viewStateStart = android.indexOf('internal class ViewState');
+        const viewState = android.slice(viewStateStart, android.indexOf('\n    companion object', viewStateStart));
         const adopt = viewState.slice(viewState.indexOf('fun adopt('), viewState.indexOf('\n        fun release()'));
         const release = viewState.slice(viewState.indexOf('fun release()'), viewState.indexOf('\n    }\n\n    companion object'));
         const releaseSidecar = viewState.slice(viewState.indexOf('private fun releaseSidecarOwnership()'));
@@ -232,7 +233,7 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(state).toContain('SurfaceId surfaceId{0};');
         expect(state).toContain('Tag componentTag{0};');
         expect(shadow).toContain('state.surfaceId = family->getSurfaceId();');
-        expect(shadow).toContain('state.componentTag = family->getTag();');
+        expect(shadow).toContain('state.componentTag = family->getEventEmitter()->getEventTarget()->getTag();');
         expect(install).toContain('const auto surfaceId = SurfaceIdFromState(_viewerState);');
         expect(install).toContain('const auto componentTag = ComponentTagFromState(_viewerState);');
         expect(ios).not.toContain('SurfaceIdForComponentView');

@@ -93,7 +93,7 @@ PreparedProseViewerShadowNode::initialStateData(
   PreparedProseViewerState state;
   state.leaseHandle = NextFabricLeaseHandle();
   state.surfaceId = family->getSurfaceId();
-  state.componentTag = family->getTag();
+  state.componentTag = family->getEventEmitter()->getEventTarget()->getTag();
   state.leaseLifecycle = std::make_shared<PreparedProseViewerLeaseLifecycle>();
   return state;
 }

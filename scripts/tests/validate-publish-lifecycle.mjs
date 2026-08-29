@@ -18,6 +18,16 @@ const packedValidatorSource = await readFile(
   path.join(repoRoot, 'scripts/validate-packed-package.sh'),
   'utf8',
 );
+const rn076ValidatorSource = await readFile(
+  path.join(repoRoot, 'scripts/validate-android-rn076-consumer.sh'),
+  'utf8',
+);
+const rn076ConsumerManifest = JSON.parse(
+  await readFile(
+    path.join(repoRoot, 'scripts/tests/android-rn076-consumer/package.json'),
+    'utf8',
+  ),
+);
 const distTagResolver = path.join(repoRoot, 'scripts/resolve-npm-dist-tag.mjs');
 
 const jobsSource = publishWorkflow.slice(publishWorkflow.search(/^jobs:\s*$/m));
@@ -113,6 +123,7 @@ for (const jobName of [
   'ios-consumer-negative',
   'android-consumer-positive',
   'android-consumer-negative',
+  'android-release-validation',
 ]) {
   const job = requireJob(jobName);
   assert.match(
@@ -121,6 +132,22 @@ for (const jobName of [
     `${jobName} must download the release artifact`,
   );
 }
+
+const androidReleaseJob = requireJob('android-release-validation');
+assert.match(androidReleaseJob, /runs-on:\s*macos-14/);
+assert.match(androidReleaseJob, /timeout-minutes:\s*60/);
+assert.match(androidReleaseJob, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
+assert.match(androidReleaseJob, /npm run test:android/);
+assert.match(androidReleaseJob, /npm run lint:android/);
+assert.match(androidReleaseJob, /:apollohg_react-native-prose-editor:assembleRelease/);
+assert.match(androidReleaseJob, /npm run validate:package:android:rn076/);
+assert.match(androidReleaseJob, /reactivecircus\/android-emulator-runner@v2\.38\.0/);
+assert.match(androidReleaseJob, /api-level:\s*24/);
+assert.match(
+  ciWorkflow,
+  /RELEASE_TARBALL="\$tarball" npm run validate:package:android:rn076/,
+  'CI must validate the exact packed artifact against React Native 0.76',
+);
 
 for (const jobName of [
   'security-android',
@@ -158,6 +185,7 @@ for (const dependency of [
   'ios-consumer-negative',
   'android-consumer-positive',
   'android-consumer-negative',
+  'android-release-validation',
 ]) {
   assert.match(
     publishJob,
@@ -190,12 +218,22 @@ assert.match(packedFixtureSource, /ios-consumer/);
 assert.match(packedFixtureSource, /android-consumer/);
 assert.match(packedValidatorSource, /--validate-packed-tarball/);
 assert.match(packedValidatorSource, /--validate-android-tarball/);
+assert.match(packedValidatorSource, /validate-android-rn076-consumer\.sh/);
+assert.equal(rn076ConsumerManifest.dependencies?.['react-native'], '0.76.9');
+assert.equal(rn076ConsumerManifest.dependencies?.react, '18.3.1');
+assert.equal(rn076ConsumerManifest.dependencies?.expo, '~52.0.49');
+assert.match(rn076ValidatorSource, /npm ci --ignore-scripts/);
+assert.match(rn076ValidatorSource, /generate-codegen-artifacts\.js/);
+assert.match(rn076ValidatorSource, /:app:assembleRelease/);
+assert.match(rn076ValidatorSource, /-PnewArchEnabled=true/);
+assert.match(rn076ValidatorSource, /-PreactNativeArchitectures=x86_64/);
 for (const script of [
   'validate:package:contracts',
   'validate:package:ios:positive',
   'validate:package:ios:negative',
   'validate:package:android:positive',
   'validate:package:android:negative',
+  'validate:package:android:rn076',
 ]) {
   assert.equal(
     typeof packageJson.scripts?.[script],
