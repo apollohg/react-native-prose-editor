@@ -71,9 +71,129 @@ class EditorInputConnectionTest {
 
             assertTrue(harness.editText.hasDeferredRustUpdateApplicationForTesting())
             assertEquals("Alph", harness.editText.text.toString())
+            assertEquals("Alph", harness.editText.authorizedTextForTesting())
         } finally {
             harness.adapter.destroy()
         }
+    }
+
+    @Test
+    fun `plain backspace does not authorize optimistic text before Rust accepts it`() {
+        val harness = externalCompositionHarness("Alpha")
+        try {
+            val listener = RecordingEditorListener()
+            harness.editText.editorListener = listener
+            harness.editText.setSelection(5)
+            harness.backend.nextRenderUpdateResult = EditorV2CallResult.Err(
+                EditorV2Error("render", "RENDER_FAILED", "transient"),
+            )
+            var authorizedDuringNativeIntent: String? = null
+            harness.backend.onApplyNativeIntent = {
+                authorizedDuringNativeIntent = harness.editText.authorizedTextForTesting()
+            }
+            val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+            assertTrue(inputConnection.deleteSurroundingText(1, 0))
+
+            assertEquals("Alph", harness.editText.text.toString())
+            assertEquals("Alpha", authorizedDuringNativeIntent)
+            assertEquals("Alph", harness.editText.authorizedTextForTesting())
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("Alph", harness.editText.text.toString())
+            assertEquals("Alph", harness.editText.authorizedTextForTesting())
+            assertEquals(4, harness.editText.selectionStart)
+            assertEquals(4, harness.editText.selectionEnd)
+            assertEquals(1, listener.receivedUpdates.size)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `plain backspace restores authoritative text when native intent is rejected`() {
+        val harness = externalCompositionHarness("Alpha")
+        try {
+            harness.editText.setSelection(5)
+            harness.backend.nextApplyNativeIntentResult = EditorV2CallResult.Err(
+                EditorV2Error("operation", "MUTATION_REJECTED", "rejected"),
+            )
+            val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+            assertTrue(inputConnection.deleteSurroundingText(1, 0))
+
+            assertEquals("Alpha", harness.editText.text.toString())
+            assertEquals("Alpha", harness.editText.authorizedTextForTesting())
+            assertEquals(5, harness.editText.selectionStart)
+            assertEquals(5, harness.editText.selectionEnd)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `plain backspace adopts Rust selection when position epoch is recovered`() {
+        val harness = externalCompositionHarness("Alpha")
+        try {
+            harness.editText.setSelection(5)
+            val session = harness.backend.sessions.getValue(harness.editorId)
+            session.anchor = 2
+            session.head = 2
+            session.positionEpochs.clear()
+            val inputConnection = harness.editText.onCreateInputConnection(EditorInfo())!!
+
+            assertTrue(inputConnection.deleteSurroundingText(1, 0))
+
+            assertEquals("Alpha", harness.editText.text.toString())
+            assertEquals("Alpha", harness.editText.authorizedTextForTesting())
+            assertEquals(2, harness.editText.selectionStart)
+            assertEquals(2, harness.editText.selectionEnd)
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `plain input recovery falls back when an incremental render cannot apply`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyRenderJSON(
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("type", "blockStart")
+                        .put("nodeType", "paragraph")
+                        .put("depth", 0),
+                )
+                .put(
+                    JSONObject()
+                        .put("type", "textRun")
+                        .put("text", "Alpha")
+                        .put("marks", JSONArray()),
+                )
+                .put(JSONObject().put("type", "blockEnd"))
+                .toString(),
+        )
+        editText.setSelection(5)
+        val authoritative = editText.captureAuthoritativeInputSnapshotForEditor()
+        editText.runWithTransientInputMutationGuard {
+            editText.text!!.delete(4, 5)
+            true
+        }
+        val patchOnlyRecovery = JSONObject()
+            .put(
+                "renderPatch",
+                JSONObject()
+                    .put("startIndex", 0)
+                    .put("deleteCount", 1)
+                    .put("renderBlocks", JSONArray().put(paragraphRenderBlock("Alpha"))),
+            )
+            .toString()
+
+        editText.restoreAuthoritativeInputForEditor(authoritative, patchOnlyRecovery)
+
+        assertEquals("Alpha", editText.text.toString())
+        assertEquals("Alpha", editText.authorizedTextForTesting())
+        assertEquals(5, editText.selectionStart)
+        assertEquals(5, editText.selectionEnd)
     }
 
     @Test
@@ -919,6 +1039,30 @@ class EditorInputConnectionTest {
         assertEquals(listOf(resultJson), listener.externalCompositionEnds)
         assertEquals(1, adapterErrors.size)
         assertEquals("POSITION_EPOCH_INVALID", adapterErrors.single().code)
+    }
+
+    @Test
+    fun `external composition remains committed after post mutation render recovery`() {
+        val harness = externalCompositionHarness("abc")
+        val listener = RecordingEditorListener()
+        harness.editText.editorListener = listener
+        harness.editText.setSelection(1, 2)
+        harness.editText.beginExternalTextComposition("speech-render-recovery")
+        harness.editText.updateExternalTextComposition("speech-render-recovery", "Y")
+        harness.backend.nextRenderUpdateResult = EditorV2CallResult.Err(
+            EditorV2Error("render", "RENDER_FAILED", "transient"),
+        )
+
+        val resultJson = harness.editText.commitExternalTextComposition(
+            "speech-render-recovery",
+            "Y",
+        )
+
+        assertEquals("committed", JSONObject(resultJson).getString("outcome"))
+        assertEquals("aYc", harness.editText.text.toString())
+        assertEquals("aYc", harness.backend.sessions.getValue(harness.editorId).text.toString())
+        assertEquals(1, listener.receivedUpdates.size)
+        assertEquals(listOf(resultJson), listener.externalCompositionEnds)
     }
 
     @Test

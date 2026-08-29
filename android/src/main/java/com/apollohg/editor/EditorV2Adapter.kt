@@ -664,7 +664,7 @@ internal class EditorV2Adapter private constructor(
             nativeOwnerId
         }
         ownerId?.let { backend.releaseNativeBinding(editorId, it) }
-        return refreshInternal(null)
+        return refreshInternal(null, stripViewSelection = false)
     }
 
     override fun currentStateJson(): String? =
@@ -806,7 +806,7 @@ internal class EditorV2Adapter private constructor(
         }
         if (nativeOwnerId != null) {
             val previousDocumentRevision = baseDocumentRevision
-            val update = performNativeIntent(nativeIntent("setSelection", anchor, head))?.updateJson
+            val update = performNativeIntent(nativeIntent("setSelection", anchor, head)).updateJsonOrNull()
                 ?: return null
             val mapping = textDocumentSelection(update) ?: return null
             publishCollaborationSelection(mapping[0], mapping[1])
@@ -868,7 +868,7 @@ internal class EditorV2Adapter private constructor(
         if (destroyed) return null
         if (nativeOwnerId != null) {
             val previousDocumentRevision = baseDocumentRevision
-            val update = performNativeIntent(nativeIntent("setSelection", anchor, head))?.updateJson
+            val update = performNativeIntent(nativeIntent("setSelection", anchor, head)).updateJsonOrNull()
                 ?: return null
             val mapping = textDocumentSelection(update) ?: return update
             publishCollaborationSelection(mapping[0], mapping[1])
@@ -989,23 +989,19 @@ internal class EditorV2Adapter private constructor(
         return null
     }
 
-    internal data class NativeMutationRender(
-        val updateJson: String,
-        val changed: Boolean,
-        val documentChanged: Boolean,
-    )
-
     private fun performNativeIntent(
         intent: JSONObject,
         reportPositionEpochInvalid: Boolean = false,
-    ): NativeMutationRender? {
+    ): EditorV2NativeIntentResult {
         if (destroyed) {
             emit(destroyedError())
-            return null
+            return EditorV2NativeIntentResult.Rejected
         }
-        val ownerId = nativeOwnerId ?: return null
-        if (positionEpoch == null && refreshInternal(null, stripViewSelection = false) == null) return null
-        val epoch = positionEpoch ?: return null
+        val ownerId = nativeOwnerId ?: return EditorV2NativeIntentResult.Rejected
+        if (positionEpoch == null && refreshInternal(null, stripViewSelection = false) == null) {
+            return EditorV2NativeIntentResult.Rejected
+        }
+        val epoch = positionEpoch ?: return EditorV2NativeIntentResult.Rejected
         val result = callWithEnvelope(
             JSONObject()
                 .put("ownerId", ownerId)
@@ -1017,49 +1013,74 @@ internal class EditorV2Adapter private constructor(
             is EditorV2CallResult.Err -> {
                 if (result.error.code == "POSITION_EPOCH_INVALID") {
                     debugNotes.add("position-epoch-refresh")
-                    refreshInternal(null, stripViewSelection = false)
+                    val recovery = refreshInternal(null, stripViewSelection = false)
                     if (reportPositionEpochInvalid) emit(result.error)
+                    if (recovery != null) {
+                        EditorV2NativeIntentResult.Recovered(recovery)
+                    } else {
+                        EditorV2NativeIntentResult.Rejected
+                    }
                 } else {
                     emit(result.error)
+                    EditorV2NativeIntentResult.Rejected
                 }
-                null
             }
             is EditorV2CallResult.Ok -> {
                 val outcome = parseMutationOutcome(result.value)
                 if (outcome == null) {
                     emit(contractError("v2 native intent outcome violates the frozen shape"))
-                    return null
+                    return EditorV2NativeIntentResult.Rejected
                 }
-                val changed = when (outcome) {
-                    is MutationOutcome.Transaction -> {
-                        baseDocumentRevision = outcome.revision
-                        outcome.changed
-                    }
-                    is MutationOutcome.NotApplicable -> false
-                    is MutationOutcome.Replacement -> {
-                        baseDocumentRevision = outcome.revision
-                        outcome.changed
-                    }
+                val resultObject = try {
+                    JSONObject(result.value)
+                } catch (_: Exception) {
+                    emit(contractError("v2 native intent outcome violates the frozen shape"))
+                    return EditorV2NativeIntentResult.Rejected
                 }
                 val documentChanged = when (outcome) {
                     MutationOutcome.NotApplicable -> false
                     is MutationOutcome.Transaction,
-                    is MutationOutcome.Replacement -> try {
-                        JSONObject(result.value).getBoolean("documentChanged")
-                    } catch (error: Exception) {
-                        emit(contractError("v2 native intent outcome violates the frozen shape"))
-                        return null
-                    }
+                    is MutationOutcome.Replacement ->
+                        exactBool(resultObject.opt("documentChanged")) ?: run {
+                            emit(contractError("v2 native intent outcome violates the frozen shape"))
+                            return EditorV2NativeIntentResult.Rejected
+                        }
+                }
+                val changed = when (outcome) {
+                    is MutationOutcome.Transaction -> outcome.changed
+                    is MutationOutcome.NotApplicable -> false
+                    is MutationOutcome.Replacement -> outcome.changed
                 }
                 invalidateCachedAtomicState(null)
-                val update = refreshInternal(null, stripViewSelection = false) ?: return null
+                val update = refreshInternal(null, stripViewSelection = false)
+                if (update == null) {
+                    val recovery = recoverNativeRender()
+                    if (recovery != null) {
+                        if (changed) {
+                            publishCachedCollaborationSelection()
+                            notifyCollaborationMutation()
+                        }
+                        return EditorV2NativeIntentResult.Applied(
+                            EditorV2NativeMutationRender(recovery, changed, documentChanged),
+                        )
+                    }
+                    return EditorV2NativeIntentResult.Rejected
+                }
                 if (changed) {
                     publishCachedCollaborationSelection()
                     notifyCollaborationMutation()
                 }
-                NativeMutationRender(update, changed, documentChanged)
+                EditorV2NativeIntentResult.Applied(
+                    EditorV2NativeMutationRender(update, changed, documentChanged),
+                )
             }
         }
+    }
+
+    private fun EditorV2NativeIntentResult.updateJsonOrNull(): String? = when (this) {
+        is EditorV2NativeIntentResult.Applied -> render.updateJson
+        is EditorV2NativeIntentResult.Recovered -> updateJson
+        EditorV2NativeIntentResult.Rejected -> null
     }
 
     private fun nativeIntent(type: String, anchor: Int, head: Int): JSONObject =
@@ -1239,7 +1260,7 @@ internal class EditorV2Adapter private constructor(
         if (nativeOwnerId != null) {
             return performNativeIntent(
                 nativeIntent("insertText", atScalarPos, atScalarPos).put("text", text)
-            )?.updateJson
+            ).updateJsonOrNull()
         }
         val postCaret = atScalarPos + text.codePointCount(0, text.length)
         return performMutation(
@@ -1260,7 +1281,7 @@ internal class EditorV2Adapter private constructor(
         if (nativeOwnerId != null) {
             return performNativeIntent(
                 nativeIntent("replaceSelectionText", scalarFrom, scalarTo).put("text", text)
-            )?.updateJson
+            ).updateJsonOrNull()
         }
         val postCaret = scalarFrom + text.codePointCount(0, text.length)
         // A range-replacing commit (autocorrect, paste-over-selection, IME
@@ -1282,12 +1303,12 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
-    internal fun replaceTextRangeWithNativeOutcome(
+    override fun replaceTextRangeNative(
         scalarFrom: Int,
         scalarTo: Int,
         text: String,
-    ): NativeMutationRender? {
-        if (nativeOwnerId == null) return null
+    ): EditorV2NativeIntentResult {
+        if (nativeOwnerId == null) return EditorV2NativeIntentResult.Rejected
         if (text.isEmpty()) {
             val clampedFrom = clampScalar(scalarFrom)
             val clampedTo = clampScalar(scalarTo)
@@ -1315,19 +1336,46 @@ internal class EditorV2Adapter private constructor(
     }
 
     private fun refreshUnchangedNativeOutcome(
-        outcome: NativeMutationRender?,
-    ): NativeMutationRender? {
-        if (outcome == null) return null
-        if (outcome.documentChanged) return outcome
-        val ownerId = nativeOwnerId ?: return null
+        outcome: EditorV2NativeIntentResult,
+    ): EditorV2NativeIntentResult {
+        val applied = outcome as? EditorV2NativeIntentResult.Applied ?: return outcome
+        if (applied.render.documentChanged) return outcome
+        val ownerId = nativeOwnerId ?: return EditorV2NativeIntentResult.Rejected
         val updateJson = try {
             nativeOwnerId = null
             refreshInternal(null, stripViewSelection = false)
         } finally {
             nativeOwnerId = ownerId
         }
-        if (updateJson == null || !pinCurrentPositionEpoch(baseDocumentRevision)) return null
-        return outcome.copy(updateJson = updateJson)
+        if (updateJson == null || !pinCurrentPositionEpoch(baseDocumentRevision)) {
+            return recoverNativeRender()
+                ?.let { recovery ->
+                    EditorV2NativeIntentResult.Applied(
+                        applied.render.copy(updateJson = recovery),
+                    )
+                }
+                ?: EditorV2NativeIntentResult.Rejected
+        }
+        return EditorV2NativeIntentResult.Applied(
+            applied.render.copy(updateJson = updateJson),
+        )
+    }
+
+    override fun deleteScalarRangeNative(
+        scalarFrom: Int,
+        scalarTo: Int,
+    ): EditorV2NativeIntentResult {
+        if (nativeOwnerId == null) return EditorV2NativeIntentResult.Rejected
+        val clampedFrom = clampScalar(scalarFrom)
+        val clampedTo = clampScalar(scalarTo)
+        val intent = if (clampedFrom >= clampedTo) {
+            nativeIntent("setSelection", clampedFrom, clampedFrom)
+        } else {
+            nativeIntent("deleteRange", clampedFrom, clampedTo)
+        }
+        return refreshUnchangedNativeOutcome(
+            performNativeIntent(intent, reportPositionEpochInvalid = true),
+        )
     }
 
     override fun deleteScalarRange(scalarFrom: Int, scalarTo: Int): String? {
@@ -1335,7 +1383,7 @@ internal class EditorV2Adapter private constructor(
         val clampedTo = clampScalar(scalarTo)
         if (clampedFrom >= clampedTo) return currentStateJson()
         if (nativeOwnerId != null) {
-            return performNativeIntent(nativeIntent("deleteRange", clampedFrom, clampedTo))?.updateJson
+            return deleteScalarRangeNative(clampedFrom, clampedTo).updateJsonOrNull()
         }
         return performMutation(
             postSelectionMirror = intArrayOf(clampedFrom, clampedFrom),
@@ -1361,7 +1409,7 @@ internal class EditorV2Adapter private constructor(
 
     override fun deleteBackwardAtSelection(anchor: Int, head: Int): String? {
         if (nativeOwnerId != null) {
-            return performNativeIntent(nativeIntent("deleteBackward", anchor, head))?.updateJson
+            return performNativeIntent(nativeIntent("deleteBackward", anchor, head)).updateJsonOrNull()
         }
         val postCaret = if (anchor == head) (anchor - 1).coerceAtLeast(0) else minOf(anchor, head)
         return performMutation(
@@ -1377,8 +1425,13 @@ internal class EditorV2Adapter private constructor(
 
     override fun splitBlockAt(scalarPos: Int): EditorV2SplitRender? =
         if (nativeOwnerId != null) {
-            performNativeIntent(nativeIntent("splitBlock", scalarPos, scalarPos))
-                ?.let { EditorV2SplitRender(it.updateJson, it.changed) }
+            when (val outcome = performNativeIntent(nativeIntent("splitBlock", scalarPos, scalarPos))) {
+                is EditorV2NativeIntentResult.Applied ->
+                    EditorV2SplitRender(outcome.render.updateJson, outcome.render.changed)
+                is EditorV2NativeIntentResult.Recovered ->
+                    EditorV2SplitRender(outcome.updateJson, false)
+                EditorV2NativeIntentResult.Rejected -> null
+            }
         } else performSplitMutation(
             preSelection = intArrayOf(scalarPos, scalarPos),
             postSelectionMirror = intArrayOf(scalarPos + 1, scalarPos + 1),
@@ -1390,8 +1443,13 @@ internal class EditorV2Adapter private constructor(
 
     override fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): EditorV2SplitRender? =
         if (nativeOwnerId != null) {
-            performNativeIntent(nativeIntent("deleteAndSplit", scalarFrom, scalarTo))
-                ?.let { EditorV2SplitRender(it.updateJson, it.changed) }
+            when (val outcome = performNativeIntent(nativeIntent("deleteAndSplit", scalarFrom, scalarTo))) {
+                is EditorV2NativeIntentResult.Applied ->
+                    EditorV2SplitRender(outcome.render.updateJson, outcome.render.changed)
+                is EditorV2NativeIntentResult.Recovered ->
+                    EditorV2SplitRender(outcome.updateJson, false)
+                EditorV2NativeIntentResult.Rejected -> null
+            }
         } else performSplitMutation(
             preSelection = intArrayOf(scalarFrom, scalarTo),
             postSelectionMirror = intArrayOf(scalarFrom + 1, scalarFrom + 1),
@@ -1471,7 +1529,7 @@ internal class EditorV2Adapter private constructor(
         if (nativeOwnerId != null) {
             performNativeIntent(
                 nativeIntent("command", anchor, head).put("command", command)
-            )?.updateJson
+            ).updateJsonOrNull()
         } else performMutation(
             preSelection = intArrayOf(anchor, head),
             postSelectionMirror = intArrayOf(anchor, head),

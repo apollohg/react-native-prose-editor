@@ -405,6 +405,69 @@ class EditorV2AdapterTest {
     }
 
     @Test
+    fun `native deletion distinguishes epoch recovery from rejection`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>abcd</p>")
+        adapter.claimNativeBindingIfUnowned(99L)
+        assertNotNull(adapter.currentStateJson())
+        val session = sessionOf(adapter)
+        session.anchor = 2
+        session.head = 2
+        session.positionEpochs.clear()
+
+        val outcome = adapter.deleteScalarRangeNative(1, 2)
+
+        assertTrue(outcome is EditorV2NativeIntentResult.Recovered)
+        val recovery = (outcome as EditorV2NativeIntentResult.Recovered).updateJson
+        assertEquals("abcd", renderedText(recovery))
+        val selection = JSONObject(recovery).getJSONObject("selection")
+        assertEquals(2, selection.getInt("anchorScalar"))
+        assertEquals(2, selection.getInt("headScalar"))
+    }
+
+    @Test
+    fun `native deletion rejects backend errors and malformed outcomes once`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>abcd</p>")
+        adapter.claimNativeBindingIfUnowned(99L)
+        assertNotNull(adapter.currentStateJson())
+        val errors = mutableListOf<EditorV2Error>()
+        adapter.onAutonomousError = errors::add
+
+        backend.nextApplyNativeIntentResult = EditorV2CallResult.Err(
+            EditorV2Error("operation", "MUTATION_REJECTED", "rejected"),
+        )
+        assertEquals(EditorV2NativeIntentResult.Rejected, adapter.deleteScalarRangeNative(1, 2))
+        assertEquals(listOf("MUTATION_REJECTED"), errors.map { it.code })
+
+        errors.clear()
+        backend.nextApplyNativeIntentResult = EditorV2CallResult.Ok("{}")
+        assertEquals(EditorV2NativeIntentResult.Rejected, adapter.deleteScalarRangeNative(1, 2))
+        assertEquals(listOf("FFI_RESULT_INVALID"), errors.map { it.code })
+    }
+
+    @Test
+    fun `native deletion remains applied after post mutation render recovery`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>abcd</p>")
+        adapter.claimNativeBindingIfUnowned(99L)
+        assertNotNull(adapter.currentStateJson())
+        backend.nextRenderUpdateResult = EditorV2CallResult.Err(
+            EditorV2Error("render", "RENDER_FAILED", "transient"),
+        )
+
+        val outcome = adapter.deleteScalarRangeNative(1, 2)
+
+        assertTrue(outcome is EditorV2NativeIntentResult.Applied)
+        val recovery = (outcome as EditorV2NativeIntentResult.Applied).render.updateJson
+        assertTrue(outcome.render.documentChanged)
+        assertEquals("acd", renderedText(recovery))
+        val selection = JSONObject(recovery).getJSONObject("selection")
+        assertEquals(1, selection.getInt("anchorScalar"))
+        assertEquals(1, selection.getInt("headScalar"))
+    }
+
+    @Test
     fun `commands route as typed command envelopes at the synced selection`() {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>ab</p>")

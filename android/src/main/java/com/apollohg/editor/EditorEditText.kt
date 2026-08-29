@@ -67,6 +67,12 @@ class EditorEditText @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = android.R.attr.editTextStyle
 ) : AppCompatEditText(context, attrs, defStyleAttr) {
+
+    internal data class AuthoritativeInputSnapshot(
+        val renderedText: CharSequence,
+        val selectionStart: Int,
+        val selectionEnd: Int,
+    )
     data class ApplyUpdateTrace(
         val attemptedPatch: Boolean,
         val usedPatch: Boolean,
@@ -426,6 +432,7 @@ class EditorEditText @JvmOverloads constructor(
     fun lastApplyUpdateTrace(): ApplyUpdateTrace? = lastApplyUpdateTraceForTesting
     internal fun hasDeferredRustUpdateApplicationForTesting(): Boolean = deferredRustUpdateJSON != null
     internal fun inputConnectionGenerationForTesting(): Long = inputConnectionGeneration
+    internal fun authorizedTextForTesting(): String = lastAuthorizedText
 
     internal fun applyRustUpdateJSONForTesting(updateJSON: String) {
         applyRustUpdateJSON(updateJSON)
@@ -1750,14 +1757,21 @@ class EditorEditText @JvmOverloads constructor(
             state.replacementEndUtf16,
             state.startingAuthorizedText
         )
-        val nativeOutcome = (driver as? EditorV2Adapter)?.replaceTextRangeWithNativeOutcome(
-            scalarFrom,
-            scalarTo,
-            state.latestText,
-        )
-        val updateJSON = nativeOutcome?.updateJson
-            ?: if (driver is EditorV2Adapter) null
-            else driver?.replaceTextRange(scalarFrom, scalarTo, state.latestText)
+        val nativeOutcome = if (driver is EditorV2Adapter) {
+            driver.replaceTextRangeNative(scalarFrom, scalarTo, state.latestText)
+        } else {
+            null
+        }
+        if (nativeOutcome is EditorV2NativeIntentResult.Recovered) {
+            applyUpdateJSON(nativeOutcome.updateJson, notifyListener = false)
+            return failExternalTextCompositionCommit(state, cause)
+        }
+        val updateJSON = when (nativeOutcome) {
+            is EditorV2NativeIntentResult.Applied -> nativeOutcome.render.updateJson
+            EditorV2NativeIntentResult.Rejected -> null
+            is EditorV2NativeIntentResult.Recovered -> null
+            null -> driver?.replaceTextRange(scalarFrom, scalarTo, state.latestText)
+        }
         if (updateJSON == null) {
             val recoveryJSON = (driver as? EditorV2Adapter)?.recoverNativeRender()
                 ?: if (driver is EditorV2Adapter) null else driver?.currentStateJson()
@@ -1768,7 +1782,9 @@ class EditorEditText @JvmOverloads constructor(
         }
 
         applyUpdateJSON(updateJSON, notifyListener = false)
-        val documentChanged = nativeOutcome?.documentChanged
+        val documentChanged = (nativeOutcome as? EditorV2NativeIntentResult.Applied)
+            ?.render
+            ?.documentChanged
             ?: (text?.toString() != state.startingAuthorizedText)
         if (documentChanged) {
             editorListener?.onEditorUpdate(updateJSON)
@@ -3471,8 +3487,58 @@ class EditorEditText @JvmOverloads constructor(
         )
     }
 
-    internal fun deleteScalarRangeForPendingImeOperationForEditor(scalarFrom: Int, scalarTo: Int) {
-        deleteRangeInRust(scalarFrom, scalarTo)
+    internal fun captureAuthoritativeInputSnapshotForEditor(): AuthoritativeInputSnapshot =
+        AuthoritativeInputSnapshot(
+            renderedText = SpannableStringBuilder(lastAuthorizedRenderedText ?: lastAuthorizedText),
+            selectionStart = selectionStart.coerceAtLeast(0),
+            selectionEnd = selectionEnd.coerceAtLeast(0),
+        )
+
+    internal fun deleteScalarRangeForPendingImeOperationForEditor(
+        scalarFrom: Int,
+        scalarTo: Int,
+    ): EditorV2NativeIntentResult? {
+        onDeleteRangeInRustForTesting?.let { callback ->
+            runWithDeferredRustUpdateApplication {
+                callback(scalarFrom, scalarTo)
+            }
+            return null
+        }
+        return v2Driver?.deleteScalarRangeNative(scalarFrom, scalarTo)
+    }
+
+    internal fun promoteOptimisticInputForEditor(
+        render: EditorV2NativeMutationRender,
+        logicalCursorAfter: Int,
+    ) {
+        authorizeCurrentVisibleTextForPendingImeOperationForEditor(logicalCursorAfter)
+        pendingOptimisticRenderText = text?.toString()
+        applyRustUpdateJSON(render.updateJson)
+    }
+
+    internal fun restoreAuthoritativeInputForEditor(
+        snapshot: AuthoritativeInputSnapshot,
+        recoveryUpdateJson: String? = null,
+    ) {
+        pendingOptimisticRenderText = null
+        cancelDeferredRustUpdateApplication()
+        if (recoveryUpdateJson != null) {
+            if (applyUpdateJSON(recoveryUpdateJson, notifyListener = false)) return
+        }
+        val wasApplyingRustState = isApplyingRustState
+        isApplyingRustState = true
+        beginBatchEdit()
+        try {
+            setText(snapshot.renderedText)
+            val length = text?.length ?: 0
+            setSelection(
+                snapshot.selectionStart.coerceIn(0, length),
+                snapshot.selectionEnd.coerceIn(0, length),
+            )
+        } finally {
+            endBatchEdit()
+            isApplyingRustState = wasApplyingRustState
+        }
     }
 
     internal fun handleStructuralBackspace() {

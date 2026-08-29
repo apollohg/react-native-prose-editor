@@ -15,6 +15,18 @@ internal data class EditorV2SelectionSync(
     val refreshedUpdateJson: String?,
 )
 
+internal data class EditorV2NativeMutationRender(
+    val updateJson: String,
+    val changed: Boolean,
+    val documentChanged: Boolean,
+)
+
+internal sealed interface EditorV2NativeIntentResult {
+    data class Applied(val render: EditorV2NativeMutationRender) : EditorV2NativeIntentResult
+    data class Recovered(val updateJson: String) : EditorV2NativeIntentResult
+    data object Rejected : EditorV2NativeIntentResult
+}
+
 /**
  * The v2 driver: the ONLY engine path for views.
  *
@@ -27,6 +39,12 @@ internal interface EditorV2Driver {
     fun insertText(text: String, atScalarPos: Int): String?
     fun replaceTextRange(scalarFrom: Int, scalarTo: Int, text: String): String?
     fun deleteScalarRange(scalarFrom: Int, scalarTo: Int): String?
+    fun replaceTextRangeNative(
+        scalarFrom: Int,
+        scalarTo: Int,
+        text: String,
+    ): EditorV2NativeIntentResult
+    fun deleteScalarRangeNative(scalarFrom: Int, scalarTo: Int): EditorV2NativeIntentResult
     fun deleteBackwardAtSelection(anchor: Int, head: Int): String?
     fun splitBlockAt(scalarPos: Int): EditorV2SplitRender?
     fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): EditorV2SplitRender?

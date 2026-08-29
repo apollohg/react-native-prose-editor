@@ -44,6 +44,9 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         EditorV2CallResult.Ok("""{"outboundChanged":false}""")
     var lastAwarenessSelectionJson: String? = null
     var nextPinPositionEpochResult: EditorV2CallResult<String>? = null
+    var nextApplyNativeIntentResult: EditorV2CallResult<String>? = null
+    var nextRenderUpdateResult: EditorV2CallResult<String>? = null
+    var onApplyNativeIntent: (() -> Unit)? = null
 
     /** Generation `collaborationDrive` asks the transport to open, if any. */
     var collaborationGenerationToOpen: String? = null
@@ -580,6 +583,10 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         mirrorHead: Int?,
     ): EditorV2CallResult<String> {
         calls.add("renderUpdate")
+        nextRenderUpdateResult?.let { result ->
+            nextRenderUpdateResult = null
+            return result
+        }
         val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
         val text = session.text.toString()
         val blocks = JSONArray()
@@ -690,6 +697,11 @@ internal class FakeEditorV2Backend : EditorV2Backend {
 
     override fun applyNativeIntent(editorId: String, requestJson: String): EditorV2CallResult<String> {
         calls.add("applyNativeIntent")
+        onApplyNativeIntent?.invoke()
+        nextApplyNativeIntentResult?.let { result ->
+            nextApplyNativeIntentResult = null
+            return result
+        }
         val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
         val request = JSONObject(requestJson)
         val requestId = canonicalRequestId(request)

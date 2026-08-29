@@ -769,18 +769,39 @@ class EditorInputConnection(
             "before=$beforeLength after=$afterLength codePoints=$deleteInCodePoints utf16=$beforeUtf16Length,$afterUtf16Length scalar=${deleteRange?.scalarStart}..${deleteRange?.scalarEnd}"
         )
 
+        val authoritative = editorView.captureAuthoritativeInputSnapshotForEditor()
         val didDeleteVisibleText = editorView.runWithTransientInputMutationGuard {
             deleteVisibleTextInRawRange(rawDeleteStart, rawDeleteEnd, imeDeleteStart)
         }
         if (didDeleteVisibleText && deleteRange != null) {
-            editorView.authorizeCurrentVisibleTextForPendingImeOperationForEditor(
-                logicalCursorAfter = deleteRange.scalarStart
-            )
-            editorView.runWithDeferredRustUpdateApplication {
-                editorView.deleteScalarRangeForPendingImeOperationForEditor(
+            when (
+                val outcome = editorView.deleteScalarRangeForPendingImeOperationForEditor(
                     deleteRange.scalarStart,
-                    deleteRange.scalarEnd
+                    deleteRange.scalarEnd,
                 )
+            ) {
+                is EditorV2NativeIntentResult.Applied -> {
+                    editorView.runWithDeferredRustUpdateApplication {
+                        editorView.promoteOptimisticInputForEditor(
+                            outcome.render,
+                            deleteRange.scalarStart,
+                        )
+                    }
+                }
+                is EditorV2NativeIntentResult.Recovered -> {
+                    editorView.restoreAuthoritativeInputForEditor(
+                        authoritative,
+                        outcome.updateJson,
+                    )
+                }
+                EditorV2NativeIntentResult.Rejected -> {
+                    editorView.restoreAuthoritativeInputForEditor(authoritative)
+                }
+                null -> {
+                    editorView.authorizeCurrentVisibleTextForPendingImeOperationForEditor(
+                        logicalCursorAfter = deleteRange.scalarStart,
+                    )
+                }
             }
         }
         editorView.recordImeTraceForTesting(
