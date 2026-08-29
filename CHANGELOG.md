@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.1] - 2026-08-30
+
+### Added
+
+- Added an API 24 instrumentation smoke test and a packaged React Native 0.76/Expo 52 New Architecture release consumer to the Android CI and publish-validation matrices.
+
+### Fixed
+
+- Made Rust-owned Android content and selection authoritative across external renders, rejected native input, IME composition, host detach, caret geometry, resize handles, and final Fabric layout handoff.
+- Preserved native collaboration transport state and protocol boundaries across editor host lifecycles.
+- Bounded decoded-image ownership by process, viewer, and request limits; constrained approximate decoder results before admission; and exposed `maxDecodedBytes` consistently to Android image loading.
+- Kept Android viewer semantics actionable and synchronized viewer fonts, dynamic appearance invalidation, and toolbar border rendering.
+- Preserved API 24 runtime compatibility and restored package compatibility with React Native 0.76 and Expo 52 consumers while retaining current React Native and Expo support.
+
 ## [1.0.0] - 2026-08-28
 
 ### Changed
