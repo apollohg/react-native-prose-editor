@@ -17,11 +17,16 @@ import com.apollohg.editor.viewer.ProseLayoutKey
 class AndroidApi24SmokeActivity : Activity() {
     private lateinit var editor: EditorEditText
     private lateinit var viewer: PreparedProseDrawingView
+    private var viewerActivations = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         editor = EditorEditText(this)
         viewer = PreparedProseDrawingView(this).apply {
+            onInteractionActivated = {
+                viewerActivations += 1
+                true
+            }
             install(preparedLayout())
         }
         setContentView(FrameLayout(this).apply {
@@ -45,10 +50,47 @@ class AndroidApi24SmokeActivity : Activity() {
         check(editor.text?.isEmpty() == true)
         editor.draw(Canvas(Bitmap.createBitmap(320, 96, Bitmap.Config.ARGB_8888)))
 
+        runViewerAccessibilityAssertions()
+    }
+
+    fun runViewerAccessibilityAssertions() {
         check(viewer.width == 200)
         viewer.draw(Canvas(Bitmap.createBitmap(200, 48, Bitmap.Config.ARGB_8888)))
         val node = requireNotNull(viewer.accessibilityNodeProvider.createAccessibilityNodeInfo(1))
         check(AccessibilityNodeInfoCompat.wrap(node).isScreenReaderFocusable)
+        check(node.isVisibleToUser)
+        val clippedNode = requireNotNull(
+            viewer.accessibilityNodeProvider.createAccessibilityNodeInfo(2)
+        )
+        check(!clippedNode.isVisibleToUser)
+        check(
+            !viewer.accessibilityNodeProvider.performAction(
+                2,
+                android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK,
+                null,
+            )
+        )
+        check(
+            !viewer.accessibilityNodeProvider.performAction(
+                2,
+                android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        check(viewerActivations == 0)
+        check(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        viewer.visibility = android.view.View.INVISIBLE
+        val hiddenNode = requireNotNull(
+            viewer.accessibilityNodeProvider.createAccessibilityNodeInfo(1)
+        )
+        check(!hiddenNode.isVisibleToUser)
+        check(!hiddenNode.isAccessibilityFocused)
     }
 
     private fun preparedLayout() = PreparedProseLayout(
@@ -73,6 +115,13 @@ class AndroidApi24SmokeActivity : Activity() {
                 visibleText = "link",
                 label = "link",
             ),
+            PreparedProseInteraction(
+                kind = PreparedProseInteraction.Kind.LINK,
+                rects = listOf(Rect(12, 56, 80, 80)),
+                href = "https://example.test/clipped",
+                visibleText = "clipped",
+                label = "clipped",
+            ),
         ),
         accessibilityNodes = listOf(
             PreparedProseAccessibilityNode(
@@ -80,6 +129,12 @@ class AndroidApi24SmokeActivity : Activity() {
                 role = PreparedProseAccessibilityNode.Role.LINK,
                 label = "link",
                 bounds = Rect(12, 0, 80, 40),
+            ),
+            PreparedProseAccessibilityNode(
+                interactionIndex = 1,
+                role = PreparedProseAccessibilityNode.Role.LINK,
+                label = "clipped",
+                bounds = Rect(12, 56, 80, 80),
             ),
         ),
         retainedBytes = 0,

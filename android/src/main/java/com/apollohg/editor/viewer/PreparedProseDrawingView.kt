@@ -10,6 +10,7 @@ import android.util.AttributeSet
 import android.view.View
 import android.view.MotionEvent
 import android.view.ViewConfiguration
+import android.view.ViewTreeObserver
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
@@ -36,19 +37,30 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         get() = synchronized(imagePixelsLock) { retainedImagePixelsBytes(imagePixels) }
     /** False when a public host owns this view's virtual subtree and notifications. */
     var publishesAccessibilitySubtree: Boolean = true
+    internal var accessibilityVisibilityForTesting: ((Rect) -> Boolean)? = null
     var linkInteractionsEnabled: Boolean = true
         set(value) {
             if (field == value) return
-            field = value
             clearVirtualAccessibilityFocus()
+            field = value
+            announceAccessibilitySubtreeChanged()
+        }
+    var mentionInteractionsEnabled: Boolean = false
+        set(value) {
+            if (field == value) return
+            clearVirtualAccessibilityFocus()
+            field = value
             announceAccessibilitySubtreeChanged()
         }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private var pendingTap: PendingTap? = null
-    private var focusedVirtualId = View.NO_ID
+    private var focusedVirtualNode: FocusedVirtualNode? = null
     private var contentOriginXPx = 0
     private var contentOriginYPx = 0
+    private val scrollChangedListener = ViewTreeObserver.OnScrollChangedListener {
+        reconcileVirtualAccessibilityFocus()
+    }
 
     init {
         DecodedBitmapBudget.shared(context)
@@ -125,16 +137,17 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
             this.contentOriginXPx == contentOriginXPx &&
             this.contentOriginYPx == contentOriginYPx
         ) return
+        clearVirtualAccessibilityFocus()
         preparedLayout = layout
         this.contentOriginXPx = contentOriginXPx
         this.contentOriginYPx = contentOriginYPx
-        clearVirtualAccessibilityFocus()
         if (announceAccessibilitySubtree) announceAccessibilitySubtreeChanged()
         invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        reconcileVirtualAccessibilityFocus()
         val artifact = preparedLayout ?: return
         val saved = canvas.save()
         canvas.translate(contentOriginXPx.toFloat(), contentOriginYPx.toFloat())
@@ -237,12 +250,33 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
+        reconcileVirtualAccessibilityFocus()
         if (width > 0) onUsableMetricsChanged?.invoke()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        viewTreeObserver.addOnScrollChangedListener(scrollChangedListener)
+        reconcileVirtualAccessibilityFocus()
         if (width > 0) onUsableMetricsChanged?.invoke()
+    }
+
+    override fun onDetachedFromWindow() {
+        if (viewTreeObserver.isAlive) {
+            viewTreeObserver.removeOnScrollChangedListener(scrollChangedListener)
+        }
+        clearVirtualAccessibilityFocus()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        reconcileVirtualAccessibilityFocus()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        reconcileVirtualAccessibilityFocus()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -255,7 +289,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         val contentY = event.y - contentOriginYPx
         fun targetAt(): PreparedProseInteraction? = preparedLayout?.interactions?.firstOrNull { interaction ->
             if (contentX < 0f || contentY < 0f) return@firstOrNull false
-            (linkInteractionsEnabled || interaction.kind != PreparedProseInteraction.Kind.LINK) &&
+            interactionEnabled(interaction.kind) &&
                 interaction.rects.any { it.contains(contentX.toInt(), contentY.toInt()) }
         }
         when (event.actionMasked) {
@@ -304,10 +338,10 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
             if (id == View.NO_ID) return AccessibilityNodeInfo.obtain(this@PreparedProseDrawingView).also(::onInitializeAccessibilityNodeInfo)
             val node = nodes().getOrNull(id - 1) ?: return null
             val parentBounds = Rect(node.bounds).apply { offset(contentOriginXPx, contentOriginYPx) }
-            val screen = Rect(parentBounds)
-            val location = IntArray(2)
-            getLocationOnScreen(location)
-            screen.offset(location[0], location[1])
+            val screen = accessibilityScreenBounds(node)
+            val visibleToUser = accessibilityNodeVisibleOnScreen(screen)
+            reconcileVirtualAccessibilityFocus()
+            val identity = identity(node)
             return AccessibilityNodeInfo.obtain().apply {
                 packageName = context.packageName
                 className = android.widget.Button::class.java.name
@@ -318,7 +352,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                 isClickable = true
                 isFocusable = true
                 AndroidApiCompat.setScreenReaderFocusable(this, true)
-                isAccessibilityFocused = id == focusedVirtualId
+                isAccessibilityFocused = focusedVirtualNode?.identity == identity
+                isVisibleToUser = visibleToUser
                 setBoundsInParent(parentBounds)
                 setBoundsInScreen(screen)
                 addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK)
@@ -330,7 +365,13 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         override fun performAction(id: Int, action: Int, arguments: Bundle?): Boolean {
             val node = nodes().getOrNull(id - 1) ?: return false
             return when (action) {
-                AccessibilityNodeInfo.ACTION_CLICK -> preparedLayout?.interactions?.getOrNull(node.interactionIndex)?.let { onInteractionActivated?.invoke(it) ?: false } ?: false
+                AccessibilityNodeInfo.ACTION_CLICK -> if (accessibilityNodeVisible(node)) {
+                    preparedLayout?.interactions?.getOrNull(node.interactionIndex)?.let {
+                        onInteractionActivated?.invoke(it) ?: false
+                    } ?: false
+                } else {
+                    false
+                }
                 AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> requestVirtualAccessibilityFocus(id)
                 AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> clearVirtualAccessibilityFocus(id)
                 else -> false
@@ -338,26 +379,75 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         }
     }
 
-    private fun nodes(): List<PreparedProseAccessibilityNode> = preparedLayout?.accessibilityNodes.orEmpty().filter {
-        linkInteractionsEnabled || it.role != PreparedProseAccessibilityNode.Role.LINK
+    private fun nodes(): List<PreparedProseAccessibilityNode> =
+        preparedLayout?.accessibilityNodes.orEmpty().filter { node ->
+            when (node.role) {
+                PreparedProseAccessibilityNode.Role.LINK -> linkInteractionsEnabled
+                PreparedProseAccessibilityNode.Role.MENTION -> mentionInteractionsEnabled
+            }
+        }
+
+    private fun interactionEnabled(kind: PreparedProseInteraction.Kind): Boolean = when (kind) {
+        PreparedProseInteraction.Kind.LINK -> linkInteractionsEnabled
+        PreparedProseInteraction.Kind.MENTION -> mentionInteractionsEnabled
     }
 
     private fun requestVirtualAccessibilityFocus(id: Int): Boolean {
-        if (nodes().getOrNull(id - 1) == null || focusedVirtualId == id) return false
+        val node = nodes().getOrNull(id - 1) ?: return false
+        if (!accessibilityNodeVisible(node)) return false
+        val identity = identity(node)
+        if (focusedVirtualNode?.identity == identity) return false
         clearVirtualAccessibilityFocus()
-        focusedVirtualId = id
+        focusedVirtualNode = FocusedVirtualNode(id, identity)
         invalidate()
         sendVirtualAccessibilityEvent(id, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED)
         return true
     }
 
-    private fun clearVirtualAccessibilityFocus(id: Int = focusedVirtualId): Boolean {
-        if (id == View.NO_ID || id != focusedVirtualId) return false
-        focusedVirtualId = View.NO_ID
+    private fun clearVirtualAccessibilityFocus(
+        id: Int = focusedVirtualNode?.virtualId ?: View.NO_ID,
+    ): Boolean {
+        val focused = focusedVirtualNode ?: return false
+        if (id == View.NO_ID || id != focused.virtualId) return false
+        focusedVirtualNode = null
         invalidate()
         sendVirtualAccessibilityEvent(id, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
         return true
     }
+
+    private fun reconcileVirtualAccessibilityFocus() {
+        val focused = focusedVirtualNode ?: return
+        val nodes = nodes()
+        val index = nodes.indexOfFirst { identity(it) == focused.identity }
+        if (index < 0 || index + 1 != focused.virtualId) {
+            clearVirtualAccessibilityFocus(focused.virtualId)
+            return
+        }
+        if (!accessibilityNodeVisible(nodes[index])) {
+            clearVirtualAccessibilityFocus(focused.virtualId)
+        }
+    }
+
+    private fun accessibilityNodeVisible(node: PreparedProseAccessibilityNode): Boolean =
+        accessibilityScreenBounds(node).let { bounds ->
+            accessibilityVisibilityForTesting?.invoke(bounds)
+                ?: accessibilityNodeVisibleOnScreen(bounds)
+        }
+
+    private fun accessibilityScreenBounds(node: PreparedProseAccessibilityNode): Rect {
+        val bounds = Rect(node.bounds).apply { offset(contentOriginXPx, contentOriginYPx) }
+        val location = IntArray(2)
+        getLocationOnScreen(location)
+        bounds.offset(location[0], location[1])
+        return bounds
+    }
+
+    private fun identity(node: PreparedProseAccessibilityNode) = AccessibilityNodeIdentity(
+        preparedLayout?.key?.generationIdentity,
+        node.interactionIndex,
+        node.role,
+        node.label,
+    )
 
     // AccessibilityEvent(Int) is API 30; see the node provider above.
     @Suppress("DEPRECATION")
@@ -383,4 +473,52 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         }
         parent?.requestSendAccessibilityEvent(this, event)
     }
+
+    private data class AccessibilityNodeIdentity(
+        val generation: String?,
+        val interactionIndex: Int,
+        val role: PreparedProseAccessibilityNode.Role,
+        val label: String,
+    )
+
+    private data class FocusedVirtualNode(
+        val virtualId: Int,
+        val identity: AccessibilityNodeIdentity,
+    )
+}
+
+internal fun View.accessibilityNodeVisibleOnScreen(screenBounds: Rect): Boolean {
+    val visibleBounds = Rect()
+    val hasGlobalVisibleBounds = getGlobalVisibleRect(visibleBounds)
+    return accessibilityBoundsVisible(
+        screenBounds,
+        visibleBounds.takeIf { hasGlobalVisibleBounds },
+        isShown,
+        windowVisibility == View.VISIBLE,
+        hasVisibleAlpha(),
+    )
+}
+
+internal fun accessibilityBoundsVisible(
+    screenBounds: Rect,
+    globalVisibleBounds: Rect?,
+    shown: Boolean,
+    windowVisible: Boolean,
+    alphaVisible: Boolean,
+): Boolean {
+    if (!shown || !windowVisible || !alphaVisible || globalVisibleBounds?.isEmpty != false) {
+        return false
+    }
+    return Rect(globalVisibleBounds).run {
+        intersect(screenBounds) && !isEmpty
+    }
+}
+
+private fun View.hasVisibleAlpha(): Boolean {
+    var current: View? = this
+    while (current != null) {
+        if (current.alpha <= 0f) return false
+        current = current.parent as? View
+    }
+    return true
 }

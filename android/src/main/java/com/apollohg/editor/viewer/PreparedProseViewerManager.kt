@@ -141,9 +141,13 @@ internal class PreparedProseViewerManager :
         update(view) { collapsesWhenEmpty = value }
 
     override fun setEnableLinkTaps(view: PreparedProseDrawingView, value: Boolean) {
-        // Permission only filters the installed interaction/accessibility
+        // Capability only filters the installed interaction/accessibility
         // nodes. It must not reconcile, acquire, or replace the generation.
         view.linkInteractionsEnabled = value
+    }
+
+    override fun setMentionInteractionsEnabled(view: PreparedProseDrawingView, value: Boolean) {
+        view.mentionInteractionsEnabled = value
     }
 
     override fun setFontEnvironmentRevision(view: PreparedProseDrawingView, value: Int) =

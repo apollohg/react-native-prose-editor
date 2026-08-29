@@ -275,7 +275,8 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
             imagePolicyJson={imagePolicyJson}
             imagesEnabled={renderImages}
             collapsesWhenEmpty={collapseTrailingEmptyParagraphs}
-            enableLinkTaps={enableLinkTaps}
+            enableLinkTaps={enableLinkTaps && onPressLink != null}
+            mentionInteractionsEnabled={mentions?.onPress != null}
             fontEnvironmentRevision={fontEnvironmentRevision}
             onPressLink={onPressLink ? handlePressLink : undefined}
             onPressMention={mentions?.onPress ? handlePressMention : undefined}

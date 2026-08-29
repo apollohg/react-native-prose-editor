@@ -1,7 +1,9 @@
 package com.apollohg.editor.viewer
 
 import android.graphics.Rect
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.apollohg.editor.AndroidApi24SmokeActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -16,6 +18,13 @@ import uniffi.editor_core.FfiViewerMark
  */
 @RunWith(AndroidJUnit4::class)
 class PreparedProseAccessibilityDeviceTest {
+    @Test
+    fun virtual_node_visibility_tracks_window_clipping_and_hidden_ancestors() {
+        ActivityScenario.launch(AndroidApi24SmokeActivity::class.java).use { scenario ->
+            scenario.onActivity(AndroidApi24SmokeActivity::runViewerAccessibilityAssertions)
+        }
+    }
+
     @Test
     fun shaped_bidi_link_uses_discontiguous_rects_in_visual_order() {
         val document = ViewerDocument(

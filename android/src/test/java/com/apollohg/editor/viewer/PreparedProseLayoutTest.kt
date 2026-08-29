@@ -87,6 +87,29 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `direct interactions are inert without a listener`() {
+        val viewer = ProseViewerView(context, testRegistry(CountingLayoutEngine()))
+        val link = PreparedProseInteraction(
+            kind = PreparedProseInteraction.Kind.LINK,
+            rects = listOf(Rect(0, 0, 20, 20)),
+            href = "https://example.test",
+            visibleText = "link",
+            label = "link",
+        )
+        val mention = PreparedProseInteraction(
+            kind = PreparedProseInteraction.Kind.MENTION,
+            rects = listOf(Rect(0, 0, 20, 20)),
+            visibleText = "@Ada",
+            docPos = 1,
+            label = "@Ada",
+            attrsJson = "{}",
+        )
+
+        assertFalse(viewer.activatePreparedInteractionForTesting(link))
+        assertFalse(viewer.activatePreparedInteractionForTesting(mention))
+    }
+
+    @Test
     fun windowedRecyclerWarmRevisitUsesOnePrimePreparation() {
         val corpus = JSONObject(context.assets.open("viewer-performance-corpus.json").bufferedReader().use { it.readText() })
         val entries = corpus.getJSONArray("documents").let { documents ->
@@ -240,8 +263,11 @@ class PreparedProseLayoutTest {
 
     @Test
     fun `public direct prepared replacement announces once and clears focus`() {
-        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine()))
-        val parent = CapturingAccessibilityParent(context).apply { addView(viewer) }
+        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine())).apply {
+            onLinkTapForTesting = {}
+        }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, viewer)
 
         assertTrue(viewer.apply(jsonSource("first generation"), configuration()))
         viewer.measure(exactWidth(320), unspecifiedHeight())
@@ -253,10 +279,19 @@ class PreparedProseLayoutTest {
             )
         )
         parent.clearEvents()
+        var clearedNodeLabel: CharSequence? = null
+        parent.onEvent = { event ->
+            if (event.eventType == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED) {
+                clearedNodeLabel = viewer.accessibilityNodeProvider
+                    .createAccessibilityNodeInfo(1)
+                    ?.contentDescription
+            }
+        }
 
         assertTrue(viewer.apply(jsonSource("replacement generation"), configuration()))
         viewer.measure(exactWidth(320), unspecifiedHeight())
 
+        assertEquals("link-320", clearedNodeLabel)
         assertEquals(1, parent.subtreeChangeCount())
         assertEquals(
             listOf(
@@ -269,8 +304,11 @@ class PreparedProseLayoutTest {
 
     @Test
     fun `direct prepared detach reattach retains artifact and clears focus without republishing`() {
-        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine()))
-        val parent = CapturingAccessibilityParent(context).apply { addView(viewer) }
+        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine())).apply {
+            onLinkTapForTesting = {}
+        }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, viewer)
 
         assertTrue(viewer.apply(jsonSource("detachment generation"), configuration()))
         viewer.measure(exactWidth(320), unspecifiedHeight())
@@ -295,6 +333,68 @@ class PreparedProseLayoutTest {
         ProseViewerView::class.java.getDeclaredMethod("onAttachedToWindow").apply { isAccessible = true }.invoke(viewer)
         assertTrue(viewer.preparedLayoutForTesting === retained)
         assertEquals(0, parent.subtreeChangeCount())
+    }
+
+    @Test
+    fun `hidden direct annotations reject accessibility focus and activation`() {
+        var activations = 0
+        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine())).apply {
+            onLinkTapForTesting = { activations += 1 }
+        }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, viewer)
+        assertTrue(viewer.apply(jsonSource("hidden direct annotation"), configuration()))
+        viewer.measure(exactWidth(320), unspecifiedHeight())
+        viewer.layout(0, 0, 320, viewer.measuredHeight)
+        viewer.accessibilityVisibilityForTesting = { false }
+        viewer.visibility = View.INVISIBLE
+
+        assertFalse(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLICK,
+                null,
+            )
+        )
+        assertFalse(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        assertEquals(0, activations)
+    }
+
+    @Test
+    fun `direct width replacement clears focus while the old artifact is installed`() {
+        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine())).apply {
+            onLinkTapForTesting = {}
+        }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, viewer, width = 480)
+        assertTrue(viewer.apply(jsonSource("width focus replacement"), configuration()))
+        viewer.measure(exactWidth(320), unspecifiedHeight())
+        viewer.layout(0, 0, 320, viewer.measuredHeight)
+        assertTrue(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        var clearedNodeLabel: CharSequence? = null
+        parent.onEvent = { event ->
+            if (event.eventType == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED) {
+                clearedNodeLabel = viewer.accessibilityNodeProvider
+                    .createAccessibilityNodeInfo(1)
+                    ?.contentDescription
+            }
+        }
+
+        viewer.measure(exactWidth(480), unspecifiedHeight())
+
+        assertEquals("link-320", clearedNodeLabel)
     }
 
     @Test
@@ -1220,6 +1320,22 @@ class PreparedProseLayoutTest {
 
     private fun unspecifiedHeight() = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
 
+    private fun mountVisible(
+        parent: CapturingAccessibilityParent,
+        child: View,
+        width: Int = 320,
+        height: Int = 200,
+    ) {
+        parent.addView(child)
+        (child as? ProseViewerView)?.accessibilityVisibilityForTesting = { true }
+        parent.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+        )
+        parent.layout(0, 0, width, height)
+        child.layout(0, 0, width, height)
+    }
+
     private class CapturingAccessibilityParent(context: android.content.Context) : ViewGroup(context) {
         init {
             shadowOf(context.getSystemService(AccessibilityManager::class.java)).setEnabled(true)
@@ -1227,8 +1343,10 @@ class PreparedProseLayoutTest {
 
         val eventTypes = mutableListOf<Int>()
         private val changeTypes = mutableListOf<Int>()
+        var onEvent: ((AccessibilityEvent) -> Unit)? = null
 
         override fun requestSendAccessibilityEvent(child: View, event: AccessibilityEvent): Boolean {
+            onEvent?.invoke(event)
             eventTypes += event.eventType
             changeTypes += event.contentChangeTypes
             return true
@@ -1303,15 +1421,15 @@ private class LinkLayoutEngine : AndroidProseLayoutEngine {
                 kind = PreparedProseInteraction.Kind.LINK,
                 rects = listOf(Rect(0, 0, 20, 20)),
                 href = "https://example.test",
-                visibleText = "link",
-                label = "link",
+                visibleText = "link-$widthPx",
+                label = "link-$widthPx",
             ),
         ),
         accessibilityNodes = listOf(
             PreparedProseAccessibilityNode(
                 interactionIndex = 0,
                 role = PreparedProseAccessibilityNode.Role.LINK,
-                label = "link",
+                label = "link-$widthPx",
                 bounds = Rect(0, 0, 20, 20),
             ),
         ),

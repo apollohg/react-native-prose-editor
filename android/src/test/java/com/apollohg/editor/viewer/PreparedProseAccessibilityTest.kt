@@ -8,10 +8,13 @@ import android.text.TextPaint
 import android.text.TextDirectionHeuristics
 import android.view.View
 import android.view.ViewGroup
+import android.view.MotionEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,6 +41,169 @@ class PreparedProseAccessibilityTest {
         val node = requireNotNull(view.accessibilityNodeProvider.createAccessibilityNodeInfo(1))
 
         assertTrue(AccessibilityNodeInfoCompat.wrap(node).isScreenReaderFocusable)
+    }
+
+    @Test
+    fun `inert annotations neither consume touch nor publish virtual children`() {
+        val view = PreparedProseDrawingView(RuntimeEnvironment.getApplication())
+        val activated = mutableListOf<PreparedProseInteraction.Kind>()
+        view.onInteractionActivated = { interaction ->
+            activated += interaction.kind
+            true
+        }
+        view.install(interactiveArtifact())
+        view.linkInteractionsEnabled = false
+        view.mentionInteractionsEnabled = false
+
+        assertFalse(tap(view, 10f, 10f))
+        assertFalse(tap(view, 40f, 50f))
+        assertEquals(
+            0,
+            requireNotNull(
+                view.accessibilityNodeProvider.createAccessibilityNodeInfo(View.NO_ID)
+            ).childCount,
+        )
+
+        view.mentionInteractionsEnabled = true
+        assertFalse(tap(view, 10f, 10f))
+        assertTrue(tap(view, 40f, 50f))
+        assertEquals(listOf(PreparedProseInteraction.Kind.MENTION), activated)
+        assertEquals(
+            1,
+            requireNotNull(
+                view.accessibilityNodeProvider.createAccessibilityNodeInfo(View.NO_ID)
+            ).childCount,
+        )
+        assertEquals(
+            "mention",
+            AccessibilityNodeInfoCompat.wrap(
+                requireNotNull(view.accessibilityNodeProvider.createAccessibilityNodeInfo(1))
+            ).roleDescription,
+        )
+    }
+
+    @Test
+    fun `hidden Fabric annotations reject accessibility focus and activation`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = PreparedProseDrawingView(context)
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, view)
+        var activations = 0
+        view.onInteractionActivated = {
+            activations += 1
+            true
+        }
+        view.install(preparedArtifact("hidden-actions"))
+        view.accessibilityVisibilityForTesting = { false }
+        view.visibility = View.INVISIBLE
+
+        assertFalse(
+            view.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLICK,
+                null,
+            )
+        )
+        assertFalse(
+            view.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        assertEquals(0, activations)
+    }
+
+    @Test
+    fun `Fabric capability changes clear focus before virtual nodes are renumbered`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = PreparedProseDrawingView(context).apply {
+            mentionInteractionsEnabled = true
+        }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, view)
+        view.install(interactiveArtifact())
+        assertTrue(
+            view.accessibilityNodeProvider.performAction(
+                2,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        var clearedNodeLabel: CharSequence? = null
+        parent.onEvent = { event ->
+            if (event.eventType == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED) {
+                clearedNodeLabel = view.accessibilityNodeProvider
+                    .createAccessibilityNodeInfo(2)
+                    ?.contentDescription
+            }
+        }
+
+        view.linkInteractionsEnabled = false
+
+        assertEquals("@Ada", clearedNodeLabel)
+    }
+
+    @Test
+    fun `virtual node visibility follows clipping and hidden ancestors`() {
+        val globalVisibleBounds = Rect(0, 0, 100, 30)
+
+        assertTrue(
+            accessibilityBoundsVisible(
+                Rect(0, 0, 20, 20),
+                globalVisibleBounds,
+                shown = true,
+                windowVisible = true,
+                alphaVisible = true,
+            )
+        )
+        assertFalse(
+            accessibilityBoundsVisible(
+                Rect(30, 40, 50, 60),
+                globalVisibleBounds,
+                shown = true,
+                windowVisible = true,
+                alphaVisible = true,
+            )
+        )
+        assertFalse(
+            accessibilityBoundsVisible(
+                Rect(0, 0, 20, 20),
+                globalVisibleBounds,
+                shown = false,
+                windowVisible = true,
+                alphaVisible = true,
+            )
+        )
+    }
+
+    @Test
+    fun `focused virtual node clears when its host becomes hidden`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = PreparedProseDrawingView(context)
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, view)
+        view.install(preparedArtifact("focus-visibility"))
+        assertTrue(
+            view.accessibilityNodeProvider.performAction(
+                1,
+                android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+
+        parent.clearEvents()
+        view.accessibilityVisibilityForTesting = { false }
+        view.visibility = View.INVISIBLE
+        val hiddenNode = requireNotNull(
+            view.accessibilityNodeProvider.createAccessibilityNodeInfo(1)
+        )
+
+        assertFalse(hiddenNode.isAccessibilityFocused)
+        assertEquals(
+            listOf(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED),
+            parent.eventTypes,
+        )
     }
 
     @Test
@@ -362,7 +528,8 @@ class PreparedProseAccessibilityTest {
     fun `Fabric-equivalent prepared replacement announces one subtree change and preserves focus clear`() {
         val context = RuntimeEnvironment.getApplication()
         val view = PreparedProseDrawingView(context)
-        val parent = CapturingAccessibilityParent(context).apply { addView(view) }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, view)
         view.install(preparedArtifact("first"))
         assertTrue(
             view.accessibilityNodeProvider.performAction(
@@ -373,9 +540,18 @@ class PreparedProseAccessibilityTest {
         )
 
         parent.clearEvents()
+        var clearedNodeLabel: CharSequence? = null
+        parent.onEvent = { event ->
+            if (event.eventType == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED) {
+                clearedNodeLabel = view.accessibilityNodeProvider
+                    .createAccessibilityNodeInfo(1)
+                    ?.contentDescription
+            }
+        }
         view.install(null, announceAccessibilitySubtree = false)
         view.install(preparedArtifact("replacement"))
 
+        assertEquals("first", clearedNodeLabel)
         assertEquals(1, parent.subtreeChangeCount())
         assertEquals(
             listOf(
@@ -400,7 +576,8 @@ class PreparedProseAccessibilityTest {
     fun `Fabric mount success lets final installation own one replacement subtree notification`() {
         val context = RuntimeEnvironment.getApplication()
         val view = PreparedProseDrawingView(context)
-        val parent = CapturingAccessibilityParent(context).apply { addView(view) }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, view)
         val transaction = FabricReplacementAccessibilityTransaction()
         view.install(preparedArtifact("first"))
         assertTrue(
@@ -429,7 +606,8 @@ class PreparedProseAccessibilityTest {
     fun `Fabric mount miss announces a removed subtree once and suppresses a later deferred install`() {
         val context = RuntimeEnvironment.getApplication()
         val view = PreparedProseDrawingView(context)
-        val parent = CapturingAccessibilityParent(context).apply { addView(view) }
+        val parent = CapturingAccessibilityParent(context)
+        mountVisible(parent, view)
         val transaction = FabricReplacementAccessibilityTransaction()
         view.install(preparedArtifact("first"))
         assertTrue(
@@ -886,6 +1064,62 @@ class PreparedProseAccessibilityTest {
         retainedBytes = 0,
     )
 
+    private fun interactiveArtifact(): PreparedProseLayout {
+        val base = preparedArtifact("interactive")
+        return base.copy(
+            heightPx = 100,
+            interactions = listOf(
+                base.interactions.single(),
+                PreparedProseInteraction(
+                    kind = PreparedProseInteraction.Kind.MENTION,
+                    rects = listOf(Rect(30, 40, 50, 60)),
+                    visibleText = "@Ada",
+                    docPos = 1,
+                    label = "@Ada",
+                    attrsJson = "{}",
+                ),
+            ),
+            accessibilityNodes = listOf(
+                base.accessibilityNodes.single(),
+                PreparedProseAccessibilityNode(
+                    interactionIndex = 1,
+                    role = PreparedProseAccessibilityNode.Role.MENTION,
+                    label = "@Ada",
+                    bounds = Rect(30, 40, 50, 60),
+                ),
+            ),
+        )
+    }
+
+    private fun tap(view: PreparedProseDrawingView, x: Float, y: Float): Boolean {
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, x, y, 0)
+        val up = MotionEvent.obtain(0, 1, MotionEvent.ACTION_UP, x, y, 0)
+        return try {
+            val consumedDown = view.onTouchEvent(down)
+            val consumedUp = view.onTouchEvent(up)
+            consumedDown && consumedUp
+        } finally {
+            down.recycle()
+            up.recycle()
+        }
+    }
+
+    private fun mountVisible(
+        parent: CapturingAccessibilityParent,
+        child: View,
+        width: Int = 100,
+        height: Int = 100,
+    ) {
+        parent.addView(child)
+        (child as? PreparedProseDrawingView)?.accessibilityVisibilityForTesting = { true }
+        parent.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+        )
+        parent.layout(0, 0, width, height)
+        child.layout(0, 0, width, height)
+    }
+
     private class CapturingAccessibilityParent(context: android.content.Context) : ViewGroup(context) {
         init {
             shadowOf(context.getSystemService(AccessibilityManager::class.java)).setEnabled(true)
@@ -893,8 +1127,10 @@ class PreparedProseAccessibilityTest {
 
         val eventTypes = mutableListOf<Int>()
         private val changeTypes = mutableListOf<Int>()
+        var onEvent: ((AccessibilityEvent) -> Unit)? = null
 
         override fun requestSendAccessibilityEvent(child: View, event: AccessibilityEvent): Boolean {
+            onEvent?.invoke(event)
             eventTypes += event.eventType
             changeTypes += event.contentChangeTypes
             return true

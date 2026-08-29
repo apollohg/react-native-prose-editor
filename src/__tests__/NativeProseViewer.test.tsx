@@ -116,7 +116,8 @@ describe('NativeProseViewer', () => {
             imagePolicyJson: expect.any(String),
             imagesEnabled: false,
             collapsesWhenEmpty: true,
-            enableLinkTaps: true,
+            enableLinkTaps: false,
+            mentionInteractionsEnabled: false,
             fontEnvironmentRevision: 0,
         });
         expect(JSON.parse(nativeProps.configJson)).toMatchObject({
@@ -172,6 +173,47 @@ describe('NativeProseViewer', () => {
         });
         expect(JSON.parse(nativeProps.themeJson)).toMatchObject({
             mentions: { textColor: '#112233', backgroundColor: '#ddeeff' },
+        });
+    });
+
+    it('passes only effective link and mention interaction capabilities', () => {
+        const onPressLink = jest.fn();
+        const onPressMention = jest.fn();
+        const { getByTestId, rerender } = render(
+            <NativeProseViewer
+                contentJSON={{ type: 'doc', content: [] }}
+                enableLinkTaps
+            />
+        );
+
+        expect(getByTestId('prepared-prose-viewer').props).toMatchObject({
+            enableLinkTaps: false,
+            mentionInteractionsEnabled: false,
+        });
+
+        rerender(
+            <NativeProseViewer
+                contentJSON={{ type: 'doc', content: [] }}
+                enableLinkTaps
+                onPressLink={onPressLink}
+            />
+        );
+        expect(getByTestId('prepared-prose-viewer').props).toMatchObject({
+            enableLinkTaps: true,
+            mentionInteractionsEnabled: false,
+        });
+
+        rerender(
+            <NativeProseViewer
+                contentJSON={{ type: 'doc', content: [] }}
+                enableLinkTaps={false}
+                onPressLink={onPressLink}
+                addons={{ mentions: { onPress: onPressMention } }}
+            />
+        );
+        expect(getByTestId('prepared-prose-viewer').props).toMatchObject({
+            enableLinkTaps: false,
+            mentionInteractionsEnabled: true,
         });
     });
 

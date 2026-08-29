@@ -15,6 +15,7 @@ export interface NativeProps extends ViewProps {
     imagesEnabled?: WithDefault<boolean, true>;
     collapsesWhenEmpty?: WithDefault<boolean, true>;
     enableLinkTaps?: WithDefault<boolean, true>;
+    mentionInteractionsEnabled?: WithDefault<boolean, false>;
     fontEnvironmentRevision: Int32;
     onPressLink?: DirectEventHandler<{ href: string; text: string }>;
     // React Native numbers are IEEE-754 doubles, which exactly represent every
