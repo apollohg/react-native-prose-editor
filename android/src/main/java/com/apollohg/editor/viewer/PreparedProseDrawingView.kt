@@ -2,7 +2,6 @@ package com.apollohg.editor.viewer
 
 import android.content.Context
 import android.content.res.Configuration
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
@@ -18,6 +17,8 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import com.apollohg.editor.AndroidApiCompat
+import com.apollohg.editor.DecodedBitmapLease
+import com.apollohg.editor.DecodedBitmapBudget
 
 /** Rendering-only consumer of fully prepared StaticLayout and geometry fragments. */
 internal class PreparedProseDrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
@@ -28,22 +29,11 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     var onVisibleRectChanged: ((Rect) -> Unit)? = null
     var onFontConfigurationChanged: ((Configuration) -> Unit)? = null
     var onInteractionActivated: ((PreparedProseInteraction) -> Boolean)? = null
-    var imagePixels: Map<String, Bitmap> = emptyMap()
-        set(value) {
-            field = value
-            PreparedProseInstrumentation.retained(
-                PreparedProseInstrumentation.Owner.IMAGE,
-                "drawing-${System.identityHashCode(this)}",
-                retainedImagePixelsBytes(value),
-            )
-            invalidate()
-        }
-    /**
-     * This surface owns only map/entry references. The shared native loader
-     * cache is the sole owner charged for a decoded Bitmap allocation.
-     */
+    private val imagePixelsLock = Any()
+    private val imagePixels = mutableMapOf<String, DecodedBitmapLease>()
+    /** Map overhead only; decoded allocation bytes are charged by the shared lease budget. */
     internal val retainedImagePixelsBytesForTesting: Long
-        get() = retainedImagePixelsBytes(imagePixels)
+        get() = synchronized(imagePixelsLock) { retainedImagePixelsBytes(imagePixels) }
     /** False when a public host owns this view's virtual subtree and notifications. */
     var publishesAccessibilitySubtree: Boolean = true
     var linkInteractionsEnabled: Boolean = true
@@ -60,11 +50,15 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     private var contentOriginXPx = 0
     private var contentOriginYPx = 0
 
+    init {
+        DecodedBitmapBudget.shared(context)
+    }
+
     internal companion object {
         const val IMAGE_PIXEL_MAP_RETAINED_BYTES = 48L
         const val IMAGE_PIXEL_ENTRY_RETAINED_BYTES = 48L
 
-        fun retainedImagePixelsBytes(pixels: Map<String, Bitmap>): Long {
+        fun retainedImagePixelsBytes(pixels: Map<String, *>): Long {
             if (pixels.isEmpty()) return 0L
             var retained = IMAGE_PIXEL_MAP_RETAINED_BYTES
             pixels.values.forEach {
@@ -81,6 +75,38 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
             left > Long.MAX_VALUE / right -> Long.MAX_VALUE
             else -> left * right
         }
+    }
+
+    fun putImageLease(id: String, lease: DecodedBitmapLease) {
+        synchronized(imagePixelsLock) { imagePixels.put(id, lease) }?.close()
+        reportRetainedImagePixels()
+        postInvalidate()
+    }
+
+    fun removeImageLeases(ids: Set<String>) {
+        val released = synchronized(imagePixelsLock) { ids.mapNotNull(imagePixels::remove) }
+        if (released.isEmpty()) return
+        released.forEach(DecodedBitmapLease::close)
+        reportRetainedImagePixels()
+        postInvalidate()
+    }
+
+    fun clearImageLeases() {
+        val released = synchronized(imagePixelsLock) {
+            imagePixels.values.toList().also { imagePixels.clear() }
+        }
+        if (released.isEmpty()) return
+        released.forEach(DecodedBitmapLease::close)
+        reportRetainedImagePixels()
+        postInvalidate()
+    }
+
+    private fun reportRetainedImagePixels() {
+        PreparedProseInstrumentation.retained(
+            PreparedProseInstrumentation.Owner.IMAGE,
+            "drawing-${System.identityHashCode(this)}",
+            synchronized(imagePixelsLock) { retainedImagePixelsBytes(imagePixels) },
+        )
     }
 
     /**
@@ -179,7 +205,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
             }
             PreparedProseFragmentKind.IMAGE -> {
                 val attachment = preparedLayout?.imageAttachments?.firstOrNull { it.bounds == fragment.bounds } ?: return
-                val bitmap = imagePixels[attachment.id] ?: return
+                val bitmap = synchronized(imagePixelsLock) { imagePixels[attachment.id]?.bitmap } ?: return
                 canvas.drawBitmap(bitmap, null, fragment.bounds, paint)
             }
             else -> Unit

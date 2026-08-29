@@ -157,6 +157,7 @@ class ProseViewerView @JvmOverloads constructor(
         )
 
     init {
+        DecodedBitmapBudget.shared(context)
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
 
         // The public facade owns virtual accessibility. The drawing child is
@@ -165,12 +166,15 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.publishesAccessibilitySubtree = false
         preparedDrawingView.linkInteractionsEnabled = linkTapsEnabled
         preparedDrawingView.onInteractionActivated = { activatePreparedInteraction(it) }
-        viewerImagePipeline.onPixels = { attachment, bitmap ->
+        viewerImagePipeline.onPixels = { attachment, lease ->
             val current = preparedRequest
             if (current != null && viewerImagePipeline.acceptsCompletion(current.semanticGenerationIdentity)) {
-                preparedDrawingView.imagePixels = preparedDrawingView.imagePixels + (attachment.id to bitmap)
+                preparedDrawingView.putImageLease(attachment.id, lease)
+            } else {
+                lease.close()
             }
         }
+        viewerImagePipeline.onPixelsReleased = preparedDrawingView::removeImageLeases
         viewerImagePipeline.onIntrinsicMetadata = { attachment, width, height ->
             applyIntrinsicImageMetadata(attachment, width, height)
         }
@@ -213,7 +217,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedArtifact = null
         releaseDirectMountedArtifact()
         viewerImagePipeline.cancel()
-        preparedDrawingView.imagePixels = emptyMap()
+        preparedDrawingView.clearImageLeases()
         directError = null
         reportedGenerationIdentity = null
         clearVirtualAccessibilityFocus()
@@ -341,7 +345,7 @@ class ProseViewerView @JvmOverloads constructor(
             // Cancellation/detachment does not create a new semantic source;
             // retain its artifact/publication bits and revision for a later
             // remount. Pixel ownership is released with the drawing map.
-            preparedDrawingView.imagePixels = emptyMap()
+            preparedDrawingView.clearImageLeases()
         }
     }
 
@@ -364,7 +368,7 @@ class ProseViewerView @JvmOverloads constructor(
         releaseDirectMountedArtifact()
         viewerImagePipeline.cancel()
         attachmentRevisions.reset()
-        preparedDrawingView.imagePixels = emptyMap()
+        preparedDrawingView.clearImageLeases()
         directError = null
         reportedGenerationIdentity = null
         preparedDrawingView.install(null, announceAccessibilitySubtree = false)

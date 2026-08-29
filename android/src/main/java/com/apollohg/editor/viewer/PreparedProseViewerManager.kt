@@ -56,12 +56,15 @@ internal class PreparedProseViewerManager :
             view.onFontConfigurationChanged = { configuration -> state.fontEnvironment.onConfigurationChanged(configuration) }
             view.onInteractionActivated = { interaction -> dispatchInteraction(view, interaction) }
             state.fontEnvironment.onInvalidated = { revision -> state.publishFontRevision(revision) }
-            state.imagePipeline.onPixels = { attachment, bitmap ->
+            state.imagePipeline.onPixels = { attachment, lease ->
                 val request = state.requestOrNull()
                 if (request != null && state.imagePipeline.acceptsCompletion(request.semanticGenerationIdentity)) {
-                    view.imagePixels = view.imagePixels + (attachment.id to bitmap)
+                    view.putImageLease(attachment.id, lease)
+                } else {
+                    lease.close()
                 }
             }
+            state.imagePipeline.onPixelsReleased = view::removeImageLeases
             state.imagePipeline.onIntrinsicMetadata = { attachment, width, height ->
                 if (state.recordIntrinsicSize(attachment, width, height)) {
                     state.publishAttachmentRevision()
@@ -79,7 +82,7 @@ internal class PreparedProseViewerManager :
         view.onVisibleRectChanged = null
         view.onFontConfigurationChanged = null
         view.onInteractionActivated = null
-        view.imagePixels = emptyMap()
+        view.clearImageLeases()
         view.install(null)
         super.onDropViewInstance(view)
     }
@@ -92,7 +95,7 @@ internal class PreparedProseViewerManager :
         states.entries.forEach { (view, state) ->
             if (state.ownsFabricSurface(surfaceId)) {
                 state.release()
-                view.imagePixels = emptyMap()
+                view.clearImageLeases()
                 view.install(null)
             }
         }
@@ -102,7 +105,7 @@ internal class PreparedProseViewerManager :
     /** Test-only Fabric-side per-surface accounting; cache bytes stay separate. */
     internal fun retainedSurfaceBytesForTesting(view: PreparedProseDrawingView): Long =
         states[view]?.retainedSurfaceBytesForTesting(view)
-            ?: PreparedProseDrawingView.retainedImagePixelsBytes(emptyMap())
+            ?: PreparedProseDrawingView.retainedImagePixelsBytes(emptyMap<String, Any>())
 
     override fun updateState(
         view: PreparedProseDrawingView,
@@ -461,7 +464,7 @@ internal class PreparedProseViewerManager :
             val request = requestOrNull() ?: return
             if (!attachmentRevisions.beginSemanticGeneration(request.semanticGenerationIdentity)) return
             imagePipeline.cancel()
-            view.imagePixels = emptyMap()
+            view.clearImageLeases()
         }
 
         fun bindFabricAttachmentState(generation: FabricGenerationToken) {
@@ -525,7 +528,7 @@ internal class PreparedProseViewerManager :
             imagePipeline.cancel()
             fontEnvironment.deactivate()
             replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
-            view.imagePixels = emptyMap()
+            view.clearImageLeases()
             view.install(null)
         }
 

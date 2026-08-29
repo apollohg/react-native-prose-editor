@@ -26,6 +26,8 @@ export interface EditorImageLoadingPolicy {
     maxPendingRequests?: number;
     /** Ceiling on decoded image width and height, in pixels. Larger images are downsampled. */
     maxDecodeDimensionPx?: number;
+    /** Decoded pixel bytes this editor or viewer may retain at once. */
+    maxDecodedBytes?: number;
 }
 
 /** {@link EditorImageLoadingPolicy} with every default filled in. */
@@ -37,6 +39,7 @@ export interface ResolvedEditorImageLoadingPolicy {
     maxConcurrentRequests: number;
     maxPendingRequests: number;
     maxDecodeDimensionPx: number;
+    maxDecodedBytes: number;
 }
 
 /** The value used for each {@link EditorImageLoadingPolicy} field left unset. */
@@ -48,6 +51,7 @@ export const DEFAULT_EDITOR_IMAGE_LOADING_POLICY: Readonly<ResolvedEditorImageLo
     maxConcurrentRequests: 2,
     maxPendingRequests: 64,
     maxDecodeDimensionPx: 2_048,
+    maxDecodedBytes: 32 * 1024 * 1024,
 };
 
 /** The ceiling each {@link EditorImageLoadingPolicy} field may not exceed. */
@@ -59,6 +63,7 @@ export const HARD_EDITOR_IMAGE_LOADING_POLICY: Readonly<ResolvedEditorImageLoadi
     maxConcurrentRequests: 16,
     maxPendingRequests: 512,
     maxDecodeDimensionPx: 8_192,
+    maxDecodedBytes: 256 * 1024 * 1024,
 };
 
 function resolveImagePolicyValue(
@@ -101,11 +106,15 @@ export function resolveEditorImageLoadingPolicy(
             'maxConcurrentRequests',
             policy?.maxConcurrentRequests
         ),
-        maxPendingRequests: resolveImagePolicyValue('maxPendingRequests', policy?.maxPendingRequests),
+        maxPendingRequests: resolveImagePolicyValue(
+            'maxPendingRequests',
+            policy?.maxPendingRequests
+        ),
         maxDecodeDimensionPx: resolveImagePolicyValue(
             'maxDecodeDimensionPx',
             policy?.maxDecodeDimensionPx
         ),
+        maxDecodedBytes: resolveImagePolicyValue('maxDecodedBytes', policy?.maxDecodedBytes),
     };
 }
 

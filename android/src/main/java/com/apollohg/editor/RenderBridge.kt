@@ -46,6 +46,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicLong
 
 object LayoutConstants {
@@ -408,21 +409,30 @@ internal class BlockImageSpan(
     private val policy = (hostView as? EditorEditText)?.imageLoadingPolicy
         ?: ImageLoadingPolicy.DEFAULT
     private val generation = (hostView as? EditorEditText)?.currentImageLoadGeneration()
+    private val ownerId = (hostView as? EditorEditText)?.decodedBitmapOwnerId
+        ?: DecodedBitmapBudget.nextOwnerId()
     private val preparedSource = NativeImagePipeline.prepare(source, policy)
 
-    @Volatile
-    private var bitmap: Bitmap? = null
+    private val retired = AtomicBoolean(false)
+    private val bitmapLease = AtomicReference<DecodedBitmapLease?>()
+    private val loadHandle = AtomicReference<RenderImageLoader.LoadHandle?>()
     @Volatile
     private var lastDrawRect: RectF? = null
 
     init {
-        if (bitmap == null && preparedSource != null) {
-            val handle = NativeImagePipeline.load(preparedSource) { loaded ->
+        if (preparedSource != null) {
+            val handle = NativeImagePipeline.load(
+                preparedSource,
+                ownerId,
+                DecodedBitmapPriority.VISIBLE,
+            ) { loaded ->
                 val currentHost = hostRef.get()
                 if (
+                    retired.get() ||
                     currentHost is EditorEditText &&
                     generation != currentHost.currentImageLoadGeneration()
                 ) {
+                    loaded?.close()
                     return@load
                 }
                 if (loaded == null) {
@@ -432,17 +442,30 @@ internal class BlockImageSpan(
                     )
                     return@load
                 }
-                bitmap = loaded
+                val previous = bitmapLease.getAndSet(loaded)
+                if (retired.get()) {
+                    if (bitmapLease.compareAndSet(loaded, null)) loaded.close()
+                    previous?.close()
+                    return@load
+                }
+                previous?.close()
                 currentHost?.post {
                     if (
                         currentHost is EditorEditText &&
                         generation != currentHost.currentImageLoadGeneration()
-                    ) return@post
+                    ) {
+                        close()
+                        return@post
+                    }
                     currentHost.requestLayout()
                     currentHost.invalidate()
                     (currentHost as? EditorEditText)?.onSelectionOrContentMayChange?.invoke()
                 }
             }
+            if (!loadHandle.compareAndSet(null, handle) || retired.get()) {
+                loadHandle.getAndSet(null)?.cancel()
+            }
+            handle.onFinished { loadHandle.compareAndSet(handle, null) }
             (hostView as? EditorEditText)?.registerImageLoad(handle)
         }
     }
@@ -454,6 +477,12 @@ internal class BlockImageSpan(
         preferredWidthDp = preferredWidthDp,
         preferredHeightDp = preferredHeightDp
     )
+
+    internal fun close() {
+        if (!retired.compareAndSet(false, true)) return
+        loadHandle.getAndSet(null)?.cancel()
+        bitmapLease.getAndSet(null)?.close()
+    }
 
     override fun getSize(
         paint: Paint,
@@ -496,7 +525,7 @@ internal class BlockImageSpan(
                 offset(host.compoundPaddingLeft.toFloat(), host.extendedPaddingTop.toFloat())
             }
         }
-        val loadedBitmap = bitmap
+        val loadedBitmap = bitmapLease.get()?.bitmap
         if (loadedBitmap != null) {
             canvas.drawBitmap(loadedBitmap, null, rect, null)
             return
@@ -516,7 +545,7 @@ internal class BlockImageSpan(
 
     internal fun currentSizePx(): Pair<Int, Int> {
         val maxWidth = resolvedMaxWidth()
-        val loadedBitmap = bitmap
+        val loadedBitmap = bitmapLease.get()?.bitmap
         val fallbackAspectRatio = if (loadedBitmap != null && loadedBitmap.width > 0 && loadedBitmap.height > 0) {
             loadedBitmap.height.toFloat() / loadedBitmap.width.toFloat()
         } else {

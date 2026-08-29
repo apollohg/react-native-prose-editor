@@ -608,6 +608,45 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `retired image span rejects a late decoded lease`() {
+        RenderImageLoader.resetForTesting()
+        val decodeStarted = CountDownLatch(1)
+        val releaseDecode = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            decodeStarted.countDown()
+            releaseDecode.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val editor = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication())
+        val span = BlockImageSpan(
+            "data:image/png;base64,AQ==",
+            editor,
+            density = 1f,
+            preferredWidthDp = null,
+            preferredHeightDp = null,
+        )
+
+        try {
+            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            span.close()
+            releaseDecode.countDown()
+            repeat(20) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                Thread.sleep(5)
+            }
+            assertEquals(
+                0,
+                DecodedBitmapBudget.shared()
+                    .retainedOwnerBytesForTesting(editor.decodedBitmapOwnerId),
+            )
+        } finally {
+            releaseDecode.countDown()
+            span.close()
+            RenderImageLoader.resetForTesting()
+        }
+    }
+
+    @Test
     fun `render - image loader deduplicates concurrent remote loads`() {
         RenderImageLoader.resetForTesting()
         val decodeCount = AtomicInteger(0)

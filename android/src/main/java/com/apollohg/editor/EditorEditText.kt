@@ -328,6 +328,7 @@ class EditorEditText @JvmOverloads constructor(
         android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     }
     private var imageResizingEnabled = true
+    internal val decodedBitmapOwnerId: Long = DecodedBitmapBudget.nextOwnerId()
     internal var imageLoadingPolicy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
         private set
     private var imageLoadGeneration: Long = 0L
@@ -497,6 +498,7 @@ class EditorEditText @JvmOverloads constructor(
     private fun nanosToMicros(nanos: Long): Long = nanos / 1_000L
 
     init {
+        DecodedBitmapBudget.shared(context)
         // Configure for rich text editing.
         inputType = resolvedInputType()
 
@@ -1212,6 +1214,7 @@ class EditorEditText @JvmOverloads constructor(
             val start = currentContent.getSpanStart(span)
             val end = currentContent.getSpanEnd(span)
             val flags = currentContent.getSpanFlags(span)
+            span.close()
             spannable.removeSpan(span)
             if (start >= 0 && end > start) {
                 spannable.setSpan(span.reloadedFor(this), start, end, flags)
@@ -4627,6 +4630,23 @@ class EditorEditText @JvmOverloads constructor(
         val followingParagraphSpans = replaceRange
             ?.let { paragraphSpansStartingAt(it.endExclusive) }
             .orEmpty()
+        val replacedImageSpans = (text as? Spanned)?.let { current ->
+            if (replaceRange == null) {
+                current.getSpans(0, current.length, BlockImageSpan::class.java).toList()
+            } else if (replaceRange.start < replaceRange.endExclusive) {
+                current.getSpans(
+                    replaceRange.start,
+                    replaceRange.endExclusive,
+                    BlockImageSpan::class.java,
+                ).filter { span ->
+                    current.getSpanStart(span) < replaceRange.endExclusive &&
+                        current.getSpanEnd(span) > replaceRange.start
+                }
+            } else {
+                emptyList()
+            }
+        }.orEmpty()
+        replacedImageSpans.forEach(BlockImageSpan::close)
         isApplyingRustState = true
         beginBatchEdit()
         try {
@@ -5580,6 +5600,8 @@ class EditorEditText @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         restartImageLoadsOnAttach = hasRenderedImageSpans()
         cancelPendingImageLoads()
+        (text as? Spanned)?.getSpans(0, length(), BlockImageSpan::class.java)
+            ?.forEach(BlockImageSpan::close)
         super.onDetachedFromWindow()
     }
 

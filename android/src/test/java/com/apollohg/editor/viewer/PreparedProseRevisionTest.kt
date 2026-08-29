@@ -6,6 +6,10 @@ import android.graphics.Typeface
 import android.content.res.Configuration
 import com.apollohg.editor.ProseViewerConfiguration
 import com.apollohg.editor.ProseViewerSource
+import com.apollohg.editor.DecodedBitmapBudget
+import com.apollohg.editor.DecodedBitmapLease
+import com.apollohg.editor.DecodedBitmapPriority
+import com.apollohg.editor.RenderImageLoader
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -20,11 +24,163 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class PreparedProseRevisionTest {
+    @Test fun visibleImagesAreAdmittedBeforePrefetchAndReleasedOutsideTheWindow() {
+        val budget = DecodedBitmapBudget(1024 * 1024)
+        val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val baseLease = requireNotNull(
+            budget.reserve(1024, DecodedBitmapPriority.VISIBLE)?.commit(bitmap, 1024)
+        )
+        val priorities = mutableListOf<DecodedBitmapPriority>()
+        val mounted = mutableMapOf<String, DecodedBitmapLease>()
+        val pipeline = ViewerImagePipeline(
+            load = { _, ownerId, priority, callback ->
+                priorities += priority
+                callback(baseLease.fork(ownerId, 8 * 1024, priority))
+                RenderImageLoader.LoadHandle {}
+            }
+        )
+        pipeline.onPixels = { attachment, lease -> mounted[attachment.id] = lease }
+        pipeline.onPixelsReleased = { ids -> ids.forEach { mounted.remove(it)?.close() } }
+        val prefetch = ViewerImageAttachment(
+            "prefetch",
+            "https://example.test/prefetch.png",
+            Rect(200, 0, 220, 20),
+            null,
+            ordinal = 0,
+        )
+        val visible = ViewerImageAttachment(
+            "visible",
+            "https://example.test/visible.png",
+            Rect(0, 0, 20, 20),
+            null,
+            ordinal = 1,
+        )
+
+        pipeline.begin("generation", true)
+        pipeline.updateVisibleRect(Rect(0, 0, 100, 100), listOf(prefetch, visible))
+        assertEquals(
+            listOf(DecodedBitmapPriority.VISIBLE, DecodedBitmapPriority.PREFETCH),
+            priorities,
+        )
+        assertEquals(setOf("visible", "prefetch"), mounted.keys)
+
+        pipeline.updateVisibleRect(Rect(2_000, 2_000, 2_100, 2_100), listOf(prefetch, visible))
+        assertTrue(mounted.isEmpty())
+        baseLease.close()
+        assertEquals(0, budget.retainedProcessBytesForTesting())
+    }
+
     @Test fun disabledImagesDoNotCreateRequests() {
         val pipeline = ViewerImagePipeline()
         pipeline.begin("disabled", false)
         pipeline.updateVisibleRect(Rect(0, 0, 100, 100), listOf(ViewerImageAttachment("i", "https://example.test/i.png", Rect(0, 0, 10, 10), null)))
         assertEquals(0, pipeline.requestCountForTesting)
+    }
+
+    @Test fun inactiveViewerVisibilityCannotReleaseAnotherViewersPrefetch() {
+        val budget = DecodedBitmapBudget(4_096)
+        val cached = requireNotNull(
+            budget.reserve(1_024, DecodedBitmapPriority.PREFETCH)?.commit(
+                Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888),
+                1_024,
+            )
+        )
+        val mounted = mutableMapOf<String, DecodedBitmapLease>()
+        val active = ViewerImagePipeline(
+            load = { _, ownerId, priority, callback ->
+                callback(cached.fork(ownerId, 4_096, priority))
+                RenderImageLoader.LoadHandle {}
+            }
+        )
+        active.onPixels = { attachment, lease -> mounted[attachment.id] = lease }
+        active.onPixelsReleased = { ids -> ids.forEach { mounted.remove(it)?.close() } }
+        val attachment = ViewerImageAttachment(
+            "prefetch",
+            "https://example.test/prefetch.png",
+            Rect(200, 0, 220, 20),
+            null,
+            ordinal = 0,
+        )
+        val inactive = ViewerImagePipeline()
+
+        active.begin("active", true)
+        active.updateVisibleRect(Rect(0, 0, 100, 100), listOf(attachment))
+        inactive.begin("disabled", false)
+        inactive.updateVisibleRect(
+            Rect(0, 0, 100, 100),
+            listOf(attachment.copy(bounds = Rect(0, 0, 20, 20))),
+        )
+        inactive.begin("stale", true)
+        inactive.cancel()
+        inactive.updateVisibleRect(
+            Rect(0, 0, 100, 100),
+            listOf(attachment.copy(bounds = Rect(0, 0, 20, 20))),
+        )
+
+        assertEquals(setOf("prefetch"), mounted.keys)
+        active.cancel()
+        cached.close()
+        assertEquals(0, budget.retainedProcessBytesForTesting())
+    }
+
+    @Test fun pressureReleaseCannotRaceACompletedPrefetchPublication() {
+        val budget = DecodedBitmapBudget(4_096)
+        val cached = requireNotNull(
+            budget.reserve(1_024, DecodedBitmapPriority.PREFETCH)?.commit(
+                Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888),
+                1_024,
+            )
+        )
+        var completion: ((DecodedBitmapLease?) -> Unit)? = null
+        var ownerId = 0L
+        val mounted = mutableMapOf<String, DecodedBitmapLease>()
+        val publicationEntered = CountDownLatch(1)
+        val allowPublication = CountDownLatch(1)
+        val pipeline = ViewerImagePipeline(
+            load = { _, requestedOwnerId, _, callback ->
+                ownerId = requestedOwnerId
+                completion = callback
+                RenderImageLoader.LoadHandle {}
+            }
+        )
+        pipeline.onPixels = { attachment, lease ->
+            publicationEntered.countDown()
+            allowPublication.await(2, TimeUnit.SECONDS)
+            mounted[attachment.id] = lease
+        }
+        pipeline.onPixelsReleased = { ids -> ids.forEach { mounted.remove(it)?.close() } }
+        val attachment = ViewerImageAttachment(
+            "prefetch",
+            "https://example.test/prefetch.png",
+            Rect(200, 0, 220, 20),
+            null,
+            ordinal = 0,
+        )
+
+        pipeline.begin("active", true)
+        pipeline.updateVisibleRect(Rect(0, 0, 100, 100), listOf(attachment))
+        val delivery = Executors.newSingleThreadExecutor()
+        delivery.execute {
+            completion?.invoke(cached.fork(ownerId, 4_096, DecodedBitmapPriority.PREFETCH))
+        }
+        assertTrue(publicationEntered.await(2, TimeUnit.SECONDS))
+        val pressureFinished = CountDownLatch(1)
+        val pressure = Executors.newSingleThreadExecutor()
+        pressure.execute {
+            pipeline.releasePrefetchForPressureForTesting()
+            pressureFinished.countDown()
+        }
+
+        assertFalse(pressureFinished.await(100, TimeUnit.MILLISECONDS))
+        allowPublication.countDown()
+        delivery.shutdown()
+        pressure.shutdown()
+        assertTrue(delivery.awaitTermination(2, TimeUnit.SECONDS))
+        assertTrue(pressure.awaitTermination(2, TimeUnit.SECONDS))
+        assertTrue(mounted.isEmpty())
+        pipeline.cancel()
+        cached.close()
+        assertEquals(0, budget.retainedProcessBytesForTesting())
     }
 
     @Test fun imagePipelineDoesNotAcquireBeforeMountedVisibility() {
@@ -265,7 +421,7 @@ class PreparedProseRevisionTest {
                 PreparedProseDrawingView.IMAGE_PIXEL_ENTRY_RETAINED_BYTES,
             PreparedProseDrawingView.retainedImagePixelsBytes(mapOf("first" to replacement)),
         )
-        assertEquals(0, PreparedProseDrawingView.retainedImagePixelsBytes(emptyMap()))
+        assertEquals(0, PreparedProseDrawingView.retainedImagePixelsBytes(emptyMap<String, Any>()))
     }
 
     @Test fun boundedIntrinsicMetadataEvictsOldestEntryDeterministically() {

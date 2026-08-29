@@ -38,10 +38,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
 import java.security.MessageDigest
-import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Semaphore
 import java.util.concurrent.Future
+import java.util.concurrent.FutureTask
+import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -55,7 +58,8 @@ internal data class ImageLoadingPolicy(
     val requestTimeoutMs: Int,
     val maxConcurrentRequests: Int,
     val maxPendingRequests: Int,
-    val maxDecodeDimensionPx: Int
+    val maxDecodeDimensionPx: Int,
+    val maxDecodedBytes: Int,
 ) {
     companion object {
         val DEFAULT = ImageLoadingPolicy(
@@ -65,7 +69,8 @@ internal data class ImageLoadingPolicy(
             requestTimeoutMs = 60_000,
             maxConcurrentRequests = 2,
             maxPendingRequests = 64,
-            maxDecodeDimensionPx = 2_048
+            maxDecodeDimensionPx = 2_048,
+            maxDecodedBytes = 32 * 1024 * 1024,
         )
 
         fun fromJson(json: String?): ImageLoadingPolicy {
@@ -85,12 +90,13 @@ internal data class ImageLoadingPolicy(
                 boundedPositiveInt("requestTimeoutMs", DEFAULT.requestTimeoutMs, 600_000),
                 boundedPositiveInt("maxConcurrentRequests", DEFAULT.maxConcurrentRequests, 16),
                 boundedPositiveInt("maxPendingRequests", DEFAULT.maxPendingRequests, 512),
-                boundedPositiveInt("maxDecodeDimensionPx", DEFAULT.maxDecodeDimensionPx, 8_192)
+                boundedPositiveInt("maxDecodeDimensionPx", DEFAULT.maxDecodeDimensionPx, 8_192),
+                boundedPositiveInt("maxDecodedBytes", DEFAULT.maxDecodedBytes, 256 * 1024 * 1024),
             )
         }
 
         internal fun canonicalBytes(policy: ImageLoadingPolicy): ByteArray = ByteBuffer
-            .allocate(Int.SIZE_BYTES * 7)
+            .allocate(Int.SIZE_BYTES * 8)
             .putInt(policy.maxSourceBytes)
             .putInt(policy.connectTimeoutMs)
             .putInt(policy.readTimeoutMs)
@@ -98,6 +104,7 @@ internal data class ImageLoadingPolicy(
             .putInt(policy.maxConcurrentRequests)
             .putInt(policy.maxPendingRequests)
             .putInt(policy.maxDecodeDimensionPx)
+            .putInt(policy.maxDecodedBytes)
             .array()
     }
 }
@@ -150,24 +157,25 @@ internal object RenderImageDecoder {
         }
     }
 
-    fun decodeSource(
+    internal fun decodeSourceLease(
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
         cancellation: Cancellation? = null,
         clock: MonotonicClock = systemMonotonicClock,
-        deadlineMs: Long = deadlineAfter(clock.elapsedRealtime(), policy.requestTimeoutMs)
-    ): Bitmap? {
+        deadlineMs: Long = deadlineAfter(clock.elapsedRealtime(), policy.requestTimeoutMs),
+        priority: DecodedBitmapPriority = DecodedBitmapPriority.VISIBLE,
+    ): DecodedBitmapLease? {
         if (unavailable(cancellation, clock, deadlineMs)) return null
         if (source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true)) {
             val bytes = decodeDataUrlBytes(source, policy, cancellation) ?: return null
             if (unavailable(cancellation, clock, deadlineMs)) return null
-            val decoded = decodeBitmap(bytes, policy)
+            val decoded = decodeBitmapLease(bytes, policy, priority)
             if (decoded == null) {
                 Log.w(LOG_TAG, "decodeSource: failed to decode data URL bytes (${sourceSummary(source)})")
             } else {
                 Log.d(
                     LOG_TAG,
-                    "decodeSource: decoded data URL ${sourceSummary(source)} -> ${decoded.width}x${decoded.height}"
+                    "decodeSource: decoded data URL ${sourceSummary(source)} -> ${decoded.bitmap.width}x${decoded.bitmap.height}"
                 )
             }
             return decoded
@@ -206,7 +214,7 @@ internal object RenderImageDecoder {
             return null
         }
         if (unavailable(cancellation, clock, deadlineMs)) return null
-        val decoded = decodeBitmap(remoteBytes, policy)
+        val decoded = decodeBitmapLease(remoteBytes, policy, priority)
         if (decoded == null) {
             Log.w(LOG_TAG, "decodeSource: failed to decode remote bytes (${sourceSummary(source)})")
         }
@@ -391,7 +399,8 @@ internal object RenderImageDecoder {
         width: Int,
         height: Int,
         maxWidth: Int = ImageLoadingPolicy.DEFAULT.maxDecodeDimensionPx,
-        maxHeight: Int = ImageLoadingPolicy.DEFAULT.maxDecodeDimensionPx
+        maxHeight: Int = ImageLoadingPolicy.DEFAULT.maxDecodeDimensionPx,
+        maxDecodedBytes: Long = ImageLoadingPolicy.DEFAULT.maxDecodedBytes.toLong(),
     ): Int {
         if (width <= 0 || height <= 0) return 1
 
@@ -399,7 +408,11 @@ internal object RenderImageDecoder {
         var sampleSize = 1L
         var sampledWidth = width.toLong()
         var sampledHeight = height.toLong()
-        while (sampledWidth > maxWidth.toLong() || sampledHeight > maxHeight.toLong()) {
+        while (
+            sampledWidth > maxWidth.toLong() ||
+            sampledHeight > maxHeight.toLong() ||
+            exceedsArgbBytes(sampledWidth, sampledHeight, maxDecodedBytes)
+        ) {
             if (sampleSize >= (1L shl 30)) return (1 shl 30)
             sampleSize = sampleSize shl 1
             sampledWidth = (width.toLong() + sampleSize - 1L) / sampleSize
@@ -408,9 +421,29 @@ internal object RenderImageDecoder {
         return sampleSize.toInt().coerceAtLeast(1)
     }
 
-    private fun decodeBitmap(bytes: ByteArray, policy: ImageLoadingPolicy): Bitmap? {
+    private fun exceedsArgbBytes(width: Long, height: Long, maximumBytes: Long): Boolean =
+        width <= 0L || height <= 0L || maximumBytes <= 0L ||
+            width > Long.MAX_VALUE / height ||
+            width * height > maximumBytes / 4L
+
+    private fun decodeBitmapLease(
+        bytes: ByteArray,
+        policy: ImageLoadingPolicy,
+        priority: DecodedBitmapPriority,
+    ): DecodedBitmapLease? {
         bitmapDecoderOverride?.let {
-            return constrainDecodedBitmap(it(bytes, policy), policy.maxDecodeDimensionPx)
+            val bitmap = try {
+                it(bytes, policy)
+            } catch (_: OutOfMemoryError) {
+                null
+            } ?: return null
+            val bytesRetained = decodedAllocationBytes(bitmap)
+            val reservation = DecodedBitmapBudget.shared().reserve(
+                bytesRetained,
+                priority,
+            ) ?: return null
+            val lease = reservation.commit(bitmap, bytesRetained) ?: return null
+            return constrainDecodedLease(lease, policy, priority)
         }
         val bounds = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
@@ -421,38 +454,112 @@ internal object RenderImageDecoder {
             return null
         }
 
-        val options = BitmapFactory.Options().apply {
-            inSampleSize = calculateInSampleSize(
+        val sampleSize = calculateInSampleSize(
                 bounds.outWidth,
                 bounds.outHeight,
                 policy.maxDecodeDimensionPx,
-                policy.maxDecodeDimensionPx
+                policy.maxDecodeDimensionPx,
+                policy.maxDecodedBytes.toLong(),
             )
+        val estimatedBytes = estimatedArgbBytes(bounds.outWidth, bounds.outHeight, sampleSize)
+        if (estimatedBytes > policy.maxDecodedBytes.toLong()) return null
+        val reservation = DecodedBitmapBudget.shared().reserve(
+            estimatedBytes,
+            priority,
+        ) ?: return null
+        val bitmap = try {
+            BitmapFactory.decodeByteArray(
+                bytes,
+                0,
+                bytes.size,
+                BitmapFactory.Options().apply { inSampleSize = sampleSize },
+            )
+        } catch (_: OutOfMemoryError) {
+            null
+        } ?: run {
+            reservation.close()
+            return null
         }
-        return constrainDecodedBitmap(
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options),
-            policy.maxDecodeDimensionPx
-        )
+        val lease = reservation.commit(bitmap, decodedAllocationBytes(bitmap)) ?: return null
+        return constrainDecodedLease(lease, policy, priority)
     }
 
-    private fun constrainDecodedBitmap(bitmap: Bitmap?, maximumDimension: Int): Bitmap? {
-        bitmap ?: return null
-        if (bitmap.width <= maximumDimension && bitmap.height <= maximumDimension) return bitmap
-        val scale = minOf(
+    private fun constrainDecodedLease(
+        lease: DecodedBitmapLease,
+        policy: ImageLoadingPolicy,
+        priority: DecodedBitmapPriority = DecodedBitmapPriority.VISIBLE,
+    ): DecodedBitmapLease? {
+        val bitmap = lease.bitmap
+        val maximumDimension = policy.maxDecodeDimensionPx
+        val dimensionScale = minOf(
+            1.0,
             maximumDimension.toDouble() / bitmap.width.toDouble(),
             maximumDimension.toDouble() / bitmap.height.toDouble()
         )
+        val byteScale = if (lease.byteCount > policy.maxDecodedBytes.toLong()) {
+            kotlin.math.sqrt(policy.maxDecodedBytes.toDouble() / lease.byteCount.toDouble())
+        } else {
+            1.0
+        }
+        val scale = minOf(dimensionScale, byteScale)
+        if (scale >= 1.0) return lease
         val targetWidth = kotlin.math.floor(bitmap.width.toDouble() * scale)
             .toInt()
             .coerceIn(1, maximumDimension)
         val targetHeight = kotlin.math.floor(bitmap.height.toDouble() * scale)
             .toInt()
             .coerceIn(1, maximumDimension)
-        val constrained = runCatching {
+        val targetBytes = estimatedArgbBytes(targetWidth, targetHeight, 1)
+        val reservation = DecodedBitmapBudget.shared().reserve(
+            targetBytes,
+            priority,
+        ) ?: run {
+            lease.close()
+            return null
+        }
+        val constrained = try {
             Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
-        }.getOrNull() ?: return null
-        if (constrained !== bitmap) bitmap.recycle()
-        return constrained
+        } catch (_: RuntimeException) {
+            null
+        } catch (_: OutOfMemoryError) {
+            null
+        } ?: run {
+            reservation.close()
+            lease.close()
+            return null
+        }
+        if (constrained === bitmap) {
+            reservation.close()
+            return if (lease.byteCount <= policy.maxDecodedBytes.toLong()) {
+                lease
+            } else {
+                lease.close()
+                null
+            }
+        }
+        val constrainedLease = reservation.commit(constrained, decodedAllocationBytes(constrained))
+        lease.close()
+        constrainedLease ?: return null
+        if (constrainedLease.byteCount > policy.maxDecodedBytes.toLong()) {
+            constrainedLease.close()
+            return null
+        }
+        return constrainedLease
+    }
+
+    private fun estimatedArgbBytes(width: Int, height: Int, sampleSize: Int): Long {
+        if (width <= 0 || height <= 0 || sampleSize <= 0) return Long.MAX_VALUE
+        val sampledWidth = (width.toLong() + sampleSize - 1L) / sampleSize
+        val sampledHeight = (height.toLong() + sampleSize - 1L) / sampleSize
+        if (sampledWidth > Long.MAX_VALUE / sampledHeight) return Long.MAX_VALUE
+        val pixels = sampledWidth * sampledHeight
+        return if (pixels > Long.MAX_VALUE / 4L) Long.MAX_VALUE else pixels * 4L
+    }
+
+    private fun decodedAllocationBytes(bitmap: Bitmap): Long {
+        val allocation = runCatching { bitmap.allocationByteCount.toLong() }.getOrNull()
+        if (allocation != null && allocation > 0L) return allocation
+        return estimatedArgbBytes(bitmap.width, bitmap.height, 1)
     }
 
     internal fun resetForTesting() {
@@ -493,8 +600,15 @@ internal object NativeImagePipeline {
 
     fun load(
         source: RenderImageLoader.PreparedSource,
-        callback: (Bitmap?) -> Unit,
-    ): RenderImageLoader.LoadHandle = RenderImageLoader.load(source, callback)
+        ownerId: Long,
+        priority: DecodedBitmapPriority,
+        callback: (DecodedBitmapLease?) -> Unit,
+    ): RenderImageLoader.LoadHandle = RenderImageLoader.loadLease(
+        source,
+        ownerId,
+        priority,
+        callback,
+    )
 }
 
 internal object RenderImageLoader {
@@ -554,7 +668,10 @@ internal object RenderImageLoader {
         val cancelled: AtomicBoolean,
         val admissionReleased: AtomicBoolean,
         val handle: LoadHandle,
-        val deliver: (Bitmap?) -> Unit
+        val ownerId: Long?,
+        val ownerLimitBytes: Long,
+        val priority: DecodedBitmapPriority,
+        val deliver: (DecodedBitmapLease?) -> Unit,
     )
     private class PendingRequest(
         val key: RequestKey,
@@ -563,6 +680,7 @@ internal object RenderImageLoader {
         val cancellation: RenderImageDecoder.Cancellation,
         val startedAtMs: Long
     ) {
+        @Volatile var priority: DecodedBitmapPriority = callbacks.first().priority
         val deadlineMs: Long = deadlineAfter(startedAtMs, key.policy.requestTimeoutMs)
         var future: Future<*>? = null
         var timeoutFuture: ScheduledFuture<*>? = null
@@ -572,19 +690,71 @@ internal object RenderImageLoader {
         val terminal = AtomicBoolean(false)
         val workerSlotReleased = AtomicBoolean(false)
     }
+    private class PrioritizedTask(
+        private val request: PendingRequest,
+        private val sequence: Long,
+        action: () -> Unit,
+    ) : FutureTask<Unit>(Callable { action(); Unit }), Comparable<PrioritizedTask> {
+        override fun compareTo(other: PrioritizedTask): Int {
+            val priority = request.priority.compareTo(other.request.priority)
+            return if (priority != 0) priority else sequence.compareTo(other.sequence)
+        }
+    }
+    internal class BoundedPriorityQueue<E>(capacity: Int) : PriorityBlockingQueue<E>() {
+        private val permits = Semaphore(capacity)
+
+        override fun offer(element: E): Boolean {
+            if (!permits.tryAcquire()) return false
+            return try {
+                super.offer(element).also { added -> if (!added) permits.release() }
+            } catch (throwable: Throwable) {
+                permits.release()
+                throw throwable
+            }
+        }
+
+        override fun poll(): E? = super.poll()?.also { permits.release() }
+
+        override fun poll(timeout: Long, unit: TimeUnit): E? =
+            super.poll(timeout, unit)?.also { permits.release() }
+
+        override fun take(): E = super.take().also { permits.release() }
+
+        override fun remove(element: E?): Boolean =
+            super.remove(element).also { removed -> if (removed) permits.release() }
+
+        override fun clear() {
+            while (poll() != null) Unit
+        }
+
+        override fun drainTo(target: MutableCollection<in E>): Int =
+            super.drainTo(target).also(permits::release)
+
+        override fun drainTo(target: MutableCollection<in E>, maxElements: Int): Int =
+            super.drainTo(target, maxElements).also(permits::release)
+    }
     private data class PolicyState(
         var submittedCount: Int = 0,
         val pending: java.util.ArrayDeque<PendingRequest> = java.util.ArrayDeque()
     )
 
-    private val cache = object : LruCache<CacheKey, Bitmap>(32 * 1024 * 1024) {
-        override fun sizeOf(key: CacheKey, value: Bitmap): Int =
-            saturatingAdd(decodedAllocationBytes(value), key.digest.size.toLong() + CACHE_ENTRY_OVERHEAD_BYTES)
+    private val cache = object : LruCache<CacheKey, DecodedBitmapLease>(32 * 1024 * 1024) {
+        override fun sizeOf(key: CacheKey, value: DecodedBitmapLease): Int =
+            saturatingAdd(value.byteCount, key.digest.size.toLong() + CACHE_ENTRY_OVERHEAD_BYTES)
                 .coerceAtMost(Int.MAX_VALUE.toLong())
                 .toInt()
+
+        override fun entryRemoved(
+            evicted: Boolean,
+            key: CacheKey,
+            oldValue: DecodedBitmapLease,
+            newValue: DecodedBitmapLease?,
+        ) {
+            if (oldValue !== newValue) oldValue.close()
+        }
     }
 
-    /** The cache is the only decoded-pixel allocation owner. */
+    /** Counts the allocation once even when cache and mounted leases share it. */
     private fun decodedAllocationBytes(bitmap: Bitmap): Long {
         val allocation = runCatching { bitmap.allocationByteCount.toLong() }.getOrNull()
         if (allocation != null && allocation >= 0) return allocation
@@ -607,11 +777,18 @@ internal object RenderImageLoader {
     private var admissionCount = 0
     private val nextCallbackId = AtomicLong()
     private val submissionRejectionCount = AtomicLong()
+    private val submissionSequence = AtomicLong()
     private val digestConstructionCount = AtomicLong()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private var globalExecutor = createGlobalExecutor()
     private val timeoutScheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "native-editor-image-deadline").apply { isDaemon = true }
+    }
+
+    init {
+        DecodedBitmapBudget.shared().setPressureHandler {
+            synchronized(cache) { cache.evictAll() }
+        }
     }
 
     @Volatile
@@ -638,12 +815,12 @@ internal object RenderImageLoader {
     @Volatile
     internal var beforeDigestOverride: (() -> Unit)? = null
 
-    fun cached(
+    internal fun isCachedForTesting(
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
-    ): Bitmap? = prepare(source, policy)?.let {
-        synchronized(cache) { cache.get(cacheKey(it.source, it.policy)) }
-    }
+    ): Boolean = prepare(source, policy)?.let {
+        synchronized(cache) { cache.get(cacheKey(it.source, it.policy)) != null }
+    } ?: false
 
     internal fun prepare(
         source: String,
@@ -727,22 +904,42 @@ internal object RenderImageLoader {
 
     internal fun submissionRejectionCountForTesting(): Long = submissionRejectionCount.get()
 
-    fun load(
+    internal fun loadLease(
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
-        onLoaded: (Bitmap?) -> Unit
-    ): LoadHandle = load(source, policy, null, onLoaded)
+        ownerId: Long,
+        priority: DecodedBitmapPriority,
+        onLoaded: (DecodedBitmapLease?) -> Unit,
+    ): LoadHandle = loadInternal(
+        source,
+        policy,
+        null,
+        ownerId,
+        priority,
+        onLoaded,
+    )
 
-    internal fun load(
+    internal fun loadLease(
         prepared: PreparedSource,
-        onLoaded: (Bitmap?) -> Unit
-    ): LoadHandle = load(prepared.source, prepared.policy, prepared, onLoaded)
+        ownerId: Long,
+        priority: DecodedBitmapPriority,
+        onLoaded: (DecodedBitmapLease?) -> Unit,
+    ): LoadHandle = loadInternal(
+        prepared.source,
+        prepared.policy,
+        prepared,
+        ownerId,
+        priority,
+        onLoaded,
+    )
 
-    private fun load(
+    private fun loadInternal(
         source: String,
         policy: ImageLoadingPolicy,
         prepared: PreparedSource?,
-        onLoaded: (Bitmap?) -> Unit
+        ownerId: Long?,
+        priority: DecodedBitmapPriority,
+        onLoaded: (DecodedBitmapLease?) -> Unit,
     ): LoadHandle {
         val cancelled = AtomicBoolean(false)
         var requestKey: RequestKey? = null
@@ -756,7 +953,10 @@ internal object RenderImageLoader {
             cancelled,
             AtomicBoolean(false),
             handle,
-            onLoaded
+            ownerId,
+            policy.maxDecodedBytes.toLong(),
+            priority,
+            onLoaded,
         )
         val admitted = synchronized(lock) {
             if (admissionCount >= GLOBAL_ADMISSION_LIMIT) {
@@ -796,8 +996,10 @@ internal object RenderImageLoader {
             postCallbacks(listOf(callback), null)
             return handle
         }
-        synchronized(cache) { cache.get(resolvedRequestKey.digest) }?.let { bitmap ->
-            scheduleCachedDelivery(callback, bitmap, deadlineMs)
+        synchronized(cache) {
+            cache.get(resolvedRequestKey.digest)?.let { cached -> leaseForCallback(cached, callback) }
+        }?.let { lease ->
+            scheduleCachedDelivery(callback, lease, deadlineMs)
             return handle
         }
         var drain = false
@@ -807,6 +1009,13 @@ internal object RenderImageLoader {
             val existing = inFlight[resolvedRequestKey]
             if (existing != null) {
                 existing.callbacks += callback
+                if (
+                    callback.priority == DecodedBitmapPriority.VISIBLE &&
+                    existing.priority != DecodedBitmapPriority.VISIBLE
+                ) {
+                    existing.priority = DecodedBitmapPriority.VISIBLE
+                    promoteRequestLocked(existing)
+                }
             } else {
                 val pending = PendingRequest(
                     key = resolvedRequestKey,
@@ -822,13 +1031,17 @@ internal object RenderImageLoader {
                         inFlight[resolvedRequestKey] = pending
                         state.submittedCount += 1
                         pending.submitted = true
-                        readyToSubmit.addLast(pending)
+                        enqueueReadyLocked(pending)
                         drain = true
                     }
                     state.pending.size < policy.maxPendingRequests -> {
                         createdRequest = pending
                         inFlight[resolvedRequestKey] = pending
-                        state.pending.addLast(pending)
+                        if (pending.priority == DecodedBitmapPriority.VISIBLE) {
+                            state.pending.addFirst(pending)
+                        } else {
+                            state.pending.addLast(pending)
+                        }
                     }
                     else -> reject = true
                 }
@@ -841,6 +1054,34 @@ internal object RenderImageLoader {
             drainSubmissions()
         }
         return handle
+    }
+
+    private fun promoteRequestLocked(request: PendingRequest) {
+        val state = policyStates[request.key.policy]
+        if (!request.submitted) {
+            if (state?.pending?.remove(request) == true) state.pending.addFirst(request)
+            return
+        }
+        if (readyToSubmit.remove(request)) {
+            readyToSubmit.addFirst(request)
+            return
+        }
+        val future = request.future ?: return
+        if (!request.started.get() && globalExecutor.remove(future as Runnable)) {
+            try {
+                globalExecutor.execute(future)
+            } catch (_: RejectedExecutionException) {
+                submissionRejectionCount.incrementAndGet()
+                request.future = null
+                enqueueReadyLocked(request)
+                mainHandler.post { drainSubmissions() }
+            }
+        }
+    }
+
+    private fun enqueueReadyLocked(request: PendingRequest) {
+        if (request.priority == DecodedBitmapPriority.VISIBLE) readyToSubmit.addFirst(request)
+        else readyToSubmit.addLast(request)
     }
 
     private fun drainSubmissions() {
@@ -864,18 +1105,24 @@ internal object RenderImageLoader {
 
     private fun submitRequest(request: PendingRequest): Boolean {
         try {
-            val future = globalExecutor.submit {
+            val future = PrioritizedTask(
+                request,
+                submissionSequence.incrementAndGet(),
+            ) {
                 request.started.set(true)
-                var bitmap: Bitmap? = null
+                var bitmap: DecodedBitmapLease? = null
                 try {
                     bitmap = decode(request)
                 } catch (_: Exception) {
+                    bitmap = null
+                } catch (_: OutOfMemoryError) {
                     bitmap = null
                 } finally {
                     completeDecodedRequest(request, bitmap)
                     beforeWorkerReturnOverride?.invoke(request.source)
                 }
             }
+            globalExecutor.execute(future)
             var orphaned = false
             synchronized(lock) {
                 request.dispatching = false
@@ -905,12 +1152,15 @@ internal object RenderImageLoader {
         }
     }
 
-    private fun completeDecodedRequest(request: PendingRequest, bitmap: Bitmap?) {
+    private fun completeDecodedRequest(request: PendingRequest, bitmap: DecodedBitmapLease?) {
         synchronized(lock) {
             releaseRequestSlotLocked(request)
         }
         mainHandler.post { drainSubmissions() }
-        if (request.terminal.get()) return
+        if (request.terminal.get()) {
+            bitmap?.close()
+            return
+        }
         if (bitmap == null || request.cancellation.isCancelled() ||
             monotonicNowMs() >= request.deadlineMs
         ) {
@@ -935,10 +1185,13 @@ internal object RenderImageLoader {
 
     private fun claimRequestOutcome(
         request: PendingRequest,
-        candidateBitmap: Bitmap?,
+        candidateBitmap: DecodedBitmapLease?,
         deliverInline: Boolean
     ): Boolean {
-        if (!request.terminal.compareAndSet(false, true)) return false
+        if (!request.terminal.compareAndSet(false, true)) {
+            candidateBitmap?.close()
+            return false
+        }
         request.timeoutFuture?.cancel(false)
         val callbacks: List<Callback>
         synchronized(lock) {
@@ -951,16 +1204,22 @@ internal object RenderImageLoader {
                 monotonicNowMs() < request.deadlineMs &&
                 callbacks.any { callback -> !callback.cancelled.get() }
         }
-        if (resolvedBitmap == null) request.cancellation.cancel()
+        if (resolvedBitmap == null) {
+            candidateBitmap?.close()
+            request.cancellation.cancel()
+        }
+        val deliveries = callbacks.map { callback ->
+            callback to resolvedBitmap?.let { leaseForCallback(it, callback) }
+        }
         if (resolvedBitmap != null) {
             synchronized(cache) { cache.put(request.key.digest, resolvedBitmap) }
         }
         callbacks.forEach(::releaseAdmission)
         if (deliverInline) {
-            callbacks.forEach { callback -> deliverCallback(callback, resolvedBitmap) }
+            deliveries.forEach { (callback, lease) -> deliverCallback(callback, lease) }
             drainSubmissions()
         } else {
-            postCallbacks(callbacks, resolvedBitmap)
+            postDeliveries(deliveries)
         }
         return true
     }
@@ -979,13 +1238,18 @@ internal object RenderImageLoader {
         if (request.terminal.get()) future.cancel(false)
     }
 
-    private fun scheduleCachedDelivery(callback: Callback, bitmap: Bitmap, deadlineMs: Long) {
+    private fun scheduleCachedDelivery(
+        callback: Callback,
+        lease: DecodedBitmapLease,
+        deadlineMs: Long,
+    ) {
         val terminal = AtomicBoolean(false)
         val delayMs = (deadlineMs - monotonicNowMs()).coerceAtLeast(0L)
         val timeoutFuture = timeoutScheduler.schedule(
             {
                 deadlineExecutionGateOverride?.invoke()
                 if (terminal.compareAndSet(false, true)) {
+                    lease.close()
                     releaseAdmission(callback)
                     postCallbacks(listOf(callback), null)
                 }
@@ -997,14 +1261,16 @@ internal object RenderImageLoader {
                 if (!terminal.compareAndSet(false, true)) return@post
                 timeoutFuture.cancel(false)
                 releaseAdmission(callback)
-                val result = bitmap.takeIf {
+                val result = lease.takeIf {
                     !callback.cancelled.get() && monotonicNowMs() < deadlineMs
                 }
+                if (result == null) lease.close()
                 deliverCallback(callback, result)
             }
         ) {
             timeoutFuture.cancel(false)
             terminal.set(true)
+            lease.close()
             callback.handle.finish()
         }
     }
@@ -1018,13 +1284,23 @@ internal object RenderImageLoader {
         }
     }
 
-    private fun postCallbacks(callbacks: List<Callback>, bitmap: Bitmap?) {
+    private fun postCallbacks(callbacks: List<Callback>, bitmap: DecodedBitmapLease?) {
+        val deliveries = callbacks.map { callback ->
+            callback to bitmap?.let { leaseForCallback(it, callback) }
+        }
+        postDeliveries(deliveries)
+    }
+
+    private fun postDeliveries(deliveries: List<Pair<Callback, DecodedBitmapLease?>>) {
         if (!mainHandler.post {
-                callbacks.forEach { callback -> deliverCallback(callback, bitmap) }
+                deliveries.forEach { (callback, lease) -> deliverCallback(callback, lease) }
                 drainSubmissions()
             }
         ) {
-            callbacks.forEach { it.handle.finish() }
+            deliveries.forEach { (callback, lease) ->
+                lease?.close()
+                callback.handle.finish()
+            }
             drainSubmissions()
         }
     }
@@ -1068,10 +1344,11 @@ internal object RenderImageLoader {
             }
         }
 
-    private fun deliverCallback(callback: Callback, bitmap: Bitmap?) {
+    private fun deliverCallback(callback: Callback, lease: DecodedBitmapLease?) {
         try {
-            if (!callback.cancelled.get()) callback.deliver(bitmap)
+            if (!callback.cancelled.get()) callback.deliver(lease) else lease?.close()
         } catch (_: Exception) {
+            lease?.close()
             // Consumer failures must not crash the delivery runnable or retain admission.
         } finally {
             callback.handle.finish()
@@ -1126,7 +1403,7 @@ internal object RenderImageLoader {
         if (next != null) {
             state.submittedCount += 1
             next.submitted = true
-            readyToSubmit.addLast(next)
+            enqueueReadyLocked(next)
         }
         removePolicyStateIfEmptyLocked(policy)
     }
@@ -1141,7 +1418,7 @@ internal object RenderImageLoader {
         GLOBAL_WORKERS,
         30L,
         TimeUnit.SECONDS,
-        ArrayBlockingQueue(GLOBAL_QUEUE_CAPACITY)
+        BoundedPriorityQueue<Runnable>(GLOBAL_QUEUE_CAPACITY)
     ) {
         override fun afterExecute(runnable: Runnable?, throwable: Throwable?) {
             super.afterExecute(runnable, throwable)
@@ -1151,15 +1428,36 @@ internal object RenderImageLoader {
         }
     }.apply { allowCoreThreadTimeOut(true) }
 
-    private fun decode(request: PendingRequest): Bitmap? =
-        decodeSourceOverride?.invoke(request.source, request.key.policy)
-            ?: RenderImageDecoder.decodeSource(
+    private fun decode(request: PendingRequest): DecodedBitmapLease? {
+        decodeSourceOverride?.let { override ->
+            val bitmap = try {
+                override(request.source, request.key.policy)
+            } catch (_: OutOfMemoryError) {
+                null
+            } ?: return null
+            val bytes = decodedAllocationBytes(bitmap)
+            val reservation = DecodedBitmapBudget.shared().reserve(
+                bytes,
+                request.priority,
+            ) ?: return null
+            return reservation.commit(bitmap, bytes)
+        }
+        return RenderImageDecoder.decodeSourceLease(
                 request.source,
                 request.key.policy,
                 request.cancellation,
                 monotonicClockOverride ?: systemMonotonicClock,
-                request.deadlineMs
+                request.deadlineMs,
+                request.priority,
             )
+    }
+
+    private fun leaseForCallback(
+        lease: DecodedBitmapLease,
+        callback: Callback,
+    ): DecodedBitmapLease? = callback.ownerId?.let { ownerId ->
+        lease.fork(ownerId, callback.ownerLimitBytes, callback.priority)
+    } ?: lease.forkUnowned()
 
     private fun monotonicNowMs(): Long =
         (monotonicClockOverride ?: systemMonotonicClock).elapsedRealtime()

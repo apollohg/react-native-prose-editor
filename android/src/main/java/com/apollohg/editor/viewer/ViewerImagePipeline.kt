@@ -1,7 +1,9 @@
 package com.apollohg.editor.viewer
 
-import android.graphics.Bitmap
 import android.graphics.Rect
+import com.apollohg.editor.DecodedBitmapBudget
+import com.apollohg.editor.DecodedBitmapLease
+import com.apollohg.editor.DecodedBitmapPriority
 import com.apollohg.editor.ImageLoadingPolicy
 import com.apollohg.editor.NativeImagePipeline
 import com.apollohg.editor.RenderImageLoader
@@ -197,7 +199,15 @@ internal class ViewerAttachmentRevisionState {
  * limits, byte-bounded cache, de-duplication, cancellation receipts and errors.
  */
 internal class ViewerImagePipeline(
-    private val load: (RenderImageLoader.PreparedSource, (Bitmap?) -> Unit) -> RenderImageLoader.LoadHandle = { source, callback -> RenderImageLoader.load(source, callback) },
+    private val ownerId: Long = DecodedBitmapBudget.nextOwnerId(),
+    private val load: (
+        RenderImageLoader.PreparedSource,
+        Long,
+        DecodedBitmapPriority,
+        (DecodedBitmapLease?) -> Unit,
+    ) -> RenderImageLoader.LoadHandle = { source, owner, priority, callback ->
+        NativeImagePipeline.load(source, owner, priority, callback)
+    },
 ) {
     companion object { const val PREFETCH_MARGIN_PX = 480 }
 
@@ -206,68 +216,168 @@ internal class ViewerImagePipeline(
     private var enabled = false
     private var policy = ImageLoadingPolicy.DEFAULT
     private val requested = mutableSetOf<String>()
+    private val requestPriorities = mutableMapOf<String, DecodedBitmapPriority>()
     private val receipts = mutableMapOf<String, RenderImageLoader.LoadHandle>()
     var requestCountForTesting: Int = 0
         private set
-    var onPixels: ((ViewerImageAttachment, Bitmap) -> Unit)? = null
+    var onPixels: ((ViewerImageAttachment, DecodedBitmapLease) -> Unit)? = null
+    var onPixelsReleased: ((Set<String>) -> Unit)? = null
     var onIntrinsicMetadata: ((ViewerImageAttachment, Int, Int) -> Unit)? = null
     /** Contains only the internal attachment token, never its source URL. */
     var onResourceFailure: ((ViewerImageAttachment) -> Unit)? = null
 
-    fun begin(generation: String, imagesEnabled: Boolean, policy: ImageLoadingPolicy = this.policy) = synchronized(lock) {
-        if (this.generation == generation && enabled == imagesEnabled && this.policy == policy) return@synchronized
-        receipts.values.forEach(RenderImageLoader.LoadHandle::cancel)
-        receipts.clear()
-        requested.clear()
-        requestCountForTesting = 0
-        this.generation = generation
-        this.enabled = imagesEnabled
-        this.policy = policy
+    fun begin(generation: String, imagesEnabled: Boolean, policy: ImageLoadingPolicy = this.policy) {
+        val released = synchronized(lock) {
+            if (this.generation == generation && enabled == imagesEnabled && this.policy == policy) {
+                return@synchronized null
+            }
+            receipts.values.forEach(RenderImageLoader.LoadHandle::cancel)
+            receipts.clear()
+            requested.toSet().also {
+                requested.clear()
+                requestPriorities.clear()
+                requestCountForTesting = 0
+                this.generation = generation
+                this.enabled = imagesEnabled
+                this.policy = policy
+            }
+        } ?: return
+        DecodedBitmapBudget.shared().setOwnerPressureHandler(ownerId, ::releasePrefetchForPressure)
+        onPixelsReleased?.invoke(released)
     }
 
-    fun cancel() = synchronized(lock) {
-        generation = ""
-        enabled = false
-        receipts.values.forEach(RenderImageLoader.LoadHandle::cancel)
-        receipts.clear()
-        requested.clear()
+    fun cancel() {
+        val released = synchronized(lock) {
+            generation = ""
+            enabled = false
+            receipts.values.forEach(RenderImageLoader.LoadHandle::cancel)
+            receipts.clear()
+            requested.toSet().also {
+                requested.clear()
+                requestPriorities.clear()
+            }
+        }
+        DecodedBitmapBudget.shared().setOwnerPressureHandler(ownerId, null)
+        onPixelsReleased?.invoke(released)
     }
 
     fun acceptsCompletion(generation: String): Boolean = synchronized(lock) {
         enabled && this.generation.isNotEmpty() && this.generation == generation
     }
 
+    private fun acceptsCompletion(generation: String, id: String): Boolean = synchronized(lock) {
+        enabled && this.generation.isNotEmpty() && this.generation == generation && id in requested
+    }
+
     fun updateVisibleRect(visible: Rect, attachments: List<ViewerImageAttachment>) {
-        if (visible.isEmpty) return
-        val prefetched = Rect(visible).apply { inset(-PREFETCH_MARGIN_PX, -PREFETCH_MARGIN_PX) }
+        val prefetched = if (visible.isEmpty) Rect() else Rect(visible).apply {
+            inset(-PREFETCH_MARGIN_PX, -PREFETCH_MARGIN_PX)
+        }
+        val eligibleIds = attachments.asSequence()
+            .filter { it.ordinal >= 0 && it.source.isNotEmpty() && Rect.intersects(it.bounds, prefetched) }
+            .mapTo(mutableSetOf()) { it.id }
+        val visibleIds = attachments.asSequence()
+            .filter { it.ordinal >= 0 && it.source.isNotEmpty() && Rect.intersects(it.bounds, visible) }
+            .mapTo(mutableSetOf()) { it.id }
+        val released = mutableSetOf<String>()
         val start = synchronized(lock) {
             if (!enabled || generation.isEmpty()) return
-            attachments.filter { it.ordinal >= 0 && it.source.isNotEmpty() && Rect.intersects(it.bounds, prefetched) && requested.add(it.id) }
+            requested.filterTo(released) { it !in eligibleIds }
+            requested.filterTo(released) {
+                it in visibleIds && requestPriorities[it] == DecodedBitmapPriority.PREFETCH
+            }
+            released.forEach { id ->
+                requested.remove(id)
+                requestPriorities.remove(id)
+                receipts.remove(id)?.cancel()
+            }
+            attachments.asSequence()
+                .filter { it.id in eligibleIds && it.id !in requested }
+                .sortedBy { if (Rect.intersects(it.bounds, visible)) 0 else 1 }
+                .filter { requested.add(it.id) }
+                .toList()
                 .also { requestCountForTesting += it.size }
-                .map { it to generation }
+                .map { attachment ->
+                    Triple(
+                        attachment,
+                        generation,
+                        if (Rect.intersects(attachment.bounds, visible)) {
+                            DecodedBitmapPriority.VISIBLE
+                        } else {
+                            DecodedBitmapPriority.PREFETCH
+                        },
+                    ).also { requestPriorities[attachment.id] = it.third }
+                }
         }
-        start.forEach { (attachment, requestGeneration) ->
+        if (released.isNotEmpty()) onPixelsReleased?.invoke(released)
+        start.forEach { (attachment, requestGeneration, priority) ->
+            if (!acceptsCompletion(requestGeneration, attachment.id)) return@forEach
             val source = NativeImagePipeline.prepare(attachment.source, policy) ?: run {
                 reportFailure(attachment, requestGeneration)
                 return@forEach
             }
             PreparedProseInstrumentation.imageRequested()
-            val receipt = load(source) { bitmap ->
-                if (!acceptsCompletion(requestGeneration)) return@load
-                if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) {
+            val receipt = load(source, ownerId, priority) { lease ->
+                if (!acceptsCompletion(requestGeneration, attachment.id)) {
+                    lease?.close()
+                    return@load
+                }
+                val bitmap = lease?.bitmap
+                if (lease == null || bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) {
+                    lease?.close()
                     reportFailure(attachment, requestGeneration)
                     return@load
                 }
                 PreparedProseInstrumentation.imageMetadataRead()
                 onIntrinsicMetadata?.invoke(attachment, bitmap.width, bitmap.height)
-                if (acceptsCompletion(requestGeneration)) {
-                    PreparedProseInstrumentation.imageDecoded()
-                    onPixels?.invoke(attachment, bitmap)
+                val delivered = synchronized(lock) {
+                    if (!enabled || generation != requestGeneration || attachment.id !in requested) {
+                        false
+                    } else {
+                        PreparedProseInstrumentation.imageDecoded()
+                        val callback = onPixels
+                        if (callback == null) false else {
+                            callback.invoke(attachment, lease)
+                            true
+                        }
+                    }
+                }
+                if (!delivered) {
+                    lease.close()
                 }
             }
-            synchronized(lock) { if (acceptsCompletion(requestGeneration)) receipts[attachment.id] = receipt else receipt.cancel() }
+            synchronized(lock) {
+                if (acceptsCompletion(requestGeneration) && attachment.id in requested) {
+                    receipts[attachment.id] = receipt
+                } else {
+                    receipt.cancel()
+                }
+            }
+            receipt.onFinished {
+                synchronized(lock) {
+                    if (receipts[attachment.id] === receipt) receipts.remove(attachment.id)
+                }
+            }
         }
     }
+
+    private fun releasePrefetchForPressure() {
+        val released = synchronized(lock) {
+            requestPriorities.asSequence()
+                .filter { it.value == DecodedBitmapPriority.PREFETCH }
+                .mapTo(mutableSetOf()) { it.key }
+                .also { ids ->
+                    ids.forEach { id ->
+                        requestPriorities.remove(id)
+                        requested.remove(id)
+                        receipts.remove(id)?.cancel()
+                    }
+                }
+        }
+        if (released.isNotEmpty()) onPixelsReleased?.invoke(released)
+    }
+
+    internal fun releasePrefetchForPressureForTesting() = releasePrefetchForPressure()
 
     private fun reportFailure(attachment: ViewerImageAttachment, requestGeneration: String) {
         val callback = synchronized(lock) {

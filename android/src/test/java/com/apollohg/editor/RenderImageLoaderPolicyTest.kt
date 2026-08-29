@@ -8,10 +8,12 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.CopyOnWriteArrayList
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -54,16 +56,17 @@ class RenderImageLoaderPolicyTest {
         assertEquals(2, defaults.maxConcurrentRequests)
         assertEquals(64, defaults.maxPendingRequests)
         assertEquals(2_048, defaults.maxDecodeDimensionPx)
+        assertEquals(32 * 1024 * 1024, defaults.maxDecodedBytes)
 
         val parsed = ImageLoadingPolicy.fromJson(
-            """{"maxSourceBytes":12,"connectTimeoutMs":13,"readTimeoutMs":14,"requestTimeoutMs":15,"maxConcurrentRequests":3,"maxPendingRequests":4,"maxDecodeDimensionPx":16}"""
+            """{"maxSourceBytes":12,"connectTimeoutMs":13,"readTimeoutMs":14,"requestTimeoutMs":15,"maxConcurrentRequests":3,"maxPendingRequests":4,"maxDecodeDimensionPx":16,"maxDecodedBytes":17}"""
         )
-        assertEquals(ImageLoadingPolicy(12, 13, 14, 15, 3, 4, 16), parsed)
+        assertEquals(ImageLoadingPolicy(12, 13, 14, 15, 3, 4, 16, 17), parsed)
         assertEquals(defaults, ImageLoadingPolicy.fromJson("""{"maxSourceBytes":0}"""))
         assertEquals(
             defaults,
             ImageLoadingPolicy.fromJson(
-                """{"maxSourceBytes":67108865,"connectTimeoutMs":600001,"readTimeoutMs":600001,"requestTimeoutMs":600001,"maxConcurrentRequests":17,"maxPendingRequests":513,"maxDecodeDimensionPx":8193}"""
+                """{"maxSourceBytes":67108865,"connectTimeoutMs":600001,"readTimeoutMs":600001,"requestTimeoutMs":600001,"maxConcurrentRequests":17,"maxPendingRequests":513,"maxDecodeDimensionPx":8193,"maxDecodedBytes":268435457}"""
             )
         )
     }
@@ -314,7 +317,7 @@ class RenderImageLoaderPolicyTest {
 
         assertEquals(0L, completed.count)
         assertNull(result)
-        assertNull(RenderImageLoader.cached(source, ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)))
+        assertFalse(RenderImageLoader.isCachedForTesting(source, ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)))
         assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
     }
 
@@ -344,7 +347,7 @@ class RenderImageLoaderPolicyTest {
 
         assertEquals(0L, completed.count)
         assertNull(result)
-        assertNull(RenderImageLoader.cached(source, policy))
+        assertFalse(RenderImageLoader.isCachedForTesting(source, policy))
         assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
     }
 
@@ -374,7 +377,7 @@ class RenderImageLoaderPolicyTest {
 
         assertEquals(0L, completed.count)
         assertNull(result)
-        assertNull(RenderImageLoader.cached(source, policy))
+        assertFalse(RenderImageLoader.isCachedForTesting(source, policy))
         assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
     }
 
@@ -419,7 +422,7 @@ class RenderImageLoaderPolicyTest {
         val warmed = CountDownLatch(1)
         RenderImageLoader.load(source, policy) { warmed.countDown() }
         drainMainUntil(warmed)
-        assertTrue(RenderImageLoader.cached(source, policy) != null)
+        assertTrue(RenderImageLoader.isCachedForTesting(source, policy))
 
         val clock = FakeMonotonicClock()
         RenderImageLoader.monotonicClockOverride = clock
@@ -613,6 +616,30 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `sampling also honors decoded byte ceiling without overflow`() {
+        assertEquals(
+            4,
+            RenderImageDecoder.calculateInSampleSize(
+                width = 4_096,
+                height = 4_096,
+                maxWidth = 8_192,
+                maxHeight = 8_192,
+                maxDecodedBytes = 4L * 1024 * 1024
+            )
+        )
+        assertEquals(
+            1 shl 30,
+            RenderImageDecoder.calculateInSampleSize(
+                width = Int.MAX_VALUE,
+                height = Int.MAX_VALUE,
+                maxWidth = Int.MAX_VALUE,
+                maxHeight = Int.MAX_VALUE,
+                maxDecodedBytes = 1
+            )
+        )
+    }
+
+    @Test
     fun `sampling uses ceiling division at the decode dimension boundary`() {
         assertEquals(
             4,
@@ -638,6 +665,24 @@ class RenderImageLoaderPolicyTest {
         requireNotNull(decoded)
         assertEquals(2_048, decoded.width)
         assertTrue(decoded.height <= 2_048)
+    }
+
+    @Test
+    fun `actual decoded bitmap is constrained by decoded byte policy`() {
+        RenderImageDecoder.bitmapDecoderOverride = { _, _ ->
+            Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+        }
+
+        val decoded = RenderImageDecoder.decodeSource(
+            "data:image/png;base64,AQ==",
+            ImageLoadingPolicy.DEFAULT.copy(
+                maxDecodeDimensionPx = 128,
+                maxDecodedBytes = 1_024,
+            ),
+        )
+
+        requireNotNull(decoded)
+        assertTrue(decoded.allocationByteCount <= 1_024)
     }
 
     @Test
@@ -684,6 +729,29 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `global priority queue capacity is atomic under concurrent offers`() {
+        repeat(20) {
+            val queue = RenderImageLoader.BoundedPriorityQueue<Int>(1)
+            val ready = CountDownLatch(32)
+            val start = CountDownLatch(1)
+            val executor = Executors.newFixedThreadPool(32)
+            repeat(32) { value ->
+                executor.execute {
+                    ready.countDown()
+                    start.await()
+                    queue.offer(value)
+                }
+            }
+
+            assertTrue(ready.await(2, TimeUnit.SECONDS))
+            start.countDown()
+            executor.shutdown()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+            assertTrue(queue.size <= 1)
+        }
+    }
+
+    @Test
     fun `policy concurrency above global workers is admitted under global ceiling`() {
         val release = CountDownLatch(1)
         val started = CountDownLatch(4)
@@ -718,6 +786,43 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `queued visible decode starts before queued prefetch`() {
+        val blockersStarted = CountDownLatch(RenderImageLoader.globalWorkerLimitForTesting())
+        val releaseBlockers = CountDownLatch(1)
+        val completed = CountDownLatch(RenderImageLoader.globalWorkerLimitForTesting() + 2)
+        val starts = CopyOnWriteArrayList<String>()
+        RenderImageLoader.decodeSourceOverride = { source, _ ->
+            starts += source
+            if (source.contains("blocker")) {
+                blockersStarted.countDown()
+                releaseBlockers.await(2, TimeUnit.SECONDS)
+            }
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val policy = ImageLoadingPolicy.DEFAULT.copy(maxConcurrentRequests = 16)
+        val owner = DecodedBitmapBudget.nextOwnerId()
+        fun enqueue(source: String, priority: DecodedBitmapPriority) {
+            RenderImageLoader.loadLease(source, policy, owner, priority) { lease ->
+                lease?.close()
+                completed.countDown()
+            }
+        }
+        repeat(RenderImageLoader.globalWorkerLimitForTesting()) { index ->
+            enqueue("https://example.com/blocker/$index", DecodedBitmapPriority.PREFETCH)
+        }
+        assertTrue(blockersStarted.await(2, TimeUnit.SECONDS))
+        val prefetch = "https://example.com/queued-prefetch"
+        val visible = "https://example.com/queued-visible"
+        enqueue(prefetch, DecodedBitmapPriority.PREFETCH)
+        enqueue(visible, DecodedBitmapPriority.VISIBLE)
+
+        releaseBlockers.countDown()
+        drainMainUntil(completed)
+
+        assertTrue(starts.indexOf(visible) < starts.indexOf(prefetch))
+    }
+
+    @Test
     fun `throwing decoder completes callback and permits retry`() {
         val completed = CountDownLatch(1)
         RenderImageLoader.decodeSourceOverride = { _, _ -> error("decoder failure") }
@@ -744,6 +849,23 @@ class RenderImageLoaderPolicyTest {
 
         assertEquals(0L, retried.count)
         assertTrue(retryResult != null)
+    }
+
+    @Test
+    fun `decoder out of memory is reported as a nonfatal miss`() {
+        val completed = CountDownLatch(1)
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        RenderImageLoader.decodeSourceOverride = { _, _ -> throw OutOfMemoryError("test") }
+
+        RenderImageLoader.load("https://example.com/oom.png") {
+            result = it
+            completed.countDown()
+        }
+
+        drainMainUntil(completed)
+        assertNull(result)
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+        assertEquals(0, RenderImageLoader.cacheEntryCountForTesting())
     }
 
     @Test
