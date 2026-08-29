@@ -2379,8 +2379,8 @@ class NativeEditorExpoView(
     }
 
     override fun onDetachedFromWindow() {
-        richTextView.editorEditText.retireInputConnectionForHostDetach()
         prepareForDetachFromWindow()
+        richTextView.editorEditText.retireInputConnectionForHostDetach()
         super.onDetachedFromWindow()
         handleDetachedFromWindow()
     }
@@ -3279,8 +3279,8 @@ class NativeEditorExpoView(
     }
 
     internal fun handleDetachedFromWindowForTesting() {
-        richTextView.editorEditText.retireInputConnectionForHostDetach()
         prepareForDetachFromWindow()
+        richTextView.editorEditText.retireInputConnectionForHostDetach()
         handleDetachedFromWindow()
     }
 
