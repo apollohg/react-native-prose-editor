@@ -102,6 +102,104 @@ Pass `focusPreservingRefs` a native view ref or readonly array of refs for exter
 
 See [Getting Started](https://github.com/apollohg/react-native-prose-editor/wiki/Getting-Started) and the [NativeRichTextEditor reference](https://github.com/apollohg/react-native-prose-editor/wiki/NativeRichTextEditor-Reference) for the complete API.
 
+## Custom atom nodes
+
+Custom atoms are schema-declared, block-level void nodes rendered by consumer React components inside the native editor. Define the component and its schema together, add the definition to the document schema, and pass the definitions that have custom renderers to the editor:
+
+```tsx
+import { useEffect, useMemo, useRef } from 'react';
+import { Pressable, Text, View } from 'react-native';
+import {
+    AtomUpdateAttrsError,
+    createNativeEditorDocumentHandle,
+    defaultSchema,
+    defineAtomNode,
+    NativeRichTextEditor,
+    withAtomsSchema,
+    type AtomComponentProps,
+    type NativeRichTextEditorRef,
+} from '@apollohg/react-native-prose-editor';
+
+function CounterCard({ attrs, selected, updateAttrs }: AtomComponentProps) {
+    const title = String(attrs.title);
+    const count = Number(attrs.count);
+
+    const increment = async () => {
+        try {
+            await updateAttrs({ count: count + 1 });
+        } catch (error) {
+            if (error instanceof AtomUpdateAttrsError) {
+                console.warn(error.code);
+            }
+        }
+    };
+
+    return (
+        <View accessibilityState={{ selected }}>
+            <Text>{title}</Text>
+            <Pressable onPress={increment}>
+                <Text>Count: {count}</Text>
+            </Pressable>
+        </View>
+    );
+}
+
+const counterCard = defineAtomNode({
+    name: 'counterCard',
+    attrs: {
+        title: { default: 'Untitled counter' },
+        count: { default: 0 },
+    },
+    html: {
+        tag: 'div',
+        staticAttrs: { 'data-type': 'counter-card' },
+        attrMap: { title: 'data-title', count: 'data-count' },
+    },
+    component: CounterCard,
+    estimatedHeight: 120,
+});
+
+const schema = withAtomsSchema(defaultSchema, [counterCard]);
+
+export function CounterEditor() {
+    const editorRef = useRef<NativeRichTextEditorRef>(null);
+    const documentHandle = useMemo(
+        () =>
+            createNativeEditorDocumentHandle({
+                schema,
+                initialization: { type: 'localHtml', html: '<p>Counter demo</p>' },
+            }),
+        []
+    );
+
+    useEffect(() => () => documentHandle.destroy(), [documentHandle]);
+
+    return (
+        <NativeRichTextEditor
+            ref={editorRef}
+            documentHandle={documentHandle}
+            atoms={[counterCard]}
+        />
+    );
+}
+```
+
+The component receives its current `attrs`, `nodeType`, selection state, and an asynchronous `updateAttrs(partial)` function. Attribute updates are revision-guarded and reject with `AtomUpdateAttrsError`; its `code` is `not-applicable`, `stale-revision`, `not-ready`, or `engine-error`. Only declared attributes can be updated.
+
+Use `editorRef.current?.insertNode(counterCard.name)` to insert an atom with its schema defaults. To provide attributes, insert the fragment produced by the definition:
+
+```ts
+editorRef.current?.insertContentJson(
+    counterCard.buildFragmentJson({ title: 'Sample item', count: 10 })
+);
+```
+
+The example above round-trips through HTML as a shape such as `<div data-type="counter-card" data-title="Sample item" data-count="10"></div>`. Every declared atom attribute must have a unique `attrMap` target, and those targets cannot overlap `staticAttrs`. `defineAtomNode` derives `data-*` targets when `attrMap` is omitted and rejects incomplete or colliding rules, preserving every declared attribute across JSON and HTML conversion.
+
+`withAtomsSchema` adds atom definitions to an existing schema. `defineSchema` also accepts an `atoms` key when defining a schema from its node and mark lists. A schema-declared custom void node without a matching definition in the editor's `atoms` prop renders as a built-in chip, so it is never an invisible blank line.
+
+Atoms are block-level and editor-only in this first version. `NativeProseViewer` draws its own void-node fallback instead of mounting the consumer component, and editor atom components are not virtualized.
+
 ## Prose viewer
 
 `NativeProseViewer` renders HTML or ProseMirror JSON without creating an editor session. Supply exactly one content source and ensure its host provides a finite width.

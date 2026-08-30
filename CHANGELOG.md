@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `defineAtomNode`, `withAtomsSchema`, the `defineSchema` `atoms` key, and the `NativeRichTextEditor` `atoms` prop for consumer-rendered custom atom blocks.
+- Added the revision-guarded `updateNodeAttrs` command and atom component `updateAttrs` helper for changing declared void-node attributes.
+- Added declarative schema HTML rules for parsing and serializing custom nodes with lossless declared-attribute mappings.
+
 ## [1.0.1] - 2026-08-30
 
 ### Added
