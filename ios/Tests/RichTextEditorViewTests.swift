@@ -1,4 +1,18 @@
 import XCTest
+import ExpoModulesCore
+
+private final class AutoGrowStyleTrackingNativeEditorView: NativeEditorExpoView {
+    private(set) var publishedStyleHeights: [CGFloat?] = []
+
+    required init(appContext: AppContext? = nil) {
+        super.init(appContext: appContext)
+    }
+
+    override func setStyleSize(_ width: NSNumber?, height: NSNumber?) {
+        publishedStyleHeights.append(height.map { CGFloat($0.doubleValue) })
+        super.setStyleSize(width, height: height)
+    }
+}
 
 final class RichTextEditorViewTests: XCTestCase {
     func testNativeCommitEventPayloadKeepsTheCommittedUpdateSourceAndRevision() throws {
@@ -6997,6 +7011,35 @@ final class RichTextEditorViewTests: XCTestCase {
         view.layoutIfNeeded()
 
         XCTAssertEqual(view.intrinsicContentSize.height, expectedHeight, accuracy: 1.0)
+    }
+
+    func testNativeEditorAutoGrowPublishesFabricStyleHeightDuringNativeLayout() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = AutoGrowStyleTrackingNativeEditorView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 0)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+        view.richTextView.setContent(html: "<p>Alpha</p>")
+        view.setHeightBehavior("autoGrow")
+        view.layoutIfNeeded()
+
+        let initialHeight = try XCTUnwrap(view.publishedStyleHeights.compactMap { $0 }.last)
+        let initialPublicationCount = view.publishedStyleHeights.count
+        view.richTextView.setContent(html: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
+        view.layoutIfNeeded()
+
+        let publishedHeight = try XCTUnwrap(view.publishedStyleHeights.compactMap { $0 }.last)
+        XCTAssertGreaterThan(publishedHeight, initialHeight)
+        XCTAssertGreaterThan(view.publishedStyleHeights.count, initialPublicationCount)
+
+        view.setHeightBehavior("fixed")
+        XCTAssertNil(view.publishedStyleHeights.last!)
     }
 
     func testApplyThemeRerendersExistingContentWhenTextIsUnchanged() {

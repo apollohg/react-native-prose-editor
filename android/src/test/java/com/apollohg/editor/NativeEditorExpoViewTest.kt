@@ -3378,6 +3378,55 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
+    fun `auto grow publishes changed height during native render application`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        val events = mutableListOf<Map<String, Any>>()
+        view.onContentHeightChangeForTesting = { events += it }
+        view.setHeightBehavior("autoGrow")
+
+        val widthSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            360,
+            android.view.View.MeasureSpec.EXACTLY
+        )
+        val heightSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+            0,
+            android.view.View.MeasureSpec.UNSPECIFIED
+        )
+        editText.applyUpdateJSON(renderUpdateJson("One line"), notifyListener = false)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+        val initialHeight = events.last()["contentHeight"] as Int
+        events.clear()
+
+        editText.applyUpdateJSON(
+            renderUpdateJson((1..8).joinToString("\n") { "Line $it" }),
+            notifyListener = false
+        )
+
+        assertTrue("height must publish before the next looper turn", events.isNotEmpty())
+        assertTrue((events.last()["contentHeight"] as Int) > initialHeight)
+    }
+
+    @Test
+    fun `content size change hook ignores caret-only selection`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editText = view.richTextView.editorEditText
+        var contentSizeChangeCount = 0
+        editText.onContentSizeMayChange = { contentSizeChangeCount += 1 }
+
+        editText.applyUpdateJSON(renderUpdateJson("Alpha"), notifyListener = false)
+        assertTrue(contentSizeChangeCount > 0)
+        contentSizeChangeCount = 0
+
+        editText.setSelection(editText.length())
+
+        assertEquals(0, contentSizeChangeCount)
+    }
+
+    @Test
     fun `detach preflight flushes pending composition before unregistering`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)

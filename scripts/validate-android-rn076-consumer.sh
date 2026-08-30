@@ -82,6 +82,9 @@ const expo = JSON.parse(readFileSync(join(root, 'expo-module.config.json'), 'utf
 if (expo.android?.gradlePath !== 'android/expo/build.gradle') {
   fail('RN 0.76 package must route Expo autolinking through the Android facade');
 }
+if (expo.android?.path !== 'android/expo') {
+  fail('Expo module autolinking must use the Android facade project directory');
+}
 if (!expo.android?.modules?.includes('com.apollohg.editor.NativeEditorModule')) {
   fail('RN 0.76 package Expo module entry is missing com.apollohg.editor.NativeEditorModule');
 }
