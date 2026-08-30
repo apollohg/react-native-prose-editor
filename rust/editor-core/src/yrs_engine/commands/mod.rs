@@ -65,6 +65,10 @@ pub enum TypedCommand {
     InsertNode {
         node_type: String,
     },
+    UpdateNodeAttrs {
+        doc_pos: u32,
+        attrs: HashMap<String, serde_json::Value>,
+    },
     ResizeImage {
         at: RevisionedPosition,
         width: u32,
@@ -147,6 +151,7 @@ pub(crate) fn plan(
         | TypedCommand::OutdentListItem
         | TypedCommand::ToggleTaskItemChecked
         | TypedCommand::InsertNode { .. }
+        | TypedCommand::UpdateNodeAttrs { .. }
         | TypedCommand::ResizeImage { .. }) => structure::plan(context, command),
     }
 }

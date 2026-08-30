@@ -234,6 +234,12 @@ enum CommandEnvelope {
         #[serde(rename = "nodeType")]
         node_type: String,
     },
+    UpdateNodeAttrs {
+        #[serde(rename = "docPos")]
+        doc_pos: u32,
+        #[serde(default)]
+        attrs: HashMap<String, serde_json::Value>,
+    },
     ResizeImage {
         at: PositionEnvelope,
         width: u32,
@@ -346,6 +352,9 @@ impl From<CommandEnvelope> for TypedCommand {
             CommandEnvelope::OutdentListItem => Self::OutdentListItem,
             CommandEnvelope::ToggleTaskItemChecked => Self::ToggleTaskItemChecked,
             CommandEnvelope::InsertNode { node_type } => Self::InsertNode { node_type },
+            CommandEnvelope::UpdateNodeAttrs { doc_pos, attrs } => {
+                Self::UpdateNodeAttrs { doc_pos, attrs }
+            }
             CommandEnvelope::ResizeImage { at, width, height } => Self::ResizeImage {
                 at: at.into(),
                 width,

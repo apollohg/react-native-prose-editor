@@ -20,8 +20,8 @@ pub(crate) use format::{
 pub(crate) use structure::{
     plan_apply_list_type, plan_indent_list_item, plan_insert_node, plan_outdent_list_item,
     plan_resize_image, plan_toggle_task_item_checked, plan_unwrap_from_list,
-    plan_wrap_in_list_admitted, prove_structural_diff, simulate_plan, structural_diff_bounded,
-    AdmittedSemanticCommandPlan, ResizeImageRequest, SimulatedCommandPlan,
+    plan_update_node_attrs, plan_wrap_in_list_admitted, prove_structural_diff, simulate_plan,
+    structural_diff_bounded, AdmittedSemanticCommandPlan, ResizeImageRequest, SimulatedCommandPlan,
 };
 pub(crate) use text::{
     apply_operations, plan_delete_backward, plan_delete_scalar_range, plan_insert_text,

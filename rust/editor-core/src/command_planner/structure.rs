@@ -547,6 +547,51 @@ pub(crate) struct ResizeImageRequest {
     pub height: u32,
 }
 
+fn void_node_at<'a>(
+    document: &'a Document,
+    position_map: &PositionMap,
+    doc_pos: u32,
+) -> Option<(u32, &'a Node)> {
+    let block = position_map.block(position_map.find_block_for_doc_pos(doc_pos)?)?;
+    if !block.is_void_block {
+        return None;
+    }
+    Some((block.doc_start, document.node_at(&block.node_path)?))
+}
+
+pub(crate) fn plan_update_node_attrs(
+    document: &Document,
+    position_map: &PositionMap,
+    schema: &Schema,
+    selection: &Selection,
+    doc_pos: u32,
+    new_attrs: std::collections::HashMap<String, serde_json::Value>,
+    limits: &ResourceLimits,
+) -> Option<SemanticCommandPlan> {
+    let (resolved_pos, node) = void_node_at(document, position_map, doc_pos)?;
+    if resolved_pos != doc_pos {
+        return None;
+    }
+    let spec = schema.node(node.node_type())?;
+    if !spec.is_void {
+        return None;
+    }
+    if !spec.allow_undeclared_attrs && new_attrs.keys().any(|key| !spec.attrs.contains_key(key)) {
+        return None;
+    }
+    let mut attrs = node.attrs().clone();
+    attrs.extend(new_attrs);
+    let plan = SemanticCommandPlan {
+        operations: vec![SemanticOperation::UpdateNodeAttrs {
+            pos: doc_pos,
+            attrs,
+        }],
+        selection_after: None,
+        history: SemanticCommandHistory::InputBoundary,
+    };
+    admitted_plan(document, schema, selection, plan, limits).map(|admitted| admitted.plan)
+}
+
 pub(crate) fn plan_resize_image(
     document: &Document,
     position_map: &PositionMap,
@@ -563,11 +608,7 @@ pub(crate) fn plan_resize_image(
     if width == 0 || height == 0 {
         return None;
     }
-    let block = position_map.block(position_map.find_block_for_doc_pos(doc_position)?)?;
-    if !block.is_void_block {
-        return None;
-    }
-    let node = document.node_at(&block.node_path)?;
+    let (doc_start, node) = void_node_at(document, position_map, doc_position)?;
     if node.node_type() != "image" {
         return None;
     }
@@ -585,10 +626,10 @@ pub(crate) fn plan_resize_image(
         selection,
         SemanticCommandPlan {
             operations: vec![SemanticOperation::UpdateNodeAttrs {
-                pos: block.doc_start,
+                pos: doc_start,
                 attrs,
             }],
-            selection_after: Some(Selection::node(block.doc_start)),
+            selection_after: Some(Selection::node(doc_start)),
             history: SemanticCommandHistory::InputBoundary,
         },
         limits,
@@ -644,6 +685,122 @@ pub(crate) fn structural_diff_bounded(
         Some((&budget, limits.max_document_depth)),
         0,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
+
+    fn atom_schema() -> Schema {
+        Schema::from_json(&serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock" },
+                { "name": "text", "content": "", "role": "text" },
+                {
+                    "name": "counterCard",
+                    "content": "",
+                    "group": "block",
+                    "role": "block",
+                    "isVoid": true,
+                    "attrs": {
+                        "title": { "default": "" },
+                        "count": { "default": 0 }
+                    }
+                }
+            ],
+            "marks": []
+        }))
+        .unwrap()
+    }
+
+    fn atom_document(schema: &Schema) -> Document {
+        from_prosemirror_json(
+            &serde_json::json!({
+                "type": "doc",
+                "content": [
+                    { "type": "counterCard", "attrs": { "title": "a", "count": 1 } },
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] }
+                ]
+            }),
+            schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn plan_update_node_attrs_rewrites_declared_attrs() {
+        let schema = atom_schema();
+        let document = atom_document(&schema);
+        let position_map = PositionMap::build(&document, &schema);
+        let doc_pos = position_map.block(0).unwrap().doc_start;
+        let selection = Selection::cursor(doc_pos);
+
+        let plan = plan_update_node_attrs(
+            &document,
+            &position_map,
+            &schema,
+            &selection,
+            doc_pos,
+            HashMap::from([("title".into(), serde_json::json!("b"))]),
+            &ResourceLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.operations,
+            vec![SemanticOperation::UpdateNodeAttrs {
+                pos: doc_pos,
+                attrs: HashMap::from([
+                    ("title".into(), serde_json::json!("b")),
+                    ("count".into(), serde_json::json!(1)),
+                ]),
+            }]
+        );
+        assert_eq!(plan.selection_after, None);
+    }
+
+    #[test]
+    fn plan_update_node_attrs_rejects_undeclared_attr_without_escape_hatch() {
+        let schema = atom_schema();
+        let document = atom_document(&schema);
+        let position_map = PositionMap::build(&document, &schema);
+        let doc_pos = position_map.block(0).unwrap().doc_start;
+
+        assert!(plan_update_node_attrs(
+            &document,
+            &position_map,
+            &schema,
+            &Selection::cursor(doc_pos),
+            doc_pos,
+            HashMap::from([("bogus".into(), serde_json::json!(1))]),
+            &ResourceLimits::default(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn plan_update_node_attrs_rejects_non_void_target() {
+        let schema = atom_schema();
+        let document = atom_document(&schema);
+        let position_map = PositionMap::build(&document, &schema);
+        let doc_pos = position_map.block(1).unwrap().doc_start;
+
+        assert!(plan_update_node_attrs(
+            &document,
+            &position_map,
+            &schema,
+            &Selection::cursor(doc_pos),
+            doc_pos,
+            HashMap::new(),
+            &ResourceLimits::default(),
+        )
+        .is_none());
+    }
 }
 
 pub(crate) fn prove_structural_diff(

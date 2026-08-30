@@ -100,6 +100,17 @@ pub(super) fn plan(
             &node_type,
             context.resource_limits,
         ),
+        TypedCommand::UpdateNodeAttrs { doc_pos, attrs } => {
+            crate::command_planner::plan_update_node_attrs(
+                context.document,
+                context.position_map,
+                context.schema,
+                &selection,
+                doc_pos,
+                attrs,
+                context.resource_limits,
+            )
+        }
         TypedCommand::ResizeImage { at, width, height } => {
             let doc_position = explicit_doc_position(&context, at)?;
             crate::command_planner::plan_resize_image(

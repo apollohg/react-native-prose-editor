@@ -209,6 +209,29 @@ fn command_entry_applies_planner_commands_with_local_command_origin() {
 }
 
 #[test]
+fn update_node_attrs_command_reaches_the_structural_planner() {
+    let id = session_with_runtime();
+    let before = bridge::session_audit(id).unwrap();
+    let outcome = bridge::submit_command(
+        id,
+        &command_envelope(
+            13,
+            revision(id),
+            serde_json::json!({
+                "type": "updateNodeAttrs",
+                "docPos": 1,
+                "attrs": { "title": "b" }
+            }),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(outcome, BridgeTestOutcome::NotApplicable);
+    assert_eq!(bridge::session_audit(id).unwrap(), before);
+    bridge::destroy_session(id);
+}
+
+#[test]
 fn selection_requests_reserve_nothing_and_enqueue_nothing() {
     let id = session_with_runtime();
     let before = bridge::session_audit(id).unwrap();
