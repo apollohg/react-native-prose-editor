@@ -450,6 +450,12 @@ fn process_element(
         return Ok(());
     }
 
+    if let Some(node) = build_html_rules_node(tag, elem, schema) {
+        flush_inline_acc(inline_acc, schema, block_acc);
+        block_acc.push(node);
+        return Ok(());
+    }
+
     // 2) Check if this matches a known schema node by html_tag
     if let Some(spec) = schema.node_by_html_tag(tag) {
         if tag == "img"
@@ -496,6 +502,52 @@ fn process_element(
         inline_acc.push(opaque);
     }
     Ok(())
+}
+
+fn build_html_rules_node(
+    tag: &str,
+    elem: &scraper::node::Element,
+    schema: &Schema,
+) -> Option<Node> {
+    for name in schema.nodes_with_html_rules_for_tag(tag) {
+        let spec = schema.node(name)?;
+        let rules = spec.html_rules.as_ref()?;
+        if !rules
+            .static_attrs
+            .iter()
+            .all(|(attr, expected)| element_attr(elem, attr) == Some(expected.as_str()))
+        {
+            continue;
+        }
+        let mut attrs = super::default_node_attrs(spec);
+        for (attr_name, html_attr) in &rules.attr_map {
+            if let Some(raw) = element_attr(elem, html_attr) {
+                let attr_spec = spec.attrs.get(attr_name)?;
+                attrs.insert(attr_name.clone(), coerce_rule_attr_value(attr_spec, raw));
+            }
+        }
+        return Some(Node::void(name.clone(), attrs));
+    }
+    None
+}
+
+fn coerce_rule_attr_value(spec: &crate::schema::AttrSpec, raw: &str) -> serde_json::Value {
+    match spec.default.as_ref() {
+        Some(serde_json::Value::Number(_)) => raw
+            .parse::<i64>()
+            .map(serde_json::Value::from)
+            .or_else(|_| raw.parse::<f64>().map(serde_json::Value::from))
+            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string())),
+        Some(serde_json::Value::Bool(_)) => match raw {
+            "true" => serde_json::Value::Bool(true),
+            "false" => serde_json::Value::Bool(false),
+            _ => serde_json::Value::String(raw.to_string()),
+        },
+        Some(serde_json::Value::Array(_)) | Some(serde_json::Value::Object(_)) => {
+            serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+        }
+        _ => serde_json::Value::String(raw.to_string()),
+    }
 }
 
 fn build_mention_node(

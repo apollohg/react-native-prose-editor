@@ -60,6 +60,69 @@ fn html_rules_json_encode_non_scalar_attrs() {
     );
 }
 
+#[test]
+fn html_rules_element_parses_to_atom_node() {
+    let schema = atom_rules_schema();
+    let doc = from_html(
+        "<div data-type=\"counter-card\" data-title=\"Sample item\" data-count=\"5\"></div><p>x</p>",
+        &schema,
+        &default_opts(),
+    )
+    .unwrap();
+    let json = to_prosemirror_json(&doc, &schema);
+    assert_eq!(
+        json["content"][0],
+        serde_json::json!({"type":"counterCard","attrs":{"title":"Sample item","count":5}})
+    );
+}
+
+#[test]
+fn html_rules_missing_mapped_attr_takes_declared_default() {
+    let schema = atom_rules_schema();
+    let doc = from_html(
+        "<div data-type=\"counter-card\" data-title=\"Sample item\"></div>",
+        &schema,
+        &default_opts(),
+    )
+    .unwrap();
+    assert_eq!(doc.root().child(0).unwrap().attrs()["count"], 0);
+}
+
+#[test]
+fn html_rules_mismatched_discriminator_stays_opaque() {
+    let schema = atom_rules_schema();
+    let doc = from_html(
+        "<div data-type=\"other-thing\" data-title=\"X\"></div>",
+        &schema,
+        &default_opts(),
+    )
+    .unwrap();
+    let json = to_prosemirror_json(&doc, &schema);
+    assert_ne!(json["content"][0]["type"], "counterCard");
+}
+
+#[test]
+fn atom_document_round_trips_html_losslessly() {
+    let schema = atom_rules_schema();
+    let original = from_prosemirror_json(
+        &serde_json::json!({"type":"doc","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"before"}]},
+            {"type":"counterCard","attrs":{"title":"Sam<u>ple","count":12}},
+            {"type":"paragraph","content":[{"type":"text","text":"after"}]}
+        ]}),
+        &schema,
+        UnknownTypeMode::Error,
+    )
+    .unwrap();
+    let html = to_html(&original, &schema);
+    let reparsed = from_html(&html, &schema, &default_opts()).unwrap();
+    assert_eq!(
+        to_prosemirror_json(&reparsed, &schema),
+        to_prosemirror_json(&original, &schema),
+        "html was: {html}"
+    );
+}
+
 fn projected_heading_schema() -> Schema {
     Schema::from_json(&serde_json::json!({
         "nodes": [

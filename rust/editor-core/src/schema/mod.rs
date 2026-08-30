@@ -68,7 +68,6 @@ pub struct Schema {
     marks: HashMap<String, MarkSpec>,
     mark_order: Vec<String>,
     node_html_tags: HashMap<String, String>,
-    #[allow(dead_code)]
     html_rules_by_tag: HashMap<String, Vec<String>>,
     json_node_types: HashMap<String, Vec<String>>,
     mark_html_tags: HashMap<String, String>,
@@ -934,7 +933,6 @@ impl Schema {
             .and_then(|name| self.nodes.get(name))
     }
 
-    #[allow(dead_code)]
     pub(crate) fn nodes_with_html_rules_for_tag(&self, tag: &str) -> &[String] {
         self.html_rules_by_tag
             .get(tag)
