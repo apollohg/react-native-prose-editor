@@ -93,6 +93,17 @@ export {
 } from './addons';
 
 export {
+    defineAtomNode,
+    withAtomsSchema,
+    serializeEditorAtoms,
+    type AtomComponent,
+    type AtomComponentProps,
+    type AtomNodeConfig,
+    type AtomNodeDefinition,
+    type SerializedEditorAtoms,
+} from './atoms';
+
+export {
     defineSchema,
     defaultSchema,
     defaultSchemaSpec,
@@ -112,6 +123,7 @@ export {
     type SchemaNodeSpec,
     type SchemaMarkSpec,
     type NodeSpec,
+    type NodeHtmlRules,
     type NodeJSONProjection,
     type MarkSpec,
     type AttrSpec,

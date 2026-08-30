@@ -1,5 +1,6 @@
 import type { DocumentJSON } from './NativeEditorBridge';
 import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
+import { withAtomsSchema, type AtomNodeDefinition } from './atoms';
 import {
     resolveEditorResourceLimits,
     type EditorResourceLimits,
@@ -147,9 +148,14 @@ export interface SchemaMarkSpec {
 export interface SchemaSpec {
     nodes: Readonly<Record<string, SchemaNodeSpec>>;
     marks?: Readonly<Record<string, SchemaMarkSpec>>;
+    atoms?: readonly AtomNodeDefinition[];
 }
 
-const RESERVED_WIRE_NODE_TYPES = new Set(['__opaque', '__opaque_json', '__skip']);
+export const RESERVED_WIRE_NODE_TYPES: ReadonlySet<string> = new Set([
+    '__opaque',
+    '__opaque_json',
+    '__skip',
+]);
 export const ATOM_HTML_IDENTIFIER = /^[a-z][a-z0-9-]*$/;
 export const ATOM_HTML_DENIED_TAGS: ReadonlySet<string> = new Set([
     'script',
@@ -428,7 +434,10 @@ export function defineSchema(spec: SchemaSpec): SchemaDefinition {
                 : { allowUndeclaredAttrs: mark.allowUndeclaredAttrs }),
         };
     });
-    return { nodes, marks };
+    const schema = { nodes, marks };
+    return spec.atoms == null || spec.atoms.length === 0
+        ? schema
+        : withAtomsSchema(schema, spec.atoms);
 }
 
 /** Attributes of the built-in image node. */
