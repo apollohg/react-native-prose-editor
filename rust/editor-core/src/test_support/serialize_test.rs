@@ -13,6 +13,53 @@ fn schema() -> Schema {
     crate::tiptap_schema()
 }
 
+fn atom_rules_schema() -> Schema {
+    Schema::from_json(&super::schema_test::atom_schema_json("counter-card")).unwrap()
+}
+
+fn atom_rules_schema_with_array_attr() -> Schema {
+    let mut json = super::schema_test::atom_schema_json("counter-card");
+    json["nodes"][3]["attrs"] = serde_json::json!({ "sets": { "default": [] } });
+    json["nodes"][3]["html"]["attrMap"] = serde_json::json!({ "sets": "data-sets" });
+    Schema::from_json(&json).unwrap()
+}
+
+#[test]
+fn html_rules_node_serializes_per_rules() {
+    let schema = atom_rules_schema();
+    let document = from_prosemirror_json(
+        &serde_json::json!({"type":"doc","content":[
+            {"type":"counterCard","attrs":{"title":"Sam\"ple","count":5}},
+            {"type":"paragraph","content":[{"type":"text","text":"after"}]}
+        ]}),
+        &schema,
+        UnknownTypeMode::Error,
+    )
+    .unwrap();
+    assert_eq!(
+        to_html(&document, &schema),
+        "<div data-type=\"counter-card\" data-count=\"5\" data-title=\"Sam&quot;ple\"></div><p>after</p>"
+    );
+}
+
+#[test]
+fn html_rules_json_encode_non_scalar_attrs() {
+    let schema = atom_rules_schema_with_array_attr();
+    let document = from_prosemirror_json(
+        &serde_json::json!({"type":"doc","content":[
+            {"type":"counterCard","attrs":{"sets":[{"count":5}]}}
+        ]}),
+        &schema,
+        UnknownTypeMode::Error,
+    )
+    .unwrap();
+    let html = to_html(&document, &schema);
+    assert!(
+        html.contains("data-sets=\"[{&quot;count&quot;:5}]\""),
+        "got: {html}"
+    );
+}
+
 fn projected_heading_schema() -> Schema {
     Schema::from_json(&serde_json::json!({
         "nodes": [

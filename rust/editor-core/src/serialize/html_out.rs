@@ -43,6 +43,8 @@ pub fn to_html(doc: &Document, schema: &Schema) -> String {
                         serialize_mention_node(node, &mut buf);
                     } else if node.node_type() == "__opaque" {
                         serialize_opaque_node(node, &mut buf);
+                    } else if let Some(rules) = spec.and_then(|spec| spec.html_rules.as_ref()) {
+                        serialize_html_rules_node(node, rules, &mut buf);
                     } else if let Some(tag) = html_tag {
                         buf.push('<');
                         buf.push_str(tag);
@@ -69,6 +71,40 @@ pub fn to_html(doc: &Document, schema: &Schema) -> String {
         }
     }
     buf
+}
+
+fn serialize_html_rules_node(node: &Node, rules: &crate::schema::HtmlRules, buf: &mut String) {
+    buf.push('<');
+    buf.push_str(&rules.tag);
+    for (name, value) in &rules.static_attrs {
+        buf.push(' ');
+        buf.push_str(name);
+        buf.push_str("=\"");
+        escape_html(value, buf);
+        buf.push('"');
+    }
+    for (attr_name, html_attr) in &rules.attr_map {
+        let Some(value) = node.attrs().get(attr_name) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let rendered = match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Bool(_) | serde_json::Value::Number(_) => value.to_string(),
+            _ => json_value_string(value),
+        };
+        buf.push(' ');
+        buf.push_str(html_attr);
+        buf.push_str("=\"");
+        escape_html(&rendered, buf);
+        buf.push('"');
+    }
+    buf.push('>');
+    buf.push_str("</");
+    buf.push_str(&rules.tag);
+    buf.push('>');
 }
 
 fn serialize_node_attrs(node: &Node, spec: &crate::schema::NodeSpec, buf: &mut String) {
