@@ -370,8 +370,11 @@ internal class EditorV2Adapter private constructor(
             "blockStart" -> onlyKeys(object_, setOf("type", "nodeType", "depth", "listContext")) && object_.opt("nodeType") is String &&
                 scalarField(object_, "depth") != null && (!object_.has("listContext") || validListContext(object_.opt("listContext")))
             "blockEnd" -> exactKeys(object_, setOf("type"))
-            "voidInline", "voidBlock" -> onlyKeys(object_, setOf("type", "nodeType", "docPos", "attrs")) && object_.opt("nodeType") is String &&
+            "voidInline" -> onlyKeys(object_, setOf("type", "nodeType", "docPos", "attrs")) && object_.opt("nodeType") is String &&
                 scalarField(object_, "docPos") != null && (!object_.has("attrs") || object_.opt("attrs") is JSONObject)
+            "voidBlock" -> onlyKeys(object_, setOf("type", "nodeType", "docPos", "attrs", "atomId")) && object_.opt("nodeType") is String &&
+                scalarField(object_, "docPos") != null && (!object_.has("attrs") || object_.opt("attrs") is JSONObject) &&
+                (!object_.has("atomId") || object_.opt("atomId") is String)
             "opaqueInlineAtom" -> onlyKeys(object_, setOf("type", "nodeType", "label", "docPos", "attrs", "mentionTheme")) &&
                 object_.opt("nodeType") is String && object_.opt("label") is String && scalarField(object_, "docPos") != null &&
                 (!object_.has("attrs") || object_.opt("attrs") is JSONObject) &&

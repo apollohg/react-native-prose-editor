@@ -816,6 +816,41 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertNotNil(adapter.adoptExternalRender(withMention))
     }
 
+    func testAtomicRenderValidationAcceptsAtomIdOnlyOnVoidBlock() {
+        func adopt(_ element: [String: Any]) -> String? {
+            let adapter = makeAdapter()
+            _ = adapter.setContentHtml("<p>base</p>")
+            let raw = editorV2RenderUpdate(
+                editorId: adapter.editorId,
+                mirrorScalarAnchor: nil,
+                mirrorScalarHead: nil
+            ).value!
+            let snapshot = mutatedObjectJSON(raw) { object in
+                object["renderBlocks"] = [[element]]
+            }
+            return adapter.adoptExternalRender(snapshot)
+        }
+
+        XCTAssertNotNil(adopt([
+            "type": "voidBlock",
+            "nodeType": "counterCard",
+            "docPos": 1,
+            "atomId": "y1-2",
+        ]))
+        XCTAssertNil(adopt([
+            "type": "voidBlock",
+            "nodeType": "counterCard",
+            "docPos": 1,
+            "atomId": 7,
+        ]))
+        XCTAssertNil(adopt([
+            "type": "voidInline",
+            "nodeType": "hardBreak",
+            "docPos": 1,
+            "atomId": "y1-2",
+        ]))
+    }
+
     func testMalformedAtomicRenderNestedVariantsLeaveEveryCacheUnchanged() {
         let adapter = makeAdapter()
         let spy = ErrorSpy()

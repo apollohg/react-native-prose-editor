@@ -948,6 +948,28 @@ describe('NativeEditorBridge v2', () => {
             expect(handle.bridge.renderUpdate()).toEqual(expected);
         });
 
+        it('accepts an optional string atomId on voidBlock', () => {
+            const expected = {
+                ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                renderBlocks: [
+                    [
+                        {
+                            type: 'voidBlock',
+                            nodeType: 'counterCard',
+                            docPos: 1,
+                            atomId: 'y1-2',
+                        },
+                    ],
+                ],
+            };
+            const handle = createHandle();
+            mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(
+                okRecord(JSON.stringify(expected))
+            );
+
+            expect(handle.bridge.renderUpdate()).toEqual(expected);
+        });
+
         const missingStateRevision = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
         delete missingStateRevision.stateRevision;
         const missingSelection = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
@@ -983,6 +1005,38 @@ describe('NativeEditorBridge v2', () => {
             [
                 'malformed renderBlocks',
                 { ...MOCK_ATOMIC_RENDER_SNAPSHOT, renderBlocks: [[{ type: 'surprise' }]] },
+            ],
+            [
+                'numeric voidBlock atomId',
+                {
+                    ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                    renderBlocks: [
+                        [
+                            {
+                                type: 'voidBlock',
+                                nodeType: 'counterCard',
+                                docPos: 1,
+                                atomId: 7,
+                            },
+                        ],
+                    ],
+                },
+            ],
+            [
+                'voidInline atomId',
+                {
+                    ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                    renderBlocks: [
+                        [
+                            {
+                                type: 'voidInline',
+                                nodeType: 'hardBreak',
+                                docPos: 1,
+                                atomId: 'y1-2',
+                            },
+                        ],
+                    ],
+                },
             ],
             [
                 'unexpected nested render element field',

@@ -991,6 +991,48 @@ class EditorV2AdapterTest {
     }
 
     @Test
+    fun `atomic external snapshot accepts atomId only on voidBlock`() {
+        fun adopt(element: JSONObject): String? {
+            val adapter = makeAdapter()
+            val snapshot = JSONObject(atomicRenderSnapshot("base", "7", selectionScalar = 1))
+                .put(
+                    "renderBlocks",
+                    org.json.JSONArray().put(org.json.JSONArray().put(element))
+                )
+                .toString()
+            return adoptExternalRender(adapter, snapshot)
+        }
+
+        assertNotNull(
+            adopt(
+                JSONObject()
+                    .put("type", "voidBlock")
+                    .put("nodeType", "counterCard")
+                    .put("docPos", 1)
+                    .put("atomId", "y1-2")
+            )
+        )
+        assertNull(
+            adopt(
+                JSONObject()
+                    .put("type", "voidBlock")
+                    .put("nodeType", "counterCard")
+                    .put("docPos", 1)
+                    .put("atomId", 7)
+            )
+        )
+        assertNull(
+            adopt(
+                JSONObject()
+                    .put("type", "voidInline")
+                    .put("nodeType", "hardBreak")
+                    .put("docPos", 1)
+                    .put("atomId", "y1-2")
+            )
+        )
+    }
+
+    @Test
     fun `atomic external snapshot rejects an opaque atom with non object attrs`() {
         val adapter = makeAdapter()
         val mention = JSONObject()

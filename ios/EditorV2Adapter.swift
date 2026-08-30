@@ -777,10 +777,19 @@ final class EditorV2Adapter {
             return object["listContext"].map(isValidListContext) ?? true
         case "blockEnd":
             return Set(object.keys) == ["type"]
-        case "voidInline", "voidBlock":
+        case "voidInline":
             guard hasOnlyKeys(object, ["type", "nodeType", "docPos", "attrs"]),
                   object["nodeType"] is String,
                   uint32Field(object, "docPos") != nil
+            else {
+                return false
+            }
+            return object["attrs"].map { $0 is [String: Any] } ?? true
+        case "voidBlock":
+            guard hasOnlyKeys(object, ["type", "nodeType", "docPos", "attrs", "atomId"]),
+                  object["nodeType"] is String,
+                  uint32Field(object, "docPos") != nil,
+                  object["atomId"].map({ $0 is String }) ?? true
             else {
                 return false
             }

@@ -135,6 +135,7 @@ export interface RenderElement {
     nodeType?: string;
     depth?: number;
     docPos?: number;
+    atomId?: string;
     label?: string;
     attrs?: Record<string, unknown>;
     mentionTheme?: EditorMentionTheme;
@@ -826,12 +827,19 @@ function validRenderElement(value: unknown): value is RenderElement {
         case 'blockEnd':
             return hasExactOwnKeys(value, ['type']);
         case 'voidInline':
-        case 'voidBlock':
             return (
                 hasOnlyOwnKeys(value, ['type', 'nodeType', 'docPos', 'attrs']) &&
                 typeof value.nodeType === 'string' &&
                 nativeEditorV2U32(value.docPos) != null &&
                 (value.attrs === undefined || isPlainRecord(value.attrs))
+            );
+        case 'voidBlock':
+            return (
+                hasOnlyOwnKeys(value, ['type', 'nodeType', 'docPos', 'attrs', 'atomId']) &&
+                typeof value.nodeType === 'string' &&
+                nativeEditorV2U32(value.docPos) != null &&
+                (value.attrs === undefined || isPlainRecord(value.attrs)) &&
+                (value.atomId === undefined || typeof value.atomId === 'string')
             );
         case 'opaqueInlineAtom':
             return (
