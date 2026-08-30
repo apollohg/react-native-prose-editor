@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicReference
 import uniffi.editor_core.editorV2GetState
 
 private const val DESTROY_INVALIDATION_AWAIT_TIMEOUT_MS = 250L
+private const val ATOM_NATIVE_ID_PREFIX = "prose-atom:"
 private val nextNativeEditorErrorCallbackToken = AtomicLong(0)
 
 internal enum class NativeEditorOutsideTapDecision {
@@ -882,6 +883,7 @@ class NativeEditorExpoView(
     private val onSelectionChange by EventDispatcher<Map<String, Any>>()
     private val onFocusChange by EventDispatcher<Map<String, Any>>()
     private val onContentHeightChange by EventDispatcher<Map<String, Any>>()
+    private val onAtomLayout by EventDispatcher<Map<String, Any>>()
     private val onEditorReady by EventDispatcher<Map<String, Any>>()
     @Suppress("unused")
     private val onToolbarAction by EventDispatcher<Map<String, Any>>()
@@ -897,6 +899,7 @@ class NativeEditorExpoView(
     internal var onSelectionChangeForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onFocusChangeForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onContentHeightChangeForTesting: ((Map<String, Any>) -> Unit)? = null
+    internal var onAtomLayoutForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onEditorUpdateForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onEditorErrorForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onExternalTextCompositionEndForTesting: ((Map<String, Any>) -> Unit)? = null
@@ -934,6 +937,7 @@ class NativeEditorExpoView(
     private var pendingThemeRetryAttempts = 0
     private var lastAddonsJson: String? = null
     private var lastAtomsJson: String? = null
+    private val reactChildren = mutableListOf<View>()
     private var lastRemoteSelectionsJson: String? = null
     private var lastToolbarItemsJson: String? = null
     private var lastToolbarFrameJson: String? = null
@@ -1013,6 +1017,7 @@ class NativeEditorExpoView(
 
     init {
         addView(richTextView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        richTextView.onAtomContentWidthChange = ::emitAtomLayout
         richTextView.editorEditText.editorListener = this
         richTextView.onBeforeDetachedFromWindow = {
             prepareForDetachFromWindow()
@@ -1098,6 +1103,7 @@ class NativeEditorExpoView(
                     blockCommandsUntilRegistered = true
                 )
             }
+            richTextView.emitAtomContentWidthIfAvailable(force = true)
             return
         }
         if (previousEditorId != id) {
@@ -1140,6 +1146,7 @@ class NativeEditorExpoView(
                 toolbarState = NativeToolbarState.empty
                 keyboardToolbarView.applyState(toolbarState)
             }
+            richTextView.emitAtomContentWidthIfAvailable(force = true)
             return
         }
 
@@ -1164,6 +1171,7 @@ class NativeEditorExpoView(
         applyPendingThemeIfNeeded()
         refreshReadyStateIfSettled()
         applyAutoFocusIfNeeded()
+        richTextView.emitAtomContentWidthIfAvailable(force = true)
     }
 
     fun setThemeJson(themeJson: String?) {
@@ -1240,6 +1248,49 @@ class NativeEditorExpoView(
         val configuration = AtomRenderConfiguration.fromJson(atomsJson)
         if (!richTextView.applyAtomRenderConfiguration(configuration)) return
         lastAtomsJson = atomsJson
+    }
+
+    internal val atomChildCount: Int
+        get() = reactChildren.size
+
+    internal fun atomChildAt(index: Int): View? = reactChildren.getOrNull(index)
+
+    internal fun addAtomChild(child: View, index: Int) {
+        reactChildren.remove(child)
+        reactChildren.add(index.coerceIn(0, reactChildren.size), child)
+        val atomKey = atomKey(child)
+        if (atomKey == null) {
+            (child.parent as? ViewGroup)?.removeView(child)
+            super.addView(child, childCount)
+            return
+        }
+        richTextView.mountAtomChild(child, atomKey)
+    }
+
+    internal fun removeAtomChildAt(index: Int) {
+        reactChildren.getOrNull(index)?.let(::removeAtomChild)
+    }
+
+    internal fun removeAtomChild(child: View) {
+        reactChildren.remove(child)
+        if (!richTextView.unmountAtomChild(child)) {
+            (child.parent as? ViewGroup)?.removeView(child)
+        }
+    }
+
+    private fun emitAtomLayout(widthPx: Float) {
+        val density = resources.displayMetrics.density.takeIf { it > 0f } ?: 1f
+        val event = mapOf<String, Any>(
+            "width" to widthPx / density,
+            "editorId" to eventEditorId(richTextView.editorId)
+        )
+        onAtomLayoutForTesting?.invoke(event) ?: onAtomLayout(event)
+    }
+
+    private fun atomKey(child: View): String? {
+        val nativeId = child.getTag(com.facebook.react.R.id.view_tag_native_id) as? String
+        if (nativeId == null || !nativeId.startsWith(ATOM_NATIVE_ID_PREFIX)) return null
+        return nativeId.removePrefix(ATOM_NATIVE_ID_PREFIX).takeIf(String::isNotEmpty)
     }
 
     fun setRemoteSelectionsJson(remoteSelectionsJson: String?) {

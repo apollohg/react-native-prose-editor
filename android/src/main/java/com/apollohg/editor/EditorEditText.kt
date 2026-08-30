@@ -313,6 +313,7 @@ class EditorEditText @JvmOverloads constructor(
 
     internal var atomRenderConfiguration: AtomRenderConfiguration? = null
         private set
+    private var atomHeightRenderApplyCount = 0
 
     var placeholderText: String = ""
         set(value) {
@@ -1157,6 +1158,40 @@ class EditorEditText @JvmOverloads constructor(
         requestLayout()
         return true
     }
+
+    internal fun applyAtomHeight(
+        atomKey: String,
+        heightPx: Int,
+        configuration: AtomRenderConfiguration?
+    ): Boolean {
+        atomRenderConfiguration = configuration
+        val content = text as? Spanned ?: return false
+        val span = content.getSpans(0, content.length, AtomBlockSpan::class.java)
+            .firstOrNull { it.atomKey == atomKey }
+            ?: return false
+        if (span.reservedHeightPx == heightPx) return false
+
+        val previousSelectionStart = selectionStart
+        val previousSelectionEnd = selectionEnd
+        val previousScrollX = scrollX
+        val previousScrollY = scrollY
+        span.reservedHeightPx = heightPx
+        applyRenderedSpannable(SpannableStringBuilder(content), usedPatch = false)
+        atomHeightRenderApplyCount += 1
+        val length = text?.length ?: 0
+        if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
+            setSelection(
+                previousSelectionStart.coerceIn(0, length),
+                previousSelectionEnd.coerceIn(0, length)
+            )
+        }
+        scrollTo(previousScrollX, previousScrollY)
+        requestLayout()
+        onSelectionOrContentMayChange?.invoke()
+        return true
+    }
+
+    internal fun atomHeightRenderApplyCountForTesting(): Int = atomHeightRenderApplyCount
 
     fun setHeightBehavior(heightBehavior: EditorHeightBehavior) {
         if (this.heightBehavior == heightBehavior) return

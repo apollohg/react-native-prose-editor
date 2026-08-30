@@ -435,11 +435,22 @@ class NativeEditorModule : Module() {
                 "onSelectionChange",
                 "onFocusChange",
                 "onContentHeightChange",
+                "onAtomLayout",
                 "onEditorReady",
                 "onToolbarAction",
                 "onAddonEvent",
                 "onExternalTextCompositionEnd"
             )
+
+            GroupView<NativeEditorExpoView> {
+                AddChildView<android.view.View> { parent, child, index ->
+                    parent.addAtomChild(child, index)
+                }
+                GetChildCount { parent -> parent.atomChildCount }
+                GetChildViewAt<android.view.View> { parent, index -> parent.atomChildAt(index) }
+                RemoveChildView<android.view.View> { parent, child -> parent.removeAtomChild(child) }
+                RemoveChildViewAt { parent, index -> parent.removeAtomChildAt(index) }
+            }
 
             Prop("editorId") { view: NativeEditorExpoView, id: String? ->
                 view.setEditorHandle(canonicalV2U64(id))
