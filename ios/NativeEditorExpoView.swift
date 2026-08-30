@@ -2894,6 +2894,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         heightBehavior = nextBehavior
         if nextBehavior != .autoGrow {
             cachedAutoGrowContentHeight = 0
+            publishAutoGrowStyleHeight(nil)
         }
         richTextView.heightBehavior = nextBehavior
         invalidateIntrinsicContentSize()
@@ -2924,6 +2925,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             ?? (cachedAutoGrowContentHeight > 0 ? cachedAutoGrowContentHeight : richTextView.intrinsicContentSize.height)
         let contentHeight = ceil(resolvedHeight)
         guard contentHeight > 0 else { return }
+        publishAutoGrowStyleHeight(contentHeight)
         guard force || abs(contentHeight - lastEmittedContentHeight) > 0.5 else { return }
         cachedAutoGrowContentHeight = contentHeight
         lastEmittedContentHeight = contentHeight
@@ -2932,6 +2934,12 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             originatingEditorId: originatingEditorId
         ) else { return }
         onContentHeightChange(event)
+    }
+
+    private func publishAutoGrowStyleHeight(_ height: CGFloat?) {
+        let selector = NSSelectorFromString("setStyleSize:height:")
+        guard responds(to: selector) else { return }
+        _ = perform(selector, with: nil, with: height.map { NSNumber(value: Double($0)) })
     }
 
     func setToolbarButtonsJson(_ toolbarButtonsJson: String?) {

@@ -40,6 +40,37 @@ import uniffi.editor_core.editorV2GetState
 private const val DESTROY_INVALIDATION_AWAIT_TIMEOUT_MS = 250L
 private val nextNativeEditorErrorCallbackToken = AtomicLong(0)
 
+private class ExpoAutoGrowStyleSizePublisher(private val view: ExpoView) {
+    private data class Binding(
+        val proxy: Any,
+        val method: java.lang.reflect.Method,
+        val stateWrapperGetter: java.lang.reflect.Method,
+    )
+
+    private val binding: Binding? by lazy(LazyThreadSafetyMode.NONE) {
+        runCatching {
+            val proxy = requireNotNull(
+                view.javaClass.methods
+                    .first { it.name == "getShadowNodeProxy" && it.parameterCount == 0 }
+                    .invoke(view)
+            )
+            val method = proxy.javaClass.methods
+                .first { it.name == "setStyleSize" && it.parameterCount == 2 }
+            val stateWrapperGetter = view.javaClass.methods
+                .first { it.name == "getStateWrapper" && it.parameterCount == 0 }
+            Binding(proxy, method, stateWrapperGetter)
+        }.getOrNull()
+    }
+
+    fun publish(heightDp: Double?): Boolean {
+        val resolvedBinding = binding ?: return false
+        return runCatching {
+            if (resolvedBinding.stateWrapperGetter.invoke(view) == null) return false
+            resolvedBinding.method.invoke(resolvedBinding.proxy, null, heightDp)
+        }.isSuccess
+    }
+}
+
 internal enum class NativeEditorOutsideTapDecision {
     IGNORE,
     PRESERVE_FOCUS,
@@ -909,6 +940,8 @@ class NativeEditorExpoView(
     private var heightBehavior = EditorHeightBehavior.FIXED
     private var lastEmittedContentHeight = 0
     private var lastEmittedContentHeightEditorId: Long? = null
+    private val autoGrowStyleSizePublisher = ExpoAutoGrowStyleSizePublisher(this)
+    private var lastPublishedAutoGrowHeightDp: Double? = null
     private var outsideTapWindow: Window? = null
     private var pendingOutsideTapHandlerInstallRetry: Runnable? = null
     private var toolbarFramesInWindow: List<RectF> = emptyList()
@@ -1015,6 +1048,12 @@ class NativeEditorExpoView(
         richTextView.editorEditText.editorListener = this
         richTextView.onBeforeDetachedFromWindow = {
             prepareForDetachFromWindow()
+        }
+        richTextView.onAutoGrowHeightMayChange = {
+            if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
+                requestLayout()
+                emitContentHeightIfNeeded(force = false)
+            }
         }
         keyboardToolbarView.onPressItem = { item ->
             handleToolbarItemPress(item)
@@ -1201,6 +1240,7 @@ class NativeEditorExpoView(
         if (nextBehavior != EditorHeightBehavior.AUTO_GROW) {
             lastEmittedContentHeight = 0
             lastEmittedContentHeightEditorId = null
+            publishAutoGrowStyleHeight(null)
         }
         richTextView.setHeightBehavior(nextBehavior)
         val params = richTextView.layoutParams as LayoutParams
@@ -2569,6 +2609,7 @@ class NativeEditorExpoView(
             }
         ).coerceAtLeast(0)
         if (contentHeight <= 0) return
+        publishAutoGrowStyleHeight(contentHeight)
         val editorId = richTextView.editorId
         if (
             !force &&
@@ -2584,6 +2625,14 @@ class NativeEditorExpoView(
             "editorId" to eventEditorId(editorId)
         )
         onContentHeightChangeForTesting?.invoke(event) ?: onContentHeightChange(event)
+    }
+
+    private fun publishAutoGrowStyleHeight(contentHeightPx: Int?) {
+        val heightDp = contentHeightPx?.let { it.toDouble() / resources.displayMetrics.density }
+        if (heightDp == lastPublishedAutoGrowHeightDp) return
+        if (autoGrowStyleSizePublisher.publish(heightDp)) {
+            lastPublishedAutoGrowHeightDp = heightDp
+        }
     }
 
     /** Applies an editor update from JS without echoing it back through events. */

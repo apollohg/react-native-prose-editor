@@ -54,6 +54,7 @@ class RichTextEditorView @JvmOverloads constructor(
     private var viewportBottomInsetPx: Int = 0
     internal var appliedCornerRadiusPx: Float = 0f
     internal var appliedBackgroundColorForTesting: Int = Color.WHITE
+    internal var onAutoGrowHeightMayChange: (() -> Unit)? = null
 
     private var currentEditorId: Long = 0
     private var deferEditorUnbindOnDetach = false
@@ -108,6 +109,11 @@ class RichTextEditorView @JvmOverloads constructor(
             refreshOverlays()
         }
         editorEditText.onSelectionOrContentMayChange = { refreshOverlays() }
+        editorEditText.onContentSizeMayChange = {
+            if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
+                onAutoGrowHeightMayChange?.invoke()
+            }
+        }
 
         addView(editorViewport, createContainerLayoutParams())
         updateScrollContainerAppearance()

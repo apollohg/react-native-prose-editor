@@ -297,6 +297,7 @@ class EditorEditText @JvmOverloads constructor(
     /** Listener for editor events. */
     var editorListener: EditorListener? = null
     var onSelectionOrContentMayChange: (() -> Unit)? = null
+    var onContentSizeMayChange: (() -> Unit)? = null
 
     /** The base font size in pixels used for unstyled text. */
     private var baseFontSize: Float = textSize
@@ -1232,6 +1233,7 @@ class EditorEditText @JvmOverloads constructor(
         post { scrollTo(previousScrollX, previousScrollY) }
         requestLayout()
         invalidate()
+        onContentSizeMayChange?.invoke()
         onSelectionOrContentMayChange?.invoke()
         return true
     }
@@ -5129,6 +5131,9 @@ class EditorEditText @JvmOverloads constructor(
         if (notifyListener) {
             editorListener?.onEditorUpdate(updateJSON)
         }
+        if (!shouldSkipRender) {
+            onContentSizeMayChange?.invoke()
+        }
         onSelectionOrContentMayChange?.invoke()
         if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
             requestLayout()
@@ -5211,6 +5216,7 @@ class EditorEditText @JvmOverloads constructor(
         currentRenderBlocksJson = null
         pendingOptimisticRenderText = null
         applyRenderedSpannable(spannable, usedPatch = false)
+        onContentSizeMayChange?.invoke()
         onSelectionOrContentMayChange?.invoke()
         if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
             requestLayout()
