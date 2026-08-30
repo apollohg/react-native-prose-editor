@@ -221,6 +221,16 @@ pub(crate) fn plan_delete_scalar_range(
     ) {
         return Ok(Some(plan));
     }
+    if let Some(plan) = super::delete_previous_void_block_action(
+        document,
+        position_map,
+        schema,
+        scalar_from,
+        scalar_to,
+        doc_to,
+    ) {
+        return Ok(Some(plan));
+    }
     // Must precede the DeleteRange fallback: at the head of a non-empty text
     // block that range would straddle the block boundary, which the engine
     // rejects as a cross-parent structural deletion.

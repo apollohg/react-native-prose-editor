@@ -98,6 +98,34 @@ class AtomMountingTest {
     }
 
     @Test
+    fun `atom height follows rendered content instead of the editor sized React host`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        view.setHeightBehavior(EditorHeightBehavior.AUTO_GROW)
+        installAtoms(view, listOf("counterCard:0"))
+        val renderedCard = FrameLayout(view.context).apply {
+            layoutParams = FrameLayout.LayoutParams(280, 132)
+        }
+        val host = ReactViewGroup(view.context).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom:counterCard:0")
+            addView(renderedCard)
+            measure(
+                View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(500, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, 280, 500)
+        }
+        renderedCard.layout(0, 0, 280, 132)
+
+        view.mountAtomChild(host, "counterCard:0")
+        host.layout(0, 0, 280, 1_000)
+
+        assertEquals(132, host.height)
+        assertEquals(132, view.measuredAtomHeightForTesting("counterCard:0"))
+        assertEquals(132, atomSpans(view).single().reservedHeightPx)
+        assertEquals(1, view.atomHeightRenderApplyCountForTesting())
+    }
+
+    @Test
     fun `decorative overlays do not mask a React atom touch target`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val root = FrameLayout(activity).apply { id = 100 }

@@ -111,6 +111,12 @@ fn start_of_second_block(first_block_len: u32) -> u32 {
     first_block_len + 1
 }
 
+fn import_json(engine: &mut YrsDocumentEngine, value: serde_json::Value) {
+    engine
+        .import_json(&value.to_string(), TransactionOrigin::DocumentImport)
+        .expect("document import must apply");
+}
+
 fn document(engine: &YrsDocumentEngine) -> serde_json::Value {
     engine.document_json().expect("document must render")
 }
@@ -129,6 +135,25 @@ fn marked(text: &str, marks: &[&str]) -> serde_json::Value {
         "text": text,
         "marks": marks.iter().map(|m| serde_json::json!({ "type": m })).collect::<Vec<_>>(),
     })
+}
+
+#[test]
+fn backspace_at_text_start_after_void_block_deletes_the_void_block() {
+    let mut engine = engine();
+    import_json(
+        &mut engine,
+        doc(vec![
+            serde_json::json!({ "type": "horizontalRule" }),
+            paragraph(serde_json::json!([plain("after")])),
+        ]),
+    );
+
+    press_backspace(&mut engine, 1);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([plain("after")]))])
+    );
 }
 
 fn doc(blocks: Vec<serde_json::Value>) -> serde_json::Value {

@@ -63,8 +63,12 @@ class RichTextEditorView @JvmOverloads constructor(
                 )
                 return
             }
-            val width = child.measuredWidth.takeIf { it > 0 } ?: child.width.coerceAtLeast(0)
-            val height = child.measuredHeight.takeIf { it > 0 } ?: child.height.coerceAtLeast(0)
+            val width = atomContentWidthPx()
+                ?: child.measuredWidth.takeIf { it > 0 }
+                ?: child.width.coerceAtLeast(0)
+            val height = renderedAtomHeightPx(child)
+                ?: child.measuredHeight.takeIf { it > 0 }
+                ?: child.height.coerceAtLeast(0)
             child.measure(
                 MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
                 MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -220,16 +224,55 @@ class RichTextEditorView @JvmOverloads constructor(
         atomHostViews[atomKey] = child
         (child.parent as? ViewGroup)?.removeView(child)
         editorContentFrame.addView(child)
-        val listener = View.OnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
-            val height = bottom - top
+        val listener = View.OnLayoutChangeListener { view, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val height = renderedAtomHeightPx(view) ?: bottom - top
             val oldHeight = oldBottom - oldTop
-            if (height > 0 && height != oldHeight) setAtomHeight(atomKey, height)
+            if (height > 0) {
+                constrainAtomHostBounds(view, height)
+                if (height != oldHeight) setAtomHeight(atomKey, height)
+            }
         }
         atomLayoutListeners.remove(child)?.let(child::removeOnLayoutChangeListener)
         atomLayoutListeners[child] = listener
         child.addOnLayoutChangeListener(listener)
-        if (child.height > 0) setAtomHeight(atomKey, child.height)
+        val initialHeight = renderedAtomHeightPx(child) ?: child.height
+        if (initialHeight > 0) {
+            constrainAtomHostBounds(child, initialHeight)
+            setAtomHeight(atomKey, initialHeight)
+        }
         layoutAtomHostViews()
+    }
+
+    private fun atomContentWidthPx(): Int? = (
+        editorEditText.width -
+            editorEditText.compoundPaddingLeft -
+            editorEditText.compoundPaddingRight
+    ).takeIf { it > 0 }
+
+    private fun renderedAtomHeightPx(host: View): Int? {
+        val group = host as? ViewGroup ?: return null
+        var bottom = 0
+        for (index in 0 until group.childCount) {
+            val child = group.getChildAt(index)
+            if (child.visibility != View.GONE) bottom = maxOf(bottom, child.bottom)
+        }
+        return bottom.takeIf { it > 0 }
+    }
+
+    private fun constrainAtomHostBounds(host: View, height: Int) {
+        val width = atomContentWidthPx()
+            ?: host.measuredWidth.takeIf { it > 0 }
+            ?: host.width
+        if (width <= 0 || height <= 0) return
+        if (host.measuredWidth != width || host.measuredHeight != height) {
+            host.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+            )
+        }
+        if (host.left != 0 || host.top != 0 || host.width != width || host.height != height) {
+            host.layout(0, 0, width, height)
+        }
     }
 
     internal fun unmountAtomChild(child: View): Boolean {

@@ -437,10 +437,8 @@ fn move_into_previous_blockquote_action(
 /// cross-parent structural deletion, so the keystroke failed outright instead
 /// of merging the two blocks.
 ///
-/// Only a join against a previous *text block* sibling is planned here. A
-/// previous sibling that is a void/atom node (an image, a horizontal rule) has
-/// no text to merge into, and a first child has nothing before it at all; both
-/// fall through to the existing behaviour.
+/// Only a join against a previous *text block* sibling is planned here. Void
+/// siblings are handled by `delete_previous_void_block_action`.
 fn join_with_previous_block_action(
     document: &Document,
     map: &PositionMap,
@@ -692,6 +690,48 @@ fn plan_empty_blockquote_exit(
             content: Fragment::from(replacement),
         }],
         selection_after: Some(Selection::cursor(cursor.checked_add(1)?)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
+}
+
+fn delete_previous_void_block_action(
+    document: &Document,
+    map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    doc_to: u32,
+) -> Option<SemanticCommandPlan> {
+    if scalar_from >= scalar_to || map.doc_to_scalar(doc_to, document) != scalar_to {
+        return None;
+    }
+    let resolved = document.resolve(doc_to).ok()?;
+    let block = resolved.parent(document);
+    if !is_text_block(schema, block) || resolved.parent_offset != 0 {
+        return None;
+    }
+    let (&index, parent_path) = resolved.node_path.split_last()?;
+    if index == 0 {
+        return None;
+    }
+    let parent = document.node_at(parent_path)?;
+    let previous = parent.child(usize::try_from(index).ok()?.checked_sub(1)?)?;
+    if !(previous.is_void()
+        && schema
+            .node(previous.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::Block)))
+    {
+        return None;
+    }
+    let mut previous_path = parent_path.to_vec();
+    previous_path.push(index - 1);
+    let from = node_delete_start(document, &previous_path)?;
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::DeleteRange {
+            from,
+            to: from.checked_add(previous.node_size())?,
+        }],
+        selection_after: Some(Selection::cursor(from.checked_add(1)?)),
         history: SemanticCommandHistory::InputBoundary,
     })
 }
