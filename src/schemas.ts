@@ -39,6 +39,13 @@ export interface NodeJSONProjection {
     attrs?: Record<string, unknown>;
 }
 
+/** Declarative HTML parsing and serialization rules for a void node. */
+export interface NodeHtmlRules {
+    tag: string;
+    staticAttrs?: Record<string, string>;
+    attrMap?: Record<string, string>;
+}
+
 /** Declaration of one node type in a {@link SchemaDefinition}. */
 export interface NodeSpec {
     /** Native node type name. `json` may expose a different public document type. */
@@ -60,6 +67,8 @@ export interface NodeSpec {
     role: string;
     /** Tag used when serializing this node to HTML. */
     htmlTag?: string;
+    /** Declarative HTML rules used for lossless void-node round trips. */
+    html?: NodeHtmlRules;
     /** Whether the node holds no content of its own (an image or rule, say). */
     isVoid?: boolean;
     /**
@@ -120,6 +129,7 @@ export interface SchemaNodeSpec {
     role?: NodeSpec['role'] | 'heading';
     parseDOM?: readonly ParseDOMRule[];
     toDOM?: DOMOutputSpec | AttributeDOMOutputSpec;
+    html?: NodeHtmlRules;
     isVoid?: boolean;
     allowUndeclaredAttrs?: boolean;
 }
@@ -140,6 +150,45 @@ export interface SchemaSpec {
 }
 
 const RESERVED_WIRE_NODE_TYPES = new Set(['__opaque', '__opaque_json', '__skip']);
+export const ATOM_HTML_IDENTIFIER = /^[a-z][a-z0-9-]*$/;
+export const ATOM_HTML_DENIED_TAGS: ReadonlySet<string> = new Set([
+    'script',
+    'style',
+    'iframe',
+    'object',
+    'embed',
+    'link',
+    'meta',
+    'base',
+    'title',
+    'head',
+    'html',
+    'body',
+    'form',
+    'textarea',
+    'select',
+    'option',
+    'button',
+    'area',
+    'br',
+    'col',
+    'hr',
+    'img',
+    'input',
+    'param',
+    'source',
+    'track',
+    'wbr',
+]);
+export const ATOM_HTML_DENIED_ATTRS: ReadonlySet<string> = new Set([
+    'style',
+    'srcdoc',
+    'href',
+    'src',
+    'srcset',
+    'action',
+    'formaction',
+]);
 const ALLOWED_MARK_HTML_TAGS = new Set([
     'span',
     'strong',
@@ -294,6 +343,7 @@ export function defineSchema(spec: SchemaSpec): SchemaDefinition {
             ...(node.group == null ? {} : { group: node.group }),
             ...(node.attrs == null ? {} : { attrs: node.attrs }),
             role: schemaNodeRole(name, node),
+            ...(node.html == null ? {} : { html: node.html }),
             ...(node.isVoid == null ? {} : { isVoid: node.isVoid }),
             ...(node.allowUndeclaredAttrs == null
                 ? {}
@@ -755,6 +805,62 @@ function normalizeNodeJSONProjection(value: unknown): NodeJSONProjection | null 
     return Object.keys(attrs).length === 0 ? { type: raw.type } : { type: raw.type, attrs };
 }
 
+function isSafeAtomHtmlTag(tag: string): boolean {
+    return ATOM_HTML_IDENTIFIER.test(tag) && !ATOM_HTML_DENIED_TAGS.has(tag);
+}
+
+function isSafeAtomHtmlAttr(name: string): boolean {
+    return (
+        ATOM_HTML_IDENTIFIER.test(name) &&
+        !name.startsWith('on') &&
+        !ATOM_HTML_DENIED_ATTRS.has(name)
+    );
+}
+
+function normalizeNodeHtmlRules(value: unknown): NodeHtmlRules | null | undefined {
+    if (value === undefined) return undefined;
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+    const raw = value as Record<string, unknown>;
+    if (
+        Object.keys(raw).some(
+            (key) => key !== 'tag' && key !== 'staticAttrs' && key !== 'attrMap'
+        ) ||
+        typeof raw.tag !== 'string' ||
+        !isSafeAtomHtmlTag(raw.tag)
+    ) {
+        return null;
+    }
+    const normalizeMap = (
+        candidate: unknown,
+        validateName: (name: string) => boolean
+    ): Record<string, string> | null | undefined => {
+        if (candidate === undefined) return undefined;
+        if (candidate == null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return null;
+        }
+        const normalized: Record<string, string> = {};
+        for (const [name, mapped] of Object.entries(candidate)) {
+            if (!validateName(name) || typeof mapped !== 'string') return null;
+            normalized[name] = mapped;
+        }
+        return normalized;
+    };
+    const staticAttrs = normalizeMap(raw.staticAttrs, isSafeAtomHtmlAttr);
+    const attrMap = normalizeMap(raw.attrMap, isSafeHtmlAttr);
+    if (
+        staticAttrs === null ||
+        attrMap === null ||
+        (attrMap != null && Object.values(attrMap).some((name) => !isSafeAtomHtmlAttr(name)))
+    ) {
+        return null;
+    }
+    return {
+        tag: raw.tag,
+        ...(staticAttrs == null ? {} : { staticAttrs }),
+        ...(attrMap == null ? {} : { attrMap }),
+    };
+}
+
 function projectionAttrsOverlap(
     left: Record<string, unknown>,
     right: Record<string, unknown>
@@ -803,10 +909,12 @@ function normalizeSchemaDefinition(
         }
         const raw = rawNode as unknown as Record<string, unknown>;
         const htmlTag = typeof raw.htmlTag === 'string' ? raw.htmlTag : undefined;
+        const html = normalizeNodeHtmlRules(raw.html);
         const attrs = normalizeAttrs(raw.attrs);
         const json = normalizeNodeJSONProjection(raw.json);
         if (
             (htmlTag != null && !isSafeHtmlTag(htmlTag)) ||
+            html === null ||
             json === null ||
             Object.keys(attrs).some((name) => !isSafeHtmlAttr(name))
         ) {
@@ -819,6 +927,7 @@ function normalizeSchemaDefinition(
             ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
             role: normalizeRole(raw.role),
             ...(htmlTag == null ? {} : { htmlTag }),
+            ...(html == null ? {} : { html }),
             ...(json == null ? {} : { json }),
             isVoid: typeof raw.isVoid === 'boolean' ? raw.isVoid : false,
             ...(typeof raw.allowUndeclaredAttrs === 'boolean'

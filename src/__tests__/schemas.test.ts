@@ -28,7 +28,42 @@ const GROUPED_RANGE_SCHEMA: SchemaDefinition = {
     marks: [],
 };
 
+const COUNTER_NODE: NodeSpec = {
+    name: 'counterCard',
+    content: '',
+    group: 'block',
+    role: 'block',
+    isVoid: true,
+    attrs: { title: { default: '' } },
+    html: {
+        tag: 'div',
+        staticAttrs: { 'data-type': 'counter-card' },
+        attrMap: { title: 'data-title' },
+    },
+};
+
 describe('defineSchema', () => {
+    it('includes declarative HTML rules in compiled node specs', () => {
+        const schema = defineSchema({
+            nodes: {
+                doc: { content: 'block+' },
+                counterCard: {
+                    content: '',
+                    group: 'block',
+                    role: 'block',
+                    isVoid: true,
+                    attrs: COUNTER_NODE.attrs,
+                    html: COUNTER_NODE.html,
+                },
+                text: { role: 'text' },
+            },
+        });
+
+        expect(schema.nodes.find((node) => node.name === 'counterCard')?.html).toEqual(
+            COUNTER_NODE.html
+        );
+    });
+
     it('uses ProseMirror naming by default and retains a Tiptap-compatible preset', () => {
         const exports = schemaExports as unknown as Record<string, unknown>;
         const defaultSchema = exports.defaultSchema as SchemaDefinition | undefined;
@@ -485,6 +520,41 @@ describe('schema-aware document normalization', () => {
 
     it('retains a valid custom schema', () => {
         expect(resolveDocumentSchema(articleSchema)).toMatchObject(articleSchema);
+    });
+
+    it('retains declarative HTML rules during schema resolution', () => {
+        const resolved = resolveDocumentSchema({
+            ...defaultSchema,
+            nodes: [...defaultSchema.nodes, COUNTER_NODE],
+        });
+
+        expect(resolved.nodes.find((node) => node.name === 'counterCard')?.html).toEqual(
+            COUNTER_NODE.html
+        );
+    });
+
+    it('does not fall back when a custom node has valid declarative HTML rules', () => {
+        const resolved = resolveDocumentSchema({
+            ...defaultSchema,
+            nodes: [...defaultSchema.nodes, COUNTER_NODE],
+        });
+
+        expect(resolved).not.toBe(defaultSchema);
+        expect(resolved.nodes.some((node) => node.name === 'counterCard')).toBe(true);
+    });
+
+    it('applies the atom identifier policy to declarative HTML rules', () => {
+        const unsafe = {
+            ...COUNTER_NODE,
+            html: { ...COUNTER_NODE.html!, tag: 'img' },
+        };
+        const resolved = resolveDocumentSchema({
+            ...defaultSchema,
+            nodes: [...defaultSchema.nodes, unsafe],
+        });
+
+        expect(resolved).toBe(defaultSchema);
+        expect(resolved.nodes.some((node) => node.name === 'counterCard')).toBe(false);
     });
 
     it('matches native projection ambiguity validation', () => {
