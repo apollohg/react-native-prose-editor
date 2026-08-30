@@ -96,4 +96,23 @@ Size PreparedProseMeasurementsManager::measure(
   }
 }
 
+void PreparedProseMeasurementsManager::prepareFinalLayout(
+    SurfaceId,
+    Tag,
+    const PreparedProseViewerProps&,
+    int32_t,
+    int32_t,
+    int32_t,
+    Float,
+    uint64_t,
+    uint64_t,
+    double,
+    int32_t,
+    int32_t,
+    uint64_t,
+    uint64_t,
+    const std::shared_ptr<PreparedProseViewerLeaseLifecycle>&) const {
+  // The iOS component view consumes Fabric's final content frame directly.
+}
+
 } // namespace facebook::react

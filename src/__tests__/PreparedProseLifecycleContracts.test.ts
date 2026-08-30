@@ -76,6 +76,21 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(drawing).toContain('canvas.translate(contentOriginXPx.toFloat(), contentOriginYPx.toFloat())');
     });
 
+    it('defines the shared final-layout hook on both native platforms', () => {
+        const header = readSource(
+            'common/cpp/react/renderer/components/PreparedProseViewer/PreparedProseMeasurementsManager.h'
+        );
+        const android = readSource(
+            'android/src/main/jni/PreparedProseViewerMeasurementsManager.cpp'
+        );
+        const ios = readSource('ios/Viewer/Fabric/PreparedProseMeasurementsManager.mm');
+        const definition = 'void PreparedProseMeasurementsManager::prepareFinalLayout(';
+
+        expect(header).toContain('void prepareFinalLayout(');
+        expect(android).toContain(definition);
+        expect(ios).toContain(definition);
+    });
+
     it('injects the raw host JNA JAR into JVM Test tasks without contaminating Android resolution', () => {
         const androidBuild = readSource('android/build.gradle');
 
