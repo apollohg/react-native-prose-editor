@@ -1030,6 +1030,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
     }
 
+    var atomRenderConfiguration: AtomRenderConfiguration? {
+        didSet {
+            guard oldValue != atomRenderConfiguration else { return }
+            renderAppearanceRevision &+= 1
+            invalidateAutoGrowHeightMeasurement()
+        }
+    }
+
     var heightBehavior: EditorHeightBehavior = .fixed {
         didSet {
             guard oldValue != heightBehavior else { return }
@@ -3623,6 +3631,25 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return true
     }
 
+    @discardableResult
+    func applyAtomRenderConfiguration(_ configuration: AtomRenderConfiguration?) -> Bool {
+        if editorId != 0 {
+            guard prepareForExternalEditorUpdate() else { return false }
+            atomRenderConfiguration = configuration
+            let previousOffset = contentOffset
+            applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+            if heightBehavior == .fixed {
+                preserveScrollOffset(previousOffset)
+            }
+        } else {
+            atomRenderConfiguration = configuration
+        }
+        if heightBehavior == .autoGrow {
+            notifyHeightChangeIfNeeded(force: true)
+        }
+        return true
+    }
+
     private func preserveScrollOffset(_ previousOffset: CGPoint) {
         let restore = { [weak self] in
             guard let self else { return }
@@ -6070,7 +6097,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                     && !(currentTopLevelChildMetadata?.isEmpty ?? true),
                 baseFont: baseFont,
                 textColor: baseTextColor,
-                theme: theme
+                theme: theme,
+                atomConfiguration: atomRenderConfiguration
             )
         }
         let buildRenderNanos = DispatchTime.now().uptimeNanoseconds - buildStartedAt
@@ -6273,7 +6301,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                         fromArray: resolvedRenderBlocks,
                         baseFont: baseFont,
                         textColor: baseTextColor,
-                        theme: theme
+                        theme: theme,
+                        atomConfiguration: atomRenderConfiguration
                     )
                 }
                 currentRenderBlocks = resolvedRenderBlocks
@@ -6283,7 +6312,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                         fromArray: renderElements,
                         baseFont: baseFont,
                         textColor: baseTextColor,
-                        theme: theme
+                        theme: theme,
+                        atomConfiguration: atomRenderConfiguration
                     )
                 }
                 currentRenderBlocks = nil
@@ -6419,7 +6449,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 fromJSON: renderJSON,
                 baseFont: baseFont,
                 textColor: baseTextColor,
-                theme: theme
+                theme: theme,
+                atomConfiguration: atomRenderConfiguration
             )
         }
         _ = applyAttributedRender(attrStr, usedPatch: false)
@@ -6960,6 +6991,13 @@ final class RichTextEditorView: UIView {
         let cornerRadius = theme?.borderRadius ?? 0
         layer.cornerRadius = cornerRadius
         clipsToBounds = cornerRadius > 0
+        refreshOverlays()
+        return true
+    }
+
+    @discardableResult
+    func applyAtomRenderConfiguration(_ configuration: AtomRenderConfiguration?) -> Bool {
+        guard textView.applyAtomRenderConfiguration(configuration) else { return false }
         refreshOverlays()
         return true
     }

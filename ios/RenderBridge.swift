@@ -103,6 +103,34 @@ enum LayoutConstants {
     static let objectReplacementCharacter = "\u{FFFC}"
 }
 
+struct AtomRenderConfiguration: Equatable {
+    let registeredNodeTypes: Set<String>
+    let estimatedHeights: [String: CGFloat]
+    let measuredHeights: [String: CGFloat]
+
+    static func from(json: String?) -> AtomRenderConfiguration? {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        let nodeTypes = Set((raw["nodeTypes"] as? [Any] ?? []).compactMap { $0 as? String })
+        let rawHeights = raw["estimatedHeights"] as? [String: Any] ?? [:]
+        var estimatedHeights: [String: CGFloat] = [:]
+        for (nodeType, value) in rawHeights {
+            guard let number = value as? NSNumber else { continue }
+            let height = CGFloat(truncating: number)
+            guard height.isFinite, height >= 0 else { continue }
+            estimatedHeights[nodeType] = height
+        }
+        return AtomRenderConfiguration(
+            registeredNodeTypes: nodeTypes,
+            estimatedHeights: estimatedHeights,
+            measuredHeights: [:]
+        )
+    }
+}
+
 // MARK: - RenderBridge
 
 /// Converts RenderElement JSON (emitted by Rust editor-core via UniFFI) into
@@ -135,7 +163,8 @@ final class RenderBridge {
         fromJSON json: String,
         baseFont: UIFont,
         textColor: UIColor,
-        theme: EditorTheme? = nil
+        theme: EditorTheme? = nil,
+        atomConfiguration: AtomRenderConfiguration? = nil
     ) -> NSAttributedString {
         guard let data = json.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
@@ -147,7 +176,8 @@ final class RenderBridge {
             fromArray: parsed,
             baseFont: baseFont,
             textColor: textColor,
-            theme: theme
+            theme: theme,
+            atomConfiguration: atomConfiguration
         )
     }
 
@@ -165,12 +195,14 @@ final class RenderBridge {
         fromArray elements: [[String: Any]],
         baseFont: UIFont,
         textColor: UIColor,
-        theme: EditorTheme? = nil
+        theme: EditorTheme? = nil,
+        atomConfiguration: AtomRenderConfiguration? = nil
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockStack: [BlockContext] = []
         var isFirstBlock = true
         var pendingTrailingParagraphSpacing: CGFloat? = nil
+        var atomOccurrences: [String: Int] = [:]
 
         for element in elements {
             guard let type = element["type"] as? String else { continue }
@@ -259,6 +291,9 @@ final class RenderBridge {
                 let nodeType = element["nodeType"] as? String ?? ""
                 guard let docPos = jsonUInt32(element["docPos"]) else { continue }
                 let attrs = element["attrs"] as? [String: Any] ?? [:]
+                let occurrence = atomOccurrences[nodeType, default: 0]
+                atomOccurrences[nodeType] = occurrence + 1
+                let atomKey = (element["atomId"] as? String) ?? "\(nodeType):\(occurrence)"
 
                 // Add inter-block newline if not the first block.
                 if !isFirstBlock {
@@ -291,7 +326,9 @@ final class RenderBridge {
                     baseFont: baseFont,
                     textColor: textColor,
                     topLevelChildIndex: topLevelChildIndex,
-                    theme: theme
+                    theme: theme,
+                    atomKey: atomKey,
+                    atomConfiguration: atomConfiguration
                 )
                 result.append(attrStr)
 
@@ -479,7 +516,8 @@ final class RenderBridge {
         includeTrailingInterBlockSeparator: Bool = false,
         baseFont: UIFont,
         textColor: UIColor,
-        theme: EditorTheme? = nil
+        theme: EditorTheme? = nil,
+        atomConfiguration: AtomRenderConfiguration? = nil
     ) -> NSAttributedString {
         var flattened: [[String: Any]] = []
         flattened.reserveCapacity(blocks.reduce(0) { $0 + $1.count })
@@ -497,7 +535,8 @@ final class RenderBridge {
             fromArray: flattened,
             baseFont: baseFont,
             textColor: textColor,
-            theme: theme
+            theme: theme,
+            atomConfiguration: atomConfiguration
         )
         let needsLeadingInterBlockSeparator = includeLeadingInterBlockSeparator && startIndex > 0
         guard !blocks.isEmpty,
@@ -752,7 +791,9 @@ final class RenderBridge {
         baseFont: UIFont,
         textColor: UIColor,
         topLevelChildIndex: Int?,
-        theme: EditorTheme?
+        theme: EditorTheme?,
+        atomKey: String,
+        atomConfiguration: AtomRenderConfiguration?
     ) -> NSAttributedString {
         var attrs = defaultAttributes(baseFont: baseFont, textColor: textColor)
         attrs[RenderBridgeAttributes.voidNodeType] = nodeType
@@ -794,6 +835,19 @@ final class RenderBridge {
             attrStr.addAttributes(attrs, range: range)
             return attrStr
         default:
+            if atomConfiguration?.registeredNodeTypes.contains(nodeType) == true {
+                let attachment = AtomBlockAttachment(
+                    atomKey: atomKey,
+                    nodeType: nodeType,
+                    docPos: docPos,
+                    reservedHeight: atomConfiguration?.measuredHeights[atomKey]
+                        ?? atomConfiguration?.estimatedHeights[nodeType]
+                        ?? 0
+                )
+                let attrStr = NSMutableAttributedString(attachment: attachment)
+                attrStr.addAttributes(attrs, range: NSRange(location: 0, length: attrStr.length))
+                return attrStr
+            }
             // Unknown void block: render as object replacement character.
             return NSAttributedString(
                 string: LayoutConstants.objectReplacementCharacter,
@@ -1534,6 +1588,42 @@ final class HorizontalRuleAttachment: NSTextAttachment {
             )
             context.fill(lineRect)
         }
+    }
+}
+
+final class AtomBlockAttachment: NSTextAttachment {
+    let atomKey: String
+    let nodeType: String
+    let docPos: UInt32
+    var reservedHeight: CGFloat
+
+    init(atomKey: String, nodeType: String, docPos: UInt32, reservedHeight: CGFloat) {
+        self.atomKey = atomKey
+        self.nodeType = nodeType
+        self.docPos = docPos
+        self.reservedHeight = reservedHeight
+        super.init(data: nil, ofType: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func attachmentBounds(
+        for textContainer: NSTextContainer?,
+        proposedLineFragment lineFrag: CGRect,
+        glyphPosition position: CGPoint,
+        characterIndex charIndex: Int
+    ) -> CGRect {
+        CGRect(x: 0, y: 0, width: lineFrag.width, height: reservedHeight)
+    }
+
+    override func image(
+        forBounds imageBounds: CGRect,
+        textContainer: NSTextContainer?,
+        characterIndex charIndex: Int
+    ) -> UIImage? {
+        nil
     }
 }
 

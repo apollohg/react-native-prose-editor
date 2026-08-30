@@ -2096,6 +2096,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private let imageLoadOwner = RenderImageLoadOwner(policy: .default)
     private var lastThemeJSON: String?
     private var lastAddonsJSON: String?
+    private var lastAtomsJSON: String?
     private var lastRemoteSelectionsJSON: String?
     private var lastToolbarItemsJSON: String?
     private var lastToolbarFrameJSON: String?
@@ -2782,6 +2783,13 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         addons = NativeEditorAddons.from(json: addonsJson)
         accessoryToolbar.apply(mentionTheme: richTextView.textView.theme?.mentions ?? addons.mentions?.theme)
         refreshMentionQuery()
+    }
+
+    func setAtomsJson(_ atomsJson: String?) {
+        guard lastAtomsJSON != atomsJson else { return }
+        let configuration = AtomRenderConfiguration.from(json: atomsJson)
+        guard richTextView.applyAtomRenderConfiguration(configuration) else { return }
+        lastAtomsJSON = atomsJson
     }
 
     var imageLoadingPolicy: ImageLoadingPolicy {

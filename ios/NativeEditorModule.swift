@@ -783,6 +783,9 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             Prop("addonsJson") { (view: NativeEditorExpoView, addonsJson: String?) in
                 view.setAddonsJson(addonsJson)
             }
+            Prop("atomsJson") { (view: NativeEditorExpoView, atomsJson: String?) in
+                view.setAtomsJson(atomsJson)
+            }
             Prop("remoteSelectionsJson") { (view: NativeEditorExpoView, remoteSelectionsJson: String?) in
                 view.setRemoteSelectionsJson(remoteSelectionsJson)
             }

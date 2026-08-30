@@ -1329,6 +1329,69 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(editor.imageLoadingPolicy.maxSourceBytes, 1234)
     }
 
+    func testSetAtomsJsonReappliesTheCurrentRender() throws {
+        let config: [String: Any] = [
+            "initialization": [
+                "type": "localJson",
+                "json": [
+                    "type": "doc",
+                    "content": [["type": "counterCard", "attrs": ["title": "Sample item"]]],
+                ],
+            ],
+            "schema": [
+                "nodes": [
+                    ["name": "doc", "content": "block+", "role": "doc"],
+                    [
+                        "name": "paragraph",
+                        "content": "text*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "p",
+                    ],
+                    ["name": "text", "content": "", "role": "text"],
+                    [
+                        "name": "counterCard",
+                        "content": "",
+                        "group": "block",
+                        "role": "block",
+                        "isVoid": true,
+                        "attrs": ["title": ["default": ""]],
+                        "html": [
+                            "tag": "div",
+                            "staticAttrs": ["data-type": "counter-card"],
+                            "attrMap": ["title": "data-title"],
+                        ],
+                    ],
+                ],
+                "marks": [],
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: config)
+        let editorId = makeV2Editor(configJson: try XCTUnwrap(String(data: data, encoding: .utf8)))
+        defer { destroyV2Editor(id: editorId) }
+        let editor = NativeEditorExpoView()
+        editor.setEditorId(editorId)
+        defer { editor.setEditorId(0) }
+
+        XCTAssertNil(editor.richTextView.textView.textStorage.attribute(
+            .attachment,
+            at: 0,
+            effectiveRange: nil
+        ))
+
+        editor.setAtomsJson(
+            #"{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"#
+        )
+
+        let attachment = editor.richTextView.textView.textStorage.attribute(
+            .attachment,
+            at: 0,
+            effectiveRange: nil
+        ) as? AtomBlockAttachment
+        XCTAssertEqual(attachment?.nodeType, "counterCard")
+        XCTAssertEqual(attachment?.reservedHeight, 120)
+    }
+
     // MARK: - Plain Text Rendering
 
     /// A single paragraph with unstyled text should produce the text with base font.
@@ -2050,6 +2113,109 @@ final class RenderBridgeTests: XCTestCase {
         let ruleRange = (result.string as NSString).range(of: "\u{FFFC}")
         XCTAssertNotEqual(ruleRange.location, NSNotFound)
         XCTAssertTrue(result.attribute(.attachment, at: ruleRange.location, effectiveRange: nil) is HorizontalRuleAttachment)
+    }
+
+    func testRender_registeredVoidBlockGetsAtomSpacerAttachment() throws {
+        let result = RenderBridge.renderElements(
+            fromJSON: #"[{"type":"voidBlock","nodeType":"counterCard","docPos":1,"attrs":{"title":"t"}}]"#,
+            baseFont: baseFont,
+            textColor: textColor,
+            atomConfiguration: AtomRenderConfiguration(
+                registeredNodeTypes: ["counterCard"],
+                estimatedHeights: ["counterCard": 120],
+                measuredHeights: [:]
+            )
+        )
+
+        let attachment = try XCTUnwrap(
+            result.attribute(.attachment, at: 0, effectiveRange: nil) as? AtomBlockAttachment
+        )
+        XCTAssertEqual(result.string, "\u{FFFC}")
+        XCTAssertEqual(attachment.atomKey, "counterCard:0")
+        XCTAssertEqual(attachment.nodeType, "counterCard")
+        XCTAssertEqual(attachment.docPos, 1)
+        XCTAssertEqual(attachment.reservedHeight, 120)
+        let bounds = attachment.attachmentBounds(
+            for: nil,
+            proposedLineFragment: CGRect(x: 0, y: 0, width: 280, height: 20),
+            glyphPosition: .zero,
+            characterIndex: 0
+        )
+        XCTAssertEqual(bounds.width, 280)
+        XCTAssertEqual(bounds.height, 120)
+        XCTAssertNil(
+            attachment.image(forBounds: bounds, textContainer: nil, characterIndex: 0)
+        )
+        XCTAssertEqual(
+            result.attribute(RenderBridgeAttributes.voidNodeType, at: 0, effectiveRange: nil) as? String,
+            "counterCard"
+        )
+        XCTAssertEqual(
+            result.attribute(RenderBridgeAttributes.docPos, at: 0, effectiveRange: nil) as? UInt32,
+            1
+        )
+    }
+
+    func testRender_atomKeysFollowIdentityContract() {
+        let result = RenderBridge.renderElements(
+            fromArray: [
+                ["type": "voidBlock", "nodeType": "counterCard", "docPos": 1],
+                ["type": "voidBlock", "nodeType": "counterCard", "docPos": 3],
+                [
+                    "type": "voidBlock",
+                    "nodeType": "counterCard",
+                    "docPos": 5,
+                    "atomId": "client-1:9",
+                ],
+            ],
+            baseFont: baseFont,
+            textColor: textColor,
+            atomConfiguration: AtomRenderConfiguration(
+                registeredNodeTypes: ["counterCard"],
+                estimatedHeights: [:],
+                measuredHeights: [:]
+            )
+        )
+        var keys: [String] = []
+        result.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: result.length)
+        ) { value, _, _ in
+            if let attachment = value as? AtomBlockAttachment {
+                keys.append(attachment.atomKey)
+            }
+        }
+
+        XCTAssertEqual(keys, ["counterCard:0", "counterCard:1", "client-1:9"])
+    }
+
+    func testRender_unregisteredVoidBlockKeepsBareReplacementCharacter() {
+        let result = RenderBridge.renderElements(
+            fromJSON: #"[{"type":"voidBlock","nodeType":"counterCard","docPos":1}]"#,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertEqual(result.string, "\u{FFFC}")
+        XCTAssertNil(result.attribute(.attachment, at: 0, effectiveRange: nil))
+    }
+
+    func testRender_measuredAtomHeightOverridesEstimate() throws {
+        let result = RenderBridge.renderElements(
+            fromJSON: #"[{"type":"voidBlock","nodeType":"counterCard","docPos":1}]"#,
+            baseFont: baseFont,
+            textColor: textColor,
+            atomConfiguration: AtomRenderConfiguration(
+                registeredNodeTypes: ["counterCard"],
+                estimatedHeights: ["counterCard": 120],
+                measuredHeights: ["counterCard:0": 260]
+            )
+        )
+
+        let attachment = try XCTUnwrap(
+            result.attribute(.attachment, at: 0, effectiveRange: nil) as? AtomBlockAttachment
+        )
+        XCTAssertEqual(attachment.reservedHeight, 260)
     }
 
     func testRender_proseMirrorListItemName() {
