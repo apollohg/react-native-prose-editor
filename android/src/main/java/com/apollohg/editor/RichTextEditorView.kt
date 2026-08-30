@@ -45,6 +45,33 @@ class RichTextEditorView @JvmOverloads constructor(
         }
     }
 
+    private inner class EditorContentFrame(context: Context) : FrameLayout(context) {
+        override fun measureChildWithMargins(
+            child: View,
+            parentWidthMeasureSpec: Int,
+            widthUsed: Int,
+            parentHeightMeasureSpec: Int,
+            heightUsed: Int,
+        ) {
+            if (child === editorEditText) {
+                super.measureChildWithMargins(
+                    child,
+                    parentWidthMeasureSpec,
+                    widthUsed,
+                    parentHeightMeasureSpec,
+                    heightUsed,
+                )
+                return
+            }
+            val width = child.measuredWidth.takeIf { it > 0 } ?: child.width.coerceAtLeast(0)
+            val height = child.measuredHeight.takeIf { it > 0 } ?: child.height.coerceAtLeast(0)
+            child.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+            )
+        }
+    }
+
     val editorEditText: EditorEditText
     val editorScrollView: ScrollView
     private val remoteSelectionOverlayView: RemoteSelectionOverlayView
@@ -79,7 +106,7 @@ class RichTextEditorView @JvmOverloads constructor(
         orientation = VERTICAL
 
         editorEditText = EditorEditText(context)
-        editorContentFrame = FrameLayout(context).apply {
+        editorContentFrame = EditorContentFrame(context).apply {
             setOnTouchListener { _, event ->
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                     editorEditText.isFocusableInTouchMode = true

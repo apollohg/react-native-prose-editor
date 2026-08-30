@@ -7,6 +7,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import com.facebook.react.R
+import com.facebook.react.uimanager.TouchTargetHelper
+import com.facebook.react.views.view.ReactViewGroup
 import expo.modules.core.ModuleRegistry
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.ModulesProvider
@@ -68,6 +70,73 @@ class AtomMountingTest {
         assertSame(editor.richTextView.editorContentFrame, child.parent)
         assertEquals(1, editor.atomChildCount)
         assertSame(child, editor.atomChildAt(0))
+    }
+
+    @Test
+    fun `auto grow measures a mounted React atom host with explicit specs`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        view.setHeightBehavior(EditorHeightBehavior.AUTO_GROW)
+        installAtoms(view, listOf("counterCard:0"))
+        val child = ReactViewGroup(view.context).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom:counterCard:0")
+            layoutParams = FrameLayout.LayoutParams(280, ViewGroup.LayoutParams.WRAP_CONTENT)
+            measure(
+                View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(132, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, 280, 132)
+        }
+        view.mountAtomChild(child, "counterCard:0")
+
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(500, View.MeasureSpec.AT_MOST),
+        )
+
+        assertEquals(280, child.measuredWidth)
+        assertEquals(132, child.measuredHeight)
+    }
+
+    @Test
+    fun `decorative overlays do not mask a React atom touch target`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val root = FrameLayout(activity).apply { id = 100 }
+        val editor = nativeEditorView().apply { id = 101 }
+        editor.onAtomLayoutForTesting = {}
+        root.addView(editor, FrameLayout.LayoutParams(320, 500))
+        activity.setContentView(root)
+        installAtoms(editor.richTextView, listOf("counterCard:0"))
+        val child = ReactViewGroup(editor.context).apply {
+            id = 202
+            setTag(R.id.view_tag_native_id, "prose-atom:counterCard:0")
+            layoutParams = FrameLayout.LayoutParams(280, 132)
+            measure(
+                View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(132, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, 280, 132)
+        }
+        editor.addAtomChild(child, 0)
+        layout(root, 320, 500)
+        editor.richTextView.layoutAtomHostViews()
+        val childLocation = IntArray(2)
+        val rootLocation = IntArray(2)
+        child.getLocationOnScreen(childLocation)
+        root.getLocationOnScreen(rootLocation)
+        val coords = floatArrayOf(
+            childLocation[0] - rootLocation[0] + 50f,
+            childLocation[1] - rootLocation[1] + 50f,
+        )
+
+        val target = TouchTargetHelper.findTargetTagAndCoordinatesForTouch(
+            coords[0],
+            coords[1],
+            root,
+            coords,
+            null,
+        )
+
+        assertEquals(child.id, target)
     }
 
     @Test
@@ -212,4 +281,5 @@ class AtomMountingTest {
         )
         view.layout(0, 0, width, height)
     }
+
 }
