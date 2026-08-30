@@ -12,6 +12,7 @@ import type {
 export const INITIAL_CONTENT = [
     '<p><strong>Native Editor</strong> example app.</p>',
     '<p>Use this screen to test focus, theme updates, lists, line breaks, toolbar behavior, and optional addons.</p>',
+    '<div data-type="counter-card" data-count="10" data-title="Sample item"></div>',
     '<p>Enable mentions above, then type @ after a space, on a blank line, or after punctuation to show native mention suggestions in the toolbar.</p>',
     '<blockquote><p>Blockquotes can wrap one or more blocks and inherit theme styling.</p></blockquote>',
     '<ul><li><p>Try typing</p></li><li><p>Try list indenting</p><ul><li>Multiple levels are supported</li></ul></li></ul>',
@@ -245,8 +246,10 @@ export type EditorCommandId =
     | 'insert:html'
     | 'insert:json'
     | 'insert:image'
+    | 'insert:counterCard'
     | 'doc:setContent'
     | 'doc:setContentJson'
+    | 'doc:setUnknownAtomJson'
     | 'doc:clear'
     | 'read:content'
     | 'read:contentJson'
@@ -296,6 +299,7 @@ export const EDITOR_COMMAND_GROUPS: readonly {
             { id: 'insert:html', label: 'HTML fragment' },
             { id: 'insert:json', label: 'JSON fragment' },
             { id: 'insert:image', label: 'Image' },
+            { id: 'insert:counterCard', label: 'Insert counter card' },
         ],
     },
     {
@@ -304,6 +308,7 @@ export const EDITOR_COMMAND_GROUPS: readonly {
         commands: [
             { id: 'doc:setContent', label: 'setContent' },
             { id: 'doc:setContentJson', label: 'setContentJson' },
+            { id: 'doc:setUnknownAtomJson', label: 'Unknown atom JSON' },
             { id: 'doc:clear', label: 'clearContent' },
         ],
     },

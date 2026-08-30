@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     FlatList,
     Platform,
+    Pressable,
     ScrollView,
     StyleSheet,
     Text,
@@ -30,7 +31,10 @@ import {
     NativeRichTextEditor,
     NativeProseViewer,
     defaultSchema,
+    defineAtomNode,
+    withAtomsSchema,
     withMentionsSchema,
+    type AtomComponentProps,
     type DocumentJSON,
     type EditorAddons,
     type EditorToolbarHeadingLevel,
@@ -111,6 +115,97 @@ const PICKED_IMAGE_COMPRESSION = 0.8;
 const EDITOR_MIN_HEIGHT = 200;
 /** Only applies under heightBehavior 'fixed'; autoGrow drops the ceiling. */
 const EDITOR_MAX_HEIGHT = 300;
+
+function CounterCard({ attrs, selected, updateAttrs }: AtomComponentProps) {
+    const [localPresses, setLocalPresses] = useState(0);
+    const [updateError, setUpdateError] = useState<string | null>(null);
+    const title = typeof attrs.title === 'string' ? attrs.title : 'Untitled counter';
+    const parsedCount = typeof attrs.count === 'number' ? attrs.count : Number(attrs.count);
+    const count = Number.isFinite(parsedCount) ? parsedCount : 0;
+
+    const handleIncrementCount = useCallback(() => {
+        setUpdateError(null);
+        void updateAttrs({ count: count + 1 }).catch((error: unknown) => {
+            setUpdateError(error instanceof Error ? error.message : 'Could not update count');
+        });
+    }, [count, updateAttrs]);
+
+    const handleLocalPress = useCallback(() => {
+        setLocalPresses((count) => count + 1);
+    }, []);
+
+    return (
+        <View
+            accessibilityLabel={`${title}, count ${count}`}
+            accessibilityState={{ selected }}
+            style={[styles.counterCard, selected && styles.counterCardSelected]}>
+            <View style={styles.counterCardHeader}>
+                <View style={styles.counterCardSummary}>
+                    <Text style={styles.counterCardEyebrow}>Counter</Text>
+                    <Text style={styles.counterCardTitle}>{title}</Text>
+                </View>
+                <Text style={styles.counterCardCount}>Count: {count}</Text>
+            </View>
+            <View style={styles.counterCardActions}>
+                <Pressable
+                    accessibilityRole='button'
+                    accessibilityLabel='Add one'
+                    onPress={handleIncrementCount}
+                    style={({ pressed }) => [
+                        styles.counterCardButton,
+                        styles.counterCardPrimaryButton,
+                        pressed && styles.counterCardButtonPressed,
+                    ]}>
+                    <Text style={styles.counterCardPrimaryButtonLabel}>+1</Text>
+                </Pressable>
+                <Pressable
+                    accessibilityRole='button'
+                    accessibilityLabel={`Local presses: ${localPresses}`}
+                    onPress={handleLocalPress}
+                    style={({ pressed }) => [
+                        styles.counterCardButton,
+                        styles.counterCardSecondaryButton,
+                        pressed && styles.counterCardButtonPressed,
+                    ]}>
+                    <Text style={styles.counterCardSecondaryButtonLabel}>
+                        Local presses: {localPresses}
+                    </Text>
+                </Pressable>
+            </View>
+            {selected ? <Text style={styles.counterCardSelectedLabel}>Selected</Text> : null}
+            {updateError ? <Text style={styles.counterCardError}>{updateError}</Text> : null}
+        </View>
+    );
+}
+
+const counterCardAtom = defineAtomNode({
+    name: 'counterCard',
+    attrs: {
+        title: { default: 'Untitled counter' },
+        count: { default: 0 },
+    },
+    html: {
+        tag: 'div',
+        staticAttrs: { 'data-type': 'counter-card' },
+        attrMap: { title: 'data-title', count: 'data-count' },
+    },
+    component: CounterCard,
+    estimatedHeight: 132,
+});
+
+const unregisteredCardAtom = defineAtomNode({
+    name: 'unregisteredCard',
+    attrs: { label: { default: 'Unregistered atom' } },
+    html: {
+        tag: 'div',
+        staticAttrs: { 'data-type': 'unregistered-card' },
+        attrMap: { label: 'data-label' },
+    },
+    component: CounterCard,
+});
+
+const EDITOR_ATOMS = [counterCardAtom] as const;
+const SCHEMA_ATOMS = [counterCardAtom, unregisteredCardAtom] as const;
 
 const DEFAULT_BEHAVIOR_SETTINGS: EditorBehaviorSettings = {
     editable: true,
@@ -376,7 +471,11 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
     );
 
     const documentSchema = useMemo(
-        () => (mentionsEnabled ? withMentionsSchema(defaultSchema) : defaultSchema),
+        () =>
+            withAtomsSchema(
+                mentionsEnabled ? withMentionsSchema(defaultSchema) : defaultSchema,
+                SCHEMA_ATOMS
+            ),
         [mentionsEnabled]
     );
 
@@ -634,12 +733,38 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
                 case 'insert:image':
                     handleInsertSampleImage();
                     return;
+                case 'insert:counterCard':
+                    editor.insertContentJson(
+                        counterCardAtom.buildFragmentJson({ title: 'Sample item', count: 8 })
+                    );
+                    appendEvent('insertContentJson', 'inserted counter card');
+                    return;
                 case 'doc:setContent':
                     editor.setContent(INITIAL_CONTENT);
                     return;
                 case 'doc:setContentJson':
                     editor.setContentJson(editor.getContentJson());
                     appendEvent('setContentJson', 'reapplied the current document');
+                    return;
+                case 'doc:setUnknownAtomJson':
+                    editor.setContentJson({
+                        type: 'doc',
+                        content: [
+                            {
+                                type: 'paragraph',
+                                content: [{ type: 'text', text: 'Unknown atom fallback:' }],
+                            },
+                            {
+                                type: 'unregisteredCard',
+                                attrs: { label: 'Rendered by the built-in chip' },
+                            },
+                            {
+                                type: 'paragraph',
+                                content: [{ type: 'text', text: 'Continue editing here.' }],
+                            },
+                        ],
+                    });
+                    appendEvent('setContentJson', 'loaded an atom omitted from the atoms prop');
                     return;
                 case 'doc:clear':
                     editor.clearContent();
@@ -922,6 +1047,7 @@ function HarnessScreen({ activeThemePreset, onSelectThemePreset }: HarnessScreen
                             ref={editorRef}
                             documentHandle={documentHandle}
                             documentRevision={documentRevision}
+                            atoms={EDITOR_ATOMS}
                             theme={theme}
                             addons={addons}
                             placeholder='Start typing...'
@@ -1463,6 +1589,90 @@ const styles = StyleSheet.create({
     /** Exercises `containerStyle`, the only way to space an inline toolbar. */
     editorContainer: {
         gap: SPACE.sm,
+    },
+    counterCard: {
+        minHeight: 132,
+        padding: SPACE.lg,
+        gap: SPACE.md,
+        borderWidth: 2,
+        borderColor: '#CBD5E1',
+        borderRadius: 10,
+        backgroundColor: '#F8FAFC',
+    },
+    counterCardSelected: {
+        borderColor: '#2563EB',
+        backgroundColor: '#EFF6FF',
+    },
+    counterCardHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: SPACE.md,
+    },
+    counterCardSummary: {
+        flex: 1,
+        gap: SPACE.xs,
+    },
+    counterCardEyebrow: {
+        color: '#64748B',
+        fontSize: FONT_SIZE.section,
+        fontWeight: '700',
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+    },
+    counterCardTitle: {
+        color: '#0F172A',
+        fontSize: FONT_SIZE.heading,
+        lineHeight: LINE_HEIGHT.heading,
+        fontWeight: '700',
+    },
+    counterCardCount: {
+        color: '#0F172A',
+        fontSize: FONT_SIZE.label,
+        lineHeight: LINE_HEIGHT.label,
+        fontWeight: '700',
+        fontVariant: ['tabular-nums'],
+    },
+    counterCardActions: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: SPACE.sm,
+    },
+    counterCardButton: {
+        minHeight: 44,
+        paddingHorizontal: SPACE.lg,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: RADIUS,
+    },
+    counterCardPrimaryButton: {
+        backgroundColor: '#2563EB',
+    },
+    counterCardSecondaryButton: {
+        backgroundColor: '#E2E8F0',
+    },
+    counterCardButtonPressed: {
+        opacity: 0.7,
+    },
+    counterCardPrimaryButtonLabel: {
+        color: '#FFFFFF',
+        fontSize: FONT_SIZE.hint,
+        fontWeight: '700',
+    },
+    counterCardSecondaryButtonLabel: {
+        color: '#0F172A',
+        fontSize: FONT_SIZE.hint,
+        fontWeight: '700',
+    },
+    counterCardSelectedLabel: {
+        color: '#1D4ED8',
+        fontSize: FONT_SIZE.section,
+        fontWeight: '700',
+        textTransform: 'uppercase',
+    },
+    counterCardError: {
+        color: '#B91C1C',
+        fontSize: FONT_SIZE.hint,
     },
     benchmarkScreen: {
         flex: 1,
