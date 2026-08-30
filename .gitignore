@@ -12,6 +12,7 @@ example/dist-export-test
 /example/android/
 example/.android-device-test.env
 android/build
+android/expo/build
 *.xcresult
 ios-tests/.device-test.env
 coverage

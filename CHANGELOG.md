@@ -13,6 +13,7 @@
 - Bounded decoded-image ownership by process, viewer, and request limits; constrained approximate decoder results before admission; and exposed `maxDecodedBytes` consistently to Android image loading.
 - Kept Android viewer semantics actionable and synchronized viewer fonts, dynamic appearance invalidation, and toolbar border rendering.
 - Preserved API 24 runtime compatibility and restored package compatibility with React Native 0.76 and Expo 52 consumers while retaining current React Native and Expo support.
+- Isolated the Expo Android facade project from React Native codegen outputs so current Expo example and consumer apps assemble reliably.
 
 ## [1.0.0] - 2026-08-28
 
