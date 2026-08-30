@@ -3472,7 +3472,6 @@ class EditorEditText @JvmOverloads constructor(
         lastAuthorizedText = text?.toString().orEmpty()
         lastAuthorizedRenderedText = text?.let { SpannableStringBuilder(it) }
         lastAuthorizedTextRevision += 1L
-        currentRenderBlocksJson = null
         clearNativeTextMutationAdoptionSuppression()
         clearNativeTextMutationAfterBlurWindow()
     }
