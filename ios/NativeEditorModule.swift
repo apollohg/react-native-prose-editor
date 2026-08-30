@@ -729,6 +729,7 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
                 "onSelectionChange",
                 "onFocusChange",
                 "onContentHeightChange",
+                "onAtomLayout",
                 "onToolbarAction",
                 "onAddonEvent",
                 "onEditorError",

@@ -6745,6 +6745,83 @@ extension EditorTextView: NSTextStorageDelegate {
 
 // MARK: - RichTextEditorView (Fabric Host)
 
+final class AtomHostContainerView: UIView {
+    let atomKey: String
+    private(set) var hostedView: UIView?
+    weak var editorView: RichTextEditorView?
+
+    private var boundsObservation: NSKeyValueObservation?
+    private var isDetachingHostedView = false
+    private var lastReportedHeight: CGFloat?
+
+    init(atomKey: String) {
+        self.atomKey = atomKey
+        super.init(frame: .zero)
+        clipsToBounds = false
+        isUserInteractionEnabled = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func host(_ view: UIView) {
+        if hostedView !== view {
+            _ = detachHostedView()
+        }
+        view.removeFromSuperview()
+        hostedView = view
+        addSubview(view)
+        boundsObservation = view.observe(\.bounds, options: [.new]) { [weak self] _, _ in
+            self?.reportHeightIfNeeded()
+        }
+        setNeedsLayout()
+        reportHeightIfNeeded()
+    }
+
+    @discardableResult
+    func detachHostedView() -> UIView? {
+        boundsObservation = nil
+        guard let hostedView else { return nil }
+        self.hostedView = nil
+        lastReportedHeight = nil
+        isDetachingHostedView = true
+        hostedView.removeFromSuperview()
+        isDetachingHostedView = false
+        return hostedView
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let hostedView else { return }
+        let height = hostedView.bounds.height
+        let frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
+        if hostedView.frame != frame {
+            hostedView.frame = frame
+        }
+        reportHeightIfNeeded()
+    }
+
+    override func willRemoveSubview(_ subview: UIView) {
+        super.willRemoveSubview(subview)
+        guard !isDetachingHostedView, subview === hostedView else { return }
+        boundsObservation = nil
+        hostedView = nil
+        lastReportedHeight = nil
+        editorView?.atomHostContainerDidLoseHostedView(self)
+    }
+
+    private func reportHeightIfNeeded() {
+        guard let height = hostedView?.bounds.height,
+              height.isFinite,
+              height > 0,
+              lastReportedHeight.map({ abs($0 - height) > 0.5 }) ?? true
+        else { return }
+        lastReportedHeight = height
+        editorView?.atomHostContainer(self, didMeasureHeight: height)
+    }
+}
+
 /// The top-level container view that a Fabric component would own.
 ///
 /// Hosts the EditorTextView. In a full Fabric integration, this would be
@@ -6789,8 +6866,15 @@ final class RichTextEditorView: UIView {
     private let imageTapOverlayView = ImageTapOverlayView()
     private let imageResizeOverlayView = ImageResizeOverlayView()
     var onHeightMayChange: ((CGFloat) -> Void)?
+    var onAtomContentWidthChange: ((CGFloat) -> Void)?
     private var lastAutoGrowWidth: CGFloat = 0
     private var cachedAutoGrowMeasuredHeight: CGFloat = 0
+    private var atomRenderConfiguration: AtomRenderConfiguration?
+    private var atomHostContainers: [String: AtomHostContainerView] = [:]
+    private var measuredAtomHeights: [String: CGFloat] = [:]
+    private var fallbackAtomHeights: [String: CGFloat] = [:]
+    private var lastAtomContentWidth: CGFloat = 0
+    private(set) var atomLayoutInvalidationCountForTesting = 0
     private var remoteSelections: [RemoteSelectionDecoration] = []
     private var initialUpdateJSONForNextEditorBind: String?
     private var overlayRefreshScheduled = false
@@ -6954,6 +7038,7 @@ final class RichTextEditorView: UIView {
         }
         super.layoutSubviews()
         layoutManagedSubviews()
+        layoutAtomHostContainers()
         refreshOverlaysIfNeeded()
         guard heightBehavior == .autoGrow else { return }
         textView.updateAutoGrowHostHeight(bounds.height)
@@ -6997,9 +7082,205 @@ final class RichTextEditorView: UIView {
 
     @discardableResult
     func applyAtomRenderConfiguration(_ configuration: AtomRenderConfiguration?) -> Bool {
-        guard textView.applyAtomRenderConfiguration(configuration) else { return false }
+        atomRenderConfiguration = configuration
+        guard textView.applyAtomRenderConfiguration(resolvedAtomRenderConfiguration()) else {
+            return false
+        }
+        layoutAtomHostContainers()
         refreshOverlays()
         return true
+    }
+
+    func mountAtomChild(_ child: UIView, atomKey: String) {
+        if let existing = atomHostContainers[atomKey] {
+            if existing.hostedView === child {
+                if child.superview !== existing {
+                    existing.host(child)
+                }
+                layoutAtomHostContainers()
+                return
+            }
+            _ = existing.detachHostedView()
+            existing.removeFromSuperview()
+        }
+
+        let container = AtomHostContainerView(atomKey: atomKey)
+        container.editorView = self
+        atomHostContainers[atomKey] = container
+        textView.addSubview(container)
+        container.host(child)
+        layoutAtomHostContainers()
+    }
+
+    @discardableResult
+    func unmountAtomChild(_ child: UIView) -> Bool {
+        guard let entry = atomHostContainers.first(where: { $0.value.hostedView === child }) else {
+            return false
+        }
+        removeAtomHostContainer(for: entry.key, removeChild: true)
+        return true
+    }
+
+    func atomHostContainer(for atomKey: String) -> AtomHostContainerView? {
+        atomHostContainers[atomKey]
+    }
+
+    func measuredAtomHeight(for atomKey: String) -> CGFloat? {
+        measuredAtomHeights[atomKey]
+    }
+
+    func emitAtomContentWidthIfAvailable(force: Bool = false) {
+        let width = atomContentWidth()
+        guard width > 0,
+              force || abs(width - lastAtomContentWidth) > 0.5
+        else { return }
+        lastAtomContentWidth = width
+        onAtomContentWidthChange?(width)
+    }
+
+    fileprivate func atomHostContainer(
+        _ container: AtomHostContainerView,
+        didMeasureHeight height: CGFloat
+    ) {
+        setAtomHeight(key: container.atomKey, height: height)
+    }
+
+    fileprivate func atomHostContainerDidLoseHostedView(_ container: AtomHostContainerView) {
+        guard atomHostContainers[container.atomKey] === container else { return }
+        removeAtomHostContainer(for: container.atomKey, removeChild: false)
+    }
+
+    func setAtomHeight(key atomKey: String, height: CGFloat) {
+        guard height.isFinite,
+              height > 0,
+              measuredAtomHeights[atomKey].map({ abs($0 - height) > 0.5 }) ?? true,
+              let entry = atomAttachmentEntry(for: atomKey)
+        else { return }
+
+        fallbackAtomHeights[atomKey] = fallbackAtomHeights[atomKey] ?? entry.attachment.reservedHeight
+        measuredAtomHeights[atomKey] = height
+        textView.atomRenderConfiguration = resolvedAtomRenderConfiguration()
+        updateAtomAttachment(entry, height: height)
+    }
+
+    private func removeAtomHostContainer(for atomKey: String, removeChild: Bool) {
+        guard let container = atomHostContainers.removeValue(forKey: atomKey) else { return }
+        container.editorView = nil
+        let child = container.detachHostedView()
+        container.removeFromSuperview()
+        if removeChild {
+            child?.removeFromSuperview()
+        }
+
+        measuredAtomHeights.removeValue(forKey: atomKey)
+        textView.atomRenderConfiguration = resolvedAtomRenderConfiguration()
+        if let entry = atomAttachmentEntry(for: atomKey),
+           let fallbackHeight = fallbackAtomHeights.removeValue(forKey: atomKey)
+        {
+            updateAtomAttachment(entry, height: fallbackHeight)
+        }
+    }
+
+    private func resolvedAtomRenderConfiguration() -> AtomRenderConfiguration? {
+        guard let atomRenderConfiguration else { return nil }
+        var heights = atomRenderConfiguration.measuredHeights
+        heights.merge(measuredAtomHeights) { _, measured in measured }
+        return AtomRenderConfiguration(
+            registeredNodeTypes: atomRenderConfiguration.registeredNodeTypes,
+            estimatedHeights: atomRenderConfiguration.estimatedHeights,
+            measuredHeights: heights
+        )
+    }
+
+    private func updateAtomAttachment(
+        _ entry: (attachment: AtomBlockAttachment, range: NSRange),
+        height: CGFloat
+    ) {
+        guard abs(entry.attachment.reservedHeight - height) > 0.5 else { return }
+        entry.attachment.reservedHeight = height
+        atomLayoutInvalidationCountForTesting += 1
+        textView.layoutManager.invalidateLayout(
+            forCharacterRange: entry.range,
+            actualCharacterRange: nil
+        )
+        textView.layoutManager.invalidateDisplay(forCharacterRange: entry.range)
+        textView.setNeedsLayout()
+        setNeedsLayout()
+        layoutAtomHostContainers()
+    }
+
+    private func atomAttachmentEntry(
+        for atomKey: String
+    ) -> (attachment: AtomBlockAttachment, range: NSRange)? {
+        guard textView.textStorage.length > 0 else { return nil }
+        var match: (attachment: AtomBlockAttachment, range: NSRange)?
+        textView.textStorage.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: textView.textStorage.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, stop in
+            guard let attachment = value as? AtomBlockAttachment,
+                  attachment.atomKey == atomKey
+            else { return }
+            match = (attachment, range)
+            stop.pointee = true
+        }
+        return match
+    }
+
+    private func atomAttachmentEntries() -> [String: (AtomBlockAttachment, NSRange)] {
+        guard textView.textStorage.length > 0 else { return [:] }
+        var entries: [String: (AtomBlockAttachment, NSRange)] = [:]
+        textView.textStorage.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: textView.textStorage.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, _ in
+            guard let attachment = value as? AtomBlockAttachment else { return }
+            entries[attachment.atomKey] = (attachment, range)
+        }
+        return entries
+    }
+
+    private func atomContentWidth() -> CGFloat {
+        let padding = textView.textContainer.lineFragmentPadding
+        return max(0, textView.textContainer.size.width - (padding * 2))
+    }
+
+    private func layoutAtomHostContainers() {
+        emitAtomContentWidthIfAvailable()
+        guard !atomHostContainers.isEmpty else { return }
+        let entries = atomAttachmentEntries()
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let padding = textView.textContainer.lineFragmentPadding
+        let width = atomContentWidth()
+
+        for (atomKey, container) in atomHostContainers {
+            guard let (attachment, characterRange) = entries[atomKey] else {
+                container.isHidden = true
+                continue
+            }
+            let glyphRange = textView.layoutManager.glyphRange(
+                forCharacterRange: characterRange,
+                actualCharacterRange: nil
+            )
+            let attachmentRect = textView.layoutManager.boundingRect(
+                forGlyphRange: glyphRange,
+                in: textView.textContainer
+            )
+            let frame = CGRect(
+                x: textView.textContainerInset.left + padding,
+                y: attachmentRect.minY,
+                width: width,
+                height: attachment.reservedHeight
+            )
+            if container.frame != frame {
+                container.frame = frame
+            }
+            container.isHidden = false
+            textView.bringSubviewToFront(container)
+            container.setNeedsLayout()
+        }
     }
 
     func setRemoteSelections(_ selections: [RemoteSelectionDecoration]) {
@@ -7244,6 +7525,7 @@ final class RichTextEditorView: UIView {
                 keyPath: .refreshOverlays
             )
         }
+        layoutAtomHostContainers()
         remoteSelectionOverlayView.refresh()
         imageResizeOverlayView.refresh()
     }
@@ -7280,6 +7562,9 @@ final class RichTextEditorView: UIView {
     }
 
     private func shouldRefreshOverlays() -> Bool {
+        if !atomHostContainers.isEmpty {
+            return true
+        }
         if !remoteSelections.isEmpty || remoteSelectionOverlayView.hasVisibleDecorations {
             return true
         }

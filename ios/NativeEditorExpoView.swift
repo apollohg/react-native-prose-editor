@@ -2100,6 +2100,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var lastRemoteSelectionsJSON: String?
     private var lastToolbarItemsJSON: String?
     private var lastToolbarFrameJSON: String?
+    private var isReparentingAtomChild = false
     private var pendingEditorUpdateJSON: String?
     private var pendingEditorUpdateEditorId: String?
     private var pendingEditorUpdateRevision = 0
@@ -2155,6 +2156,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     let onSelectionChange = EventDispatcher()
     let onFocusChange = EventDispatcher()
     let onContentHeightChange = EventDispatcher()
+    let onAtomLayout = EventDispatcher()
     let onToolbarAction = EventDispatcher()
     let onAddonEvent = EventDispatcher()
     let onEditorError = EventDispatcher()
@@ -2222,6 +2224,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             self.invalidateIntrinsicContentSize()
             self.emitContentHeightIfNeeded(force: true, measuredHeight: measuredHeight)
         }
+        richTextView.onAtomContentWidthChange = { [weak self] width in
+            self?.emitAtomLayout(width: width)
+        }
         richTextView.textView.editorDelegate = self
         configureAccessoryToolbar()
 
@@ -2259,6 +2264,34 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     // MARK: - Layout
+
+    override func mountChildComponentView(_ childComponentView: UIView, index: Int) {
+        guard let atomKey = Self.atomKey(for: childComponentView) else {
+            super.mountChildComponentView(childComponentView, index: index)
+            return
+        }
+        richTextView.mountAtomChild(childComponentView, atomKey: atomKey)
+    }
+
+    override func unmountChildComponentView(_ childComponentView: UIView, index: Int) {
+        if Self.atomKey(for: childComponentView) != nil {
+            _ = richTextView.unmountAtomChild(childComponentView)
+            childComponentView.removeFromSuperview()
+            return
+        }
+        super.unmountChildComponentView(childComponentView, index: index)
+    }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        guard subview !== richTextView,
+              !isReparentingAtomChild,
+              let atomKey = Self.atomKey(for: subview)
+        else { return }
+        isReparentingAtomChild = true
+        richTextView.mountAtomChild(subview, atomKey: atomKey)
+        isReparentingAtomChild = false
+    }
 
     override var intrinsicContentSize: CGSize {
         guard heightBehavior == .autoGrow else {
@@ -2382,6 +2415,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         // state. The text view must not perform an independent state read.
         imageLoadOwner.withCurrent {
             richTextView.bindEditor(id: id, initialUpdateJSON: initialBindUpdateJSON)
+        }
+        if id != 0 {
+            richTextView.emitAtomContentWidthIfAvailable(force: true)
         }
         if id != 0 {
             if let initialBindUpdateJSON,
@@ -2940,6 +2976,26 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             originatingEditorId: originatingEditorId
         ) else { return }
         onContentHeightChange(event)
+    }
+
+    private func emitAtomLayout(width: CGFloat) {
+        guard let event = Self.editorScopedEventPayload(
+            ["width": Double(width)],
+            originatingEditorId: richTextView.editorId
+        ) else { return }
+        onAtomLayout(event)
+    }
+
+    private static func atomKey(for view: UIView) -> String? {
+        let selector = NSSelectorFromString("nativeID")
+        let nativeID = view.responds(to: selector) ? view.value(forKey: "nativeID") as? String : nil
+        let identifier = nativeID ?? view.accessibilityIdentifier
+        let prefix = "prose-atom:"
+        guard let identifier,
+              identifier.hasPrefix(prefix),
+              identifier.count > prefix.count
+        else { return nil }
+        return String(identifier.dropFirst(prefix.count))
     }
 
     func setToolbarButtonsJson(_ toolbarButtonsJson: String?) {
