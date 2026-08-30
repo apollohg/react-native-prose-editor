@@ -15,6 +15,24 @@ final class AtomMountingTests: XCTestCase {
         XCTAssertEqual(container.atomKey, "counter:1")
     }
 
+    func testFabricNativeIdMountsReactChildIntoAtomContainer() throws {
+        let editor = NativeEditorExpoView()
+        editor.frame = CGRect(x: 0, y: 0, width: 320, height: 240)
+        installAtom(key: "counter:1", height: 80, in: editor.richTextView)
+        editor.layoutIfNeeded()
+
+        let componentViewClass = try XCTUnwrap(
+            NSClassFromString("RCTViewComponentView") as? NSObject.Type
+        )
+        let child = try XCTUnwrap(componentViewClass.init() as? UIView)
+        child.frame = CGRect(x: 0, y: 0, width: 100, height: 80)
+        child.setValue("prose-atom:counter:1", forKey: "nativeId")
+        editor.mountChildComponentView(child, index: 0)
+
+        let container = try XCTUnwrap(child.superview as? AtomHostContainerView)
+        XCTAssertTrue(container.superview === editor.richTextView.textView)
+    }
+
     func testChildrenBindToAttachmentsByKeyInsteadOfMountOrder() throws {
         let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 300))
         installAtoms(

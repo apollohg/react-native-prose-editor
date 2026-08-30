@@ -2989,9 +2989,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private static func atomKey(for view: UIView) -> String? {
-        let selector = NSSelectorFromString("nativeID")
-        let nativeID = view.responds(to: selector) ? view.value(forKey: "nativeID") as? String : nil
-        let identifier = nativeID ?? view.accessibilityIdentifier
+        let selector = NSSelectorFromString("nativeId")
+        let nativeId = view.responds(to: selector) ? view.value(forKey: "nativeId") as? String : nil
+        let identifier = nativeId ?? view.accessibilityIdentifier
         let prefix = "prose-atom:"
         guard let identifier,
               identifier.hasPrefix(prefix),
