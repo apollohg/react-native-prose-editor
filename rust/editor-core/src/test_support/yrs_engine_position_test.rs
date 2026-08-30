@@ -82,6 +82,7 @@ fn rich_position_schema() -> Schema {
         attrs: HashMap::new(),
         role: NodeRole::Inline,
         html_tag: None,
+        html_rules: None,
         json_projection: None,
         is_void: true,
         allow_undeclared_attrs: true,

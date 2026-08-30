@@ -14,6 +14,121 @@ fn three_node_schema() -> serde_json::Value {
     })
 }
 
+pub(crate) fn atom_schema_json(static_attr_value: &str) -> serde_json::Value {
+    serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "role": "text" },
+            {
+                "name": "counterCard", "content": "", "group": "block", "role": "block",
+                "isVoid": true,
+                "attrs": { "title": { "default": "" }, "count": { "default": 0 } },
+                "html": {
+                    "tag": "div",
+                    "staticAttrs": { "data-type": static_attr_value },
+                    "attrMap": { "title": "data-title", "count": "data-count" }
+                }
+            }
+        ],
+        "marks": []
+    })
+}
+
+#[test]
+fn schema_parses_html_rules() {
+    let schema = Schema::from_json(&atom_schema_json("counter-card")).unwrap();
+    let rules = schema
+        .node("counterCard")
+        .unwrap()
+        .html_rules
+        .as_ref()
+        .unwrap();
+    assert_eq!(rules.tag, "div");
+    assert_eq!(
+        rules.static_attrs,
+        vec![("data-type".to_string(), "counter-card".to_string())]
+    );
+    assert_eq!(
+        rules.attr_map,
+        vec![
+            ("count".to_string(), "data-count".to_string()),
+            ("title".to_string(), "data-title".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn schema_rejects_equal_html_rule_discriminators() {
+    let mut json = atom_schema_json("counter-card");
+    let mut clone = json["nodes"][3].clone();
+    clone["name"] = serde_json::json!("alternateCard");
+    json["nodes"].as_array_mut().unwrap().push(clone);
+    let error = Schema::from_json(&json).unwrap_err();
+    assert!(error.contains("ambiguous"), "got: {error}");
+}
+
+#[test]
+fn schema_rejects_subset_html_rule_discriminators() {
+    let mut json = atom_schema_json("counter-card");
+    let mut wider = json["nodes"][3].clone();
+    wider["name"] = serde_json::json!("alternateCard");
+    wider["html"]["staticAttrs"] =
+        serde_json::json!({ "data-type": "counter-card", "data-kind": "sample" });
+    json["nodes"].as_array_mut().unwrap().push(wider);
+    let error = Schema::from_json(&json).unwrap_err();
+    assert!(error.contains("ambiguous"), "got: {error}");
+}
+
+#[test]
+fn schema_accepts_conflicting_same_tag_rules() {
+    let mut json = atom_schema_json("counter-card");
+    let mut other = json["nodes"][3].clone();
+    other["name"] = serde_json::json!("alternateCard");
+    other["html"]["staticAttrs"] = serde_json::json!({ "data-type": "alternate-card" });
+    json["nodes"].as_array_mut().unwrap().push(other);
+    assert!(Schema::from_json(&json).is_ok());
+}
+
+#[test]
+fn schema_rejects_unsafe_html_rules_identifiers() {
+    for (path, value) in [
+        ("tag", serde_json::json!("script")),
+        ("tag", serde_json::json!("img")),
+        ("staticAttrs", serde_json::json!({ "onclick": "x" })),
+        ("staticAttrs", serde_json::json!({ "style": "x" })),
+    ] {
+        let mut json = atom_schema_json("counter-card");
+        json["nodes"][3]["html"][path] = value;
+        assert!(Schema::from_json(&json).is_err(), "should reject {path}");
+    }
+}
+
+#[test]
+fn schema_rejects_incomplete_or_colliding_attr_maps() {
+    let mut json = atom_schema_json("counter-card");
+    json["nodes"][3]["html"]["attrMap"] = serde_json::json!({ "title": "data-title" });
+    assert!(Schema::from_json(&json).is_err());
+
+    let mut json = atom_schema_json("counter-card");
+    json["nodes"][3]["html"]["attrMap"] =
+        serde_json::json!({ "title": "data-x", "count": "data-x" });
+    assert!(Schema::from_json(&json).is_err());
+
+    let mut json = atom_schema_json("counter-card");
+    json["nodes"][3]["html"]["attrMap"] =
+        serde_json::json!({ "title": "data-type", "count": "data-count" });
+    assert!(Schema::from_json(&json).is_err());
+
+    let mut json = atom_schema_json("counter-card");
+    json["nodes"][3]["allowUndeclaredAttrs"] = serde_json::json!(true);
+    assert!(Schema::from_json(&json).is_err());
+
+    let mut json = atom_schema_json("counter-card");
+    json["nodes"][3]["isVoid"] = serde_json::json!(false);
+    assert!(Schema::from_json(&json).is_err());
+}
+
 #[test]
 fn schema_rejects_node_and_aggregate_expression_limits() {
     let node_limits = ResourceLimits {

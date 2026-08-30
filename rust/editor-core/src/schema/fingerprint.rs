@@ -42,9 +42,19 @@ struct CanonicalNode<'a> {
     role: &'static str,
     html_tag: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    html_rules: Option<CanonicalHtmlRules<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     json_projection: Option<CanonicalJsonProjection<'a>>,
     is_void: bool,
     allow_undeclared_attrs: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalHtmlRules<'a> {
+    tag: &'a str,
+    static_attrs: BTreeMap<&'a str, &'a str>,
+    attr_map: BTreeMap<&'a str, &'a str>,
 }
 
 #[derive(Serialize)]
@@ -160,6 +170,19 @@ impl<'a> From<&'a NodeSpec> for CanonicalNode<'a> {
                 NodeRole::Block => "block",
             },
             html_tag: spec.html_tag.as_deref(),
+            html_rules: spec.html_rules.as_ref().map(|rules| CanonicalHtmlRules {
+                tag: &rules.tag,
+                static_attrs: rules
+                    .static_attrs
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect(),
+                attr_map: rules
+                    .attr_map
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect(),
+            }),
             json_projection: spec.json_projection.as_ref().map(|projection| {
                 CanonicalJsonProjection {
                     node_type: projection.node_type.as_str(),
@@ -345,6 +368,7 @@ mod tests {
                     attrs: HashMap::new(),
                     role: NodeRole::Doc,
                     html_tag: None,
+                    html_rules: None,
                     json_projection: None,
                     is_void: false,
                     allow_undeclared_attrs: false,
@@ -356,6 +380,7 @@ mod tests {
                     attrs: HashMap::new(),
                     role: NodeRole::List { ordered },
                     html_tag: Some("ol".into()),
+                    html_rules: None,
                     json_projection: None,
                     is_void: false,
                     allow_undeclared_attrs: false,
@@ -367,6 +392,7 @@ mod tests {
                     attrs: HashMap::<String, AttrSpec>::new(),
                     role: NodeRole::Text,
                     html_tag: None,
+                    html_rules: None,
                     json_projection: None,
                     is_void: false,
                     allow_undeclared_attrs: false,
@@ -433,6 +459,37 @@ mod tests {
         assert_ne!(
             schema_fingerprint(&schema(1)),
             schema_fingerprint(&schema(2))
+        );
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_html_rules_presence_and_content() {
+        let base = || {
+            serde_json::json!({
+                "nodes": [
+                    { "name": "doc", "content": "card", "role": "doc" },
+                    { "name": "card", "content": "", "role": "block", "isVoid": true,
+                      "attrs": { "t": { "default": "" } } },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": []
+            })
+        };
+        let with_rules = |disc: &str| {
+            let mut json = base();
+            json["nodes"][1]["html"] = serde_json::json!({
+                "tag": "div", "staticAttrs": { "data-type": disc }, "attrMap": { "t": "data-t" }
+            });
+            Schema::from_json(&json).unwrap()
+        };
+        let without = Schema::from_json(&base()).unwrap();
+        assert_ne!(
+            schema_fingerprint(&without),
+            schema_fingerprint(&with_rules("a"))
+        );
+        assert_ne!(
+            schema_fingerprint(&with_rules("a")),
+            schema_fingerprint(&with_rules("b"))
         );
     }
 

@@ -68,6 +68,8 @@ pub struct Schema {
     marks: HashMap<String, MarkSpec>,
     mark_order: Vec<String>,
     node_html_tags: HashMap<String, String>,
+    #[allow(dead_code)]
+    html_rules_by_tag: HashMap<String, Vec<String>>,
     json_node_types: HashMap<String, Vec<String>>,
     mark_html_tags: HashMap<String, String>,
     preferred_text_block_name: Option<String>,
@@ -90,6 +92,7 @@ pub struct NodeSpec {
     pub attrs: HashMap<String, AttrSpec>,
     pub role: NodeRole,
     pub html_tag: Option<String>,
+    pub html_rules: Option<HtmlRules>,
     pub json_projection: Option<NodeJsonProjection>,
     /// If `true`, this node has no editable content (e.g. horizontal rule, hard break).
     pub is_void: bool,
@@ -101,6 +104,13 @@ pub struct NodeSpec {
     /// other node type is filtered to its schema-declared attrs, matching the
     /// HTML ingestion path (`extract_node_attrs`).
     pub allow_undeclared_attrs: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct HtmlRules {
+    pub tag: String,
+    pub static_attrs: Vec<(String, String)>,
+    pub attr_map: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +282,76 @@ impl Schema {
                     )));
                 }
             }
+            if let Some(rules) = &node.html_rules {
+                if !is_safe_atom_html_tag(&rules.tag) {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' has invalid atom HTML tag '{}'",
+                        node.name, rules.tag
+                    )));
+                }
+                if rules.static_attrs.is_empty() {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' atom HTML rules require a static attribute discriminator",
+                        node.name
+                    )));
+                }
+                if let Some(name) = rules
+                    .static_attrs
+                    .iter()
+                    .map(|(name, _)| name)
+                    .chain(rules.attr_map.iter().map(|(_, name)| name))
+                    .find(|name| !is_safe_atom_html_attr(name))
+                {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' has invalid atom HTML attribute '{}'",
+                        node.name, name
+                    )));
+                }
+                if !node.is_void || node.allow_undeclared_attrs {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' atom HTML rules require a void node with declared attributes",
+                        node.name
+                    )));
+                }
+                let mapped_attrs = rules
+                    .attr_map
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<HashSet<_>>();
+                if mapped_attrs.len() != rules.attr_map.len()
+                    || mapped_attrs.len() != node.attrs.len()
+                    || node
+                        .attrs
+                        .keys()
+                        .any(|name| !mapped_attrs.contains(name.as_str()))
+                {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' atom HTML attrMap must cover every declared attribute exactly once",
+                        node.name
+                    )));
+                }
+                let targets = rules
+                    .attr_map
+                    .iter()
+                    .map(|(_, target)| target.as_str())
+                    .collect::<HashSet<_>>();
+                if targets.len() != rules.attr_map.len() {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' atom HTML attrMap targets must be unique",
+                        node.name
+                    )));
+                }
+                if rules
+                    .static_attrs
+                    .iter()
+                    .any(|(name, _)| targets.contains(name.as_str()))
+                {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' atom HTML attrs collide with a static discriminator",
+                        node.name
+                    )));
+                }
+            }
             if let Some(name) = node.attrs.keys().find(|name| !is_safe_html_attr(name)) {
                 return Err(SchemaValidationError::semantic(format!(
                     "node '{}' has invalid HTML attribute identifier '{}'",
@@ -316,6 +396,33 @@ impl Schema {
                     "duplicate node name '{}'",
                     node.name
                 )));
+            }
+        }
+        let html_rules_nodes = nodes
+            .iter()
+            .filter(|node| node.html_rules.is_some())
+            .collect::<Vec<_>>();
+        for (index, node) in html_rules_nodes.iter().enumerate() {
+            let rules = node.html_rules.as_ref().expect("html-rules node");
+            for previous in &html_rules_nodes[..index] {
+                let previous_rules = previous.html_rules.as_ref().expect("html-rules node");
+                if rules.tag != previous_rules.tag {
+                    continue;
+                }
+                consume_schema_work(budget, 1, "schema atom HTML ambiguity work budget exceeded")?;
+                let conflicts = rules.static_attrs.iter().any(|(name, value)| {
+                    previous_rules
+                        .static_attrs
+                        .iter()
+                        .find(|(previous_name, _)| previous_name == name)
+                        .is_some_and(|(_, previous_value)| previous_value != value)
+                });
+                if !conflicts {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' has ambiguous atom HTML rules",
+                        node.name
+                    )));
+                }
             }
         }
         let projected_nodes = nodes
@@ -469,6 +576,7 @@ impl Schema {
         }
 
         let mut node_html_tags = HashMap::new();
+        let mut html_rules_by_tag: HashMap<String, Vec<String>> = HashMap::new();
         let mut json_node_types: HashMap<String, Vec<String>> = HashMap::new();
         for node in &nodes {
             if let Some(tag) = &node.html_tag {
@@ -480,6 +588,13 @@ impl Schema {
                 node_html_tags
                     .entry(tag.clone())
                     .or_insert_with(|| node.name.clone());
+            }
+            if let Some(rules) = &node.html_rules {
+                consume_schema_work(budget, 1, "schema atom HTML index work budget exceeded")?;
+                html_rules_by_tag
+                    .entry(rules.tag.clone())
+                    .or_default()
+                    .push(node.name.clone());
             }
             if let Some(projection) = &node.json_projection {
                 consume_schema_work(
@@ -538,6 +653,7 @@ impl Schema {
                 .collect(),
             mark_order,
             node_html_tags,
+            html_rules_by_tag,
             json_node_types,
             mark_html_tags,
             preferred_text_block_name,
@@ -816,6 +932,14 @@ impl Schema {
         self.node_html_tags
             .get(tag)
             .and_then(|name| self.nodes.get(name))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn nodes_with_html_rules_for_tag(&self, tag: &str) -> &[String] {
+        self.html_rules_by_tag
+            .get(tag)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn node_for_json(
@@ -1198,6 +1322,7 @@ impl Schema {
                 .get("htmlTag")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let html_rules = parse_html_rules(node_val.get("html"), &budget, work_limit)?;
             let json_projection = match node_val.get("json") {
                 None => None,
                 Some(value) => {
@@ -1302,6 +1427,7 @@ impl Schema {
                 attrs,
                 role,
                 html_tag,
+                html_rules,
                 json_projection,
                 is_void,
                 allow_undeclared_attrs,
@@ -1421,6 +1547,67 @@ fn admit_schema_attrs(
     Ok(())
 }
 
+fn parse_html_rules(
+    value: Option<&serde_json::Value>,
+    budget: &WorkBudget,
+    work_limit: usize,
+) -> BoundaryResult<Option<HtmlRules>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or_else(|| {
+        BoundaryError::new("SCHEMA_INVALID", "node atom HTML rules must be an object")
+    })?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "tag" | "staticAttrs" | "attrMap"))
+    {
+        return Err(BoundaryError::new(
+            "SCHEMA_INVALID",
+            "node atom HTML rules contain an unknown field",
+        ));
+    }
+    let tag = object
+        .get("tag")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            BoundaryError::new("SCHEMA_INVALID", "node atom HTML rules missing 'tag'")
+        })?;
+    admit_schema_string(tag, budget, work_limit)?;
+
+    let parse_map = |name: &str| -> BoundaryResult<Vec<(String, String)>> {
+        let Some(value) = object.get(name) else {
+            return Ok(Vec::new());
+        };
+        let map = value.as_object().ok_or_else(|| {
+            BoundaryError::new(
+                "SCHEMA_INVALID",
+                format!("node atom HTML rules '{name}' must be an object"),
+            )
+        })?;
+        let mut entries = Vec::with_capacity(map.len());
+        for (key, value) in map {
+            let value = value.as_str().ok_or_else(|| {
+                BoundaryError::new(
+                    "SCHEMA_INVALID",
+                    format!("node atom HTML rules '{name}' values must be strings"),
+                )
+            })?;
+            admit_schema_string(key, budget, work_limit)?;
+            admit_schema_string(value, budget, work_limit)?;
+            entries.push((key.clone(), value.to_string()));
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(entries)
+    };
+
+    Ok(Some(HtmlRules {
+        tag: tag.to_string(),
+        static_attrs: parse_map("staticAttrs")?,
+        attr_map: parse_map("attrMap")?,
+    }))
+}
+
 fn admit_schema_value(
     value: &serde_json::Value,
     budget: &WorkBudget,
@@ -1463,6 +1650,34 @@ pub(crate) fn is_safe_html_attr(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_' || ch == ':')
         && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-'))
+}
+
+pub(crate) fn is_safe_atom_html_tag(tag: &str) -> bool {
+    const DENIED: &[&str] = &[
+        "script", "style", "iframe", "object", "embed", "link", "meta", "base", "title", "head",
+        "html", "body", "form", "textarea", "select", "option", "button", "area", "br", "col",
+        "hr", "img", "input", "param", "source", "track", "wbr",
+    ];
+    is_atom_html_identifier(tag) && !DENIED.contains(&tag)
+}
+
+pub(crate) fn is_safe_atom_html_attr(name: &str) -> bool {
+    const DENIED: &[&str] = &[
+        "style",
+        "srcdoc",
+        "href",
+        "src",
+        "srcset",
+        "action",
+        "formaction",
+    ];
+    is_atom_html_identifier(name) && !name.starts_with("on") && !DENIED.contains(&name)
+}
+
+fn is_atom_html_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('a'..='z'))
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 fn content_rule_schema_error(name: &str, error: ContentRuleError) -> SchemaValidationError {

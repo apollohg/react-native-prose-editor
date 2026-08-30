@@ -189,6 +189,7 @@ fn mention_schema() -> Schema {
             attrs,
             role: NodeRole::Inline,
             html_tag: None,
+            html_rules: None,
             json_projection: None,
             is_void: true,
             // Mirrors the real `mentionNodeSpec()` (src/addons.ts), which
