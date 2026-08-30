@@ -61,13 +61,13 @@ class AtomMountingTest {
     }
 
     @Test
-    fun `atom child is reparented into content frame`() {
+    fun `atom child stays under its React Native managed parent`() {
         val editor = nativeEditorView()
         val child = atomChild(editor.context, "counterCard:0")
 
         editor.addAtomChild(child, 0)
 
-        assertSame(editor.richTextView.editorContentFrame, child.parent)
+        assertSame(editor, child.parent)
         assertEquals(1, editor.atomChildCount)
         assertSame(child, editor.atomChildAt(0))
     }
@@ -168,6 +168,101 @@ class AtomMountingTest {
     }
 
     @Test
+    fun `dragging an atom scrolls a fixed height editor without pressing it`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editor = nativeEditorView()
+        editor.onAtomLayoutForTesting = {}
+        activity.setContentView(editor)
+        installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
+        var presses = 0
+        val action = object : View(activity) {
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (event.actionMasked == MotionEvent.ACTION_UP) presses += 1
+                return true
+            }
+        }
+        val host = ReactViewGroup(activity).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom:second")
+            addView(action, FrameLayout.LayoutParams(280, 100))
+            measure(
+                View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, 280, 100)
+        }
+        action.layout(0, 0, 280, 100)
+        editor.addAtomChild(host, 0)
+        layout(editor, 320, 240)
+        editor.richTextView.layoutAtomHostViews()
+        val startX = host.x + 50f
+        val startY = host.y + 70f
+
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 1, MotionEvent.ACTION_DOWN, startX, startY, 0)
+        )
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 2, MotionEvent.ACTION_MOVE, startX, startY - 80f, 0)
+        )
+        val scrollAfterVerticalMove = editor.richTextView.editorScrollView.scrollY
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 3, MotionEvent.ACTION_MOVE, startX + 200f, startY - 120f, 0)
+        )
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 4, MotionEvent.ACTION_UP, startX + 200f, startY - 120f, 0)
+        )
+
+        assertTrue(editor.richTextView.editorScrollView.scrollY > scrollAfterVerticalMove)
+        assertEquals(0, presses)
+    }
+
+    @Test
+    fun `horizontal atom gesture is not intercepted by editor scrolling`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editor = nativeEditorView()
+        editor.onAtomLayoutForTesting = {}
+        activity.setContentView(editor)
+        installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
+        var releases = 0
+        val action = object : View(activity) {
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (event.actionMasked == MotionEvent.ACTION_UP) releases += 1
+                return true
+            }
+        }
+        val host = ReactViewGroup(activity).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom:second")
+            addView(action, FrameLayout.LayoutParams(280, 100))
+            measure(
+                View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, 280, 100)
+        }
+        action.layout(0, 0, 280, 100)
+        editor.addAtomChild(host, 0)
+        layout(editor, 320, 240)
+        editor.richTextView.layoutAtomHostViews()
+        val startX = host.x + 50f
+        val startY = host.y + 50f
+
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 1, MotionEvent.ACTION_DOWN, startX, startY, 0)
+        )
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 2, MotionEvent.ACTION_MOVE, startX + 80f, startY - 20f, 0)
+        )
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 3, MotionEvent.ACTION_MOVE, startX + 20f, startY - 100f, 0)
+        )
+        editor.dispatchTouchEvent(
+            MotionEvent.obtain(1, 4, MotionEvent.ACTION_UP, startX + 20f, startY - 100f, 0)
+        )
+
+        assertEquals(0, editor.richTextView.editorScrollView.scrollY)
+        assertEquals(1, releases)
+    }
+
+    @Test
     fun `atom child binds to span by key not order`() {
         val view = RichTextEditorView(RuntimeEnvironment.getApplication())
         installAtoms(view, listOf("first", "second"))
@@ -204,13 +299,16 @@ class AtomMountingTest {
     }
 
     @Test
-    fun `layout atom host views includes compound padding in translation`() {
-        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+    fun `layout atom host views offsets from the React Native layout`() {
+        val editor = nativeEditorView()
+        editor.onAtomLayoutForTesting = {}
+        val view = editor.richTextView
         view.editorEditText.setPadding(17, 23, 11, 7)
         installAtoms(view, listOf("counterCard:0"))
         val child = atomChild(view.context, "counterCard:0")
-        view.mountAtomChild(child, "counterCard:0")
-        layout(view, 320, 500)
+        editor.addAtomChild(child, 0)
+        layout(editor, 320, 500)
+        child.layout(13, 19, 293, 151)
         view.layoutAtomHostViews()
 
         val span = atomSpans(view).single()
@@ -222,27 +320,44 @@ class AtomMountingTest {
             textLayout.getLineTop(textLayout.getLineForOffset(spanStart)) -
             view.editorEditText.scrollY
 
-        assertEquals(expectedX.toFloat(), child.translationX)
-        assertEquals(expectedY.toFloat(), child.translationY)
+        assertEquals(13, child.left)
+        assertEquals(19, child.top)
+        assertEquals((expectedX - child.left).toFloat(), child.translationX)
+        assertEquals((expectedY - child.top).toFloat(), child.translationY)
     }
 
     @Test
     @Config(sdk = [34], qualifiers = "xhdpi")
-    fun `atom layout event reports text content width in dp`() {
+    fun `atom layout event reports content width and positions in dp`() {
         val editor = nativeEditorView()
         val events = mutableListOf<Map<String, Any>>()
         editor.onAtomLayoutForTesting = { events.add(it) }
-        editor.setAtomsJson(
-            """{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":100}}"""
-        )
+        installAtoms(editor.richTextView, listOf("counterCard:0"))
 
         layout(editor, 400, 500)
 
         val editText = editor.richTextView.editorEditText
+        val span = atomSpans(editor.richTextView).single()
+        val text = requireNotNull(editText.text)
+        val textLayout = requireNotNull(editText.layout)
+        val spanStart = text.getSpanStart(span)
+        val density = editor.resources.displayMetrics.density
         val expectedWidth = (
             editText.width - editText.compoundPaddingLeft - editText.compoundPaddingRight
-        ).toFloat() / editor.resources.displayMetrics.density
-        assertEquals(expectedWidth, events.last()["width"] as Float)
+        ).toFloat() / density
+        val expectedX = (editText.left + editText.compoundPaddingLeft) / density
+        val expectedY = (
+            editText.top +
+                editText.totalPaddingTop +
+                textLayout.getLineTop(textLayout.getLineForOffset(spanStart)) -
+                editText.scrollY
+        ) / density
+        val event = events.last()
+        assertEquals(expectedWidth, event["width"] as Float)
+        assertEquals(
+            listOf(mapOf("key" to "counterCard:0", "x" to expectedX, "y" to expectedY)),
+            event["positions"],
+        )
     }
 
     @Test

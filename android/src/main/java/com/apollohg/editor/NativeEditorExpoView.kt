@@ -35,6 +35,7 @@ import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
 import uniffi.editor_core.editorV2GetState
 
 private const val DESTROY_INVALIDATION_AWAIT_TIMEOUT_MS = 250L
@@ -971,6 +972,12 @@ class NativeEditorExpoView(
     private var lastAddonsJson: String? = null
     private var lastAtomsJson: String? = null
     private val reactChildren = mutableListOf<View>()
+    private val atomScrollTouchSlopPx = ViewConfiguration.get(context).scaledTouchSlop
+    private var atomScrollGestureActive = false
+    private var atomScrollGestureIntercepted = false
+    private var atomScrollGestureForwarding = false
+    private var atomScrollDownX = 0f
+    private var atomScrollDownY = 0f
     private var lastRemoteSelectionsJson: String? = null
     private var lastToolbarItemsJson: String? = null
     private var lastToolbarFrameJson: String? = null
@@ -1050,7 +1057,7 @@ class NativeEditorExpoView(
 
     init {
         addView(richTextView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        richTextView.onAtomContentWidthChange = ::emitAtomLayout
+        richTextView.onAtomLayoutChange = ::emitAtomLayout
         richTextView.editorEditText.editorListener = this
         richTextView.onBeforeDetachedFromWindow = {
             prepareForDetachFromWindow()
@@ -1142,7 +1149,7 @@ class NativeEditorExpoView(
                     blockCommandsUntilRegistered = true
                 )
             }
-            richTextView.emitAtomContentWidthIfAvailable(force = true)
+            richTextView.emitAtomLayoutIfAvailable(force = true)
             return
         }
         if (previousEditorId != id) {
@@ -1185,7 +1192,7 @@ class NativeEditorExpoView(
                 toolbarState = NativeToolbarState.empty
                 keyboardToolbarView.applyState(toolbarState)
             }
-            richTextView.emitAtomContentWidthIfAvailable(force = true)
+            richTextView.emitAtomLayoutIfAvailable(force = true)
             return
         }
 
@@ -1210,7 +1217,7 @@ class NativeEditorExpoView(
         applyPendingThemeIfNeeded()
         refreshReadyStateIfSettled()
         applyAutoFocusIfNeeded()
-        richTextView.emitAtomContentWidthIfAvailable(force = true)
+        richTextView.emitAtomLayoutIfAvailable(force = true)
     }
 
     fun setThemeJson(themeJson: String?) {
@@ -1304,6 +1311,8 @@ class NativeEditorExpoView(
             super.addView(child, childCount)
             return
         }
+        (child.parent as? ViewGroup)?.removeView(child)
+        super.addView(child, childCount)
         richTextView.mountAtomChild(child, atomKey)
     }
 
@@ -1318,10 +1327,111 @@ class NativeEditorExpoView(
         }
     }
 
-    private fun emitAtomLayout(widthPx: Float) {
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            atomScrollGestureActive = atomChildAt(event.x, event.y) != null
+            atomScrollGestureIntercepted = false
+            atomScrollGestureForwarding = atomScrollGestureActive
+            atomScrollDownX = event.x
+            atomScrollDownY = event.y
+        }
+        if (!atomScrollGestureActive) return super.dispatchTouchEvent(event)
+
+        val horizontalIntent =
+            !atomScrollGestureIntercepted &&
+                atomScrollGestureForwarding &&
+                event.actionMasked == MotionEvent.ACTION_MOVE &&
+                atomScrollMovedHorizontallyBeyondSlop(event)
+        val scrollHandled = when {
+            horizontalIntent -> {
+                atomScrollGestureForwarding = false
+                cancelAtomScrollTouch(event)
+            }
+            atomScrollGestureForwarding -> dispatchAtomScrollTouch(event)
+            else -> false
+        }
+        if (
+            !atomScrollGestureIntercepted &&
+            atomScrollGestureForwarding &&
+            event.actionMasked == MotionEvent.ACTION_MOVE &&
+            atomScrollMovedVerticallyBeyondSlop(event) &&
+            richTextView.editorScrollView.let {
+                it.canScrollVertically(-1) || it.canScrollVertically(1)
+            }
+        ) {
+            atomScrollGestureIntercepted = true
+            val cancel = MotionEvent.obtain(event)
+            cancel.action = MotionEvent.ACTION_CANCEL
+            super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+        }
+        val handled = if (atomScrollGestureIntercepted) true else super.dispatchTouchEvent(event)
+        if (
+            event.actionMasked == MotionEvent.ACTION_UP ||
+            event.actionMasked == MotionEvent.ACTION_CANCEL
+        ) {
+            atomScrollGestureActive = false
+            atomScrollGestureIntercepted = false
+            atomScrollGestureForwarding = false
+        }
+        return handled || scrollHandled
+    }
+
+    private fun atomChildAt(x: Float, y: Float): View? = reactChildren.lastOrNull { child ->
+        atomKey(child) != null &&
+            child.visibility == View.VISIBLE &&
+            x >= child.x &&
+            x < child.x + child.width &&
+            y >= child.y &&
+            y < child.y + child.height
+    }
+
+    private fun atomScrollMovedVerticallyBeyondSlop(event: MotionEvent): Boolean {
+        val dx = abs(event.x - atomScrollDownX)
+        val dy = abs(event.y - atomScrollDownY)
+        return dy > atomScrollTouchSlopPx && dy > dx
+    }
+
+    private fun atomScrollMovedHorizontallyBeyondSlop(event: MotionEvent): Boolean {
+        val dx = abs(event.x - atomScrollDownX)
+        val dy = abs(event.y - atomScrollDownY)
+        return dx > atomScrollTouchSlopPx && dx >= dy
+    }
+
+    private fun cancelAtomScrollTouch(event: MotionEvent): Boolean {
+        val cancel = MotionEvent.obtain(event)
+        cancel.action = MotionEvent.ACTION_CANCEL
+        val handled = dispatchAtomScrollTouch(cancel)
+        cancel.recycle()
+        return handled
+    }
+
+    private fun dispatchAtomScrollTouch(event: MotionEvent): Boolean {
+        val editorLocation = IntArray(2)
+        val scrollLocation = IntArray(2)
+        getLocationOnScreen(editorLocation)
+        richTextView.editorScrollView.getLocationOnScreen(scrollLocation)
+        val scrollEvent = MotionEvent.obtain(event)
+        scrollEvent.offsetLocation(
+            (editorLocation[0] - scrollLocation[0]).toFloat(),
+            (editorLocation[1] - scrollLocation[1]).toFloat(),
+        )
+        val handled = richTextView.editorScrollView.onTouchEvent(scrollEvent)
+        scrollEvent.recycle()
+        return handled
+    }
+
+    private fun emitAtomLayout(widthPx: Float, positions: List<AtomLayoutPosition>) {
         val density = resources.displayMetrics.density.takeIf { it > 0f } ?: 1f
         val event = mapOf<String, Any>(
             "width" to widthPx / density,
+            "positions" to positions.map { position ->
+                mapOf(
+                    "key" to position.key,
+                    "x" to position.xPx / density,
+                    "y" to position.yPx / density,
+                )
+            },
             "editorId" to eventEditorId(richTextView.editorId)
         )
         onAtomLayoutForTesting?.invoke(event) ?: onAtomLayout(event)

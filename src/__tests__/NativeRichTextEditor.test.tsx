@@ -1449,12 +1449,20 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             nativeView.props.onAtomLayout({
-                nativeEvent: { editorId: handle.editorId, width: 280 },
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    width: 280,
+                    positions: [{ key: 'client-1:9', x: 12, y: 34 }],
+                },
             });
         });
         const atom = getByTestId('counter-atom');
         const atomHost = UNSAFE_getByProps({ nativeID: 'prose-atom:client-1:9' });
-        expect(StyleSheet.flatten(atomHost.props.style).width).toBe(280);
+        expect(StyleSheet.flatten(atomHost.props.style)).toMatchObject({
+            width: 280,
+            left: 12,
+            top: 34,
+        });
         expect(atom.props.atomProps.selected).toBe(false);
 
         act(() => {

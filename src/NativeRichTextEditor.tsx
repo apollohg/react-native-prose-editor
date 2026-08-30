@@ -192,6 +192,13 @@ interface NativeContentHeightEvent {
 interface NativeAtomLayoutEvent {
     width: number;
     editorId: string;
+    positions?: readonly NativeAtomPosition[];
+}
+
+interface NativeAtomPosition {
+    key: string;
+    x: number;
+    y: number;
 }
 
 interface NativeToolbarActionEvent {
@@ -1146,6 +1153,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const atomStateRef = useRef(atomState);
         const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(new Set());
         const [atomContentWidth, setAtomContentWidth] = useState<number | null>(null);
+        const [atomPositions, setAtomPositions] = useState<
+            ReadonlyMap<string, NativeAtomPosition>
+        >(new Map());
         const warnedUnknownAtomTypesRef = useRef(new Set<string>());
         const atomSeedEditorIdRef = useRef<string | null>(null);
         const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
@@ -1216,6 +1226,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             setAtomState(emptyAtomState);
             setSelectedKeys(new Set());
             setAtomContentWidth(null);
+            setAtomPositions(new Map());
             pushRevisionRef.current = 0;
             lastPushedEngineRevisionRef.current = null;
             lastNativeDrivenRevisionRef.current = null;
@@ -1926,6 +1937,27 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 const width = event.nativeEvent.width;
                 if (!Number.isFinite(width) || width < 0) return;
                 setAtomContentWidth((current) => (current === width ? current : width));
+                const positions = event.nativeEvent.positions;
+                if (!Array.isArray(positions)) return;
+                const next = new Map<string, NativeAtomPosition>();
+                for (const position of positions) {
+                    if (
+                        typeof position?.key !== 'string' ||
+                        !Number.isFinite(position.x) ||
+                        !Number.isFinite(position.y)
+                    ) {
+                        continue;
+                    }
+                    next.set(position.key, position);
+                }
+                setAtomPositions((current) => {
+                    if (current.size !== next.size) return next;
+                    for (const [key, position] of next) {
+                        const previous = current.get(key);
+                        if (previous?.x !== position.x || previous.y !== position.y) return next;
+                    }
+                    return current;
+                });
             },
             [documentHandle, isForThisEditor]
         );
@@ -2468,6 +2500,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 ? null
                 : atomState.instances.map((instance) => {
                       const Component = atomComponents.get(instance.nodeType) ?? DefaultAtomChip;
+                      const position = atomPositions.get(instance.key);
                       return (
                           <View
                               key={instance.key}
@@ -2475,8 +2508,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                               collapsable={false}
                               style={{
                                   position: 'absolute',
-                                  top: 0,
-                                  left: 0,
+                                  top: position?.y ?? 0,
+                                  left: position?.x ?? 0,
                                   width: atomContentWidth,
                               }}>
                               <Component
