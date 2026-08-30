@@ -6,12 +6,13 @@ import {
     ATOM_HTML_DENIED_TAGS,
     ATOM_HTML_IDENTIFIER,
     RESERVED_WIRE_NODE_TYPES,
-    buildDocumentFragmentJson,
-    type AttrSpec,
-    type NodeHtmlRules,
-    type NodeSpec,
-    type ResolvedDocumentSchema,
-    type SchemaDefinition,
+} from './atomPolicy';
+import type {
+    AttrSpec,
+    NodeHtmlRules,
+    NodeSpec,
+    ResolvedDocumentSchema,
+    SchemaDefinition,
 } from './schemas';
 
 export interface AtomComponentProps {
@@ -176,15 +177,15 @@ export function defineAtomNode(config: AtomNodeConfig): AtomNodeDefinition {
         estimatedHeight: config.estimatedHeight ?? 0,
         nodeSpec,
         buildFragmentJson(attrs, descriptor) {
-            return buildDocumentFragmentJson(
-                [
+            return {
+                type: descriptor?.documentNodeName ?? 'doc',
+                content: [
                     {
                         type: config.name,
                         ...(attrs == null ? {} : { attrs }),
                     },
                 ],
-                descriptor
-            );
+            };
         },
     };
 }

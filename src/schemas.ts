@@ -2,6 +2,12 @@ import type { DocumentJSON } from './NativeEditorBridge';
 import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
 import { withAtomsSchema, type AtomNodeDefinition } from './atoms';
 import {
+    ATOM_HTML_DENIED_ATTRS,
+    ATOM_HTML_DENIED_TAGS,
+    ATOM_HTML_IDENTIFIER,
+    RESERVED_WIRE_NODE_TYPES,
+} from './atomPolicy';
+import {
     resolveEditorResourceLimits,
     type EditorResourceLimits,
     type ResolvedEditorResourceLimits,
@@ -151,50 +157,12 @@ export interface SchemaSpec {
     atoms?: readonly AtomNodeDefinition[];
 }
 
-export const RESERVED_WIRE_NODE_TYPES: ReadonlySet<string> = new Set([
-    '__opaque',
-    '__opaque_json',
-    '__skip',
-]);
-export const ATOM_HTML_IDENTIFIER = /^[a-z][a-z0-9-]*$/;
-export const ATOM_HTML_DENIED_TAGS: ReadonlySet<string> = new Set([
-    'script',
-    'style',
-    'iframe',
-    'object',
-    'embed',
-    'link',
-    'meta',
-    'base',
-    'title',
-    'head',
-    'html',
-    'body',
-    'form',
-    'textarea',
-    'select',
-    'option',
-    'button',
-    'area',
-    'br',
-    'col',
-    'hr',
-    'img',
-    'input',
-    'param',
-    'source',
-    'track',
-    'wbr',
-]);
-export const ATOM_HTML_DENIED_ATTRS: ReadonlySet<string> = new Set([
-    'style',
-    'srcdoc',
-    'href',
-    'src',
-    'srcset',
-    'action',
-    'formaction',
-]);
+export {
+    ATOM_HTML_DENIED_ATTRS,
+    ATOM_HTML_DENIED_TAGS,
+    ATOM_HTML_IDENTIFIER,
+    RESERVED_WIRE_NODE_TYPES,
+} from './atomPolicy';
 const ALLOWED_MARK_HTML_TAGS = new Set([
     'span',
     'strong',

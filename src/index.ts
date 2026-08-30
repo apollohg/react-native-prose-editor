@@ -104,6 +104,17 @@ export {
 } from './atoms';
 
 export {
+    AtomUpdateAttrsError,
+    DEFAULT_ATOM_CHIP_HEIGHT,
+    NATIVE_VOID_BLOCK_TYPES,
+    applyRenderPatch,
+    atomSelected,
+    collectAtomInstances,
+    type AtomInstance,
+    type AtomUpdateAttrsErrorCode,
+} from './atomInstances';
+
+export {
     defineSchema,
     defaultSchema,
     defaultSchemaSpec,

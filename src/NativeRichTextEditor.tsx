@@ -7,6 +7,7 @@ import React, {
     useMemo,
     useRef,
     useState,
+    type ReactNode,
 } from 'react';
 import {
     PixelRatio,
@@ -33,6 +34,7 @@ import {
     type NativeEditorV2AtomicRenderSnapshot,
     type NativeEditorV2PositionAffinity,
     type ReadonlyActiveState,
+    type RenderElement,
     type Selection,
 } from './NativeEditorBridge';
 import { NativeEditorV2ErrorBase, NativeEditorV2OperationError } from './NativeEditorBoundaryError';
@@ -85,6 +87,16 @@ import {
     useFocusPreservingFrames,
     type NativeRichTextEditorFocusPreservingRefs,
 } from './useFocusPreservingFrames';
+import { DefaultAtomChip } from './DefaultAtomChip';
+import { serializeEditorAtoms, type AtomComponent, type AtomNodeDefinition } from './atoms';
+import {
+    AtomUpdateAttrsError,
+    DEFAULT_ATOM_CHIP_HEIGHT,
+    applyRenderPatch,
+    atomSelected,
+    collectAtomInstances,
+    type AtomInstance,
+} from './atomInstances';
 
 export type {
     NativeRichTextEditorFocusPreservingElement,
@@ -104,6 +116,7 @@ interface NativeEditorViewHandle extends NativeExternalTextCompositionHandle {
 }
 
 interface NativeEditorViewProps {
+    children?: ReactNode;
     style?: StyleProp<ViewStyle>;
     onLayout?: () => void;
     accessibilityLabel?: string;
@@ -123,6 +136,7 @@ interface NativeEditorViewProps {
     imageLoadingPolicyJson?: string;
     themeJson?: string;
     addonsJson?: string;
+    atomsJson?: string;
     toolbarItemsJson?: string;
     toolbarFrameJson?: string;
     remoteSelectionsJson?: string;
@@ -137,6 +151,7 @@ interface NativeEditorViewProps {
     onSelectionChange: (event: NativeSyntheticEvent<NativeSelectionEvent>) => void;
     onFocusChange: (event: NativeSyntheticEvent<NativeFocusEvent>) => void;
     onContentHeightChange: (event: NativeSyntheticEvent<NativeContentHeightEvent>) => void;
+    onAtomLayout: (event: NativeSyntheticEvent<NativeAtomLayoutEvent>) => void;
     onToolbarAction: (event: NativeSyntheticEvent<NativeToolbarActionEvent>) => void;
     onAddonEvent: (event: NativeSyntheticEvent<NativeAddonEvent>) => void;
 }
@@ -171,6 +186,11 @@ interface NativeFocusEvent {
 
 interface NativeContentHeightEvent {
     contentHeight: number;
+    editorId: string;
+}
+
+interface NativeAtomLayoutEvent {
+    width: number;
     editorId: string;
 }
 
@@ -244,6 +264,42 @@ const EMPTY_ACTIVE_STATE: ActiveState = {
     allowedMarks: [],
     insertableNodes: [],
 };
+
+interface AtomRenderState {
+    blocks: RenderElement[][];
+    instances: AtomInstance[];
+}
+
+function copyRenderBlocks(
+    blocks:
+        | NonNullable<NativeEditorV2AtomicRenderSnapshot['renderBlocks']>
+        | ReadonlyArray<ReadonlyArray<RenderElement>>
+): RenderElement[][] {
+    return blocks.map((block) =>
+        block.map((element) => {
+            const copy = { ...element } as RenderElement;
+            if (element.marks != null) {
+                copy.marks = element.marks.map((mark) =>
+                    typeof mark === 'string' ? mark : { ...mark }
+                );
+            }
+            if (element.attrs != null) copy.attrs = { ...element.attrs };
+            return copy;
+        })
+    );
+}
+
+function selectedAtomKeys(selection: Selection, instances: readonly AtomInstance[]): Set<string> {
+    return new Set(
+        instances
+            .filter((instance) => atomSelected(selection, instance.docPos))
+            .map(({ key }) => key)
+    );
+}
+
+function equalStringSets(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+    return left.size === right.size && [...left].every((value) => right.has(value));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value != null && typeof value === 'object' && !Array.isArray(value);
@@ -684,6 +740,8 @@ export interface NativeRichTextEditorProps {
     theme?: EditorTheme;
     /** Optional addon configuration. */
     addons?: EditorAddons;
+    /** Custom void-block node definitions mounted as React children. */
+    atoms?: readonly AtomNodeDefinition[];
     /** Remote awareness selections rendered as native overlays. */
     remoteSelections?: readonly RemoteSelectionDecoration[];
     /**
@@ -828,6 +886,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             containerStyle,
             theme,
             addons,
+            atoms,
             remoteSelections,
             allowImageResizing = true,
             onContentChange,
@@ -844,6 +903,17 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
     ) {
         _assertNativeEditorDocumentHandle(documentHandle);
         const documentDescriptor = _getNativeEditorDocumentHandleDescriptor(documentHandle);
+        const registeredAtomTypes = useMemo(
+            () => new Set((atoms ?? []).map((atom) => atom.name)),
+            [atoms]
+        );
+        const atomComponents = useMemo(() => {
+            const components = new Map<string, AtomComponent>();
+            for (const atom of atoms ?? []) {
+                if (!components.has(atom.name)) components.set(atom.name, atom.component);
+            }
+            return components;
+        }, [atoms]);
 
         const serializedValueJson = useSerializedValue(
             valueJSON,
@@ -1069,6 +1139,15 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const [autoGrowHeight, setAutoGrowHeight] = useState<number | null>(null);
         const [isFocused, setIsFocused] = useState(false);
         const [mentionQuery, setMentionQuery] = useState<MentionQueryChangeEvent | null>(null);
+        const [atomState, setAtomState] = useState<AtomRenderState>({
+            blocks: [],
+            instances: [],
+        });
+        const atomStateRef = useRef(atomState);
+        const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(new Set());
+        const [atomContentWidth, setAtomContentWidth] = useState<number | null>(null);
+        const warnedUnknownAtomTypesRef = useRef(new Set<string>());
+        const atomSeedEditorIdRef = useRef<string | null>(null);
         const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
         const activeStateKeyRef = useRef<string | null>(null);
         const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
@@ -1131,6 +1210,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             setActiveState(EMPTY_ACTIVE_STATE);
             setPushedUpdate(null);
             setAutoGrowHeight(null);
+            const emptyAtomState: AtomRenderState = { blocks: [], instances: [] };
+            atomStateRef.current = emptyAtomState;
+            atomSeedEditorIdRef.current = null;
+            setAtomState(emptyAtomState);
+            setSelectedKeys(new Set());
+            setAtomContentWidth(null);
             pushRevisionRef.current = 0;
             lastPushedEngineRevisionRef.current = null;
             lastNativeDrivenRevisionRef.current = null;
@@ -1165,6 +1250,57 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [editorId, toolbarFrameOwnerId]
         );
 
+        const updateAtomSelection = useCallback(
+            (selection: Selection, instances = atomStateRef.current.instances) => {
+                const next = selectedAtomKeys(selection, instances);
+                setSelectedKeys((current) => (equalStringSets(current, next) ? current : next));
+            },
+            []
+        );
+
+        const refreshAtomsFromUpdate = useCallback(
+            (update: NativeEditorV2AtomicRenderSnapshot) => {
+                const previous = atomStateRef.current;
+                const blocks =
+                    update.renderBlocks != null
+                        ? copyRenderBlocks(update.renderBlocks)
+                        : applyRenderPatch(previous.blocks, {
+                              startIndex: update.renderPatch.startIndex,
+                              deleteCount: update.renderPatch.deleteCount,
+                              renderBlocks: copyRenderBlocks(update.renderPatch.renderBlocks),
+                          });
+                const next = {
+                    blocks,
+                    instances: collectAtomInstances(blocks, registeredAtomTypes),
+                };
+                atomStateRef.current = next;
+                setAtomState(next);
+                updateAtomSelection(selectionRef.current, next.instances);
+            },
+            [registeredAtomTypes, updateAtomSelection]
+        );
+
+        useEffect(() => {
+            const current = atomStateRef.current;
+            const instances = collectAtomInstances(current.blocks, registeredAtomTypes);
+            const next = { blocks: current.blocks, instances };
+            atomStateRef.current = next;
+            setAtomState(next);
+            updateAtomSelection(selectionRef.current, instances);
+        }, [registeredAtomTypes, updateAtomSelection]);
+
+        useLayoutEffect(() => {
+            if (
+                !document.isReady ||
+                documentHandle.isDestroyed ||
+                atomSeedEditorIdRef.current === editorId
+            ) {
+                return;
+            }
+            atomSeedEditorIdRef.current = editorId;
+            refreshAtomsFromUpdate(bridge.renderUpdate());
+        }, [bridge, document.isReady, documentHandle, editorId, refreshAtomsFromUpdate]);
+
         const applyTypedUpdateState = useCallback(
             (
                 update: Pick<NativeEditorV2AtomicRenderSnapshot, 'selection' | 'activeState'>,
@@ -1172,6 +1308,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             ) => {
                 if (!isCurrent()) return false;
                 selectionRef.current = update.selection;
+                updateAtomSelection(update.selection);
                 if (
                     update.selection.type === 'text' &&
                     update.selection.anchorScalar != null &&
@@ -1197,7 +1334,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 return isCurrent();
             },
-            []
+            [updateAtomSelection]
         );
 
         const applyUpdateState = useCallback(
@@ -1254,6 +1391,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             // component to another handle. Do not let any side effect from A
             // reach B once that happens.
             if (!isCurrentSource()) return;
+            refreshAtomsFromUpdate(snapshot);
+            if (!isCurrentSource()) return;
             const updateJson = JSON.stringify(snapshot);
             if (!isCurrentSource()) return;
             if (!applyTypedUpdateState(snapshot, isCurrentSource)) {
@@ -1269,7 +1408,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 revision: allocation.revision,
                 editorId: sourceEditorId,
             });
-        }, [applyTypedUpdateState, bridge, documentHandle]);
+        }, [applyTypedUpdateState, bridge, documentHandle, refreshAtomsFromUpdate]);
 
         useLayoutEffect(() => {
             const pending = pendingFocusedRebindRef.current;
@@ -1343,6 +1482,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 document.documentOrigin === 'nativeView' ||
                 document.documentOrigin === 'remoteCollaboration'
             ) {
+                if (
+                    document.documentOrigin === 'remoteCollaboration' &&
+                    !documentHandle.isDestroyed
+                ) {
+                    refreshAtomsFromUpdate(bridge.renderUpdate());
+                }
                 lastPushedEngineRevisionRef.current = revision;
                 return;
             }
@@ -1353,7 +1498,10 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             document.isReady,
             document.documentRevision,
             document.documentOrigin,
+            bridge,
+            documentHandle,
             pushEngineUpdateToView,
+            refreshAtomsFromUpdate,
         ]);
 
         const afterLocalEngineMutation = useCallback(() => {
@@ -1361,6 +1509,56 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             pushEngineUpdateToView();
             document.refresh();
         }, [document, pushEngineUpdateToView]);
+
+        const updateAtomAttrs = useCallback(
+            async (docPos: number, attrs: Record<string, unknown>): Promise<void> => {
+                const baseDocumentRevision = latestRevisionRef.current;
+                if (documentHandle.isDestroyed || baseDocumentRevision == null) {
+                    throw new AtomUpdateAttrsError('not-ready', 'The editor is not ready');
+                }
+                let outcome;
+                try {
+                    outcome = bridge.applyCommand({
+                        baseDocumentRevision,
+                        command: { type: 'updateNodeAttrs', docPos, attrs },
+                    });
+                } catch (error) {
+                    if (isRevisionMismatchError(error)) {
+                        document.refresh();
+                        throw new AtomUpdateAttrsError(
+                            'stale-revision',
+                            'The atom changed before its attributes were updated'
+                        );
+                    }
+                    if (
+                        error instanceof NativeEditorV2ErrorBase &&
+                        (error.code === 'ENGINE_NOT_READY' ||
+                            error.code === 'ENGINE_DESTROYING' ||
+                            error.code === 'ENGINE_DESTROYED')
+                    ) {
+                        throw new AtomUpdateAttrsError('not-ready', 'The editor is not ready');
+                    }
+                    throw new AtomUpdateAttrsError(
+                        'engine-error',
+                        error instanceof Error ? error.message : 'The atom update failed'
+                    );
+                }
+                if (outcome.type === 'notApplicable') {
+                    throw new AtomUpdateAttrsError(
+                        'not-applicable',
+                        'The atom no longer exists at this document position'
+                    );
+                }
+                if (outcome.type !== 'transaction') {
+                    throw new AtomUpdateAttrsError(
+                        'engine-error',
+                        'Unexpected atom update outcome'
+                    );
+                }
+                afterLocalEngineMutation();
+            },
+            [afterLocalEngineMutation, bridge, document, documentHandle]
+        );
 
         const editableRef = useRef(editable);
         editableRef.current = editable;
@@ -1609,12 +1807,13 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 // the handle's same-revision signal deterministic.
                 lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
                 lastNativeDrivenRevisionRef.current = accepted.documentRevision;
+                refreshAtomsFromUpdate(accepted.snapshot);
                 applyTypedUpdateState(accepted.snapshot);
                 // The adapter already committed; re-read for content callbacks.
                 document.refresh();
                 onLocalCommitRef.current?.();
             },
-            [applyTypedUpdateState, document, documentHandle]
+            [applyTypedUpdateState, document, documentHandle, refreshAtomsFromUpdate]
         );
 
         const admitNativeBindingEvent = useCallback(
@@ -1686,9 +1885,10 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     selection = parsedSelection;
                 }
                 selectionRef.current = selection;
+                updateAtomSelection(selection);
                 onSelectionChangeRef.current?.(selection);
             },
-            [applyUpdateState, documentHandle, isForThisEditor]
+            [applyUpdateState, documentHandle, isForThisEditor, updateAtomSelection]
         );
 
         const handleFocusChange = useCallback(
@@ -1720,6 +1920,16 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [documentHandle, heightBehavior, isForThisEditor]
         );
 
+        const handleAtomLayout = useCallback(
+            (event: NativeSyntheticEvent<NativeAtomLayoutEvent>) => {
+                if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
+                const width = event.nativeEvent.width;
+                if (!Number.isFinite(width) || width < 0) return;
+                setAtomContentWidth((current) => (current === width ? current : width));
+            },
+            [documentHandle, isForThisEditor]
+        );
+
         const handleToolbarAction = useCallback(
             (event: NativeSyntheticEvent<NativeToolbarActionEvent>) => {
                 if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
@@ -1742,6 +1952,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     if (accepted == null) return;
                     lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
                     lastNativeDrivenRevisionRef.current = accepted.documentRevision;
+                    refreshAtomsFromUpdate(accepted.snapshot);
                     applyTypedUpdateState(accepted.snapshot);
                     document.refresh();
                     onLocalCommitRef.current?.();
@@ -1766,6 +1977,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 isForThisEditor,
                 openImageRequest,
                 openLinkRequest,
+                refreshAtomsFromUpdate,
             ]
         );
 
@@ -2143,6 +2355,45 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const remoteSelectionsJson = useSerializedValue(remoteSelections, (selections) =>
             serializeRemoteSelections(selections)
         );
+        const atomsJson = useMemo(() => {
+            const supplied = serializeEditorAtoms(atoms);
+            const serialized =
+                supplied == null
+                    ? { nodeTypes: [] as string[], estimatedHeights: {} as Record<string, number> }
+                    : (JSON.parse(supplied) as {
+                          nodeTypes: string[];
+                          estimatedHeights: Record<string, number>;
+                      });
+            for (const instance of atomState.instances) {
+                if (
+                    Object.prototype.hasOwnProperty.call(
+                        serialized.estimatedHeights,
+                        instance.nodeType
+                    )
+                ) {
+                    continue;
+                }
+                serialized.nodeTypes.push(instance.nodeType);
+                serialized.estimatedHeights[instance.nodeType] = DEFAULT_ATOM_CHIP_HEIGHT;
+            }
+            return serialized.nodeTypes.length === 0 ? undefined : JSON.stringify(serialized);
+        }, [atomState.instances, atoms]);
+
+        useEffect(() => {
+            if (!__DEV__) return;
+            for (const instance of atomState.instances) {
+                if (
+                    atomComponents.has(instance.nodeType) ||
+                    warnedUnknownAtomTypesRef.current.has(instance.nodeType)
+                ) {
+                    continue;
+                }
+                warnedUnknownAtomTypesRef.current.add(instance.nodeType);
+                console.warn(
+                    `NativeRichTextEditor: rendering unknown atom type '${instance.nodeType}' as a chip`
+                );
+            }
+        }, [atomComponents, atomState.instances]);
 
         const isLinkActive = activeState.marks.link === true;
         const allowsLink = activeState.allowedMarks.includes('link');
@@ -2212,6 +2463,31 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const toolbarFrameJson = serializeToolbarFrames(
             editable && isFocused ? focusPreservingFrames : undefined
         );
+        const atomChildren =
+            atomContentWidth == null
+                ? null
+                : atomState.instances.map((instance) => {
+                      const Component = atomComponents.get(instance.nodeType) ?? DefaultAtomChip;
+                      return (
+                          <View
+                              key={instance.key}
+                              nativeID={`prose-atom:${instance.key}`}
+                              collapsable={false}
+                              style={{
+                                  position: 'absolute',
+                                  top: 0,
+                                  left: 0,
+                                  width: atomContentWidth,
+                              }}>
+                              <Component
+                                  attrs={instance.attrs}
+                                  selected={selectedKeys.has(instance.key)}
+                                  nodeType={instance.nodeType}
+                                  updateAttrs={(attrs) => updateAtomAttrs(instance.docPos, attrs)}
+                              />
+                          </View>
+                      );
+                  });
 
         return (
             <View style={[styles.container, containerStyle]}>
@@ -2236,6 +2512,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     imageLoadingPolicyJson={imageLoadingPolicyJson}
                     themeJson={themeJson}
                     addonsJson={addonsJson}
+                    atomsJson={atomsJson}
                     toolbarItemsJson={toolbarItemsJson}
                     toolbarFrameJson={toolbarFrameJson}
                     remoteSelectionsJson={remoteSelectionsJson}
@@ -2248,9 +2525,11 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     onSelectionChange={handleSelectionChange}
                     onFocusChange={handleFocusChange}
                     onContentHeightChange={handleContentHeightChange}
+                    onAtomLayout={handleAtomLayout}
                     onToolbarAction={handleToolbarAction}
-                    onAddonEvent={handleAddonEvent}
-                />
+                    onAddonEvent={handleAddonEvent}>
+                    {atomChildren}
+                </NativeEditorView>
                 {shouldRenderJsToolbar ? (
                     <View
                         testID='native-editor-js-toolbar'
