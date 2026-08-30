@@ -119,15 +119,22 @@ internal object PreparedProsePerformanceGates {
         check(percentile(draw, .95) < NS_PER_MS)
         check(export.getInt("schemaVersion") == 2)
         check(export.getString("percentileDefinition") == "nearest-rank: sorted[ceil(p*n)-1]")
-        listOf(cold, warm, imagesDisabled).forEach { phase ->
+        listOf(
+            "cold" to cold,
+            "warm" to warm,
+            "imagesDisabled" to imagesDisabled,
+        ).forEach { (name, phase) ->
             check(phase.getInt("drawCount") > 0) { "phase must contain actual viewer draw evidence" }
             val rawFrameDeltas = phase.getJSONArray("rawFrameDeltasNanos").longs()
             requireNonEmpty(rawFrameDeltas, "${phase} raw frame")
-            check(
-                rawFrameDeltas.count {
-                    it <= Math.addExact(nominalFramePeriodNanos, singleTickToleranceNanos)
-                }.toDouble() / rawFrameDeltas.size >= .99
-            )
+            val deadline = Math.addExact(nominalFramePeriodNanos, singleTickToleranceNanos)
+            val onTimeCount = rawFrameDeltas.count { it <= deadline }
+            val onTimeRatio = onTimeCount.toDouble() / rawFrameDeltas.size
+            check(onTimeRatio >= .99) {
+                "$name on-time frame ratio $onTimeCount/${rawFrameDeltas.size} " +
+                    "($onTimeRatio) must be at least 0.99; " +
+                    "deadline=${deadline}ns max=${rawFrameDeltas.max()}ns"
+            }
         }
         val warmViewerCausedIntervals = warm.getJSONArray("viewerCausedDelayedIntervals").objects()
         check(warmViewerCausedIntervals.all { it.getBoolean("viewerCaused") })
