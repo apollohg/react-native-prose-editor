@@ -145,6 +145,12 @@ class RichTextEditorView @JvmOverloads constructor(
         refreshOverlays()
     }
 
+    fun applyAtomRenderConfiguration(configuration: AtomRenderConfiguration?): Boolean {
+        val applied = editorEditText.applyAtomRenderConfiguration(configuration)
+        if (applied) refreshOverlays()
+        return applied
+    }
+
     fun setHeightBehavior(heightBehavior: EditorHeightBehavior) {
         if (this.heightBehavior == heightBehavior) return
         this.heightBehavior = heightBehavior

@@ -429,6 +429,113 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `registered atom void block gets estimated spacer span`() {
+        val result = RenderBridge.buildSpannable(
+            """[{"type":"voidBlock","nodeType":"counterCard","docPos":1}]""",
+            baseFontSize,
+            textColor,
+            atomConfiguration = AtomRenderConfiguration(
+                registeredNodeTypes = setOf("counterCard"),
+                estimatedHeightsDp = mapOf("counterCard" to 120f),
+                measuredHeightsPx = emptyMap()
+            )
+        )
+
+        val span = result.getSpans(0, result.length, AtomBlockSpan::class.java).single()
+        assertEquals("counterCard:0", span.atomKey)
+        assertEquals("counterCard", span.nodeType)
+        assertEquals(1, span.docPos)
+        assertEquals(120, span.reservedHeightPx)
+    }
+
+    @Test
+    @Config(qualifiers = "xhdpi")
+    fun `atom estimate converts dp to pixels at display density`() {
+        val density = org.robolectric.RuntimeEnvironment
+            .getApplication()
+            .resources
+            .displayMetrics
+            .density
+        val result = RenderBridge.buildSpannable(
+            """[{"type":"voidBlock","nodeType":"counterCard","docPos":1}]""",
+            baseFontSize,
+            textColor,
+            density = density,
+            atomConfiguration = AtomRenderConfiguration(
+                registeredNodeTypes = setOf("counterCard"),
+                estimatedHeightsDp = mapOf("counterCard" to 120f),
+                measuredHeightsPx = emptyMap()
+            )
+        )
+
+        assertEquals(2f, density)
+        assertEquals(
+            240,
+            result.getSpans(0, result.length, AtomBlockSpan::class.java)
+                .single()
+                .reservedHeightPx
+        )
+    }
+
+    @Test
+    fun `atom keys follow contract C4`() {
+        val result = RenderBridge.buildSpannable(
+            """
+            [
+              {"type":"voidBlock","nodeType":"counterCard","docPos":1},
+              {"type":"voidBlock","nodeType":"counterCard","docPos":3},
+              {"type":"voidBlock","nodeType":"counterCard","docPos":5,"atomId":"client-1:9"}
+            ]
+            """.trimIndent(),
+            baseFontSize,
+            textColor,
+            atomConfiguration = AtomRenderConfiguration(
+                registeredNodeTypes = setOf("counterCard"),
+                estimatedHeightsDp = emptyMap(),
+                measuredHeightsPx = emptyMap()
+            )
+        )
+
+        assertEquals(
+            listOf("counterCard:0", "counterCard:1", "client-1:9"),
+            result.getSpans(0, result.length, AtomBlockSpan::class.java).map { it.atomKey }
+        )
+    }
+
+    @Test
+    fun `unregistered atom void block keeps bare replacement character`() {
+        val result = RenderBridge.buildSpannable(
+            """[{"type":"voidBlock","nodeType":"counterCard","docPos":1}]""",
+            baseFontSize,
+            textColor
+        )
+
+        assertEquals(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER, result.toString())
+        assertTrue(result.getSpans(0, result.length, AtomBlockSpan::class.java).isEmpty())
+    }
+
+    @Test
+    fun `measured atom height overrides estimate`() {
+        val result = RenderBridge.buildSpannable(
+            """[{"type":"voidBlock","nodeType":"counterCard","docPos":1}]""",
+            baseFontSize,
+            textColor,
+            atomConfiguration = AtomRenderConfiguration(
+                registeredNodeTypes = setOf("counterCard"),
+                estimatedHeightsDp = mapOf("counterCard" to 120f),
+                measuredHeightsPx = mapOf("counterCard:0" to 260)
+            )
+        )
+
+        assertEquals(
+            260,
+            result.getSpans(0, result.length, AtomBlockSpan::class.java)
+                .single()
+                .reservedHeightPx
+        )
+    }
+
+    @Test
     fun `render - ProseMirror void node names`() {
         val json = """
         [

@@ -2662,6 +2662,41 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
+    fun `atoms json reapplies the current render`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val updateJson = JSONObject()
+            .put(
+                "renderBlocks",
+                JSONArray().put(
+                    JSONArray().put(
+                        JSONObject()
+                            .put("type", "voidBlock")
+                            .put("nodeType", "counterCard")
+                            .put("docPos", 1)
+                    )
+                )
+            )
+            .put("documentVersion", "1")
+            .toString()
+        view.richTextView.editorEditText.applyUpdateJSON(updateJson, notifyListener = false)
+        val textBeforeRegistration = requireNotNull(view.richTextView.editorEditText.text)
+        assertTrue(textBeforeRegistration.getSpans(0, 1, AtomBlockSpan::class.java).isEmpty())
+
+        view.setAtomsJson(
+            """{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"""
+        )
+
+        val textAfterRegistration = requireNotNull(view.richTextView.editorEditText.text)
+        assertEquals(
+            120,
+            textAfterRegistration.getSpans(0, 1, AtomBlockSpan::class.java)
+                .single()
+                .reservedHeightPx
+        )
+    }
+
+    @Test
     fun `theme update queues latest value while preflight is blocked`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)

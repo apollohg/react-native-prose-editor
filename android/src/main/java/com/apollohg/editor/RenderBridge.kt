@@ -48,6 +48,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.roundToInt
 
 object LayoutConstants {
     /** Base indentation per depth level (pixels at base scale). */
@@ -110,6 +111,39 @@ data class BlockContext(
     var markerPending: Boolean = false,
     var renderStart: Int = 0
 )
+
+data class AtomRenderConfiguration(
+    val registeredNodeTypes: Set<String>,
+    val estimatedHeightsDp: Map<String, Float>,
+    val measuredHeightsPx: Map<String, Int>
+) {
+    companion object {
+        fun fromJson(json: String?): AtomRenderConfiguration? {
+            if (json == null) return null
+            val raw = try {
+                JSONObject(json)
+            } catch (_: Exception) {
+                return null
+            }
+            val nodeTypes = buildSet {
+                val values = raw.optJSONArray("nodeTypes") ?: JSONArray()
+                for (index in 0 until values.length()) {
+                    (values.opt(index) as? String)?.let(::add)
+                }
+            }
+            val estimatedHeights = buildMap {
+                val values = raw.optJSONObject("estimatedHeights") ?: JSONObject()
+                for (nodeType in values.keys()) {
+                    val height = (values.opt(nodeType) as? Number)?.toFloat() ?: continue
+                    if (height.isFinite() && height >= 0f) {
+                        put(nodeType, height)
+                    }
+                }
+            }
+            return AtomRenderConfiguration(nodeTypes, estimatedHeights, emptyMap())
+        }
+    }
+}
 
 private data class PendingLeadingMargin(
     val indentPx: Int,
@@ -396,6 +430,41 @@ class HorizontalRuleSpan(
         // Intentionally empty: drawLeadingMargin renders the separator line,
         // and ReplacementSpan suppresses drawing the underlying FFFC glyph.
     }
+}
+
+internal class AtomBlockSpan(
+    val atomKey: String,
+    val nodeType: String,
+    val docPos: Int,
+    var reservedHeightPx: Int
+) : ReplacementSpan() {
+    override fun getSize(
+        paint: Paint,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        fm: Paint.FontMetricsInt?
+    ): Int {
+        fm?.apply {
+            ascent = -reservedHeightPx
+            top = ascent
+            descent = 0
+            bottom = 0
+        }
+        return 0
+    }
+
+    override fun draw(
+        canvas: Canvas,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        x: Float,
+        top: Int,
+        y: Int,
+        bottom: Int,
+        paint: Paint
+    ) = Unit
 }
 
 internal class BlockImageSpan(
@@ -804,6 +873,7 @@ object RenderBridge {
         val blockStack: MutableList<BlockContext> = mutableListOf(),
         val pendingLeadingMargins: MutableMap<Int, PendingLeadingMargin> = linkedMapOf(),
         val pendingCodeBlockSpans: MutableList<PendingCodeBlockSpan> = mutableListOf(),
+        val atomOccurrences: MutableMap<String, Int> = mutableMapOf(),
         var isFirstBlock: Boolean = true,
         var nextBlockSpacingBefore: Float? = null,
         var pendingListBoundarySpacing: Float? = null,
@@ -831,7 +901,8 @@ object RenderBridge {
         textColor: Int,
         theme: EditorTheme? = null,
         density: Float = 1f,
-        hostView: TextView? = null
+        hostView: TextView? = null,
+        atomConfiguration: AtomRenderConfiguration? = null
     ): SpannableStringBuilder {
         val elements = try {
             JSONArray(json)
@@ -839,7 +910,15 @@ object RenderBridge {
             return SpannableStringBuilder()
         }
 
-        return buildSpannableFromArray(elements, baseFontSize, textColor, theme, density, hostView)
+        return buildSpannableFromArray(
+            elements,
+            baseFontSize,
+            textColor,
+            theme,
+            density,
+            hostView,
+            atomConfiguration
+        )
     }
 
     fun buildSpannableFromArray(
@@ -848,7 +927,8 @@ object RenderBridge {
         textColor: Int,
         theme: EditorTheme? = null,
         density: Float = 1f,
-        hostView: TextView? = null
+        hostView: TextView? = null,
+        atomConfiguration: AtomRenderConfiguration? = null
     ): SpannableStringBuilder {
         val state = RenderBuildState()
         appendElements(
@@ -858,7 +938,8 @@ object RenderBridge {
             textColor = textColor,
             theme = theme,
             density = density,
-            hostView = hostView
+            hostView = hostView,
+            atomConfiguration = atomConfiguration
         )
         applyPendingLeadingMargins(state.result, state.pendingLeadingMargins)
         applyPendingCodeBlockSpans(state.result, state.pendingCodeBlockSpans, theme, density)
@@ -873,7 +954,8 @@ object RenderBridge {
         textColor: Int,
         theme: EditorTheme? = null,
         density: Float = 1f,
-        hostView: TextView? = null
+        hostView: TextView? = null,
+        atomConfiguration: AtomRenderConfiguration? = null
     ): SpannableStringBuilder {
         val state = RenderBuildState()
         for (blockOffset in 0 until blocks.length()) {
@@ -886,6 +968,7 @@ object RenderBridge {
                 theme = theme,
                 density = density,
                 hostView = hostView,
+                atomConfiguration = atomConfiguration,
                 topLevelChildIndex = startIndex + blockOffset
             )
         }
@@ -959,6 +1042,7 @@ object RenderBridge {
         theme: EditorTheme?,
         density: Float,
         hostView: TextView?,
+        atomConfiguration: AtomRenderConfiguration?,
         topLevelChildIndex: Int? = null
     ) {
         for (i in 0 until elements.length()) {
@@ -1000,6 +1084,11 @@ object RenderBridge {
                 "voidBlock" -> {
                     val nodeType = element.optString("nodeType", "")
                     val attrs = element.optJSONObject("attrs")
+                    val occurrence = state.atomOccurrences[nodeType] ?: 0
+                    state.atomOccurrences[nodeType] = occurrence + 1
+                    val atomId = element.opt("atomId") as? String
+                    val atomKey = atomId ?: "$nodeType:$occurrence"
+                    val docPos = exactV2U32(element.opt("docPos") as? Number)?.toInt()
                     if (!state.isFirstBlock) {
                         val spacingPx = ((state.nextBlockSpacingBefore ?: 0f) * density).toInt()
                         appendInterBlockNewline(
@@ -1024,7 +1113,10 @@ object RenderBridge {
                         density,
                         spacingBefore,
                         hostView,
-                        topLevelChildIndex
+                        topLevelChildIndex,
+                        atomConfiguration,
+                        atomKey,
+                        docPos
                     )
                 }
 
@@ -1515,7 +1607,10 @@ object RenderBridge {
         density: Float,
         spacingBefore: Float?,
         hostView: TextView?,
-        topLevelChildIndex: Int?
+        topLevelChildIndex: Int?,
+        atomConfiguration: AtomRenderConfiguration?,
+        atomKey: String,
+        docPos: Int?
     ) {
         when (nodeType) {
             "horizontalRule", "horizontal_rule" -> {
@@ -1569,7 +1664,34 @@ object RenderBridge {
             else -> {
                 val start = builder.length
                 builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
-                annotateTopLevelChild(builder, start, builder.length, topLevelChildIndex)
+                val end = builder.length
+                if (
+                    docPos != null &&
+                    atomConfiguration?.registeredNodeTypes?.contains(nodeType) == true
+                ) {
+                    val reservedHeightPx = atomConfiguration.measuredHeightsPx[atomKey]
+                        ?: ((atomConfiguration.estimatedHeightsDp[nodeType] ?: 0f) * density)
+                            .roundToInt()
+                    builder.setSpan(
+                        AtomBlockSpan(atomKey, nodeType, docPos, reservedHeightPx),
+                        start,
+                        end,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
+                    builder.setSpan(
+                        Annotation("nativeVoidNodeType", nodeType),
+                        start,
+                        end,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
+                    builder.setSpan(
+                        Annotation("nativeDocPos", docPos.toUInt().toString()),
+                        start,
+                        end,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
+                }
+                annotateTopLevelChild(builder, start, end, topLevelChildIndex)
             }
         }
     }

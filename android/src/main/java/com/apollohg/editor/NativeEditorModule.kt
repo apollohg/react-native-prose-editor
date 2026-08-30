@@ -492,6 +492,9 @@ class NativeEditorModule : Module() {
             Prop("addonsJson") { view: NativeEditorExpoView, addonsJson: String? ->
                 view.setAddonsJson(addonsJson)
             }
+            Prop("atomsJson") { view: NativeEditorExpoView, atomsJson: String? ->
+                view.setAtomsJson(atomsJson)
+            }
             Prop("remoteSelectionsJson") { view: NativeEditorExpoView, remoteSelectionsJson: String? ->
                 view.setRemoteSelectionsJson(remoteSelectionsJson)
             }

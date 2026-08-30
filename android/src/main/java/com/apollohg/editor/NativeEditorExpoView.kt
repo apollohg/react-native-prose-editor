@@ -933,6 +933,7 @@ class NativeEditorExpoView(
     private var pendingThemeRetryGeneration = 0
     private var pendingThemeRetryAttempts = 0
     private var lastAddonsJson: String? = null
+    private var lastAtomsJson: String? = null
     private var lastRemoteSelectionsJson: String? = null
     private var lastToolbarItemsJson: String? = null
     private var lastToolbarFrameJson: String? = null
@@ -1232,6 +1233,13 @@ class NativeEditorExpoView(
         addons = NativeEditorAddons.fromJson(addonsJson)
         keyboardToolbarView.applyMentionTheme(richTextView.editorEditText.theme?.mentions ?: addons.mentions?.theme)
         refreshMentionQuery()
+    }
+
+    fun setAtomsJson(atomsJson: String?) {
+        if (lastAtomsJson == atomsJson) return
+        val configuration = AtomRenderConfiguration.fromJson(atomsJson)
+        if (!richTextView.applyAtomRenderConfiguration(configuration)) return
+        lastAtomsJson = atomsJson
     }
 
     fun setRemoteSelectionsJson(remoteSelectionsJson: String?) {

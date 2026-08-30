@@ -311,6 +311,9 @@ class EditorEditText @JvmOverloads constructor(
     var theme: EditorTheme? = null
         private set
 
+    internal var atomRenderConfiguration: AtomRenderConfiguration? = null
+        private set
+
     var placeholderText: String = ""
         set(value) {
             if (field == value) return
@@ -1102,6 +1105,57 @@ class EditorEditText @JvmOverloads constructor(
                 requestLayout()
             }
         }
+    }
+
+    fun applyAtomRenderConfiguration(configuration: AtomRenderConfiguration?): Boolean {
+        if (atomRenderConfiguration == configuration) return true
+        val stateJson = if (hasLiveEditor()) {
+            v2Driver?.currentStateJson() ?: return false
+        } else {
+            null
+        }
+        atomRenderConfiguration = configuration
+        renderAppearanceRevision += 1L
+
+        if (stateJson != null) {
+            val previousScrollX = scrollX
+            val previousScrollY = scrollY
+            applyUpdateJSON(stateJson, notifyListener = false)
+            if (heightBehavior == EditorHeightBehavior.FIXED) {
+                preserveScrollPosition(previousScrollX, previousScrollY)
+            } else {
+                requestLayout()
+            }
+            return true
+        }
+
+        val renderBlocks = currentRenderBlocksJson ?: return true
+        val previousSelectionStart = selectionStart
+        val previousSelectionEnd = selectionEnd
+        val previousScrollX = scrollX
+        val previousScrollY = scrollY
+        val spannable = RenderBridge.buildSpannableFromBlocks(
+            renderBlocks,
+            baseFontSize = baseFontSize,
+            textColor = baseTextColor,
+            theme = theme,
+            density = resources.displayMetrics.density,
+            hostView = this,
+            atomConfiguration = atomRenderConfiguration
+        )
+        applyRenderedSpannable(spannable, usedPatch = false)
+        lastAppliedRenderAppearanceRevision = renderAppearanceRevision
+        val length = text?.length ?: 0
+        if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
+            setSelection(
+                previousSelectionStart.coerceIn(0, length),
+                previousSelectionEnd.coerceIn(0, length)
+            )
+        }
+        scrollTo(previousScrollX, previousScrollY)
+        onSelectionOrContentMayChange?.invoke()
+        requestLayout()
+        return true
     }
 
     fun setHeightBehavior(heightBehavior: EditorHeightBehavior) {
@@ -4805,7 +4859,8 @@ class EditorEditText @JvmOverloads constructor(
             textColor = baseTextColor,
             theme = theme,
             density = resources.displayMetrics.density,
-            hostView = this
+            hostView = this,
+            atomConfiguration = atomRenderConfiguration
         )
 
     private fun cloneJsonArray(array: org.json.JSONArray): org.json.JSONArray =
@@ -5041,6 +5096,7 @@ class EditorEditText @JvmOverloads constructor(
         val patchTrace = if (
             !shouldSkipRender &&
             renderPatch != null &&
+            atomRenderConfiguration == null &&
             lastAppliedRenderAppearanceRevision == renderAppearanceRevision
         ) {
             applyRenderPatchIfPossible(renderPatch, refreshInputConnectionForExternalUpdate)
@@ -5072,7 +5128,8 @@ class EditorEditText @JvmOverloads constructor(
                     textColor = baseTextColor,
                     theme = theme,
                     density = resources.displayMetrics.density,
-                    hostView = this
+                    hostView = this,
+                    atomConfiguration = atomRenderConfiguration
                 )
             } else if (renderElements != null) {
                 RenderBridge.buildSpannableFromArray(
@@ -5081,7 +5138,8 @@ class EditorEditText @JvmOverloads constructor(
                     baseTextColor,
                     theme,
                     resources.displayMetrics.density,
-                    this
+                    this,
+                    atomRenderConfiguration
                 )
             } else {
                 recordImeTraceForTesting(
@@ -5202,7 +5260,8 @@ class EditorEditText @JvmOverloads constructor(
             baseTextColor,
             theme,
             resources.displayMetrics.density,
-            this
+            this,
+            atomRenderConfiguration
         )
 
         val previousScrollX = scrollX
