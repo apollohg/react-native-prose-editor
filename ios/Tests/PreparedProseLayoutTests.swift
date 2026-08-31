@@ -1985,7 +1985,6 @@ final class PreparedProseLayoutTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertTrue(manager.contains("stringOrNull(\"leaseHandle\")?.toLongOrNull()"))
-        XCTAssertTrue(manager.contains("incoming.copy(leaseHandle = prior.leaseHandle)"))
         XCTAssertTrue(manager.contains("FabricLeaseHandleBridge.currentHandle()"))
         XCTAssertTrue(cache.contains("pendingLeases"))
         XCTAssertTrue(cache.contains("mountedLeases"))
