@@ -81,7 +81,7 @@ final class AtomMountingTests: XCTestCase {
         XCTAssertEqual(editor.atomLayoutInvalidationCountForTesting, invalidations)
     }
 
-    func testAtomContainerUsesAttachmentLayoutRect() throws {
+    func testAtomContainerUsesAttachmentLayoutRectIncludingTextContainerInset() throws {
         let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         let attachment = installAtom(key: "counter:1", height: 72, in: editor)
         let child = atomChild(key: "counter:1", height: 72)
@@ -101,12 +101,58 @@ final class AtomMountingTests: XCTestCase {
         let padding = editor.textView.textContainer.lineFragmentPadding
         let expected = CGRect(
             x: editor.textView.textContainerInset.left + padding,
-            y: attachmentRect.minY,
+            y: editor.textView.textContainerInset.top + attachmentRect.minY,
             width: editor.textView.textContainer.size.width - (padding * 2),
             height: attachment.reservedHeight
         )
 
         XCTAssertEqual(try XCTUnwrap(editor.atomHostContainer(for: "counter:1")).frame, expected)
+    }
+
+    func testAtomContainerPreservesRenderedParagraphSpacing() throws {
+        let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let value = RenderBridge.renderElements(
+            fromJSON: """
+            [
+                {"type":"blockStart","nodeType":"paragraph","depth":0},
+                {"type":"textRun","text":"Above","marks":[]},
+                {"type":"blockEnd"},
+                {"type":"voidBlock","nodeType":"counterCard","docPos":7}
+            ]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label,
+            theme: EditorTheme(dictionary: [
+                "paragraph": ["spacingAfter": 18],
+            ]),
+            atomConfiguration: AtomRenderConfiguration(
+                registeredNodeTypes: ["counterCard"],
+                estimatedHeights: ["counterCard": 72],
+                measuredHeights: [:]
+            )
+        )
+        editor.textView.textStorage.setAttributedString(value)
+        let attachmentRange = (value.string as NSString).range(of: "\u{FFFC}")
+        let attachment = try XCTUnwrap(
+            value.attribute(.attachment, at: attachmentRange.location, effectiveRange: nil)
+                as? AtomBlockAttachment
+        )
+        let child = atomChild(key: attachment.atomKey, height: 72)
+        editor.mountAtomChild(child, atomKey: attachment.atomKey)
+        editor.layoutIfNeeded()
+
+        let layoutManager = editor.textView.layoutManager
+        layoutManager.ensureLayout(for: editor.textView.textContainer)
+        let precedingGlyph = layoutManager.glyphIndexForCharacter(at: 0)
+        let precedingLineRect = layoutManager.lineFragmentUsedRect(
+            forGlyphAt: precedingGlyph,
+            effectiveRange: nil
+        )
+        let precedingLineBottom = editor.textView.textContainerInset.top
+            + precedingLineRect.maxY
+        let atomTop = try XCTUnwrap(editor.atomHostContainer(for: attachment.atomKey)).frame.minY
+
+        XCTAssertEqual(atomTop - precedingLineBottom, 18, accuracy: 0.5)
     }
 
     func testUnmountClearsHostAndMeasuredHeight() {

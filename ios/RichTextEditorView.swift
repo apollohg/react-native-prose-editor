@@ -7270,7 +7270,7 @@ final class RichTextEditorView: UIView {
             )
             let frame = CGRect(
                 x: textView.textContainerInset.left + padding,
-                y: attachmentRect.minY,
+                y: textView.textContainerInset.top + attachmentRect.minY,
                 width: width,
                 height: attachment.reservedHeight
             )
