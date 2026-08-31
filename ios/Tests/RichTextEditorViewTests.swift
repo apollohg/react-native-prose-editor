@@ -10651,6 +10651,105 @@ private final class AutonomousErrorEventSink {
     }
 }
 
+@MainActor
+private final class TestTextDragSession: NSObject, UIDragSession {
+    let items: [UIDragItem]
+    var localContext: Any?
+    var allowsMoveOperation: Bool { true }
+    var isRestrictedToDraggingApplication: Bool { true }
+
+    init(items: [UIDragItem]) {
+        self.items = items
+    }
+
+    func location(in view: UIView) -> CGPoint { .zero }
+
+    func hasItemsConforming(toTypeIdentifiers typeIdentifiers: [String]) -> Bool {
+        items.contains { item in
+            typeIdentifiers.contains { item.itemProvider.hasItemConformingToTypeIdentifier($0) }
+        }
+    }
+
+    func canLoadObjects(ofClass aClass: NSItemProviderReading.Type) -> Bool {
+        items.contains { $0.itemProvider.canLoadObject(ofClass: aClass) }
+    }
+}
+
+@MainActor
+private final class TestTextDropSession: NSObject, UIDropSession {
+    let items: [UIDragItem]
+    let localDragSession: UIDragSession?
+    var progressIndicatorStyle: UIDropSessionProgressIndicatorStyle = .default
+    let progress = Progress(totalUnitCount: 1)
+    var allowsMoveOperation: Bool { true }
+    var isRestrictedToDraggingApplication: Bool { true }
+
+    init(dragSession: UIDragSession) {
+        localDragSession = dragSession
+        items = dragSession.items
+    }
+
+    func location(in view: UIView) -> CGPoint { .zero }
+
+    func hasItemsConforming(toTypeIdentifiers typeIdentifiers: [String]) -> Bool {
+        items.contains { item in
+            typeIdentifiers.contains { item.itemProvider.hasItemConformingToTypeIdentifier($0) }
+        }
+    }
+
+    func canLoadObjects(ofClass aClass: NSItemProviderReading.Type) -> Bool {
+        items.contains { $0.itemProvider.canLoadObject(ofClass: aClass) }
+    }
+
+    func loadObjects(
+        ofClass aClass: NSItemProviderReading.Type,
+        completion: @escaping ([NSItemProviderReading]) -> Void
+    ) -> Progress {
+        completion([])
+        return progress
+    }
+}
+
+@MainActor
+private final class TestTextDragRequest: NSObject, UITextDragRequest {
+    let dragRange: UITextRange
+    let suggestedItems: [UIDragItem]
+    let existingItems: [UIDragItem] = []
+    let isSelected: Bool
+    let dragSession: UIDragSession
+
+    init(
+        dragRange: UITextRange,
+        suggestedItems: [UIDragItem],
+        isSelected: Bool,
+        dragSession: UIDragSession
+    ) {
+        self.dragRange = dragRange
+        self.suggestedItems = suggestedItems
+        self.isSelected = isSelected
+        self.dragSession = dragSession
+    }
+}
+
+@MainActor
+private final class TestTextDropRequest: NSObject, UITextDropRequest {
+    let dropPosition: UITextPosition
+    let suggestedProposal: UITextDropProposal
+    let isSameView: Bool
+    let dropSession: UIDropSession
+
+    init(
+        dropPosition: UITextPosition,
+        isSameView: Bool,
+        dropSession: UIDropSession
+    ) {
+        self.dropPosition = dropPosition
+        self.isSameView = isSameView
+        self.dropSession = dropSession
+        suggestedProposal = UITextDropProposal(operation: .copy)
+    }
+}
+
 // MARK: - v2 view integration tests (formerly the staging-variant suite)
 //
 // The view is bound to a v2 session through the session pairing registry, so
@@ -10701,6 +10800,82 @@ final class EditorV2StagingViewTests: XCTestCase {
         return (view, adapter, window)
     }
 
+    private func makeTerminalAtomView(
+        html: String = #"<div data-type="counter-card" data-count="7"></div>"#,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> (view: RichTextEditorView, adapter: EditorV2Adapter, window: UIWindow) {
+        let configJson = #"""
+        {
+          "initialization":{"type":"localEmpty"},
+          "schema":{
+            "nodes":[
+              {"name":"doc","content":"block+","role":"doc"},
+              {"name":"paragraph","content":"text*","group":"block","role":"textBlock","htmlTag":"p"},
+              {"name":"text","content":"","role":"text"},
+              {
+                "name":"counterCard",
+                "content":"",
+                "group":"block",
+                "role":"block",
+                "isVoid":true,
+                "attrs":{"count":{"default":0}},
+                "html":{
+                  "tag":"div",
+                  "staticAttrs":{"data-type":"counter-card"},
+                  "attrMap":{"count":"data-count"}
+                }
+              }
+            ],
+            "marks":[]
+          }
+        }
+        """#
+        let bound = makeBoundView(
+            configJson: configJson,
+            html: html,
+            file: file,
+            line: line
+        )
+        XCTAssertTrue(
+            bound.view.applyAtomRenderConfiguration(
+                AtomRenderConfiguration(
+                    registeredNodeTypes: ["counterCard"],
+                    estimatedHeights: ["counterCard": 72],
+                    measuredHeights: [:]
+                )
+            ),
+            file: file,
+            line: line
+        )
+        bound.view.layoutIfNeeded()
+        return bound
+    }
+
+    private func terminalAtomRect(
+        in textView: EditorTextView,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> CGRect {
+        guard textView.textStorage.length > 0 else {
+            XCTFail("expected terminal atom text", file: file, line: line)
+            return .zero
+        }
+        let range = NSRange(location: textView.textStorage.length - 1, length: 1)
+        let glyphRange = textView.layoutManager.glyphRange(
+            forCharacterRange: range,
+            actualCharacterRange: nil
+        )
+        let rect = textView.layoutManager.boundingRect(
+            forGlyphRange: glyphRange,
+            in: textView.textContainer
+        )
+        return rect.offsetBy(
+            dx: textView.textContainerInset.left - textView.contentOffset.x,
+            dy: textView.textContainerInset.top - textView.contentOffset.y
+        )
+    }
+
     private func flushMain() {
         let expectation = expectation(description: "flush main")
         DispatchQueue.main.async { expectation.fulfill() }
@@ -10745,6 +10920,602 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertEqual(view.textView.textStorage.string, "Hello")
         XCTAssertEqual(v2DocumentText(adapter), "Hello")
         XCTAssertGreaterThan(adapter.baseDocumentRevision, 0)
+    }
+
+    func testStagingEditorOwnsTextDragAndDropDelegates() {
+        let (view, _, window) = makeBoundView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+
+        XCTAssertTrue(view.textView.textDragDelegate === view.textView)
+        XCTAssertTrue(view.textView.textDropDelegate === view.textView)
+    }
+
+    func testStagingTerminalAtomExposesVirtualGapCaretWithoutChangingDocument() {
+        let (view, _, window) = makeTerminalAtomView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
+        let atomRect = terminalAtomRect(in: view.textView)
+
+        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
+        guard let position = view.textView.selectedTextRange?.start else {
+            XCTFail("expected terminal gap caret")
+            return
+        }
+        let caretRect = view.textView.caretRect(for: position)
+        guard let tappedPosition = view.textView.closestPosition(
+            to: CGPoint(x: caretRect.midX, y: caretRect.midY)
+        ) else {
+            XCTFail("expected terminal gap tap position")
+            return
+        }
+        let measuredHeight = view.textView.measuredAutoGrowHeightForTesting(
+            width: view.textView.bounds.width
+        )
+
+        XCTAssertGreaterThanOrEqual(caretRect.minY, atomRect.maxY - 0.5)
+        XCTAssertEqual(
+            view.textView.offset(
+                from: view.textView.beginningOfDocument,
+                to: tappedPosition
+            ),
+            view.textView.textStorage.length
+        )
+        XCTAssertGreaterThanOrEqual(
+            measuredHeight,
+            ceil(caretRect.maxY + view.textView.textContainerInset.bottom)
+        )
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
+    }
+
+    func testStagingFixedHeightTerminalAtomGapIsScrollableIntoView() {
+        let (view, _, window) = makeTerminalAtomView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        view.frame.size.height = 60
+        view.layoutIfNeeded()
+        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
+        guard let position = view.textView.selectedTextRange?.start else {
+            XCTFail("expected terminal gap caret")
+            return
+        }
+        let caretRect = view.textView.caretRect(for: position)
+
+        XCTAssertGreaterThanOrEqual(
+            view.textView.contentSize.height + view.textView.adjustedContentInset.bottom,
+            ceil(caretRect.maxY + view.textView.textContainerInset.bottom)
+        )
+
+        let maximumOffset = max(
+            0,
+            view.textView.contentSize.height
+                - view.textView.bounds.height
+                + view.textView.adjustedContentInset.bottom
+        )
+        view.textView.setContentOffset(CGPoint(x: 0, y: maximumOffset), animated: false)
+        let visibleCaretRect = view.textView.caretRect(for: position)
+        XCTAssertLessThanOrEqual(
+            visibleCaretRect.maxY,
+            view.textView.bounds.height - view.textView.textContainerInset.bottom + 0.5
+        )
+    }
+
+    func testStagingTypingAtTerminalAtomGapCreatesParagraphInOneUndoStep() {
+        let (view, adapter, window) = makeTerminalAtomView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
+        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
+        flushMain()
+
+        view.textView.insertText("x")
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore + "<p>x</p>")
+        _ = adapter.undo()
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
+    }
+
+    func testStagingReturnAtTerminalAtomGapCreatesParagraphInOneUndoStep() {
+        let (view, adapter, window) = makeTerminalAtomView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
+        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
+        flushMain()
+
+        view.textView.insertText("\n")
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore + "<p></p>")
+        _ = adapter.undo()
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
+    }
+
+    func testStagingBackspaceAtTerminalAtomGapDeletesAtomInOneUndoStep() {
+        let (view, adapter, window) = makeTerminalAtomView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
+        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
+        flushMain()
+
+        view.textView.deleteBackward()
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), "<p></p>")
+        _ = adapter.undo()
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
+    }
+
+    func testStagingMoveSelectionCommandReordersText() {
+        let (view, adapter, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+
+        guard let updateJSON = adapter.moveSelection(anchor: 0, head: 2, to: 4) else {
+            XCTFail("expected move selection update")
+            return
+        }
+        XCTAssertTrue(view.textView.applyUpdateJSON(updateJSON))
+        XCTAssertEqual(v2DocumentText(adapter), "cdab")
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropMovesSelectionAndRestoresAfterUIKitCleanup() throws {
+        let (view, adapter, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let delegate = EditorTextViewDelegateSpy()
+        view.textView.editorDelegate = delegate
+        delegate.receivedUpdates.removeAll()
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let dropSession = TestTextDropSession(dragSession: dragSession)
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 0)),
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 2))
+        ))
+        let dragRequest = TestTextDragRequest(
+            dragRange: source,
+            suggestedItems: [item],
+            isSelected: true,
+            dragSession: dragSession
+        )
+        _ = view.textView.textDraggableView(view.textView, itemsForDrag: dragRequest)
+        let dropRequest = TestTextDropRequest(
+            dropPosition: try XCTUnwrap(
+                view.textView.position(from: view.textView.beginningOfDocument, offset: 4)
+            ),
+            isSameView: true,
+            dropSession: dropSession
+        )
+
+        let proposal = view.textView.textDroppableView(
+            view.textView,
+            proposalForDrop: dropRequest
+        )
+        XCTAssertEqual(proposal.operation, .move)
+        XCTAssertEqual(proposal.dropPerformer, .delegate)
+        XCTAssertFalse(proposal.useFastSameViewOperations)
+
+        view.textView.textDroppableView(view.textView, willPerformDrop: dropRequest)
+        XCTAssertEqual(v2DocumentText(adapter), "cdab")
+        XCTAssertEqual(view.textView.textStorage.string, "cdab")
+        XCTAssertEqual(delegate.receivedUpdates.count, 1)
+
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 2),
+            with: ""
+        )
+        XCTAssertEqual(view.textView.textStorage.string, "ab")
+
+        view.textView.textDraggableView(
+            view.textView,
+            dragSessionDidEnd: dragSession,
+            with: .move
+        )
+        flushMain()
+
+        XCTAssertEqual(v2DocumentText(adapter), "cdab")
+        XCTAssertEqual(view.textView.textStorage.string, "cdab")
+        XCTAssertEqual(delegate.receivedUpdates.count, 1)
+
+        _ = adapter.undo()
+        XCTAssertEqual(v2DocumentText(adapter), "abcd")
+    }
+
+    @MainActor
+    func testStagingSameViewAtomDropPreservesAttributesAndUndoesInOneStep() throws {
+        let htmlBefore = #"<div data-type="counter-card" data-count="7"></div><p>x</p>"#
+        let (view, adapter, window) = makeTerminalAtomView(html: htmlBefore)
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "atom" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 1))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: false,
+                dragSession: dragSession
+            )
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .move
+        )
+        view.textView.textDroppableView(view.textView, willPerformDrop: dropRequest)
+        view.textView.textDraggableView(
+            view.textView,
+            dragSessionDidEnd: dragSession,
+            with: .move
+        )
+        flushMain()
+
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: view.editorId),
+            #"<p>x</p><div data-type="counter-card" data-count="7"></div>"#
+        )
+        _ = adapter.undo()
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropRejectsDestinationInsideSourceRange() throws {
+        let (view, _, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 0)),
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 2))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: try XCTUnwrap(
+                view.textView.position(from: view.textView.beginningOfDocument, offset: 1)
+            ),
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .forbidden
+        )
+        view.textView.textDraggableView(
+            view.textView,
+            dragSessionDidEnd: dragSession,
+            with: .cancel
+        )
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropRejectsCrossParagraphSelection() throws {
+        let (view, _, window) = makeBoundView(html: "<p>ab</p><p>cd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab\nc" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 4))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .forbidden
+        )
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropRejectsSelectionEndingAtNextParagraphStart() throws {
+        let (view, _, window) = makeBoundView(html: "<p>ab</p><p>cd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab\n" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 3))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .forbidden
+        )
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropAllowsSelectionSpanningInlineHardBreak() throws {
+        let (view, _, window) = makeBoundView(html: "<p>a<br>bcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "a\nb" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 3))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .move
+        )
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropAllowsSelectionSpanningCodeBlockNewline() throws {
+        let configJson = #"""
+        {
+          "initialization":{"type":"localEmpty"},
+          "schema":{
+            "nodes":[
+              {"name":"doc","content":"block+","role":"doc"},
+              {"name":"paragraph","content":"text*","group":"block","role":"textBlock","htmlTag":"p"},
+              {"name":"codeBlock","content":"text*","group":"block","role":"textBlock","htmlTag":"pre"},
+              {"name":"text","content":"","role":"text"}
+            ],
+            "marks":[]
+          }
+        }
+        """#
+        let (view, _, window) = makeBoundView(configJson: configJson)
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        view.setContent(json: """
+        {
+          "type":"doc",
+          "content":[{"type":"codeBlock","content":[{"type":"text","text":"a\\nbcd"}]}]
+        }
+        """)
+        XCTAssertEqual(view.textView.textStorage.string, "a\nbcd")
+        XCTAssertNil(
+            view.textView.textStorage.attribute(
+                RenderBridgeAttributes.voidNodeType,
+                at: 1,
+                effectiveRange: nil
+            )
+        )
+        XCTAssertEqual(
+            view.textView.textStorage.attribute(
+                RenderBridgeAttributes.blockNodeType,
+                at: 1,
+                effectiveRange: nil
+            ) as? String,
+            "codeBlock"
+        )
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "a\nb" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 3))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .move
+        )
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropRejectsStaleSourceRevision() throws {
+        let (view, _, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 2))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+
+        view.setContent(html: "<p>wxyz</p>")
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .forbidden
+        )
+        view.textView.textDroppableView(view.textView, willPerformDrop: dropRequest)
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), "<p>wxyz</p>")
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropRejectsRevisionAdvancedByPendingMutationFlush() throws {
+        let (view, adapter, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 2))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+        let revisionBefore = adapter.baseDocumentRevision
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 3, length: 1),
+            with: "z"
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionBefore)
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .move
+        )
+        view.textView.textDroppableView(view.textView, willPerformDrop: dropRequest)
+
+        XCTAssertEqual(v2DocumentText(adapter), "abcz")
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionBefore + 1)
+    }
+
+    @MainActor
+    func testStagingTextDropStartedBeforeRebindCannotMutateTheNewEditor() throws {
+        let (view, firstAdapter, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 2))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+
+        let secondId = makeV2Editor()
+        let secondAdapter = try XCTUnwrap(EditorV2Registry.adapter(forLegacyId: secondId))
+        syntheticIds.append(secondId)
+        adapters.append(secondAdapter)
+        view.editorId = secondId
+        view.setContent(html: "<p>wxyz</p>")
+        let dropRequest = TestTextDropRequest(
+            dropPosition: view.textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            view.textView.textDroppableView(view.textView, proposalForDrop: dropRequest).operation,
+            .copy
+        )
+        view.textView.textDroppableView(view.textView, willPerformDrop: dropRequest)
+        XCTAssertEqual(v2DocumentText(firstAdapter), "abcd")
+        XCTAssertEqual(v2DocumentText(secondAdapter), "wxyz")
+    }
+
+    @MainActor
+    func testStagingAttachmentDragNarrowsSuggestedRangeToTheAtom() throws {
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let attributedText = NSMutableAttributedString(attachment: NSTextAttachment())
+        attributedText.addAttribute(
+            RenderBridgeAttributes.voidNodeType,
+            value: "counterCard",
+            range: NSRange(location: 0, length: 1)
+        )
+        attributedText.append(NSAttributedString(string: "\n"))
+        textView.attributedText = attributedText
+        let editorId = makeV2Editor()
+        syntheticIds.append(editorId)
+        textView.editorId = editorId
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "atom" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(textView.textRange(
+            from: textView.beginningOfDocument,
+            to: try XCTUnwrap(textView.position(from: textView.beginningOfDocument, offset: 2))
+        ))
+        _ = textView.textDraggableView(
+            textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: false,
+                dragSession: dragSession
+            )
+        )
+        let dropRequest = TestTextDropRequest(
+            dropPosition: textView.endOfDocument,
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+
+        XCTAssertEqual(
+            textView.textDroppableView(textView, proposalForDrop: dropRequest).operation,
+            .move
+        )
     }
 
     func testStagingMarkedTextTransientNeverReachesRustAndCommitsOnce() {

@@ -74,6 +74,10 @@ pub enum TypedCommand {
         width: u32,
         height: u32,
     },
+    MoveSelection {
+        range: RevisionedRange,
+        at: RevisionedPosition,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +156,7 @@ pub(crate) fn plan(
         | TypedCommand::ToggleTaskItemChecked
         | TypedCommand::InsertNode { .. }
         | TypedCommand::UpdateNodeAttrs { .. }
-        | TypedCommand::ResizeImage { .. }) => structure::plan(context, command),
+        | TypedCommand::ResizeImage { .. }
+        | TypedCommand::MoveSelection { .. }) => structure::plan(context, command),
     }
 }

@@ -85,6 +85,10 @@ enum EditorV2Shadow {
         adapter(for: id)?.selectionJSON() ?? "{\"type\":\"text\",\"anchor\":0,\"head\":0}"
     }
 
+    static func documentRevision(id: UInt64) -> UInt64? {
+        adapter(for: id)?.baseDocumentRevision
+    }
+
     static func canUndo(id: UInt64) -> Bool {
         adapter(for: id)?.historyFlags()?.canUndo ?? false
     }
@@ -201,6 +205,19 @@ enum EditorV2Shadow {
 
     static func outdentListItemAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String {
         adapter(for: id)?.outdentListItem(anchor: scalarAnchor, head: scalarHead) ?? "{}"
+    }
+
+    static func moveSelectionAtScalar(
+        id: UInt64,
+        scalarAnchor: UInt32,
+        scalarHead: UInt32,
+        destination: UInt32
+    ) -> String {
+        adapter(for: id)?.moveSelection(
+            anchor: scalarAnchor,
+            head: scalarHead,
+            to: destination
+        ) ?? "{}"
     }
 
     // MARK: - Node/mark commands at the engine's current selection

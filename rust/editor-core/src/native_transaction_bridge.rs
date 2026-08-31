@@ -245,6 +245,10 @@ enum CommandEnvelope {
         width: u32,
         height: u32,
     },
+    MoveSelection {
+        range: RangeEnvelope,
+        at: PositionEnvelope,
+    },
 }
 
 #[derive(serde::Deserialize)]
@@ -359,6 +363,10 @@ impl From<CommandEnvelope> for TypedCommand {
                 at: at.into(),
                 width,
                 height,
+            },
+            CommandEnvelope::MoveSelection { range, at } => Self::MoveSelection {
+                range: range.into(),
+                at: at.into(),
             },
         }
     }

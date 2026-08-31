@@ -276,6 +276,12 @@ impl PositionMap {
             return 0;
         }
 
+        let last_idx = self.blocks.len() - 1;
+        let last = &self.blocks[last_idx];
+        if last.is_void_block && doc_pos == self.effective_doc_start(last_idx).saturating_add(1) {
+            return doc_pos;
+        }
+
         // Check if the position is inside a block.
         if let Some(block_idx) = self.find_block_for_doc_pos(doc_pos) {
             let eff_doc_start = self.effective_doc_start(block_idx);
@@ -303,7 +309,6 @@ impl PositionMap {
         }
 
         // Position is beyond all blocks — snap to the end of the last block.
-        let last_idx = self.blocks.len() - 1;
         self.effective_doc_end(last_idx)
     }
 

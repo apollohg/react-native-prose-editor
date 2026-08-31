@@ -522,15 +522,327 @@ fn command_envelope(request_id: u64, base_revision: u64, command: Value) -> Stri
     .to_string()
 }
 
+fn terminal_custom_atom_config() -> Value {
+    json!({
+        "schema": {
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock" },
+                { "name": "text", "content": "", "role": "text" },
+                {
+                    "name": "counterCard",
+                    "content": "",
+                    "group": "block",
+                    "role": "block",
+                    "isVoid": true,
+                    "attrs": { "count": { "default": 0 } },
+                },
+            ],
+            "marks": [],
+        },
+        "initialization": {
+            "type": "localJson",
+            "json": {
+                "type": "doc",
+                "content": [{ "type": "counterCard", "attrs": { "count": 7 } }],
+            },
+        },
+    })
+}
+
+#[test]
+fn terminal_custom_atom_gap_accepts_text_in_one_transaction() {
+    let id = create_handle(terminal_custom_atom_config());
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 1, 1, "before"),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_input(
+        id.clone(),
+        input_envelope(2, revision_of(&id), "x"),
+    ));
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "counterCard", "attrs": { "count": 7 } },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+            ],
+        })
+    );
+    assert_eq!(
+        ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3))),
+        json!({ "changed": true })
+    );
+    assert_eq!(
+        document_json_of(&id),
+        terminal_custom_atom_config()["initialization"]["json"]
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn terminal_custom_atom_gap_accepts_return_in_one_transaction() {
+    let id = create_handle(terminal_custom_atom_config());
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 1, 1, "before"),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "splitBlock" })),
+    ));
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "counterCard", "attrs": { "count": 7 } },
+                { "type": "paragraph" },
+            ],
+        })
+    );
+    assert_eq!(
+        ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3))),
+        json!({ "changed": true })
+    );
+    assert_eq!(
+        document_json_of(&id),
+        terminal_custom_atom_config()["initialization"]["json"]
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn terminal_custom_atom_gap_backspace_deletes_atom_in_one_transaction() {
+    let id = create_handle(terminal_custom_atom_config());
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 1, 1, "before"),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph" }],
+        })
+    );
+    assert_eq!(
+        ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3))),
+        json!({ "changed": true })
+    );
+    assert_eq!(
+        document_json_of(&id),
+        terminal_custom_atom_config()["initialization"]["json"]
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn terminal_custom_atom_backspace_leaves_optional_root_empty() {
+    let mut config = terminal_custom_atom_config();
+    config["schema"]["nodes"][0]["content"] = json!("block*");
+    let id = create_handle(config);
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 1, 1, "before"),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(document_json_of(&id), json!({ "type": "doc" }));
+    destroy_handle(&id);
+}
+
+#[test]
+fn move_selection_command_reorders_text_in_one_transaction() {
+    let id = create_handle(local_json_config(
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"abcd"}]}]}"#,
+    ));
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope(1, revision_of(&id), 0, 2),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            2,
+            revision_of(&id),
+            json!({
+                "type": "moveSelection",
+                "range": {
+                    "from": { "offset": 0, "kind": "scalar" },
+                    "to": { "offset": 2, "kind": "scalar" },
+                },
+                "at": { "offset": 4, "kind": "scalar" },
+            }),
+        ),
+    ));
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "cdab" }],
+            }],
+        })
+    );
+    assert_eq!(
+        ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3))),
+        json!({ "changed": true })
+    );
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "abcd" }],
+            }],
+        })
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn move_selection_command_preserves_custom_atom_attributes() {
+    let id = create_handle(json!({
+        "schema": {
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock" },
+                { "name": "text", "content": "", "role": "text" },
+                {
+                    "name": "counterCard",
+                    "content": "",
+                    "group": "block",
+                    "role": "block",
+                    "isVoid": true,
+                    "attrs": {
+                        "title": { "default": "" },
+                        "count": { "default": 0 },
+                    },
+                },
+            ],
+            "marks": [],
+        },
+        "initialization": {
+            "type": "localJson",
+            "json": {
+                "type": "doc",
+                "content": [
+                    { "type": "counterCard", "attrs": { "title": "Keep", "count": 7 } },
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+                ],
+            },
+        },
+    }));
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope(1, revision_of(&id), 0, 1),
+    ));
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            2,
+            revision_of(&id),
+            json!({
+                "type": "moveSelection",
+                "range": {
+                    "from": { "offset": 0, "kind": "scalar" },
+                    "to": { "offset": 1, "kind": "scalar" },
+                },
+                "at": { "offset": 3, "kind": "scalar" },
+            }),
+        ),
+    ));
+
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+                { "type": "counterCard", "attrs": { "title": "Keep", "count": 7 } },
+            ],
+        })
+    );
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            3,
+            revision_of(&id),
+            json!({
+                "type": "moveSelection",
+                "range": {
+                    "from": { "offset": 2, "kind": "scalar" },
+                    "to": { "offset": 3, "kind": "scalar" },
+                },
+                "at": { "offset": 0, "kind": "scalar" },
+            }),
+        ),
+    ));
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "counterCard", "attrs": { "title": "Keep", "count": 7 } },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+            ],
+        })
+    );
+    destroy_handle(&id);
+}
+
 fn selection_envelope(request_id: u64, base_revision: u64, anchor: u32, head: u32) -> String {
+    selection_envelope_with_affinity(request_id, base_revision, anchor, head, "after")
+}
+
+fn selection_envelope_with_affinity(
+    request_id: u64,
+    base_revision: u64,
+    anchor: u32,
+    head: u32,
+    affinity: &str,
+) -> String {
     json!({
         "version": 1,
         "requestId": request_id.to_string(),
         "baseDocumentRevision": base_revision.to_string(),
         "selection": {
             "type": "text",
-            "anchor": { "offset": anchor, "kind": "scalar" },
-            "head": { "offset": head, "kind": "scalar" },
+            "anchor": { "offset": anchor, "kind": "scalar", "affinity": affinity },
+            "head": { "offset": head, "kind": "scalar", "affinity": affinity },
         },
     })
     .to_string()

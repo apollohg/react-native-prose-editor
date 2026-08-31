@@ -1136,7 +1136,6 @@ final class RenderBridge {
     /// Create a newline attributed string used between blocks.
     ///
     /// This newline separates consecutive blocks in the flat rendered text.
-    /// It carries minimal styling (base font, no special attributes).
     private static func interBlockNewline(
         baseFont: UIFont,
         textColor: UIColor,
@@ -1154,6 +1153,7 @@ final class RenderBridge {
         if let topLevelChildIndex {
             attrs[RenderBridgeAttributes.topLevelChildIndex] = NSNumber(value: topLevelChildIndex)
         }
+        attrs[RenderBridgeAttributes.blockBoundary] = true
         if let paragraphSpacingOverride,
            let paragraphStyle = (attrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
                as? NSMutableParagraphStyle

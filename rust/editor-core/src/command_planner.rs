@@ -18,10 +18,11 @@ pub(crate) use format::{
     plan_toggle_heading, plan_toggle_mark, plan_unset_mark, CommandReplacement, MarkCommandPlan,
 };
 pub(crate) use structure::{
-    plan_apply_list_type, plan_indent_list_item, plan_insert_node, plan_outdent_list_item,
-    plan_resize_image, plan_toggle_task_item_checked, plan_unwrap_from_list,
-    plan_update_node_attrs, plan_wrap_in_list_admitted, prove_structural_diff, simulate_plan,
-    structural_diff_bounded, AdmittedSemanticCommandPlan, ResizeImageRequest, SimulatedCommandPlan,
+    plan_apply_list_type, plan_indent_list_item, plan_insert_node, plan_move_selection,
+    plan_outdent_list_item, plan_resize_image, plan_toggle_task_item_checked,
+    plan_unwrap_from_list, plan_update_node_attrs, plan_wrap_in_list_admitted,
+    prove_structural_diff, simulate_plan, structural_diff_bounded, AdmittedSemanticCommandPlan,
+    ResizeImageRequest, SimulatedCommandPlan,
 };
 pub(crate) use text::{
     apply_operations, plan_delete_backward, plan_delete_scalar_range, plan_insert_text,
@@ -870,6 +871,56 @@ fn replace_void_and_empty_block(
             content: Fragment::from(vec![default_text_block(schema)?]),
         }],
         selection_after: Some(Selection::cursor(from.checked_add(1)?)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
+}
+
+fn replace_only_void_block(
+    document: &Document,
+    map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    doc_from: u32,
+    doc_to: u32,
+) -> Option<SemanticCommandPlan> {
+    let root = document.root();
+    let content = root.content()?;
+    let block = content.child(0)?;
+    let root_spec = schema.node(root.node_type())?;
+    if content.child_count() != 1
+        || doc_from != 0
+        || doc_to != root.content_size()
+        || map.doc_to_scalar(doc_from, document) != scalar_from
+        || map.doc_to_scalar(doc_to, document) != scalar_to
+        || !block.is_void()
+        || !schema
+            .node(block.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::Block))
+    {
+        return None;
+    }
+    if root_spec.content.matches::<&str, _>(&[], |child, symbol| {
+        schema.node_matches_symbol(child, symbol)
+    }) {
+        return None;
+    }
+    let replacement = default_text_block(schema)?;
+    if !root_spec
+        .content
+        .matches(&[replacement.node_type()], |child, symbol| {
+            schema.node_matches_symbol(child, symbol)
+        })
+    {
+        return None;
+    }
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::ReplaceRange {
+            from: 0,
+            to: block.node_size(),
+            content: Fragment::from(vec![replacement]),
+        }],
+        selection_after: Some(Selection::cursor(1)),
         history: SemanticCommandHistory::InputBoundary,
     })
 }

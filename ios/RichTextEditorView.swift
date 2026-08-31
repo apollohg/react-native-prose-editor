@@ -792,7 +792,7 @@ final class EditorTextViewInternalDelegate: NSObject, UITextViewDelegate {
 ///
 /// Every UITextView method runs on the main thread, and the UniFFI calls are
 /// synchronous.
-final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
+final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragDelegate, UITextDropDelegate {
     private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)!
 
     private lazy var internalTextViewDelegate = EditorTextViewInternalDelegate(editor: self)
@@ -947,6 +947,18 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         let adoptedUpdateJSON: String?
     }
 
+    private enum LocalTextDragState {
+        case idle
+        case dragging(
+            session: ObjectIdentifier,
+            editorId: UInt64,
+            documentRevision: UInt64,
+            supported: Bool,
+            range: (from: UInt32, to: UInt32)
+        )
+        case awaitingUIKitCleanup(session: ObjectIdentifier, editorId: UInt64)
+    }
+
     private enum PositionCacheUpdate {
         case scan
         case invalidate
@@ -968,9 +980,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// Guard flag to prevent re-entrant input interception while we're
     /// applying state from Rust (calling replaceCharacters on the text storage).
     var isApplyingRustState = false
+    private var localTextDragState = LocalTextDragState.idle
     private var visibleSelectionTintColor: UIColor = .systemBlue
     private var hidesNativeSelectionChrome = false
     private var isPreviewingImageResize = false
+    private var terminalAtomGapContentInsetBottom: CGFloat = 0
     var allowImageResizing = true
 
     override var isEditable: Bool {
@@ -1042,6 +1056,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         didSet {
             guard oldValue != heightBehavior else { return }
             isScrollEnabled = heightBehavior == .fixed
+            updateTerminalAtomGapScrollExtent()
             invalidateAutoGrowHeightMeasurement()
             invalidateIntrinsicContentSize()
             notifyHeightChangeIfNeeded(force: true)
@@ -1271,12 +1286,233 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         // mutations (reconciliation fallback).
         textStorage.delegate = self
         ensureInternalTextViewDelegate()
+        textDragDelegate = self
+        textDropDelegate = self
         addGestureRecognizer(imageSelectionTapRecognizer)
         installImageSelectionTapDependencies()
 
         addSubview(placeholderLabel)
         refreshPlaceholderVisibility()
         refreshNativeSelectionChromeVisibility()
+    }
+
+    func textDraggableView(
+        _ textDraggableView: UIView & UITextDraggable,
+        itemsForDrag dragRequest: UITextDragRequest
+    ) -> [UIDragItem] {
+        let requestedRange = PositionBridge.textRangeToScalarRange(
+            dragRequest.dragRange,
+            in: self
+        )
+        let range = scalarRange(for: dragRequest)
+        if editorId != 0,
+           range.from < range.to,
+           let documentRevision = EditorV2Shadow.documentRevision(id: editorId)
+        {
+            let narrowedToVoidAttachment = !dragRequest.isSelected
+                && (range.from != requestedRange.from || range.to != requestedRange.to)
+            localTextDragState = .dragging(
+                session: ObjectIdentifier(dragRequest.dragSession as AnyObject),
+                editorId: editorId,
+                documentRevision: documentRevision,
+                supported: narrowedToVoidAttachment
+                    || containsNoBlockBoundary(dragRequest.dragRange),
+                range: range
+            )
+        }
+        return dragRequest.suggestedItems
+    }
+
+    private func containsNoBlockBoundary(_ range: UITextRange) -> Bool {
+        let start = offset(from: beginningOfDocument, to: range.start)
+        let end = offset(from: beginningOfDocument, to: range.end)
+        guard start >= 0, end > start, end <= textStorage.length else { return false }
+        var containsBoundary = false
+        textStorage.enumerateAttribute(
+            RenderBridgeAttributes.blockBoundary,
+            in: NSRange(location: start, length: end - start)
+        ) { value, _, stop in
+            guard value != nil else { return }
+            containsBoundary = true
+            stop.pointee = true
+        }
+        return !containsBoundary
+    }
+
+    private func scalarRange(for dragRequest: UITextDragRequest) -> (from: UInt32, to: UInt32) {
+        let range = PositionBridge.textRangeToScalarRange(dragRequest.dragRange, in: self)
+        guard !dragRequest.isSelected else { return range }
+
+        let start = offset(from: beginningOfDocument, to: dragRequest.dragRange.start)
+        let end = offset(from: beginningOfDocument, to: dragRequest.dragRange.end)
+        guard start >= 0, end > start, start < textStorage.length else { return range }
+        let length = min(end, textStorage.length) - start
+        var atomRange: (from: UInt32, to: UInt32)?
+        textStorage.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: start, length: length)
+        ) { value, characterRange, stop in
+            guard value is NSTextAttachment,
+                  textStorage.attribute(
+                    RenderBridgeAttributes.voidNodeType,
+                    at: characterRange.location,
+                    effectiveRange: nil
+                  ) is String
+            else {
+                return
+            }
+            let from = PositionBridge.utf16OffsetToScalar(characterRange.location, in: self)
+            let to = PositionBridge.utf16OffsetToScalar(NSMaxRange(characterRange), in: self)
+            atomRange = (from, to)
+            stop.pointee = true
+        }
+        return atomRange ?? range
+    }
+
+    func textDroppableView(
+        _ textDroppableView: UIView & UITextDroppable,
+        proposalForDrop drop: UITextDropRequest
+    ) -> UITextDropProposal {
+        guard let drag = matchingLocalTextDrag(for: drop) else {
+            return drop.suggestedProposal
+        }
+        let destination = PositionBridge.textViewToScalar(drop.dropPosition, in: self)
+        guard drag.supported,
+              drag.documentRevision == EditorV2Shadow.documentRevision(id: editorId),
+              canMove(drag.range, to: destination)
+        else {
+            return UITextDropProposal(operation: .forbidden)
+        }
+
+        let proposal = UITextDropProposal(operation: .move)
+        proposal.dropAction = .insert
+        proposal.dropPerformer = .delegate
+        proposal.dropProgressMode = .custom
+        proposal.useFastSameViewOperations = false
+        return proposal
+    }
+
+    func textDroppableView(
+        _ textDroppableView: UIView & UITextDroppable,
+        willPerformDrop drop: UITextDropRequest
+    ) {
+        guard let drag = matchingLocalTextDrag(for: drop) else { return }
+        let destination = PositionBridge.textViewToScalar(drop.dropPosition, in: self)
+        guard drag.supported,
+              drag.documentRevision == EditorV2Shadow.documentRevision(id: editorId),
+              canMove(drag.range, to: destination)
+        else {
+            localTextDragState = .idle
+            return
+        }
+        guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
+        guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
+        guard drag.documentRevision == EditorV2Shadow.documentRevision(id: editorId) else {
+            localTextDragState = .idle
+            return
+        }
+
+        var applied = false
+        performInterceptedInput {
+            let updateJSON = EditorV2Shadow.moveSelectionAtScalar(
+                id: editorId,
+                scalarAnchor: drag.range.from,
+                scalarHead: drag.range.to,
+                destination: destination
+            )
+            applied = applyUpdateJSON(updateJSON)
+        }
+        if applied {
+            localTextDragState = .awaitingUIKitCleanup(
+                session: drag.session,
+                editorId: drag.editorId
+            )
+        } else {
+            localTextDragState = .idle
+        }
+    }
+
+    func textDroppableView(
+        _ textDroppableView: UIView & UITextDroppable,
+        previewForDroppingAllItemsWithDefault defaultPreview: UITargetedDragPreview
+    ) -> UITargetedDragPreview? {
+        defaultPreview
+    }
+
+    func textDraggableView(
+        _ textDraggableView: UIView & UITextDraggable,
+        dragSessionDidEnd session: UIDragSession,
+        with operation: UIDropOperation
+    ) {
+        finishLocalTextDrag(for: session)
+    }
+
+    private func matchingLocalTextDrag(
+        for drop: UITextDropRequest
+    ) -> (
+        session: ObjectIdentifier,
+        editorId: UInt64,
+        documentRevision: UInt64,
+        supported: Bool,
+        range: (from: UInt32, to: UInt32)
+    )? {
+        guard drop.isSameView,
+              let localSession = drop.dropSession.localDragSession,
+              case let .dragging(
+                  session,
+                  sourceEditorId,
+                  documentRevision,
+                  supported,
+                  range
+              ) = localTextDragState,
+              sourceEditorId == editorId,
+              session == ObjectIdentifier(localSession as AnyObject)
+        else {
+            return nil
+        }
+        return (session, sourceEditorId, documentRevision, supported, range)
+    }
+
+    private func canMove(
+        _ range: (from: UInt32, to: UInt32),
+        to destination: UInt32
+    ) -> Bool {
+        destination < range.from || destination > range.to
+    }
+
+    private func finishLocalTextDrag(for session: UIDragSession) {
+        let sessionID = ObjectIdentifier(session as AnyObject)
+        guard case let .awaitingUIKitCleanup(completedSession, sourceEditorId) = localTextDragState,
+              completedSession == sessionID,
+              sourceEditorId == editorId
+        else {
+            if case let .dragging(activeSession, _, _, _, _) = localTextDragState,
+               activeSession == sessionID {
+                localTextDragState = .idle
+            }
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  case let .awaitingUIKitCleanup(activeSession, activeEditorId) = self.localTextDragState,
+                  activeSession == sessionID,
+                  activeEditorId == self.editorId
+            else {
+                return
+            }
+            self.localTextDragState = .idle
+            if self.textStorage.string != self.lastAuthorizedText {
+                _ = self.applyAttributedRender(
+                    NSAttributedString(attributedString: self.lastAuthorizedAttributedTextStorage),
+                    usedPatch: false,
+                    positionCacheUpdate: .invalidate
+                )
+            }
+            self.applyUpdateJSON(
+                EditorV2Shadow.getCurrentState(id: self.editorId),
+                notifyDelegate: false
+            )
+        }
     }
 
     func setAutoCapitalize(_ autoCapitalize: String?) {
@@ -1514,6 +1750,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        updateTerminalAtomGapScrollExtent()
         let placeholderX = textContainerInset.left + textContainer.lineFragmentPadding
         let placeholderY = textContainerInset.top
         let placeholderWidth = max(
@@ -2017,12 +2254,29 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         )
     }
 
+    override func closestPosition(to point: CGPoint) -> UITextPosition? {
+        if let gapRect = terminalAtomGapCaretRect(),
+           point.y >= gapRect.minY,
+           point.y <= gapRect.maxY,
+           point.x >= textContainerInset.left,
+           point.x <= bounds.width - textContainerInset.right
+        {
+            return endOfDocument
+        }
+        return super.closestPosition(to: point)
+    }
+
     func measuredAutoGrowHeightForTesting(width: CGFloat) -> CGFloat {
         measuredAutoGrowHeight(forWidth: width)
     }
 
     private func resolvedCaretReferenceRect(for position: UITextPosition) -> CGRect {
         let directRect = super.caretRect(for: position)
+        if offset(from: beginningOfDocument, to: position) == textStorage.length,
+           let gapRect = terminalAtomGapCaretRect(caretWidth: max(directRect.width, 2))
+        {
+            return gapRect
+        }
         if let horizontalRuleRect = resolvedHorizontalRuleAdjacentCaretRect(
             for: position,
             directRect: directRect
@@ -2064,6 +2318,65 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
 
         return directRect
+    }
+
+    private func terminalAtomGapCaretRect(caretWidth: CGFloat = 2) -> CGRect? {
+        guard let gap = terminalAtomGapLayout() else { return nil }
+        return CGRect(
+            x: textContainerInset.left + textContainer.lineFragmentPadding - contentOffset.x,
+            y: textContainerInset.top + gap.originY - contentOffset.y,
+            width: caretWidth,
+            height: gap.height
+        )
+    }
+
+    private func terminalAtomGapLayout() -> (originY: CGFloat, height: CGFloat)? {
+        guard let attachmentRect = terminalAtomAttachmentRect() else { return nil }
+        return (attachmentRect.maxY, ceil(resolvedDefaultFont().lineHeight))
+    }
+
+    private func terminalAtomGapRequiredContentHeight() -> CGFloat? {
+        guard let gap = terminalAtomGapLayout() else { return nil }
+        return ceil(
+            textContainerInset.top
+                + gap.originY
+                + gap.height
+                + textContainerInset.bottom
+        )
+    }
+
+    private func updateTerminalAtomGapScrollExtent() {
+        let baseBottom = max(0, contentInset.bottom - terminalAtomGapContentInsetBottom)
+        let requiredHeight = heightBehavior == .fixed
+            ? terminalAtomGapRequiredContentHeight() ?? 0
+            : 0
+        let gapBottom = max(0, requiredHeight - contentSize.height)
+        terminalAtomGapContentInsetBottom = gapBottom
+        let targetBottom = baseBottom + gapBottom
+        guard abs(contentInset.bottom - targetBottom) > 0.5 else { return }
+        var updated = contentInset
+        updated.bottom = targetBottom
+        contentInset = updated
+    }
+
+    private func terminalAtomAttachmentRect() -> CGRect? {
+        guard textStorage.length > 0 else { return nil }
+        let characterIndex = textStorage.length - 1
+        guard textStorage.attribute(
+            .attachment,
+            at: characterIndex,
+            effectiveRange: nil
+        ) is AtomBlockAttachment else {
+            return nil
+        }
+
+        editorLayoutManager.ensureLayout(for: textContainer)
+        let glyphRange = editorLayoutManager.glyphRange(
+            forCharacterRange: NSRange(location: characterIndex, length: 1),
+            actualCharacterRange: nil
+        )
+        guard glyphRange.length > 0 else { return nil }
+        return editorLayoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
     }
 
     private func resolvedHorizontalRuleAdjacentCaretRect(
@@ -2124,6 +2437,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         if editorId == id, initialHTML == nil {
             return
         }
+        localTextDragState = .idle
         if editorId != id {
             EditorV2Registry.adapter(forLegacyId: editorId)?
                 .releaseNativeBindingOwner(token: nativeBindingToken)
@@ -3737,7 +4051,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             }
             lastHeightNotifyUsedRectNanosForTesting =
                 DispatchTime.now().uptimeNanoseconds - usedRectStartedAt
-            let layoutHeight = ceil(usedRect.height + textContainerInset.top + textContainerInset.bottom)
+            let terminalGapBottom = terminalAtomGapLayout().map {
+                $0.originY + $0.height
+            } ?? 0
+            let layoutHeight = ceil(
+                max(usedRect.height, terminalGapBottom)
+                    + textContainerInset.top
+                    + textContainerInset.bottom
+            )
 
             let contentSizeStartedAt = DispatchTime.now().uptimeNanoseconds
             let contentHeight = ceil(contentSize.height)
@@ -4696,6 +5017,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     @discardableResult
     func discardTransientNativeInputForEditorRebind() -> String? {
+        localTextDragState = .idle
         let externalCompositionResultJSON =
             cancelExternalTextCompositionForLifecycleIfNeeded()
         deferredInsertTexts.removeAll()
@@ -4819,6 +5141,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         allowAfterBlur: Bool,
         allowWhileIntercepting: Bool
     ) -> NativeTextMutationDrainResult {
+        if case .awaitingUIKitCleanup = localTextDragState {
+            pendingNativeTextMutation = nil
+            nativeTextMutationCommitScheduled = false
+            reconciliationWorkScheduled = false
+            return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: nil)
+        }
         if reconciliationWorkScheduled, textStorage.string != lastAuthorizedText {
             let adoptedUpdateJSON = restoreRejectedNativeTextMutation()
             return NativeTextMutationDrainResult(
@@ -6669,6 +6997,9 @@ extension EditorTextView: NSTextStorageDelegate {
     ) {
         // Only care about actual character edits, not attribute-only changes.
         guard editedMask.contains(.editedCharacters) else { return }
+        if case .awaitingUIKitCleanup = localTextDragState {
+            return
+        }
 
         // Skip if this change came from our own Rust apply path, transient IME
         // composition, or an inline prediction. iOS inline predictions (iOS 17+)

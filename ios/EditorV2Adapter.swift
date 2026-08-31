@@ -2498,6 +2498,23 @@ final class EditorV2Adapter {
         return commandAtSelection(["type": "toggleTaskItemChecked"], anchor: anchor, head: head)
     }
 
+    func moveSelection(anchor: UInt32, head: UInt32, to destination: UInt32) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        return commandAtSelection(
+            [
+                "type": "moveSelection",
+                "range": [
+                    "from": EditorV2PositionBridge.positionEnvelope(scalar: min(anchor, head)),
+                    "to": EditorV2PositionBridge.positionEnvelope(scalar: max(anchor, head)),
+                ],
+                "at": EditorV2PositionBridge.positionEnvelope(scalar: destination),
+            ],
+            anchor: anchor,
+            head: head
+        )
+    }
+
     private func commandAtSelection(_ command: [String: Any], anchor: UInt32, head: UInt32) -> String? {
         if nativeOwnerId != nil {
             var intent = nativeIntent("command", anchor: anchor, head: head)

@@ -455,6 +455,118 @@ fn resolve_block_insert_pos(document: &Document, schema: &Schema, position: u32)
         .unwrap_or(position)
 }
 
+fn resolve_block_drop_pos(document: &Document, schema: &Schema, position: u32) -> u32 {
+    let Ok(resolved) = document.resolve(position) else {
+        return position;
+    };
+    let parent = resolved.parent(document);
+    if !schema
+        .node(parent.node_type())
+        .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+    {
+        return position;
+    }
+    let Some(start) = node_delete_start(document, &resolved.node_path) else {
+        return position;
+    };
+    if resolved.parent_offset.saturating_mul(2) < parent.content_size() {
+        start
+    } else {
+        start.checked_add(parent.node_size()).unwrap_or(position)
+    }
+}
+
+fn selected_fragment(document: &Document, from: u32, to: u32) -> Option<Fragment> {
+    let resolved_from = document.resolve(from).ok()?;
+    let resolved_to = document.resolve(to).ok()?;
+    if resolved_from.node_path != resolved_to.node_path {
+        return None;
+    }
+    let parent = resolved_from.parent(document);
+    let content = parent.content()?;
+    let from_offset = resolved_from.parent_offset;
+    let to_offset = resolved_to.parent_offset;
+    let mut offset = 0u32;
+    let mut selected = Vec::new();
+
+    for child in content.iter() {
+        let child_end = offset.checked_add(child.node_size())?;
+        let overlap_from = from_offset.max(offset);
+        let overlap_to = to_offset.min(child_end);
+        if overlap_from < overlap_to {
+            if let Some(text) = child.text_str() {
+                let start = usize::try_from(overlap_from.checked_sub(offset)?).ok()?;
+                let len = usize::try_from(overlap_to.checked_sub(overlap_from)?).ok()?;
+                let value = text.chars().skip(start).take(len).collect::<String>();
+                selected.push(Node::text(value, child.marks().to_vec()));
+            } else if overlap_from == offset && overlap_to == child_end {
+                selected.push(child.clone());
+            } else {
+                return None;
+            }
+        }
+        offset = child_end;
+    }
+
+    (!selected.is_empty()).then(|| Fragment::from(selected))
+}
+
+pub(crate) fn plan_move_selection(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    from: u32,
+    to: u32,
+    destination: u32,
+    limits: &ResourceLimits,
+) -> Option<SemanticCommandPlan> {
+    let (from, to) = (from.min(to), from.max(to));
+    if from >= to || (from..=to).contains(&destination) {
+        return None;
+    }
+
+    let fragment = selected_fragment(document, from, to)?;
+    let contains_block = fragment.iter().any(|node| {
+        schema.node(node.node_type()).is_some_and(|spec| {
+            matches!(
+                spec.role,
+                NodeRole::Block | NodeRole::TextBlock | NodeRole::List { .. }
+            )
+        })
+    });
+    let destination = if contains_block {
+        resolve_block_drop_pos(document, schema, destination)
+    } else {
+        destination
+    };
+    if (from..=to).contains(&destination) {
+        return None;
+    }
+    let mapped_destination = if destination > to {
+        destination.checked_sub(to.checked_sub(from)?)?
+    } else {
+        destination
+    };
+    let cursor = mapped_destination.checked_add(fragment.size())?;
+    let plan = SemanticCommandPlan {
+        operations: vec![
+            SemanticOperation::ReplaceRange {
+                from,
+                to,
+                content: Fragment::empty(),
+            },
+            SemanticOperation::ReplaceRange {
+                from: mapped_destination,
+                to: mapped_destination,
+                content: fragment,
+            },
+        ],
+        selection_after: Some(Selection::cursor(cursor)),
+        history: SemanticCommandHistory::InputBoundary,
+    };
+    admitted_plan(document, schema, selection, plan, limits).map(|admitted| admitted.plan)
+}
+
 fn empty_text_block_range(
     document: &Document,
     schema: &Schema,

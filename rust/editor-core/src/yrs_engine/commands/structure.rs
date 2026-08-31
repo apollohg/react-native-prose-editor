@@ -16,6 +16,7 @@ fn selection(context: &PlanningContext<'_>) -> crate::selection::Selection {
 fn explicit_doc_position(
     context: &PlanningContext<'_>,
     position: RevisionedPosition,
+    field: &'static str,
 ) -> OperationResult<u32> {
     let rendered = crate::render::rendered_text(context.document, context.schema);
     let scalar = crate::yrs_engine::position::editor_offset_to_scalar(
@@ -28,8 +29,8 @@ fn explicit_doc_position(
         OperationError::position_invalid(
             context.request_id,
             0,
-            "at",
-            "at is outside the rendered document",
+            field,
+            format!("{field} is outside the rendered document"),
         )
     })?;
     Ok(context.position_map.scalar_to_doc(scalar, context.document))
@@ -112,7 +113,7 @@ pub(super) fn plan(
             )
         }
         TypedCommand::ResizeImage { at, width, height } => {
-            let doc_position = explicit_doc_position(&context, at)?;
+            let doc_position = explicit_doc_position(&context, at, "at")?;
             crate::command_planner::plan_resize_image(
                 context.document,
                 context.position_map,
@@ -123,6 +124,20 @@ pub(super) fn plan(
                     width,
                     height,
                 },
+                context.resource_limits,
+            )
+        }
+        TypedCommand::MoveSelection { range, at } => {
+            let from = explicit_doc_position(&context, range.from, "range.from")?;
+            let to = explicit_doc_position(&context, range.to, "range.to")?;
+            let destination = explicit_doc_position(&context, at, "at")?;
+            crate::command_planner::plan_move_selection(
+                context.document,
+                context.schema,
+                &selection,
+                from,
+                to,
+                destination,
                 context.resource_limits,
             )
         }

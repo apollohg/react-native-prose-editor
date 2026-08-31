@@ -1,7 +1,7 @@
 use crate::boundary::ResourceLimits;
 use crate::model::{Document, Fragment, Node};
 use crate::position::PositionMap;
-use crate::schema::Schema;
+use crate::schema::{NodeRole, Schema};
 use crate::selection::Selection;
 use crate::transform::Transaction;
 
@@ -37,10 +37,28 @@ pub(crate) fn plan_insert_text(
     if anchor != head || text.is_empty() {
         return None;
     }
+    let marks = insertion_marks(document, schema, *anchor, stored_marks, true);
+    if is_terminal_void_block_gap(document, schema, *anchor) {
+        let text_len = u32::try_from(text.chars().count()).ok()?;
+        let block = default_text_block_with_content(
+            schema,
+            Fragment::from(vec![Node::text(text.to_string(), marks)]),
+        )?;
+        return Some(SemanticCommandPlan {
+            operations: vec![SemanticOperation::InsertNode {
+                pos: *anchor,
+                node: block,
+            }],
+            selection_after: Some(Selection::cursor(
+                anchor.checked_add(1)?.checked_add(text_len)?,
+            )),
+            history: SemanticCommandHistory::InputBoundary,
+        });
+    }
     Some(SemanticCommandPlan::one(SemanticOperation::InsertText {
         pos: *anchor,
         text: text.to_string(),
-        marks: insertion_marks(document, schema, *anchor, stored_marks, true),
+        marks,
     }))
 }
 
@@ -74,14 +92,29 @@ pub(crate) fn plan_replace_selection_text(
     })
 }
 
-pub(super) fn default_text_block(schema: &Schema) -> Option<Node> {
+fn default_text_block_with_content(schema: &Schema, content: Fragment) -> Option<Node> {
     let spec = schema.preferred_text_block()?;
     let attrs = spec
         .attrs
         .iter()
         .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
         .collect();
-    Some(Node::element(spec.name.clone(), attrs, Fragment::empty()))
+    Some(Node::element(spec.name.clone(), attrs, content))
+}
+
+pub(super) fn default_text_block(schema: &Schema) -> Option<Node> {
+    default_text_block_with_content(schema, Fragment::empty())
+}
+
+fn is_terminal_void_block_gap(document: &Document, schema: &Schema, position: u32) -> bool {
+    let root = document.root();
+    if position != root.content_size() {
+        return false;
+    }
+    root.content()
+        .and_then(|content| content.iter().last())
+        .and_then(|node| schema.node(node.node_type()))
+        .is_some_and(|spec| spec.is_void && matches!(spec.role, NodeRole::Block))
 }
 
 pub(super) fn node_delete_start(document: &Document, path: &[u32]) -> Option<u32> {
@@ -198,6 +231,17 @@ pub(crate) fn plan_delete_scalar_range(
     ) {
         return Ok(Some(plan));
     }
+    if let Some(plan) = super::replace_only_void_block(
+        document,
+        position_map,
+        schema,
+        scalar_from,
+        scalar_to,
+        doc_from,
+        doc_to,
+    ) {
+        return Ok(Some(plan));
+    }
     if let Some((from, to)) = super::empty_block_delete_range(
         document,
         position_map,
@@ -269,6 +313,18 @@ pub(crate) fn plan_split(
     let scalar_to = scalar_anchor.max(scalar_head);
     let doc_from = position_map.scalar_to_doc(scalar_from, document);
     let doc_to = position_map.scalar_to_doc(scalar_to, document);
+
+    if doc_from == doc_to && is_terminal_void_block_gap(document, schema, doc_from) {
+        let block = default_text_block(schema).ok_or(())?;
+        return Ok(Some(SemanticCommandPlan {
+            operations: vec![SemanticOperation::InsertNode {
+                pos: doc_from,
+                node: block,
+            }],
+            selection_after: Some(Selection::cursor(doc_from.checked_add(1).ok_or(())?)),
+            history: SemanticCommandHistory::InputBoundary,
+        }));
+    }
 
     if doc_from == doc_to {
         if let Some(plan) = plan_code_split(document, schema, doc_from, limits)? {
