@@ -206,6 +206,57 @@ final class AtomMountingTests: XCTestCase {
         XCTAssertEqual(atomTop - precedingLineBottom, 18, accuracy: 0.5)
     }
 
+    func testAtomContainerUsesAtomThemeSpacingBeforeFollowingParagraph() throws {
+        let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 320))
+        let value = RenderBridge.renderElements(
+            fromJSON: """
+            [
+                {"type":"voidBlock","nodeType":"counterCard","docPos":1},
+                {"type":"blockStart","nodeType":"paragraph","depth":0},
+                {"type":"textRun","text":"Below","marks":[]},
+                {"type":"blockEnd"}
+            ]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label,
+            theme: EditorTheme(dictionary: [
+                "text": ["spacingAfter": 11],
+                "paragraph": ["spacingAfter": 29],
+            ]),
+            atomConfiguration: AtomRenderConfiguration(
+                registeredNodeTypes: ["counterCard"],
+                estimatedHeights: ["counterCard": 72],
+                measuredHeights: [:]
+            )
+        )
+        editor.textView.textStorage.setAttributedString(value)
+        let attachmentRange = (value.string as NSString).range(of: "\u{FFFC}")
+        let attachment = try XCTUnwrap(
+            value.attribute(.attachment, at: attachmentRange.location, effectiveRange: nil)
+                as? AtomBlockAttachment
+        )
+        editor.mountAtomChild(
+            atomChild(key: attachment.atomKey, height: 72),
+            atomKey: attachment.atomKey
+        )
+        editor.layoutIfNeeded()
+
+        let layoutManager = editor.textView.layoutManager
+        layoutManager.ensureLayout(for: editor.textView.textContainer)
+        let atomBottom = try XCTUnwrap(
+            editor.atomHostContainer(for: attachment.atomKey)
+        ).frame.maxY
+        let followingCharacter = (value.string as NSString).range(of: "Below").location
+        let followingGlyph = layoutManager.glyphIndexForCharacter(at: followingCharacter)
+        let followingLineRect = layoutManager.lineFragmentUsedRect(
+            forGlyphAt: followingGlyph,
+            effectiveRange: nil
+        )
+        let followingLineTop = editor.textView.textContainerInset.top + followingLineRect.minY
+
+        XCTAssertEqual(followingLineTop - atomBottom, 11, accuracy: 0.5)
+    }
+
     func testUnmountClearsHostAndMeasuredHeight() {
         let editor = NativeEditorExpoView()
         editor.frame = CGRect(x: 0, y: 0, width: 320, height: 240)

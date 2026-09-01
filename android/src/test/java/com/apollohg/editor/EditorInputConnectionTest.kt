@@ -5,6 +5,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -38,11 +40,260 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class EditorInputConnectionTest {
+    @Test
+    fun `tap below terminal atom activates gap for return and typing`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editText = EditorEditText(activity).apply {
+            applyAtomRenderConfiguration(
+                AtomRenderConfiguration(
+                    registeredNodeTypes = setOf("counterCard"),
+                    estimatedHeightsDp = mapOf("counterCard" to 72f),
+                    measuredHeightsPx = emptyMap(),
+                )
+            )
+            applyRenderJSON(
+                """[{"type":"voidBlock","nodeType":"counterCard","docPos":1,"atomId":"counter-1"}]"""
+            )
+            editorId = 9_001L
+        }
+        val rendered = editText.text as Spanned
+        assertEquals(1, rendered.getSpans(0, rendered.length, AtomBlockSpan::class.java).size)
+        activity.setContentView(editText)
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.AT_MOST),
+        )
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        val textLayout = requireNotNull(editText.layout)
+        val atomBottom = textLayout.getLineBottom(textLayout.getLineForOffset(0))
+        val tapX = editText.totalPaddingLeft + 4f
+        val tapY = editText.totalPaddingTop + atomBottom + editText.lineHeight / 2f
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        val handledDown = editText.onTouchEvent(down)
+        down.recycle()
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        val handledUp = editText.onTouchEvent(up)
+        up.recycle()
+
+        assertTrue(handledDown)
+        assertTrue(handledUp)
+        assertEquals(editText.text!!.length, editText.selectionStart)
+        val caret = requireNotNull(editText.nativeCursorDrawRect())
+        assertTrue(
+            "caret=$caret atomBottom=$atomBottom tap=$tapX,$tapY measured=${editText.measuredWidth}x${editText.measuredHeight} gapHeight=${editText.terminalAtomGapHeightForTesting()}",
+            caret.top >= atomBottom,
+        )
+
+        var splitPosition: Int? = null
+        var insertion: Pair<String, Int>? = null
+        editText.onSplitBlockInRustForTesting = { scalar -> splitPosition = scalar }
+        editText.onInsertTextInRustForTesting = { text, scalar -> insertion = text to scalar }
+        val inputConnection = requireNotNull(editText.onCreateInputConnection(EditorInfo()))
+        assertTrue(inputConnection.commitText("\n", 1))
+        assertEquals(1, splitPosition)
+
+        assertTrue(inputConnection.commitText("x", 1))
+
+        assertEquals("x" to 1, insertion)
+    }
+
+    @Test
+    @Config(sdk = [28, 34])
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `terminal atom gap draws a visible caret`() {
+        val activity = Robolectric.buildActivity(Activity::class.java)
+            .setup()
+            .visible()
+            .windowFocusChanged(true)
+            .get()
+        activity.setTheme(android.R.style.Theme_Material_Light)
+        val editText = terminalAtomEditText(activity)
+        activity.setContentView(editText)
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.AT_MOST),
+        )
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        assertTrue(editText.requestFocus())
+        tapTerminalAtomGap(editText)
+
+        val caret = requireNotNull(editText.nativeCursorDrawRect())
+        val bitmap = Bitmap.createBitmap(
+            editText.measuredWidth,
+            editText.measuredHeight,
+            Bitmap.Config.ARGB_8888,
+        )
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.WHITE)
+        editText.draw(canvas)
+        val x = (editText.totalPaddingLeft + caret.centerX()).toInt()
+            .coerceIn(0, bitmap.width - 1)
+        val y = (editText.totalPaddingTop + caret.centerY()).toInt()
+            .coerceIn(0, bitmap.height - 1)
+
+        val pixel = bitmap.getPixel(x, y)
+        assertTrue(
+            "focused=${editText.isFocused} window=${editText.hasWindowFocus()} cursor=${editText.isCursorVisible} caret=$caret pixel=$pixel at=$x,$y scroll=${editText.scrollX},${editText.scrollY}",
+            pixel != Color.WHITE,
+        )
+    }
+
+    @Test
+    fun `terminal atom gap uses spare minimum height without growing again`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editText = terminalAtomEditText(activity).apply {
+            minHeight = 300
+        }
+        activity.setContentView(editText)
+
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(500, View.MeasureSpec.AT_MOST),
+        )
+
+        assertEquals(300, editText.measuredHeight)
+    }
+
+    @Test
+    fun `terminal atom gap contributes to auto grow height after layout`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editText = terminalAtomEditText(activity)
+        activity.setContentView(editText)
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(500, View.MeasureSpec.AT_MOST),
+        )
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        val textLayout = requireNotNull(editText.layout)
+        val atomBottom = textLayout.getLineBottom(textLayout.getLineForOffset(0))
+        val expectedHeight = atomBottom + editText.lineHeight +
+            editText.compoundPaddingTop + editText.compoundPaddingBottom
+
+        assertTrue(editText.resolveAutoGrowHeight() >= expectedHeight)
+    }
+
+    @Test
+    fun `active terminal atom gap does not add viewport clearance to auto grow scrolling`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editText = terminalAtomEditText(activity).apply {
+            setHeightBehavior(EditorHeightBehavior.AUTO_GROW)
+        }
+        activity.setContentView(editText)
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(500, View.MeasureSpec.AT_MOST),
+        )
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        assertFalse(editText.canScrollVertically(1))
+        assertTrue(editText.requestFocus())
+
+        tapTerminalAtomGap(editText)
+        shadowOf(Looper.getMainLooper()).idle()
+        val scrollRangeWithoutInset = editText.verticalScrollRangeForTesting()
+        editText.setViewportBottomInsetPx(24)
+
+        assertEquals(scrollRangeWithoutInset, editText.verticalScrollRangeForTesting())
+        assertFalse(editText.canScrollVertically(1))
+    }
+
+    @Test
+    fun `nested terminal atom does not expose a document root gap`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editText = terminalAtomEditText(
+            activity,
+            """
+            [
+              {"type":"blockStart","nodeType":"blockquote","depth":0},
+              {"type":"voidBlock","nodeType":"counterCard","docPos":2,"atomId":"counter-1"},
+              {"type":"blockEnd"}
+            ]
+            """.trimIndent(),
+        )
+        activity.setContentView(editText)
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(500, View.MeasureSpec.AT_MOST),
+        )
+
+        assertEquals(0, editText.terminalAtomGapHeightForTesting())
+    }
+
+    @Test
+    fun `active terminal atom gap scrolls into a constrained viewport`() {
+        val bottomInset = 24
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editText = terminalAtomEditText(activity).apply {
+            setHeightBehavior(EditorHeightBehavior.FIXED)
+        }
+        activity.setContentView(editText)
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.AT_MOST),
+        )
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        assertTrue(editText.requestFocus())
+        tapTerminalAtomGap(editText)
+
+        editText.layoutParams.height = 80
+        editText.setViewportBottomInsetPx(bottomInset)
+        editText.measure(
+            View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(80, View.MeasureSpec.EXACTLY),
+        )
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val caret = requireNotNull(editText.nativeCursorDrawRect())
+        assertTrue(
+            "focused=${editText.isFocused} laidOut=${editText.isLaidOut} caret=$caret scrollY=${editText.scrollY} height=${editText.height}",
+            editText.scrollY > 0,
+        )
+        assertTrue(
+            "caret=$caret scrollY=${editText.scrollY} paddingTop=${editText.totalPaddingTop} height=${editText.height}",
+            editText.totalPaddingTop + caret.bottom - editText.scrollY <=
+                editText.height - bottomInset,
+        )
+    }
+
+    private fun terminalAtomEditText(
+        activity: Activity,
+        renderJson: String =
+            """[{"type":"voidBlock","nodeType":"counterCard","docPos":1,"atomId":"counter-1"}]""",
+    ): EditorEditText =
+        EditorEditText(activity).apply {
+            applyAtomRenderConfiguration(
+                AtomRenderConfiguration(
+                    registeredNodeTypes = setOf("counterCard"),
+                    estimatedHeightsDp = mapOf("counterCard" to 72f),
+                    measuredHeightsPx = emptyMap(),
+                )
+            )
+            applyRenderJSON(renderJson)
+            editorId = 9_001L
+        }
+
+    private fun tapTerminalAtomGap(editText: EditorEditText) {
+        val textLayout = requireNotNull(editText.layout)
+        val atomBottom = textLayout.getLineBottom(textLayout.getLineForOffset(0))
+        val x = editText.totalPaddingLeft + 4f
+        val y = editText.totalPaddingTop + atomBottom + editText.lineHeight / 2f
+        MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, x, y, 0).also {
+            editText.onTouchEvent(it)
+            it.recycle()
+        }
+        MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, x, y, 0).also {
+            editText.onTouchEvent(it)
+            it.recycle()
+        }
+    }
+
     @Test
     fun `backspace at paragraph boundary stays equal to Rust render`() {
         val harness = structuredDeleteHarness("<p>Alpha</p><p>Beta</p>")

@@ -2553,13 +2553,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             return
         }
 
-        if text == "\n" {
-            guard commitActiveMarkedTextBeforeReturn() else { return }
-            performInterceptedInput {
-                handleReturnKey()
-            }
-            return
-        }
+        if interceptReturnInput(text) { return }
 
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
             let replacementRange = trackedMarkedTextReplacementRange()
@@ -2887,6 +2881,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         }
         guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
+
+        if interceptReturnInput(text, replacing: range) { return }
 
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
             let replacementRange = trackedMarkedTextReplacementRange()
@@ -5562,6 +5558,34 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             let scalarPos = PositionBridge.cursorScalarOffset(in: self)
             splitBlockInRust(at: scalarPos)
         }
+    }
+
+    private func interceptReturnInput(
+        _ text: String,
+        replacing replacementRange: UITextRange? = nil
+    ) -> Bool {
+        guard text == "\n" || text == "\r" else { return false }
+        let scalarRange = replacementRange.map {
+            PositionBridge.textRangeToScalarRange($0, in: self)
+        }
+        guard commitActiveMarkedTextBeforeReturn() else { return true }
+        performInterceptedInput {
+            if let scalarRange {
+                if scalarRange.from == scalarRange.to {
+                    splitBlockInRust(at: scalarRange.from)
+                } else {
+                    let updateJSON = EditorV2Shadow.deleteAndSplitScalar(
+                        id: editorId,
+                        scalarFrom: scalarRange.from,
+                        scalarTo: scalarRange.to
+                    )
+                    applyUpdateJSON(updateJSON)
+                }
+            } else {
+                handleReturnKey()
+            }
+        }
+        return true
     }
 
     /// Split a block at a scalar position via the Rust editor.

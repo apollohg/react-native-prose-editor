@@ -335,6 +335,9 @@ final class RenderBridge {
                     atomConfiguration: atomConfiguration
                 )
                 result.append(attrStr)
+                pendingTrailingParagraphSpacing = theme?.effectiveTextStyle(
+                    for: nodeType
+                ).spacingAfter
 
             case "opaqueInlineAtom":
                 let nodeType = element["nodeType"] as? String ?? ""

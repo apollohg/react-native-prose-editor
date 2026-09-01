@@ -30,6 +30,38 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class AtomMountingTest {
     @Test
+    fun `atom spacing before following paragraph uses atom theme spacing`() {
+        val editor = EditorEditText(RuntimeEnvironment.getApplication())
+        editor.applyTheme(
+            EditorTheme.fromJson(
+                """{"text":{"spacingAfter":11},"paragraph":{"spacingAfter":29}}"""
+            )
+        )
+        editor.applyAtomRenderConfiguration(
+            AtomRenderConfiguration(
+                registeredNodeTypes = setOf("counterCard"),
+                estimatedHeightsDp = mapOf("counterCard" to 72f),
+                measuredHeightsPx = emptyMap(),
+            )
+        )
+        editor.applyRenderJSON(
+            """
+            [
+              {"type":"voidBlock","nodeType":"counterCard","docPos":1,"atomId":"counter-1"},
+              {"type":"blockStart","nodeType":"paragraph","depth":0},
+              {"type":"textRun","text":"Below","marks":[]},
+              {"type":"blockEnd"}
+            ]
+            """.trimIndent()
+        )
+        val content = editor.text as android.text.Spanned
+        val newline = content.toString().indexOf('\n')
+        val spacer = content.getSpans(newline, newline + 1, ParagraphSpacerSpan::class.java).single()
+
+        assertEquals(11, spacer.spacingPx)
+    }
+
+    @Test
     fun `content frame wraps edit text as scroll child`() {
         val view = RichTextEditorView(RuntimeEnvironment.getApplication())
 

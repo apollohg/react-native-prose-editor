@@ -1009,7 +1009,7 @@ fn replace_only_void_block(
     })
 }
 
-fn empty_block_delete_range(
+fn empty_block_delete_action(
     document: &Document,
     map: &PositionMap,
     schema: &Schema,
@@ -1017,7 +1017,8 @@ fn empty_block_delete_range(
     scalar_to: u32,
     doc_from: u32,
     doc_to: u32,
-) -> Option<(u32, u32)> {
+    is_collapsed_backward_delete: bool,
+) -> Option<SemanticCommandPlan> {
     if scalar_from >= scalar_to {
         return None;
     }
@@ -1031,20 +1032,53 @@ fn empty_block_delete_range(
     let (resolved, open) = context;
     let block = resolved.parent(document);
     let &index = resolved.node_path.last()?;
-    if index == 0 {
-        return None;
-    }
-    let parent = document.node_at(&resolved.node_path[..resolved.node_path.len() - 1])?;
-    let previous = parent.child(index as usize - 1)?;
-    if !previous.is_element() && !previous.is_void() {
-        return None;
-    }
+    let parent_path = &resolved.node_path[..resolved.node_path.len() - 1];
+    let parent = document.node_at(parent_path)?;
     let same_doc = doc_from == doc_to;
     let boundary = scalar_to == scalar_from.saturating_add(1)
         && doc_from < doc_to
         && doc_to == open.saturating_add(1)
         && map.doc_to_scalar(doc_from, document) == scalar_from;
-    (same_doc || boundary).then_some((open, open.checked_add(block.node_size())?))
+    if index == 0 {
+        if !is_collapsed_backward_delete
+            || scalar_to != scalar_from.saturating_add(1)
+            || (!same_doc && !boundary)
+        {
+            return None;
+        }
+        let next = parent.child(1)?;
+        let next_spec = schema.node(next.node_type())?;
+        if !next.is_void() || !matches!(next_spec.role, NodeRole::Block) {
+            return None;
+        }
+        return Some(SemanticCommandPlan {
+            operations: vec![SemanticOperation::DeleteRange {
+                from: open,
+                to: open.checked_add(block.node_size())?,
+            }],
+            selection_after: Some(Selection::cursor(open)),
+            history: SemanticCommandHistory::InputBoundary,
+        });
+    }
+    let previous = parent.child(index as usize - 1)?;
+    if !previous.is_element() && !previous.is_void() {
+        return None;
+    }
+    if !same_doc && !boundary {
+        return None;
+    }
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::DeleteRange {
+            from: open,
+            to: open.checked_add(block.node_size())?,
+        }],
+        selection_after: if is_collapsed_backward_delete {
+            Some(Selection::cursor(open.checked_sub(1)?))
+        } else {
+            None
+        },
+        history: SemanticCommandHistory::InputBoundary,
+    })
 }
 
 fn plan_empty_split_action(

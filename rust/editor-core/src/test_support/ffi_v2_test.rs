@@ -855,6 +855,221 @@ fn terminal_custom_atom_gap_backspace_deletes_atom_in_one_transaction() {
 }
 
 #[test]
+fn deleting_blank_paragraph_before_atom_moves_caret_to_previous_text() {
+    let mut config = terminal_custom_atom_config();
+    config["initialization"]["json"]["content"] = json!([
+        { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+        { "type": "paragraph" },
+        { "type": "counterCard", "attrs": { "count": 7 } },
+    ]);
+    let id = create_handle(config);
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 2, 2, "before"),
+    ));
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+                { "type": "counterCard", "attrs": { "count": 7 } },
+            ],
+        })
+    );
+    assert_eq!(caret_scalar(&id), 1);
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(3, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph" },
+                { "type": "counterCard", "attrs": { "count": 7 } },
+            ],
+        })
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn deleting_first_blank_paragraph_before_atom_keeps_caret_at_document_start() {
+    let mut config = terminal_custom_atom_config();
+    config["initialization"]["json"]["content"] = json!([
+        { "type": "paragraph" },
+        { "type": "counterCard", "attrs": { "count": 7 } },
+    ]);
+    let id = create_handle(config);
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 1, 1, "before"),
+    ));
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+
+    let atom_only = json!({
+        "type": "doc",
+        "content": [{ "type": "counterCard", "attrs": { "count": 7 } }],
+    });
+    assert_eq!(document_json_of(&id), atom_only);
+    assert_eq!(caret_scalar(&id), 0);
+
+    assert_eq!(
+        ok_json(&v2::editor_v2_apply_command(
+            id.clone(),
+            command_envelope(3, revision_of(&id), json!({ "type": "deleteBackward" })),
+        )),
+        json!({ "type": "notApplicable" })
+    );
+    assert_eq!(document_json_of(&id), atom_only);
+    destroy_handle(&id);
+}
+
+#[test]
+fn forward_delete_before_first_blank_paragraph_does_not_remove_it() {
+    let mut config = terminal_custom_atom_config();
+    config["initialization"]["json"]["content"] = json!([
+        { "type": "paragraph" },
+        { "type": "counterCard", "attrs": { "count": 7 } },
+    ]);
+    let id = create_handle(config);
+    let render = ok_json(&v2_render::editor_v2_render_native(
+        id.clone(),
+        "4".into(),
+        None,
+        None,
+    ));
+    let epoch = render["positionEpoch"].as_str().unwrap();
+
+    let outcome = ok_json(&v2::editor_v2_apply_native_intent(
+        id.clone(),
+        json!({
+            "version": 1,
+            "requestId": "1",
+            "ownerId": "4",
+            "positionEpoch": epoch,
+            "intent": {
+                "type": "deleteForward",
+                "anchor": 0,
+                "head": 0,
+            },
+        })
+        .to_string(),
+    ));
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], false);
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph" },
+                { "type": "counterCard", "attrs": { "count": 7 } },
+            ],
+        })
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn explicit_blank_paragraph_range_is_not_treated_as_boundary_backspace() {
+    let mut config = terminal_custom_atom_config();
+    config["initialization"]["json"]["content"] = json!([
+        { "type": "paragraph" },
+        { "type": "counterCard", "attrs": { "count": 7 } },
+    ]);
+    let id = create_handle(config);
+
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            1,
+            revision_of(&id),
+            json!({
+                "type": "deleteRange",
+                "range": {
+                    "from": { "offset": 0, "kind": "scalar" },
+                    "to": { "offset": 1, "kind": "scalar" },
+                },
+            }),
+        ),
+    ));
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], false);
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph" },
+                { "type": "counterCard", "attrs": { "count": 7 } },
+            ],
+        })
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn explicit_non_first_blank_paragraph_range_preserves_mapped_selection() {
+    let mut config = terminal_custom_atom_config();
+    config["initialization"]["json"]["content"] = json!([
+        { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+        { "type": "paragraph" },
+        { "type": "counterCard", "attrs": { "count": 7 } },
+    ]);
+    let id = create_handle(config);
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 0, 0, "before"),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            2,
+            revision_of(&id),
+            json!({
+                "type": "deleteRange",
+                "range": {
+                    "from": { "offset": 1, "kind": "scalar" },
+                    "to": { "offset": 2, "kind": "scalar" },
+                },
+            }),
+        ),
+    ));
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome["changed"], true);
+    let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
+    assert_eq!(update["selection"]["anchorScalar"], 1);
+    assert_eq!(update["selection"]["headScalar"], 2);
+    assert_eq!(
+        document_json_of(&id),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
+                { "type": "counterCard", "attrs": { "count": 7 } },
+            ],
+        })
+    );
+    destroy_handle(&id);
+}
+
+#[test]
 fn terminal_custom_atom_backspace_leaves_optional_root_empty() {
     let mut config = terminal_custom_atom_config();
     config["schema"]["nodes"][0]["content"] = json!("block*");

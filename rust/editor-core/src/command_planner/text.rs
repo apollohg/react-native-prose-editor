@@ -173,7 +173,15 @@ pub(crate) fn plan_delete_backward(
     let from = scalar_anchor.min(scalar_head);
     let to = scalar_anchor.max(scalar_head);
     if from < to {
-        return plan_delete_scalar_range_impl(document, position_map, schema, from, to, true);
+        return plan_delete_scalar_range_impl(
+            document,
+            position_map,
+            schema,
+            from,
+            to,
+            true,
+            false,
+        );
     }
     let cursor = selection.from(document);
     if let Some(plan) = super::plan_empty_split_action(document, schema, cursor) {
@@ -192,7 +200,7 @@ pub(crate) fn plan_delete_backward(
     if to == 0 {
         return Ok(None);
     }
-    plan_delete_scalar_range_impl(document, position_map, schema, to - 1, to, true)
+    plan_delete_scalar_range_impl(document, position_map, schema, to - 1, to, true, true)
 }
 
 pub(crate) fn plan_delete_scalar_range(
@@ -209,6 +217,7 @@ pub(crate) fn plan_delete_scalar_range(
         scalar_from,
         scalar_to,
         false,
+        false,
     )
 }
 
@@ -219,6 +228,7 @@ fn plan_delete_scalar_range_impl(
     scalar_from: u32,
     scalar_to: u32,
     is_backward_delete: bool,
+    is_collapsed_backward_delete: bool,
 ) -> Result<Option<SemanticCommandPlan>, ()> {
     let doc_from = position_map.scalar_to_doc(scalar_from, document);
     let doc_to = position_map.scalar_to_doc(scalar_to, document);
@@ -286,7 +296,7 @@ fn plan_delete_scalar_range_impl(
     ) {
         return Ok(Some(plan));
     }
-    if let Some((from, to)) = super::empty_block_delete_range(
+    if let Some(plan) = super::empty_block_delete_action(
         document,
         position_map,
         schema,
@@ -294,10 +304,9 @@ fn plan_delete_scalar_range_impl(
         scalar_to,
         doc_from,
         doc_to,
+        is_collapsed_backward_delete,
     ) {
-        return Ok(Some(SemanticCommandPlan::one(
-            SemanticOperation::DeleteRange { from, to },
-        )));
+        return Ok(Some(plan));
     }
     if let Some(plan) = super::move_into_previous_blockquote_action(
         document,

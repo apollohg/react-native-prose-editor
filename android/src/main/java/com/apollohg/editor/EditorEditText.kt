@@ -403,6 +403,8 @@ class EditorEditText @JvmOverloads constructor(
     private var currentRenderBlocksNeedFullApply = false
     private var authorizedVisibleTextNeedsRebuild = false
     private var logicalSelectionSnapshot: LogicalSelectionSnapshot? = null
+    private var terminalAtomGapActive = false
+    private var terminalAtomGapTapCandidate = false
     private var localTextDrag: LocalTextDrag? = null
     private var lastAppliedDocumentVersion: String? = null
     private var restartImageLoadsOnAttach = false
@@ -422,6 +424,7 @@ class EditorEditText @JvmOverloads constructor(
     internal var onDeleteBackwardAtSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onToggleTaskItemCheckedAtSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onInsertTextInRustForTesting: ((String, Int) -> Unit)? = null
+    internal var onSplitBlockInRustForTesting: ((Int) -> Unit)? = null
     internal var onReplaceTextInRustForTesting: ((Int, Int, String) -> Unit)? = null
     internal var onSetSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onDeleteAndSplitScalarInRustForTesting: ((Int, Int) -> Unit)? = null
@@ -552,6 +555,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private val legacyCursorClipPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val terminalAtomGapCaretPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     private val caretWidthPx: Float by lazy { maxOf(MIN_CARET_WIDTH_PX, resources.displayMetrics.density) }
     private val caretColor: Int by lazy { resolveCaretColor() }
     private var editorAccessibilityHint: CharSequence? = null
@@ -567,6 +571,11 @@ class EditorEditText @JvmOverloads constructor(
 
     internal fun nativeCursorDrawRect(): RectF? {
         val textLayout = layout ?: return null
+        if (terminalAtomGapActive) {
+            terminalAtomGapRectInLayout()?.let { gap ->
+                return RectF(gap.left, gap.top, gap.left + caretWidthPx, gap.bottom)
+            }
+        }
         val offset = selectionEnd.coerceIn(0, textLayout.text.length)
         val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint, textLayout.text)
         val left = textLayout.getPrimaryHorizontal(offset)
@@ -579,6 +588,7 @@ class EditorEditText @JvmOverloads constructor(
         private var cursorColorFilter: ColorFilter? = null
 
         override fun draw(canvas: Canvas) {
+            if (terminalAtomGapActive) return
             val rect = nativeCursorDrawRect() ?: return
             val textLayout = layout ?: return
             val offset = selectionEnd.coerceIn(0, textLayout.text.length)
@@ -876,6 +886,7 @@ class EditorEditText @JvmOverloads constructor(
     override fun onDraw(canvas: android.graphics.Canvas) {
         super.onDraw(canvas)
         clipLegacyNativeCursorTail(canvas)
+        drawTerminalAtomGapCaret(canvas)
 
         val placeholderLayout =
             buildPlaceholderLayout(width - compoundPaddingLeft - compoundPaddingRight) ?: return
@@ -886,6 +897,14 @@ class EditorEditText @JvmOverloads constructor(
         placeholderLayout.draw(canvas)
         canvas.restoreToCount(saveCount)
         paint.color = previousColor
+    }
+
+    private fun drawTerminalAtomGapCaret(canvas: Canvas) {
+        if (!terminalAtomGapActive) return
+        if (!CaretGeometry.shouldRender(isFocused, hasWindowFocus(), selectionStart, selectionEnd)) return
+        val gap = terminalAtomGapRectInView() ?: return
+        terminalAtomGapCaretPaint.color = caretColor
+        canvas.drawRect(gap.left, gap.top, gap.left + caretWidthPx, gap.bottom, terminalAtomGapCaretPaint)
     }
 
     private fun clipLegacyNativeCursorTail(canvas: Canvas) {
@@ -912,8 +931,12 @@ class EditorEditText @JvmOverloads constructor(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)
 
-        val placeholderHeight = resolvePlaceholderHeightForMeasuredWidth(measuredWidth) ?: return
-        val desiredHeight = maxOf(measuredHeight, placeholderHeight)
+        val placeholderHeight = resolvePlaceholderHeightForMeasuredWidth(measuredWidth) ?: 0
+        val desiredHeight = maxOf(
+            measuredHeight,
+            terminalAtomGapRequiredContentHeightPx() ?: 0,
+            placeholderHeight,
+        )
         val resolvedHeight = when (MeasureSpec.getMode(heightMeasureSpec)) {
             MeasureSpec.EXACTLY -> measuredHeight
             MeasureSpec.AT_MOST -> desiredHeight.coerceAtMost(MeasureSpec.getSize(heightMeasureSpec))
@@ -925,7 +948,26 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (terminalAtomGapActive) ensureSelectionVisible()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                terminalAtomGapTapCandidate = terminalAtomGapRectInView()?.contains(event.x, event.y) == true
+                if (!terminalAtomGapTapCandidate && terminalAtomGapActive) {
+                    setTerminalAtomGapActive(false)
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (terminalAtomGapTapCandidate && terminalAtomGapRectInView()?.contains(event.x, event.y) != true) {
+                    terminalAtomGapTapCandidate = false
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> terminalAtomGapTapCandidate = false
+        }
         if (event.actionMasked == MotionEvent.ACTION_DOWN && imageSpanHitAt(event.x, event.y) == null) {
             clearExplicitSelectedImageRange()
         }
@@ -946,7 +988,84 @@ class EditorEditText @JvmOverloads constructor(
                 }
             }
         }
-        return super.onTouchEvent(event)
+        val handled = super.onTouchEvent(event)
+        if (event.actionMasked == MotionEvent.ACTION_UP && terminalAtomGapTapCandidate) {
+            terminalAtomGapTapCandidate = false
+            logicalSelectionSnapshot = null
+            setSelection(text?.length ?: 0)
+            setTerminalAtomGapActive(true)
+            return true
+        }
+        return handled
+    }
+
+    override fun computeVerticalScrollRange(): Int {
+        val terminalGapExtent = terminalAtomGapRequiredContentHeightPx()?.let { requiredHeight ->
+            requiredHeight + if (
+                terminalAtomGapActive && heightBehavior == EditorHeightBehavior.FIXED
+            ) {
+                resolveViewportBottomClearancePx()
+            } else {
+                0
+            }
+        } ?: 0
+        return maxOf(super.computeVerticalScrollRange(), terminalGapExtent)
+    }
+
+    private fun terminalAtomGapHeightPx(): Int =
+        if (terminalAtomSpan() == null) 0 else lineHeight
+
+    internal fun terminalAtomGapHeightForTesting(): Int = terminalAtomGapHeightPx()
+
+    internal fun verticalScrollRangeForTesting(): Int = computeVerticalScrollRange()
+
+    private fun terminalAtomSpan(): AtomBlockSpan? {
+        val content = text as? Spanned ?: return null
+        if (content.isEmpty()) return null
+        val offset = content.length - 1
+        return content.getSpans(offset, offset + 1, AtomBlockSpan::class.java)
+            .firstOrNull {
+                it.isDirectRootChild && content.getSpanEnd(it) == content.length
+            }
+    }
+
+    private fun terminalAtomGapRectInLayout(): RectF? {
+        terminalAtomSpan() ?: return null
+        val textLayout = layout ?: return null
+        val atomOffset = textLayout.text.length - 1
+        val line = textLayout.getLineForOffset(atomOffset)
+        val top = textLayout.getLineBottom(line).toFloat()
+        return RectF(
+            textLayout.getLineLeft(line),
+            top,
+            textLayout.width.toFloat(),
+            top + lineHeight,
+        )
+    }
+
+    private fun terminalAtomGapRequiredContentHeightPx(
+        textLayout: Layout? = layout,
+    ): Int? {
+        terminalAtomSpan() ?: return null
+        textLayout ?: return null
+        val atomOffset = textLayout.text.length - 1
+        val line = textLayout.getLineForOffset(atomOffset)
+        return textLayout.getLineBottom(line) + lineHeight +
+            compoundPaddingTop + compoundPaddingBottom
+    }
+
+    private fun terminalAtomGapRectInView(): RectF? {
+        val gap = terminalAtomGapRectInLayout() ?: return null
+        gap.offset(totalPaddingLeft - scrollX.toFloat(), totalPaddingTop - scrollY.toFloat())
+        return gap
+    }
+
+    private fun setTerminalAtomGapActive(active: Boolean) {
+        if (terminalAtomGapActive == active) return
+        terminalAtomGapActive = active
+        isCursorVisible = !active
+        invalidate()
+        if (active) ensureSelectionVisible()
     }
 
     override fun onDragEvent(event: DragEvent): Boolean {
@@ -1420,6 +1539,7 @@ class EditorEditText @JvmOverloads constructor(
         if (laidOutTextHeight != null && laidOutTextHeight > 0) {
             return maxOf(
                 laidOutTextHeight + compoundPaddingTop + compoundPaddingBottom,
+                terminalAtomGapRequiredContentHeightPx() ?: 0,
                 placeholderHeight ?: 0
             )
         }
@@ -1434,6 +1554,7 @@ class EditorEditText @JvmOverloads constructor(
             val textHeight = staticLayout.height.takeIf { it > 0 } ?: lineHeight
             return maxOf(
                 textHeight + compoundPaddingTop + compoundPaddingBottom,
+                terminalAtomGapRequiredContentHeightPx(staticLayout) ?: 0,
                 placeholderHeight ?: 0
             )
         }
@@ -1469,26 +1590,51 @@ class EditorEditText @JvmOverloads constructor(
             caretVisibilityRequestPosted = false
             if (!hasFocus() || !isLaidOut || layout == null) return@post
             val selectionOffset = selectionEnd.takeIf { it >= 0 } ?: return@post
-            if (heightBehavior == EditorHeightBehavior.FIXED) {
+            val terminalGap = if (terminalAtomGapActive) terminalAtomGapRectInLayout() else null
+            val viewportBottomClearance = resolveViewportBottomClearancePx()
+            if (heightBehavior == EditorHeightBehavior.FIXED && terminalGap == null) {
                 bringPointIntoView(selectionOffset)
             }
 
             val textLayout = layout ?: return@post
             val clampedOffset = selectionOffset.coerceAtMost(textLayout.text.length)
             val line = textLayout.getLineForOffset(clampedOffset)
-            val caretLeft = textLayout.getPrimaryHorizontal(clampedOffset).toInt()
-            val viewportBottomClearance = resolveViewportBottomClearancePx()
-            val rect = Rect(
-                caretLeft + totalPaddingLeft,
-                textLayout.getLineTop(line) + totalPaddingTop,
-                caretLeft + totalPaddingLeft + 1,
-                textLayout.getLineBottom(line) + totalPaddingTop + viewportBottomClearance
-            )
+            val rect = if (terminalGap != null) {
+                Rect(
+                    (terminalGap.left + totalPaddingLeft).toInt(),
+                    (terminalGap.top + totalPaddingTop).toInt(),
+                    (terminalGap.left + totalPaddingLeft + caretWidthPx).toInt(),
+                    (terminalGap.bottom + totalPaddingTop + viewportBottomClearance).toInt(),
+                )
+            } else {
+                val caretLeft = textLayout.getPrimaryHorizontal(clampedOffset).toInt()
+                Rect(
+                    caretLeft + totalPaddingLeft,
+                    textLayout.getLineTop(line) + totalPaddingTop,
+                    caretLeft + totalPaddingLeft + 1,
+                    textLayout.getLineBottom(line) + totalPaddingTop + viewportBottomClearance
+                )
+            }
+            if (heightBehavior == EditorHeightBehavior.FIXED && terminalGap != null) {
+                scrollContentRectIntoView(rect)
+            }
             requestRectangleOnScreen(rect)
         }
         if (!posted) {
             caretVisibilityRequestPosted = false
         }
+    }
+
+    private fun scrollContentRectIntoView(rect: Rect) {
+        val viewportTop = scrollY
+        val viewportBottom = scrollY + height
+        val targetScrollY = when {
+            rect.bottom > viewportBottom -> rect.bottom - height
+            rect.top < viewportTop -> rect.top
+            else -> scrollY
+        }
+        val maxScrollY = maxOf(0, computeVerticalScrollRange() - height)
+        scrollTo(scrollX, targetScrollY.coerceIn(0, maxScrollY))
     }
 
     private fun resolveViewportBottomClearancePx(): Int {
@@ -3517,6 +3663,12 @@ class EditorEditText @JvmOverloads constructor(
      */
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
+        if (
+            terminalAtomGapActive &&
+            (selStart != selEnd || selEnd != (text?.length ?: 0) || terminalAtomSpan() == null)
+        ) {
+            setTerminalAtomGapActive(false)
+        }
         canonicalListCaretOffset(selStart, selEnd)?.let { canonicalOffset ->
             setSelection(canonicalOffset)
             return
@@ -4359,6 +4511,10 @@ class EditorEditText @JvmOverloads constructor(
      */
     private fun splitBlockInRust(atScalarPos: Int) {
         if (!hasLiveEditor()) return
+        onSplitBlockInRustForTesting?.let { callback ->
+            callback(atScalarPos)
+            return
+        }
         v2Driver?.let { driver ->
             driver.splitBlockAt(atScalarPos)?.let { result ->
                 applyRustUpdateJSON(
@@ -4905,6 +5061,8 @@ class EditorEditText @JvmOverloads constructor(
         preserveInputConnectionForExternalUpdate: Boolean = false
     ) {
         onBeforeRenderRefresh?.invoke()
+        setTerminalAtomGapActive(false)
+        terminalAtomGapTapCandidate = false
         val startedAt = System.nanoTime()
         val previousScrollX = scrollX
         val previousScrollY = scrollY

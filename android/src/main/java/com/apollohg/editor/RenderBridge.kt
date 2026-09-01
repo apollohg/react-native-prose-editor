@@ -442,6 +442,7 @@ internal class AtomBlockSpan(
     val docPos: Int,
     var reservedHeightPx: Int,
     val hasStableAtomId: Boolean,
+    val isDirectRootChild: Boolean,
 ) : ReplacementSpan() {
     override fun getSize(
         paint: Paint,
@@ -1123,6 +1124,7 @@ object RenderBridge {
                         atomKey,
                         docPos,
                         atomId != null,
+                        state.blockStack.isEmpty(),
                     )
                 }
 
@@ -1618,6 +1620,7 @@ object RenderBridge {
         atomKey: String,
         docPos: Int?,
         hasStableAtomId: Boolean,
+        isDirectRootChild: Boolean,
     ) {
         when (nodeType) {
             "horizontalRule", "horizontal_rule" -> {
@@ -1688,6 +1691,7 @@ object RenderBridge {
                             docPos,
                             reservedHeightPx,
                             hasStableAtomId,
+                            isDirectRootChild,
                         ),
                         start,
                         end,

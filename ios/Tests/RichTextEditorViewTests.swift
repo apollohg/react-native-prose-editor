@@ -11173,6 +11173,80 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
     }
 
+    func testStagingConstrainedTerminalGapHitThenReturnCreatesParagraph() throws {
+        let (view, _, window) = makeTerminalAtomView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let textView = view.textView
+        let atomRect = terminalAtomRect(in: textView)
+        let gapPoint = CGPoint(
+            x: textView.textContainerInset.left + textView.textContainer.lineFragmentPadding,
+            y: atomRect.maxY + ceil(textView.font?.lineHeight ?? 17) / 2
+        )
+        let documentRange = try XCTUnwrap(
+            textView.textRange(
+                from: textView.beginningOfDocument,
+                to: textView.endOfDocument
+            )
+        )
+        let hitPosition = try XCTUnwrap(
+            textView.closestPosition(to: gapPoint, within: documentRange)
+        )
+        textView.selectedTextRange = try XCTUnwrap(
+            textView.textRange(from: hitPosition, to: hitPosition)
+        )
+        textView.textViewDidChangeSelection(textView)
+        flushMain()
+
+        let selectedRange = try XCTUnwrap(textView.selectedTextRange)
+        textView.replace(selectedRange, withText: "\n")
+
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: view.editorId),
+            #"<div data-type="counter-card" data-count="7"></div><p></p>"#
+        )
+    }
+
+    func testStagingReturnReplacementUsesCollapsedSuppliedRange() throws {
+        for returnText in ["\n", "\r"] {
+            let (view, _, window) = makeBoundView(html: "<p>abcd</p>")
+            defer { view.removeFromSuperview(); window.isHidden = true }
+            setCollapsedCaret(in: view.textView, utf16Offset: 0)
+            let position = try XCTUnwrap(
+                view.textView.position(from: view.textView.beginningOfDocument, offset: 2)
+            )
+            let replacementRange = try XCTUnwrap(
+                view.textView.textRange(from: position, to: position)
+            )
+
+            view.textView.replace(replacementRange, withText: returnText)
+
+            XCTAssertEqual(
+                EditorV2Shadow.getHtml(id: view.editorId),
+                "<p>ab</p><p>cd</p>"
+            )
+        }
+    }
+
+    func testStagingReturnReplacementUsesNoncollapsedSuppliedRange() throws {
+        let (view, _, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        setCollapsedCaret(in: view.textView, utf16Offset: 0)
+        let start = try XCTUnwrap(
+            view.textView.position(from: view.textView.beginningOfDocument, offset: 1)
+        )
+        let end = try XCTUnwrap(view.textView.position(from: start, offset: 2))
+        let replacementRange = try XCTUnwrap(
+            view.textView.textRange(from: start, to: end)
+        )
+
+        view.textView.replace(replacementRange, withText: "\n")
+
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: view.editorId),
+            "<p>a</p><p>d</p>"
+        )
+    }
+
     func testStagingBackspaceAtTerminalAtomGapDeletesAtomInOneUndoStep() {
         let (view, adapter, window) = makeTerminalAtomView()
         defer { view.removeFromSuperview(); window.isHidden = true }
