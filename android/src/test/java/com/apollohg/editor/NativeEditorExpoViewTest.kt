@@ -2697,6 +2697,29 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
+    fun `atoms json retries unchanged prop after transient preflight failure`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val atomsJson =
+            """{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"""
+        view.richTextView.editorEditText.editorId = 12345L
+        view.richTextView.editorEditText.blockExternalEditorUpdatePreparationForTesting = true
+
+        view.setAtomsJson(atomsJson)
+        view.setAtomsJson(atomsJson)
+
+        assertEquals(atomsJson, view.pendingAtomsJsonForTesting())
+        assertNull(view.lastAtomsJsonForTesting())
+
+        view.richTextView.editorEditText.blockExternalEditorUpdatePreparationForTesting = false
+        view.richTextView.editorEditText.editorId = 0L
+        view.wakePendingPreflightWorkForTesting()
+
+        assertNull(view.pendingAtomsJsonForTesting())
+        assertEquals(atomsJson, view.lastAtomsJsonForTesting())
+    }
+
+    @Test
     fun `theme update queues latest value while preflight is blocked`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)

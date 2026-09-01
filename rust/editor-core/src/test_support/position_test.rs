@@ -87,6 +87,16 @@ fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
 }
 
+fn image() -> Node {
+    Node::void(
+        "image".to_string(),
+        HashMap::from([(
+            "src".to_string(),
+            serde_json::Value::String("https://example.com/a.png".to_string()),
+        )]),
+    )
+}
+
 /// A minimal schema declaring `taskList`/`taskItem` (by `NodeRole`, not just
 /// name) for tests that build documents using those node type names. The
 /// standard `tiptap_schema()` preset has no task-list node types, since task
@@ -1009,6 +1019,21 @@ fn test_normalize_cursor_pos_nested_list() {
         4,
         "pos 7 (after bulletList) -> snap to doc_end of last block = 4"
     );
+}
+
+#[test]
+fn terminal_gap_after_nested_void_block_is_cursorable() {
+    let document = Document::new(doc(vec![blockquote(vec![
+        paragraph(vec![text("caption")]),
+        image(),
+    ])]));
+    let map = PositionMap::build(&document, &tiptap_schema());
+    let void_block = map.block(map.block_count() - 1).unwrap();
+    let nested_gap = void_block.doc_start + 1;
+
+    assert!(void_block.is_void_block);
+    assert_eq!(void_block.node_path.as_slice(), &[0, 1]);
+    assert_eq!(map.normalize_cursor_pos(nested_gap, &document), nested_gap);
 }
 
 #[test]

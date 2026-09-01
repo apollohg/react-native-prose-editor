@@ -956,7 +956,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             supported: Bool,
             range: (from: UInt32, to: UInt32)
         )
-        case awaitingUIKitCleanup(session: ObjectIdentifier, editorId: UInt64)
+        case awaitingUIKitCleanup(
+            session: ObjectIdentifier,
+            editorId: UInt64,
+            cleanupRanges: [NSRange]
+        )
     }
 
     private enum PositionCacheUpdate {
@@ -1066,6 +1070,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     var onHeightMayChange: ((CGFloat) -> Void)?
     var onViewportMayChange: (() -> Void)?
     var onSelectionOrContentMayChange: (() -> Void)?
+    var onExternalUpdateReadinessMayChange: (() -> Void)?
     private var lastAutoGrowMeasuredHeight: CGFloat = 0
     private var lastAutoGrowMeasuredWidth: CGFloat = 0
     private var autoGrowHostHeight: CGFloat = 0
@@ -1092,6 +1097,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     var captureApplyUpdateTraceForTesting = false
     private(set) var lastApplyUpdateTraceForTesting: ApplyUpdateTrace?
     private var currentRenderBlocks: [[[String: Any]]]? = nil
+    private var currentRenderBlocksDocumentVersion: UInt64?
+    private var recoveringRenderPatchBaseMismatch = false
     private var currentTopLevelChildMetadata: [TopLevelChildMetadata]? = nil
     private var renderAppearanceRevision: UInt64 = 1
     private var lastAppliedRenderAppearanceRevision: UInt64 = 0
@@ -1412,6 +1419,13 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             return
         }
 
+        let sourceStartUtf16 = PositionBridge.scalarToUtf16Offset(drag.range.from, in: self)
+        let sourceEndUtf16 = PositionBridge.scalarToUtf16Offset(drag.range.to, in: self)
+        let sourceUtf16Range = NSRange(
+            location: sourceStartUtf16,
+            length: max(0, sourceEndUtf16 - sourceStartUtf16)
+        )
+
         var applied = false
         performInterceptedInput {
             let updateJSON = EditorV2Shadow.moveSelectionAtScalar(
@@ -1425,7 +1439,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         if applied {
             localTextDragState = .awaitingUIKitCleanup(
                 session: drag.session,
-                editorId: drag.editorId
+                editorId: drag.editorId,
+                cleanupRanges: localTextDragCleanupRanges(
+                    sourceUtf16Range: sourceUtf16Range,
+                    sourceScalarRange: drag.range,
+                    destination: destination
+                )
             )
         } else {
             localTextDragState = .idle
@@ -1482,7 +1501,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
 
     private func finishLocalTextDrag(for session: UIDragSession) {
         let sessionID = ObjectIdentifier(session as AnyObject)
-        guard case let .awaitingUIKitCleanup(completedSession, sourceEditorId) = localTextDragState,
+        guard case let .awaitingUIKitCleanup(completedSession, sourceEditorId, _) = localTextDragState,
               completedSession == sessionID,
               sourceEditorId == editorId
         else {
@@ -1492,27 +1511,60 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             }
             return
         }
+        scheduleLocalTextDragCleanup(session: sessionID, sourceEditorId: sourceEditorId)
+    }
+
+    private func scheduleLocalTextDragCleanup(
+        session: ObjectIdentifier,
+        sourceEditorId: UInt64
+    ) {
         DispatchQueue.main.async { [weak self] in
             guard let self,
-                  case let .awaitingUIKitCleanup(activeSession, activeEditorId) = self.localTextDragState,
-                  activeSession == sessionID,
+                  case let .awaitingUIKitCleanup(activeSession, activeEditorId, _) = self.localTextDragState,
+                  activeSession == session,
+                  activeEditorId == sourceEditorId,
                   activeEditorId == self.editorId
             else {
                 return
             }
-            self.localTextDragState = .idle
-            if self.textStorage.string != self.lastAuthorizedText {
-                _ = self.applyAttributedRender(
-                    NSAttributedString(attributedString: self.lastAuthorizedAttributedTextStorage),
-                    usedPatch: false,
-                    positionCacheUpdate: .invalidate
+            if self.pendingNativeTextMutation != nil || self.nativeTextMutationCommitScheduled {
+                _ = self.drainPendingNativeTextMutation(
+                    allowAfterBlur: self.canAdoptNativeTextMutationAfterBlur(),
+                    allowWhileIntercepting: true
                 )
             }
-            self.applyUpdateJSON(
-                EditorV2Shadow.getCurrentState(id: self.editorId),
-                notifyDelegate: false
+            self.localTextDragState = .idle
+            self.restoreAfterLocalTextDragCleanup()
+        }
+    }
+
+    private func restoreAfterLocalTextDragCleanup() {
+        if textStorage.string != lastAuthorizedText {
+            _ = applyAttributedRender(
+                NSAttributedString(attributedString: lastAuthorizedAttributedTextStorage),
+                usedPatch: false,
+                positionCacheUpdate: .invalidate
             )
         }
+        applyUpdateJSON(
+            EditorV2Shadow.getCurrentState(id: editorId),
+            notifyDelegate: false
+        )
+    }
+
+    private func localTextDragCleanupRanges(
+        sourceUtf16Range: NSRange,
+        sourceScalarRange: (from: UInt32, to: UInt32),
+        destination: UInt32
+    ) -> [NSRange] {
+        var ranges = [sourceUtf16Range]
+        if destination < sourceScalarRange.from {
+            ranges.append(NSRange(
+                location: sourceUtf16Range.location + sourceUtf16Range.length,
+                length: sourceUtf16Range.length
+            ))
+        }
+        return ranges
     }
 
     func setAutoCapitalize(_ autoCapitalize: String?) {
@@ -2323,8 +2375,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     private func terminalAtomGapCaretRect(caretWidth: CGFloat = 2) -> CGRect? {
         guard let gap = terminalAtomGapLayout() else { return nil }
         return CGRect(
-            x: textContainerInset.left + textContainer.lineFragmentPadding - contentOffset.x,
-            y: textContainerInset.top + gap.originY - contentOffset.y,
+            x: textContainerInset.left + textContainer.lineFragmentPadding,
+            y: textContainerInset.top + gap.originY,
             width: caretWidth,
             height: gap.height
         )
@@ -2442,6 +2494,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             EditorV2Registry.adapter(forLegacyId: editorId)?
                 .releaseNativeBindingOwner(token: nativeBindingToken)
             discardTransientNativeInputForEditorRebind()
+            invalidateCurrentRenderBlocks()
         }
         editorId = id
         EditorV2Registry.adapter(forLegacyId: id)?
@@ -2468,6 +2521,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         discardTransientNativeInputForEditorRebind()
         EditorV2Registry.adapter(forLegacyId: editorId)?
             .releaseNativeBindingOwner(token: nativeBindingToken)
+        invalidateCurrentRenderBlocks()
         editorId = 0
     }
 
@@ -3338,6 +3392,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             super.unmarkText()
         }
         clearMarkedTextTracking()
+        onExternalUpdateReadinessMayChange?()
     }
 
     private func performTransientTextMutation(_ action: () -> Void) {
@@ -5141,12 +5196,6 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         allowAfterBlur: Bool,
         allowWhileIntercepting: Bool
     ) -> NativeTextMutationDrainResult {
-        if case .awaitingUIKitCleanup = localTextDragState {
-            pendingNativeTextMutation = nil
-            nativeTextMutationCommitScheduled = false
-            reconciliationWorkScheduled = false
-            return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: nil)
-        }
         if reconciliationWorkScheduled, textStorage.string != lastAuthorizedText {
             let adoptedUpdateJSON = restoreRejectedNativeTextMutation()
             return NativeTextMutationDrainResult(
@@ -5571,6 +5620,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     // MARK: - Applying Rust State
 
     private struct ParsedRenderPatch {
+        let baseDocumentVersion: UInt64?
         let startIndex: Int
         let deleteCount: Int
         let renderBlocks: [[[String: Any]]]
@@ -5593,12 +5643,64 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         else {
             return nil
         }
+        let baseDocumentVersion: UInt64?
+        if raw.keys.contains("baseDocumentVersion") {
+            guard let parsed = canonicalDocumentVersion(raw["baseDocumentVersion"])
+            else { return nil }
+            baseDocumentVersion = parsed
+        } else {
+            baseDocumentVersion = nil
+        }
 
         return ParsedRenderPatch(
+            baseDocumentVersion: baseDocumentVersion,
             startIndex: startIndex,
             deleteCount: deleteCount,
             renderBlocks: renderBlocks
         )
+    }
+
+    private func canonicalDocumentVersion(_ value: Any?) -> UInt64? {
+        guard let text = value as? String,
+              let version = UInt64(text),
+              String(version) == text
+        else { return nil }
+        return version
+    }
+
+    private func patchMatchesCurrentRenderBlocks(
+        _ patch: ParsedRenderPatch,
+        updateDocumentVersion: UInt64?
+    ) -> Bool {
+        if let baseDocumentVersion = patch.baseDocumentVersion {
+            return baseDocumentVersion == currentRenderBlocksDocumentVersion
+        }
+        return updateDocumentVersion == nil && currentRenderBlocksDocumentVersion == nil
+    }
+
+    private func retainCurrentRenderBlocks(
+        _ blocks: [[[String: Any]]]?,
+        documentVersion: UInt64?
+    ) {
+        currentRenderBlocks = blocks
+        currentRenderBlocksDocumentVersion = blocks == nil ? nil : documentVersion
+    }
+
+    private func invalidateCurrentRenderBlocks() {
+        currentRenderBlocks = nil
+        currentRenderBlocksDocumentVersion = nil
+    }
+
+    private func recoverRenderPatchBaseMismatch(notifyDelegate: Bool) -> Bool {
+        invalidateCurrentRenderBlocks()
+        guard !recoveringRenderPatchBaseMismatch,
+              editorId != 0,
+              let adapter = EditorV2Registry.adapter(forLegacyId: editorId),
+              let recovery = adapter.recoverNativeRender()
+        else { return false }
+        recoveringRenderPatchBaseMismatch = true
+        defer { recoveringRenderPatchBaseMismatch = false }
+        return applyUpdateJSON(recovery, notifyDelegate: notifyDelegate)
     }
 
     private func mergeRenderBlocks(
@@ -5743,6 +5845,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
 
         return .patch(
             ParsedRenderPatch(
+                baseDocumentVersion: currentRenderBlocksDocumentVersion,
                 startIndex: startIndex,
                 deleteCount: deleteCount,
                 renderBlocks: replacementBlocks
@@ -6562,14 +6665,26 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             "[applyUpdateJSON.begin] renderCount=\(renderElements?.count ?? 0) updateSelection=\(selectionFromUpdate, privacy: .public) before=\(self.textSnapshotSummary(), privacy: .public)"
         )
         let resolveRenderBlocksStartedAt = DispatchTime.now().uptimeNanoseconds
+        let updateDocumentVersion = canonicalDocumentVersion(update["documentVersion"])
         let renderBlocks = parseRenderBlocks(update["renderBlocks"])
         let explicitRenderPatch = parseRenderPatch(update["renderPatch"])
         let resolvedRenderBlocks = renderBlocks
             ?? explicitRenderPatch.flatMap { patch in
-                currentRenderBlocks.flatMap { mergeRenderBlocks(applying: patch, to: $0) }
+                guard patchMatchesCurrentRenderBlocks(
+                    patch,
+                    updateDocumentVersion: updateDocumentVersion
+                ) else { return nil }
+                return currentRenderBlocks.flatMap { mergeRenderBlocks(applying: patch, to: $0) }
             }
         let resolveRenderBlocksNanos =
             DispatchTime.now().uptimeNanoseconds - resolveRenderBlocksStartedAt
+        if renderBlocks == nil,
+           renderElements == nil,
+           explicitRenderPatch != nil,
+           resolvedRenderBlocks == nil
+        {
+            return recoverRenderPatchBaseMismatch(notifyDelegate: notifyDelegate)
+        }
 
         let derivedRenderPatch: DerivedRenderPatch? =
             if let currentRenderBlocks,
@@ -6618,7 +6733,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         if shouldSkipRender {
             lastRenderAppliedPatchForTesting = false
             if let resolvedRenderBlocks {
-                currentRenderBlocks = resolvedRenderBlocks
+                retainCurrentRenderBlocks(
+                    resolvedRenderBlocks,
+                    documentVersion: updateDocumentVersion
+                )
             }
         } else if !appliedPatch {
             let buildStartedAt = DispatchTime.now().uptimeNanoseconds
@@ -6633,7 +6751,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
                         atomConfiguration: atomRenderConfiguration
                     )
                 }
-                currentRenderBlocks = resolvedRenderBlocks
+                retainCurrentRenderBlocks(
+                    resolvedRenderBlocks,
+                    documentVersion: updateDocumentVersion
+                )
             } else if let renderElements {
                 attrStr = withImageLoadOwner {
                     RenderBridge.renderElements(
@@ -6644,7 +6765,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
                         atomConfiguration: atomRenderConfiguration
                     )
                 }
-                currentRenderBlocks = nil
+                invalidateCurrentRenderBlocks()
             } else {
                 return false
             }
@@ -6668,7 +6789,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             usedSmallPatchTextMutation = applyTrace.usedSmallPatchTextMutation
             lastAppliedRenderAppearanceRevision = renderAppearanceRevision
         } else if let resolvedRenderBlocks {
-            currentRenderBlocks = resolvedRenderBlocks
+            retainCurrentRenderBlocks(
+                resolvedRenderBlocks,
+                documentVersion: updateDocumentVersion
+            )
             lastAppliedRenderAppearanceRevision = renderAppearanceRevision
         }
         if appliedPatch,
@@ -6782,7 +6906,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             )
         }
         _ = applyAttributedRender(attrStr, usedPatch: false)
-        currentRenderBlocks = nil
+        invalidateCurrentRenderBlocks()
         refreshTopLevelChildMetadata(from: attrStr)
         lastAppliedRenderAppearanceRevision = renderAppearanceRevision
 
@@ -6997,15 +7121,23 @@ extension EditorTextView: NSTextStorageDelegate {
     ) {
         // Only care about actual character edits, not attribute-only changes.
         guard editedMask.contains(.editedCharacters) else { return }
-        if case .awaitingUIKitCleanup = localTextDragState {
-            return
-        }
-
         // Skip if this change came from our own Rust apply path, transient IME
         // composition, or an inline prediction. iOS inline predictions (iOS 17+)
         // mutate textStorage directly and set markedTextRange without calling
         // setMarkedText, so isComposing remains false — check markedTextRange too.
         guard !isApplyingRustState, !isComposing, markedTextRange == nil else { return }
+
+        if case let .awaitingUIKitCleanup(_, _, cleanupRanges) = localTextDragState,
+           delta < 0,
+           cleanupRanges.contains(where: {
+               $0.location == editedRange.location && $0.length == -delta
+           })
+        {
+            pendingNativeTextMutation = nil
+            nativeTextMutationCommitScheduled = false
+            restoreAfterLocalTextDragCleanup()
+            return
+        }
 
         // Skip if no editor is bound yet (nothing to reconcile against).
         guard editorId != 0 else { return }
@@ -7413,8 +7545,10 @@ final class RichTextEditorView: UIView {
 
     @discardableResult
     func applyAtomRenderConfiguration(_ configuration: AtomRenderConfiguration?) -> Bool {
+        let previousConfiguration = atomRenderConfiguration
         atomRenderConfiguration = configuration
         guard textView.applyAtomRenderConfiguration(resolvedAtomRenderConfiguration()) else {
+            atomRenderConfiguration = previousConfiguration
             return false
         }
         layoutAtomHostContainers()
@@ -7482,15 +7616,22 @@ final class RichTextEditorView: UIView {
     }
 
     func setAtomHeight(key atomKey: String, height: CGFloat) {
+        let previousMeasuredHeight = measuredAtomHeights[atomKey]
         guard height.isFinite,
               height > 0,
-              measuredAtomHeights[atomKey].map({ abs($0 - height) > 0.5 }) ?? true,
-              let entry = atomAttachmentEntry(for: atomKey)
+              measuredAtomHeights[atomKey].map({ abs($0 - height) > 0.5 }) ?? true
         else { return }
 
-        fallbackAtomHeights[atomKey] = fallbackAtomHeights[atomKey] ?? entry.attachment.reservedHeight
         measuredAtomHeights[atomKey] = height
         textView.atomRenderConfiguration = resolvedAtomRenderConfiguration()
+        guard let entry = atomAttachmentEntry(for: atomKey) else { return }
+        let fallbackHeight = atomRenderConfiguration?.estimatedHeights[entry.attachment.nodeType]
+            ?? (previousMeasuredHeight == nil && entry.attachment.reservedHeight > 0
+                ? entry.attachment.reservedHeight
+                : nil)
+        if let fallbackHeight {
+            fallbackAtomHeights[atomKey] = fallbackAtomHeights[atomKey] ?? fallbackHeight
+        }
         updateAtomAttachment(entry, height: height)
     }
 
@@ -7505,10 +7646,12 @@ final class RichTextEditorView: UIView {
 
         measuredAtomHeights.removeValue(forKey: atomKey)
         textView.atomRenderConfiguration = resolvedAtomRenderConfiguration()
-        if let entry = atomAttachmentEntry(for: atomKey),
-           let fallbackHeight = fallbackAtomHeights.removeValue(forKey: atomKey)
-        {
-            updateAtomAttachment(entry, height: fallbackHeight)
+        if let entry = atomAttachmentEntry(for: atomKey) {
+            let fallbackHeight = fallbackAtomHeights.removeValue(forKey: atomKey)
+                ?? atomRenderConfiguration?.estimatedHeights[entry.attachment.nodeType]
+            if let fallbackHeight {
+                updateAtomAttachment(entry, height: fallbackHeight)
+            }
         }
     }
 
@@ -7582,7 +7725,6 @@ final class RichTextEditorView: UIView {
         emitAtomContentWidthIfAvailable()
         guard !atomHostContainers.isEmpty else { return }
         let entries = atomAttachmentEntries()
-        textView.layoutManager.ensureLayout(for: textView.textContainer)
         let padding = textView.textContainer.lineFragmentPadding
         let width = atomContentWidth()
 
@@ -7591,6 +7733,7 @@ final class RichTextEditorView: UIView {
                 container.isHidden = true
                 continue
             }
+            textView.layoutManager.ensureLayout(forCharacterRange: characterRange)
             let glyphRange = textView.layoutManager.glyphRange(
                 forCharacterRange: characterRange,
                 actualCharacterRange: nil
@@ -7607,10 +7750,10 @@ final class RichTextEditorView: UIView {
             )
             if container.frame != frame {
                 container.frame = frame
+                container.setNeedsLayout()
             }
-            container.isHidden = false
             textView.bringSubviewToFront(container)
-            container.setNeedsLayout()
+            container.isHidden = false
         }
     }
 

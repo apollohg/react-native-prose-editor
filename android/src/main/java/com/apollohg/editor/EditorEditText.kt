@@ -36,6 +36,7 @@ import android.util.AttributeSet
 import android.util.Log
 import android.util.TypedValue
 import android.view.KeyEvent
+import android.view.DragEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.accessibility.AccessibilityNodeInfo
@@ -153,6 +154,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private data class ParsedRenderPatch(
+        val baseDocumentVersion: String?,
         val startIndex: Int,
         val deleteCount: Int,
         val renderBlocks: org.json.JSONArray
@@ -201,6 +203,13 @@ class EditorEditText @JvmOverloads constructor(
         val pointerId: Int,
         val downX: Float,
         val downY: Float
+    )
+
+    private data class LocalTextDrag(
+        val scalarFrom: Int,
+        val scalarTo: Int,
+        val documentVersion: String?,
+        val editorId: Long,
     )
 
     private data class NativeTextMutation(
@@ -390,7 +399,12 @@ class EditorEditText @JvmOverloads constructor(
     private var imeTraceSequence: Long = 0L
     private var lastImeTraceUptimeMs: Long = 0L
     private var currentRenderBlocksJson: org.json.JSONArray? = null
+    private var currentRenderBlocksDocumentVersion: String? = null
+    private var currentRenderBlocksNeedFullApply = false
+    private var authorizedVisibleTextNeedsRebuild = false
     private var logicalSelectionSnapshot: LogicalSelectionSnapshot? = null
+    private var localTextDrag: LocalTextDrag? = null
+    private var lastAppliedDocumentVersion: String? = null
     private var restartImageLoadsOnAttach = false
     private var renderAppearanceRevision: Long = 1L
     private var lastAppliedRenderAppearanceRevision: Long = 0L
@@ -399,6 +413,7 @@ class EditorEditText @JvmOverloads constructor(
     private var deferredRustUpdateJSON: String? = null
     private var deferredRustUpdateLineBoundaryRefreshSource: String? = null
     private var deferredRustUpdateGeneration: Long = 0L
+    private var recoveringRenderPatchBaseMismatch = false
     private var externalUpdatePreparationCaptureDepth: Int = 0
     private var capturedExternalUpdatePreparationJSON: String? = null
     private var lineBoundaryInputRefreshGeneration: Long = 0L
@@ -413,6 +428,7 @@ class EditorEditText @JvmOverloads constructor(
     internal var onInsertContentHtmlInRustForTesting: ((String) -> Unit)? = null
     internal var onInsertContentJsonAtSelectionScalarForTesting: ((Int, Int, String) -> Unit)? = null
     internal var onResizeImageAtDocPosForTesting: ((Int, Int, Int) -> Unit)? = null
+    internal var onMoveSelectionScalarForTesting: ((Int, Int, Int) -> Unit)? = null
     internal var onBeforeRenderRefresh: (() -> Unit)? = null
     internal var blockExternalEditorUpdatePreparationForTesting = false
     internal var blockExternalEditorCommandPreparationForTesting = false
@@ -429,6 +445,7 @@ class EditorEditText @JvmOverloads constructor(
             if (field === value) return
             (field as? EditorV2Adapter)?.releaseNativeBindingOwner(nativeBindingToken)
             field = value
+            invalidateCurrentRenderBlocks()
             (value as? EditorV2Adapter)?.claimNativeBindingIfUnowned(nativeBindingToken)
         }
     private val nativeBindingToken = nextNativeBindingToken.incrementAndGet()
@@ -932,6 +949,101 @@ class EditorEditText @JvmOverloads constructor(
         return super.onTouchEvent(event)
     }
 
+    override fun onDragEvent(event: DragEvent): Boolean {
+        return when (event.action) {
+            DragEvent.ACTION_DRAG_STARTED -> {
+                val drag = localTextDragFor(event)
+                localTextDrag = drag
+                drag != null || super.onDragEvent(event)
+            }
+            DragEvent.ACTION_DROP -> {
+                val drag = localTextDrag
+                localTextDrag = null
+                if (drag == null) {
+                    super.onDragEvent(event)
+                } else {
+                    val currentText = text?.toString().orEmpty()
+                    val destinationUtf16 = getOffsetForPosition(event.x, event.y)
+                        .coerceIn(0, currentText.length)
+                    val destination = PositionBridge.utf16ToScalar(destinationUtf16, currentText)
+                    performLocalSelectionDrop(drag, destination) || super.onDragEvent(event)
+                }
+            }
+            DragEvent.ACTION_DRAG_ENDED -> {
+                val handled = localTextDrag != null
+                localTextDrag = null
+                super.onDragEvent(event) || handled
+            }
+            DragEvent.ACTION_DRAG_ENTERED,
+            DragEvent.ACTION_DRAG_LOCATION,
+            DragEvent.ACTION_DRAG_EXITED -> super.onDragEvent(event) || localTextDrag != null
+            else -> super.onDragEvent(event)
+        }
+    }
+
+    private fun localTextDragFor(event: DragEvent): LocalTextDrag? {
+        if (!isEditable || editorId == 0L || !isDragFromThisEditor(event.localState) || !hasFocus()) {
+            return null
+        }
+        val currentText = text?.toString() ?: return null
+        val selection = normalizedUtf16SelectionRange(currentText) ?: return null
+        val (start, end) = PositionBridge.snapRangeToScalarBoundaries(
+            selection.first,
+            selection.second,
+            currentText,
+        )
+        if (start >= end || containsInterBlockBoundary(start, end)) return null
+        return LocalTextDrag(
+            PositionBridge.utf16ToScalar(start, currentText),
+            PositionBridge.utf16ToScalar(end, currentText),
+            lastAppliedDocumentVersion,
+            editorId,
+        )
+    }
+
+    private fun isDragFromThisEditor(localState: Any?): Boolean {
+        if (localState === this) return true
+        if (localState?.javaClass?.name != "android.widget.TextView\$DragLocalState") return false
+        return runCatching {
+            val field = localState.javaClass.getDeclaredField("sourceTextView")
+            field.isAccessible = true
+            field.get(localState) === this
+        }.getOrDefault(false)
+    }
+
+    private fun containsInterBlockBoundary(start: Int, end: Int): Boolean {
+        val content = text as? Spanned ?: return false
+        return content.getSpans(start, end, Annotation::class.java).any {
+            it.key == RenderBridge.NATIVE_INTER_BLOCK_SEPARATOR_ANNOTATION
+        }
+    }
+
+    private fun performLocalSelectionDrop(drag: LocalTextDrag, destination: Int): Boolean {
+        if (destination in drag.scalarFrom..drag.scalarTo) return false
+        if (drag.editorId != editorId || drag.documentVersion == null) return false
+        if (lastAppliedDocumentVersion == null || lastAppliedDocumentVersion != drag.documentVersion) return false
+        if (!prepareForExternalInteractionMutation()) return false
+        if (lastAppliedDocumentVersion != drag.documentVersion) return false
+        onMoveSelectionScalarForTesting?.let { callback ->
+            callback(drag.scalarFrom, drag.scalarTo, destination)
+            return true
+        }
+        val driver = v2Driver ?: return false
+        val updateJSON = driver.moveSelection(drag.scalarFrom, drag.scalarTo, destination)
+        applyNonOptimisticRustUpdate(driver, updateJSON)
+        return updateJSON != null
+    }
+
+    internal fun performLocalSelectionDropForTesting(
+        scalarFrom: Int,
+        scalarTo: Int,
+        destination: Int,
+        documentVersion: String?,
+    ): Boolean = performLocalSelectionDrop(
+        LocalTextDrag(scalarFrom, scalarTo, documentVersion, editorId),
+        destination,
+    )
+
     override fun performClick(): Boolean {
         return super.performClick()
     }
@@ -1132,10 +1244,6 @@ class EditorEditText @JvmOverloads constructor(
         }
 
         val renderBlocks = currentRenderBlocksJson ?: return true
-        val previousSelectionStart = selectionStart
-        val previousSelectionEnd = selectionEnd
-        val previousScrollX = scrollX
-        val previousScrollY = scrollY
         val spannable = RenderBridge.buildSpannableFromBlocks(
             renderBlocks,
             baseFontSize = baseFontSize,
@@ -1145,16 +1253,8 @@ class EditorEditText @JvmOverloads constructor(
             hostView = this,
             atomConfiguration = atomRenderConfiguration
         )
-        applyRenderedSpannable(spannable, usedPatch = false)
+        applyFullRenderPreservingEditorState(spannable)
         lastAppliedRenderAppearanceRevision = renderAppearanceRevision
-        val length = text?.length ?: 0
-        if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
-            setSelection(
-                previousSelectionStart.coerceIn(0, length),
-                previousSelectionEnd.coerceIn(0, length)
-            )
-        }
-        scrollTo(previousScrollX, previousScrollY)
         onSelectionOrContentMayChange?.invoke()
         requestLayout()
         return true
@@ -1166,28 +1266,22 @@ class EditorEditText @JvmOverloads constructor(
         configuration: AtomRenderConfiguration?
     ): Boolean {
         atomRenderConfiguration = configuration
-        val content = text as? Spanned ?: return false
+        val content = text ?: return false
         val span = content.getSpans(0, content.length, AtomBlockSpan::class.java)
             .firstOrNull { it.atomKey == atomKey }
             ?: return false
         if (span.reservedHeightPx == heightPx) return false
 
-        val previousSelectionStart = selectionStart
-        val previousSelectionEnd = selectionEnd
-        val previousScrollX = scrollX
-        val previousScrollY = scrollY
+        val start = content.getSpanStart(span)
+        val end = content.getSpanEnd(span)
+        val flags = content.getSpanFlags(span)
+        if (start < 0 || end <= start) return false
         span.reservedHeightPx = heightPx
-        applyRenderedSpannable(SpannableStringBuilder(content), usedPatch = false)
+        content.removeSpan(span)
+        content.setSpan(span, start, end, flags)
         atomHeightRenderApplyCount += 1
-        val length = text?.length ?: 0
-        if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
-            setSelection(
-                previousSelectionStart.coerceIn(0, length),
-                previousSelectionEnd.coerceIn(0, length)
-            )
-        }
-        scrollTo(previousScrollX, previousScrollY)
         requestLayout()
+        invalidate()
         onSelectionOrContentMayChange?.invoke()
         return true
     }
@@ -1294,10 +1388,6 @@ class EditorEditText @JvmOverloads constructor(
         )
         if (imageSpans.isEmpty()) return false
 
-        val previousSelectionStart = selectionStart
-        val previousSelectionEnd = selectionEnd
-        val previousScrollX = scrollX
-        val previousScrollY = scrollY
         cancelPendingImageLoads()
         val spannable = SpannableStringBuilder(currentContent)
         imageSpans.forEach { span ->
@@ -1310,16 +1400,7 @@ class EditorEditText @JvmOverloads constructor(
                 spannable.setSpan(span.reloadedFor(this), start, end, flags)
             }
         }
-        applyRenderedSpannable(spannable, usedPatch = false)
-        if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
-            val length = text?.length ?: 0
-            setSelection(
-                previousSelectionStart.coerceIn(0, length),
-                previousSelectionEnd.coerceIn(0, length)
-            )
-        }
-        scrollTo(previousScrollX, previousScrollY)
-        post { scrollTo(previousScrollX, previousScrollY) }
+        applyFullRenderPreservingEditorState(spannable, restoreScrollAfterLayout = true)
         requestLayout()
         invalidate()
         onContentSizeMayChange?.invoke()
@@ -3540,6 +3621,9 @@ class EditorEditText @JvmOverloads constructor(
             return
         }
         if (deferredRustUpdateApplicationDepth > 0) {
+            if (deferredRustUpdateJSON != null && deferredRustUpdateJSON != updateJSON) {
+                advanceRenderBlocksThroughDeferredUpdate(deferredRustUpdateJSON!!)
+            }
             deferredRustUpdateJSON = updateJSON
             deferredRustUpdateLineBoundaryRefreshSource = lineBoundaryRefreshSource
             recordImeTraceForTesting(
@@ -3549,7 +3633,6 @@ class EditorEditText @JvmOverloads constructor(
             authorizeCurrentVisibleTextForDeferredRustUpdate()
             return
         }
-        cancelDeferredRustUpdateApplication()
         recordImeTraceForTesting(
             "rustUpdateApply",
             "mode=immediate jsonLength=${updateJSON.length}"
@@ -3560,7 +3643,11 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun authorizeCurrentVisibleTextForDeferredRustUpdate() {
-        lastAuthorizedText = text?.toString().orEmpty()
+        val visibleText = text?.toString().orEmpty()
+        if (visibleText != lastAuthorizedText) {
+            authorizedVisibleTextNeedsRebuild = true
+        }
+        lastAuthorizedText = visibleText
         lastAuthorizedRenderedText = text?.let { SpannableStringBuilder(it) }
         lastAuthorizedTextRevision += 1L
         clearNativeTextMutationAdoptionSuppression()
@@ -3828,7 +3915,28 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    private fun cancelDeferredRustUpdateApplication() {
+    private fun advanceRenderBlocksThroughDeferredUpdate(updateJSON: String) {
+        val update = try {
+            org.json.JSONObject(updateJSON)
+        } catch (_: Exception) {
+            invalidateCurrentRenderBlocks()
+            return
+        }
+        val updateDocumentVersion = canonicalV2U64(update.opt("documentVersion") as? String)
+        val renderBlocks = update.optJSONArray("renderBlocks")
+        val patch = parseRenderPatch(update.optJSONObject("renderPatch"))
+        val resolved = renderBlocks
+            ?: patch?.takeIf { patchMatchesCurrentRenderBlocks(it, updateDocumentVersion) }?.let {
+                currentRenderBlocksJson?.let { current -> mergeRenderBlocks(current, it) }
+            }
+        retainCurrentRenderBlocks(
+            resolved,
+            updateDocumentVersion,
+            needFullApply = resolved != null,
+        )
+    }
+
+    private fun cancelDeferredRustUpdateApplication(invalidateRenderBlocks: Boolean = true) {
         if (deferredRustUpdateJSON == null) return
         recordImeTraceForTesting(
             "rustUpdateDeferredCancel",
@@ -3837,6 +3945,9 @@ class EditorEditText @JvmOverloads constructor(
         deferredRustUpdateJSON = null
         deferredRustUpdateLineBoundaryRefreshSource = null
         deferredRustUpdateGeneration += 1L
+        if (invalidateRenderBlocks) {
+            invalidateCurrentRenderBlocks()
+        }
     }
 
     /**
@@ -4641,11 +4752,62 @@ class EditorEditText @JvmOverloads constructor(
     private fun parseRenderPatch(raw: org.json.JSONObject?): ParsedRenderPatch? {
         if (raw == null) return null
         val renderBlocks = raw.optJSONArray("renderBlocks") ?: return null
+        val baseDocumentVersion = if (raw.has("baseDocumentVersion")) {
+            canonicalV2U64(raw.opt("baseDocumentVersion") as? String) ?: return null
+        } else {
+            null
+        }
         return ParsedRenderPatch(
+            baseDocumentVersion = baseDocumentVersion,
             startIndex = raw.optInt("startIndex", -1),
             deleteCount = raw.optInt("deleteCount", -1),
             renderBlocks = renderBlocks
         ).takeIf { it.startIndex >= 0 && it.deleteCount >= 0 }
+    }
+
+    private fun patchMatchesCurrentRenderBlocks(
+        patch: ParsedRenderPatch,
+        updateDocumentVersion: String?,
+    ): Boolean = if (patch.baseDocumentVersion == null) {
+        updateDocumentVersion == null && currentRenderBlocksDocumentVersion == null
+    } else {
+        patch.baseDocumentVersion == currentRenderBlocksDocumentVersion
+    }
+
+    private fun retainCurrentRenderBlocks(
+        blocks: org.json.JSONArray?,
+        documentVersion: String?,
+        needFullApply: Boolean,
+    ) {
+        currentRenderBlocksJson = blocks?.let(::cloneJsonArray)
+        currentRenderBlocksDocumentVersion = documentVersion.takeIf { blocks != null }
+        currentRenderBlocksNeedFullApply = blocks != null && needFullApply
+    }
+
+    private fun invalidateCurrentRenderBlocks() {
+        currentRenderBlocksJson = null
+        currentRenderBlocksDocumentVersion = null
+        currentRenderBlocksNeedFullApply = false
+    }
+
+    private fun recoverRenderPatchBaseMismatch(
+        notifyListener: Boolean,
+        refreshInputConnectionForExternalUpdate: Boolean,
+    ): Boolean {
+        invalidateCurrentRenderBlocks()
+        if (recoveringRenderPatchBaseMismatch) return false
+        val adapter = v2Driver as? EditorV2Adapter ?: return false
+        val recovery = adapter.recoverNativeRender() ?: return false
+        recoveringRenderPatchBaseMismatch = true
+        return try {
+            applyUpdateJSON(
+                recovery,
+                notifyListener = notifyListener,
+                refreshInputConnectionForExternalUpdate = refreshInputConnectionForExternalUpdate,
+            )
+        } finally {
+            recoveringRenderPatchBaseMismatch = false
+        }
     }
 
     private fun hasTopLevelChildMetadata(content: Spanned): Boolean =
@@ -4698,6 +4860,41 @@ class EditorEditText @JvmOverloads constructor(
 
     private fun spannedContainsImageSpan(content: Spanned): Boolean =
         spannedRangeContainsImageSpan(content, 0, content.length)
+
+    private fun spannedRangeContainsUnstableAtom(
+        content: Spanned,
+        start: Int,
+        endExclusive: Int,
+    ): Boolean {
+        if (start >= endExclusive) return false
+        return content.getSpans(start, endExclusive, AtomBlockSpan::class.java)
+            .any { !it.hasStableAtomId }
+    }
+
+    private fun spannedContainsUnstableAtom(content: Spanned): Boolean =
+        spannedRangeContainsUnstableAtom(content, 0, content.length)
+
+    private fun applyFullRenderPreservingEditorState(
+        spannable: CharSequence,
+        restoreScrollAfterLayout: Boolean = false,
+    ) {
+        val previousSelectionStart = selectionStart
+        val previousSelectionEnd = selectionEnd
+        val previousScrollX = scrollX
+        val previousScrollY = scrollY
+        applyRenderedSpannable(spannable, usedPatch = false)
+        if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
+            val length = text?.length ?: 0
+            setSelection(
+                previousSelectionStart.coerceIn(0, length),
+                previousSelectionEnd.coerceIn(0, length),
+            )
+        }
+        preserveScrollPosition(previousScrollX, previousScrollY)
+        if (restoreScrollAfterLayout) {
+            post { preserveScrollPosition(previousScrollX, previousScrollY) }
+        }
+    }
 
     private fun applyRenderedSpannable(
         spannable: CharSequence,
@@ -5027,7 +5224,10 @@ class EditorEditText @JvmOverloads constructor(
                 buildRenderNanos = 0L,
                 applyRenderNanos = 0L
             )
-        if (spannedRangeContainsImageSpan(content, replaceRange.start, replaceRange.endExclusive)) {
+        if (
+            spannedRangeContainsImageSpan(content, replaceRange.start, replaceRange.endExclusive) ||
+            spannedRangeContainsUnstableAtom(content, replaceRange.start, replaceRange.endExclusive)
+        ) {
             return PatchApplyTrace(
                 applied = false,
                 eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
@@ -5043,7 +5243,10 @@ class EditorEditText @JvmOverloads constructor(
             includeTrailingInterBlockSeparator = replaceRange.endExclusive < content.length
         )
         val buildRenderNanos = System.nanoTime() - buildStartedAt
-        if (spannedContainsImageSpan(patchedSpannable)) {
+        if (
+            spannedContainsImageSpan(patchedSpannable) ||
+            spannedContainsUnstableAtom(patchedSpannable)
+        ) {
             return PatchApplyTrace(
                 applied = false,
                 eligibilityNanos = eligibilityNanos,
@@ -5098,25 +5301,46 @@ class EditorEditText @JvmOverloads constructor(
             )
             return false
         }
-        cancelDeferredRustUpdateApplication()
+        deferredRustUpdateJSON?.let { deferredUpdateJSON ->
+            if (deferredUpdateJSON != updateJSON) {
+                advanceRenderBlocksThroughDeferredUpdate(deferredUpdateJSON)
+            }
+            cancelDeferredRustUpdateApplication(invalidateRenderBlocks = false)
+        }
         val parseNanos = System.nanoTime() - parseStartedAt
+
+        val resolveRenderBlocksStartedAt = System.nanoTime()
+        val updateDocumentVersion = canonicalV2U64(update.opt("documentVersion") as? String)
+        val renderElements = update.optJSONArray("renderElements")
+        val renderBlocks = update.optJSONArray("renderBlocks")
+        val renderPatch = parseRenderPatch(update.optJSONObject("renderPatch"))
+        val resolvedRenderBlocks = renderBlocks
+            ?: renderPatch
+                ?.takeIf { patchMatchesCurrentRenderBlocks(it, updateDocumentVersion) }
+                ?.let { patch ->
+                    currentRenderBlocksJson?.let { mergeRenderBlocks(it, patch) }
+                }
+        val resolveRenderBlocksNanos = System.nanoTime() - resolveRenderBlocksStartedAt
+        if (
+            renderBlocks == null &&
+            renderElements == null &&
+            renderPatch != null &&
+            resolvedRenderBlocks == null
+        ) {
+            return recoverRenderPatchBaseMismatch(
+                notifyListener,
+                refreshInputConnectionForExternalUpdate,
+            )
+        }
 
         // The core is the authority on empty state; adopt it before anything
         // reconsiders the placeholder.
         setCoreReportedDocumentIsEmpty(
             if (update.has("documentIsEmpty")) update.optBoolean("documentIsEmpty") else null
         )
-
-        val resolveRenderBlocksStartedAt = System.nanoTime()
-        val renderElements = update.optJSONArray("renderElements")
-        val renderBlocks = update.optJSONArray("renderBlocks")
-        val renderPatch = parseRenderPatch(update.optJSONObject("renderPatch"))
-        val resolvedRenderBlocks = renderBlocks
-            ?: renderPatch?.let { patch ->
-                currentRenderBlocksJson?.let { mergeRenderBlocks(it, patch) }
-            }
-        val resolveRenderBlocksNanos = System.nanoTime() - resolveRenderBlocksStartedAt
         val shouldSkipRender = !refreshInputConnectionForExternalUpdate &&
+            !currentRenderBlocksNeedFullApply &&
+            !authorizedVisibleTextNeedsRebuild &&
             resolvedRenderBlocks != null &&
             currentRenderBlocksJson?.let { current ->
                 renderBlocksEqual(current, resolvedRenderBlocks)
@@ -5131,8 +5355,9 @@ class EditorEditText @JvmOverloads constructor(
         val applyRenderNanos: Long
         val patchTrace = if (
             !shouldSkipRender &&
+            !currentRenderBlocksNeedFullApply &&
             renderPatch != null &&
-            atomRenderConfiguration == null &&
+            resolvedRenderBlocks != null &&
             lastAppliedRenderAppearanceRevision == renderAppearanceRevision
         ) {
             applyRenderPatchIfPossible(renderPatch, refreshInputConnectionForExternalUpdate)
@@ -5143,14 +5368,22 @@ class EditorEditText @JvmOverloads constructor(
         if (shouldSkipRender) {
             pendingOptimisticRenderText = null
             lastRenderAppliedPatchForTesting = false
-            currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
+            retainCurrentRenderBlocks(
+                resolvedRenderBlocks,
+                updateDocumentVersion,
+                needFullApply = false,
+            )
             clearNativeTextMutationAdoptionSuppression()
             clearNativeTextMutationAfterBlurWindow()
             buildRenderNanos = 0L
             applyRenderNanos = 0L
         } else if (appliedPatch) {
             pendingOptimisticRenderText = null
-            currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
+            retainCurrentRenderBlocks(
+                resolvedRenderBlocks,
+                updateDocumentVersion,
+                needFullApply = false,
+            )
             lastAppliedRenderAppearanceRevision = renderAppearanceRevision
             buildRenderNanos = patchTrace?.buildRenderNanos ?: 0L
             applyRenderNanos = patchTrace?.applyRenderNanos ?: 0L
@@ -5185,7 +5418,11 @@ class EditorEditText @JvmOverloads constructor(
                 return false
             }
             buildRenderNanos = System.nanoTime() - buildStartedAt
-            currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
+            retainCurrentRenderBlocks(
+                resolvedRenderBlocks,
+                updateDocumentVersion,
+                needFullApply = false,
+            )
             val applyStartedAt = System.nanoTime()
             val optimisticText = pendingOptimisticRenderText
             val canReuseOptimisticVisibleText =
@@ -5213,11 +5450,13 @@ class EditorEditText @JvmOverloads constructor(
         if (selection != null) {
             applySelectionFromJSON(
                 selection,
-                update.optString("documentVersion", "").takeIf { it.isNotEmpty() }
+                updateDocumentVersion,
             )
         } else {
             logicalSelectionSnapshot = null
         }
+        lastAppliedDocumentVersion = updateDocumentVersion
+        authorizedVisibleTextNeedsRebuild = false
         val selectionNanos = System.nanoTime() - selectionStartedAt
 
         val postApplyStartedAt = System.nanoTime()
@@ -5307,7 +5546,7 @@ class EditorEditText @JvmOverloads constructor(
         val previousScrollY = scrollY
 
         explicitSelectedImageRange = null
-        currentRenderBlocksJson = null
+        invalidateCurrentRenderBlocks()
         pendingOptimisticRenderText = null
         applyRenderedSpannable(spannable, usedPatch = false)
         onContentSizeMayChange?.invoke()

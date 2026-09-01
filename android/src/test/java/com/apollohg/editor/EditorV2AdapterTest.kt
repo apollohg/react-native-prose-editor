@@ -167,6 +167,7 @@ class EditorV2AdapterTest {
         snapshot.put(
             "renderPatch",
             JSONObject()
+                .put("baseDocumentVersion", "1")
                 .put("startIndex", 0)
                 .put("deleteCount", 0)
                 .put("renderBlocks", blocks),
@@ -224,6 +225,21 @@ class EditorV2AdapterTest {
 
         val undone = adapter.undo()
         assertEquals("ab", renderedText(undone))
+    }
+
+    @Test
+    fun `move selection constructs a native structural command`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>abcd</p>")
+        adapter.claimNativeBindingIfUnowned(1L)
+
+        assertNotNull(adapter.moveSelection(0, 2, 4))
+
+        val command = sessionOf(adapter).commands.last()
+        assertEquals("moveSelection", command.getString("type"))
+        assertEquals(0, command.getJSONObject("range").getJSONObject("from").getInt("offset"))
+        assertEquals(2, command.getJSONObject("range").getJSONObject("to").getInt("offset"))
+        assertEquals(4, command.getJSONObject("at").getInt("offset"))
     }
 
     @Test

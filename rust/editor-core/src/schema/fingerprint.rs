@@ -46,6 +46,8 @@ struct CanonicalNode<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     json_projection: Option<CanonicalJsonProjection<'a>>,
     is_void: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deletable_on_backspace: Option<bool>,
     allow_undeclared_attrs: bool,
 }
 
@@ -194,6 +196,7 @@ impl<'a> From<&'a NodeSpec> for CanonicalNode<'a> {
                 }
             }),
             is_void: spec.is_void,
+            deletable_on_backspace: spec.deletable_on_backspace,
             allow_undeclared_attrs: spec.allow_undeclared_attrs,
         }
     }
@@ -371,6 +374,7 @@ mod tests {
                     html_rules: None,
                     json_projection: None,
                     is_void: false,
+                    deletable_on_backspace: None,
                     allow_undeclared_attrs: false,
                 },
                 NodeSpec {
@@ -383,6 +387,7 @@ mod tests {
                     html_rules: None,
                     json_projection: None,
                     is_void: false,
+                    deletable_on_backspace: None,
                     allow_undeclared_attrs: false,
                 },
                 NodeSpec {
@@ -395,6 +400,7 @@ mod tests {
                     html_rules: None,
                     json_projection: None,
                     is_void: false,
+                    deletable_on_backspace: None,
                     allow_undeclared_attrs: false,
                 },
             ],

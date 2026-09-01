@@ -302,6 +302,7 @@ fn mention_schema() -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: true,
+            deletable_on_backspace: None,
             // Mirrors the real `mentionNodeSpec()` (src/addons.ts), which
             // intentionally round-trips arbitrary app-defined attrs.
             allow_undeclared_attrs: true,

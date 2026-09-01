@@ -95,6 +95,8 @@ pub struct NodeSpec {
     pub json_projection: Option<NodeJsonProjection>,
     /// If `true`, this node has no editable content (e.g. horizontal rule, hard break).
     pub is_void: bool,
+    /// Whether collapsed backspace may delete this void block from an adjacent caret.
+    pub deletable_on_backspace: Option<bool>,
     /// If `true`, JSON ingestion (`set_json`/`insert_content_json`) admits attrs
     /// on this node that are not declared in `attrs`, instead of filtering them
     /// out. Default `false`. This is an opt-in escape hatch for node types with
@@ -1381,6 +1383,9 @@ impl Schema {
                 .get("isVoid")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let deletable_on_backspace = node_val
+                .get("deletableOnBackspace")
+                .and_then(|v| v.as_bool());
             let allow_undeclared_attrs = node_val
                 .get("allowUndeclaredAttrs")
                 .and_then(|v| v.as_bool())
@@ -1428,6 +1433,7 @@ impl Schema {
                 html_rules,
                 json_projection,
                 is_void,
+                deletable_on_backspace,
                 allow_undeclared_attrs,
             });
         }

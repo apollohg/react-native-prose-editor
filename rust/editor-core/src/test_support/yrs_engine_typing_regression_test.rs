@@ -156,6 +156,29 @@ fn backspace_at_text_start_after_void_block_deletes_the_void_block() {
     );
 }
 
+#[test]
+fn backspace_at_text_start_after_image_is_not_applicable() {
+    let mut engine = engine();
+    import_json(
+        &mut engine,
+        doc(vec![
+            serde_json::json!({
+                "type": "image",
+                "attrs": { "src": "https://example.com/a.png" }
+            }),
+            paragraph(serde_json::json!([plain("caption")])),
+        ]),
+    );
+    let before = document(&engine);
+
+    let outcome = engine
+        .apply_command(1, TypedCommand::DeleteBackward)
+        .expect("backspace planning must not fail");
+
+    assert!(outcome.is_none());
+    assert_eq!(document(&engine), before);
+}
+
 fn doc(blocks: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({ "type": "doc", "content": blocks })
 }

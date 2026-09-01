@@ -1,6 +1,26 @@
 import XCTest
 
 final class AtomMountingTests: XCTestCase {
+    func testFabricMountIndexesIgnoreAtomAndInternalSubviews() {
+        let editor = NativeEditorExpoView()
+        let first = UIView()
+        let atom = atomChild(key: "counter:1", height: 40)
+        let second = UIView()
+
+        editor.mountChildComponentView(first, index: 0)
+        editor.mountChildComponentView(atom, index: 1)
+        editor.mountChildComponentView(second, index: 2)
+
+        XCTAssertEqual(editor.subviews.count, 3)
+        XCTAssertTrue(editor.subviews[0] === editor.richTextView)
+        XCTAssertTrue(editor.subviews[1] === first)
+        XCTAssertTrue(editor.subviews[2] === second)
+
+        editor.unmountChildComponentView(first, index: 0)
+        XCTAssertTrue(editor.subviews[0] === editor.richTextView)
+        XCTAssertTrue(editor.subviews[1] === second)
+    }
+
     func testPrefixedReactChildIsReparentedIntoTextView() throws {
         let editor = NativeEditorExpoView()
         editor.frame = CGRect(x: 0, y: 0, width: 320, height: 240)
@@ -79,6 +99,37 @@ final class AtomMountingTests: XCTestCase {
         XCTAssertEqual(editor.measuredAtomHeight(for: "counter:1"), 96)
         XCTAssertEqual(invalidations, 1)
         XCTAssertEqual(editor.atomLayoutInvalidationCountForTesting, invalidations)
+    }
+
+    func testChildMountedBeforeAttachmentSuppliesMeasuredHeightToLaterRender() throws {
+        let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        XCTAssertTrue(editor.applyAtomRenderConfiguration(AtomRenderConfiguration(
+            registeredNodeTypes: ["counter"],
+            estimatedHeights: ["counter": 40],
+            measuredHeights: [:]
+        )))
+
+        let child = atomChild(key: "counter:0", height: 96)
+        editor.mountAtomChild(child, atomKey: "counter:0")
+
+        XCTAssertEqual(editor.measuredAtomHeight(for: "counter:0"), 96)
+        let rendered = RenderBridge.renderElements(
+            fromJSON: """
+            [{"type":"voidBlock","nodeType":"counter","docPos":1}]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label,
+            theme: nil,
+            atomConfiguration: editor.textView.atomRenderConfiguration
+        )
+        let attachment = try XCTUnwrap(
+            rendered.attribute(.attachment, at: 0, effectiveRange: nil) as? AtomBlockAttachment
+        )
+
+        XCTAssertEqual(attachment.reservedHeight, 96)
+        editor.textView.attributedText = rendered
+        XCTAssertTrue(editor.unmountAtomChild(child))
+        XCTAssertEqual(attachment.reservedHeight, 40)
     }
 
     func testAtomContainerUsesAttachmentLayoutRectIncludingTextContainerInset() throws {
@@ -168,6 +219,26 @@ final class AtomMountingTests: XCTestCase {
         XCTAssertNil(editor.richTextView.measuredAtomHeight(for: "counter:1"))
         XCTAssertNil(child.superview)
         XCTAssertEqual(attachment.reservedHeight, 40)
+    }
+
+    func testUnmountWithoutEstimateKeepsMeasuredHeightWhenNoFallbackExists() {
+        let editor = NativeEditorExpoView()
+        editor.frame = CGRect(x: 0, y: 0, width: 320, height: 240)
+        let attachment = installAtom(key: "counter:1", height: 0, in: editor.richTextView)
+        XCTAssertTrue(editor.richTextView.applyAtomRenderConfiguration(
+            AtomRenderConfiguration(
+                registeredNodeTypes: ["counter"],
+                estimatedHeights: [:],
+                measuredHeights: [:]
+            )
+        ))
+        let child = atomChild(key: "counter:1", height: 240)
+        editor.mountChildComponentView(child, index: 0)
+        XCTAssertEqual(attachment.reservedHeight, 240)
+
+        editor.unmountChildComponentView(child, index: 0)
+
+        XCTAssertEqual(attachment.reservedHeight, 240)
     }
 
     func testAtomContentWidthEventOnlyFiresWhenWidthChanges() {

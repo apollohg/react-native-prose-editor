@@ -15,6 +15,7 @@ import expo.modules.kotlin.ModulesProvider
 import expo.modules.kotlin.modules.Module
 import java.lang.ref.WeakReference
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -123,6 +124,29 @@ class AtomMountingTest {
         assertEquals(132, view.measuredAtomHeightForTesting("counterCard:0"))
         assertEquals(132, atomSpans(view).single().reservedHeightPx)
         assertEquals(1, view.atomHeightRenderApplyCountForTesting())
+    }
+
+    @Test
+    fun `atom child mounted before its span supplies height to the later render`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        view.applyAtomRenderConfiguration(
+            AtomRenderConfiguration(setOf("counterCard"), mapOf("counterCard" to 40f), emptyMap())
+        )
+        val child = atomChild(view.context, "counterCard:0").apply {
+            measure(
+                View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(132, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, 280, 132)
+        }
+
+        view.mountAtomChild(child, "counterCard:0")
+        view.editorEditText.applyRenderJSON(
+            """[{"type":"voidBlock","nodeType":"counterCard","docPos":1}]"""
+        )
+
+        assertEquals(132, view.measuredAtomHeightForTesting("counterCard:0"))
+        assertEquals(132, atomSpans(view).single().reservedHeightPx)
     }
 
     @Test
@@ -263,6 +287,43 @@ class AtomMountingTest {
     }
 
     @Test
+    fun `atom tap is delivered only to the React child`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editor = nativeEditorView()
+        editor.onAtomLayoutForTesting = {}
+        activity.setContentView(editor)
+        installAtoms(editor.richTextView, listOf("counterCard:0"))
+        var releases = 0
+        val action = object : View(activity) {
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (event.actionMasked == MotionEvent.ACTION_UP) releases += 1
+                return true
+            }
+        }
+        val host = ReactViewGroup(activity).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom:counterCard:0")
+            addView(action, FrameLayout.LayoutParams(280, 100))
+            measure(
+                View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, 280, 100)
+        }
+        action.layout(0, 0, 280, 100)
+        editor.addAtomChild(host, 0)
+        layout(editor, 320, 240)
+        editor.richTextView.layoutAtomHostViews()
+        val x = host.x + 50f
+        val y = host.y + 50f
+
+        editor.dispatchTouchEvent(MotionEvent.obtain(1, 1, MotionEvent.ACTION_DOWN, x, y, 0))
+        editor.dispatchTouchEvent(MotionEvent.obtain(1, 2, MotionEvent.ACTION_UP, x, y, 0))
+
+        assertEquals(1, releases)
+        assertEquals(0, editor.atomScrollTouchDispatchCountForTesting)
+    }
+
+    @Test
     fun `atom child binds to span by key not order`() {
         val view = RichTextEditorView(RuntimeEnvironment.getApplication())
         installAtoms(view, listOf("first", "second"))
@@ -285,15 +346,41 @@ class AtomMountingTest {
     }
 
     @Test
+    fun `laying out multiple atoms keeps the established host z order`() {
+        val context = RuntimeEnvironment.getApplication() as Context
+        val host = FrameLayout(context)
+        val editor = RichTextEditorView(context)
+        installAtoms(editor, listOf("first", "second"))
+        val first = atomChild(context, "first")
+        val second = atomChild(context, "second")
+        host.addView(editor)
+        host.addView(first)
+        host.addView(second)
+        editor.mountAtomChild(first, "first")
+        editor.mountAtomChild(second, "second")
+        layout(host, 320, 500)
+        editor.layoutAtomHostViews()
+        layout(host, 320, 500)
+
+        editor.layoutAtomHostViews()
+
+        assertFalse(host.isLayoutRequested)
+        assertEquals(host.childCount - 2, host.indexOfChild(first))
+        assertEquals(host.childCount - 1, host.indexOfChild(second))
+    }
+
+    @Test
     fun `atom child height change updates span exactly once`() {
         val view = RichTextEditorView(RuntimeEnvironment.getApplication())
         installAtoms(view, listOf("counterCard:0"))
         val child = atomChild(view.context, "counterCard:0")
         view.mountAtomChild(child, "counterCard:0")
+        val content = view.editorEditText.text
 
         child.layout(0, 0, 280, 164)
         child.layout(0, 0, 280, 164)
 
+        assertSame(content, view.editorEditText.text)
         assertEquals(164, atomSpans(view).single().reservedHeightPx)
         assertEquals(1, view.atomHeightRenderApplyCountForTesting())
     }
@@ -374,6 +461,37 @@ class AtomMountingTest {
         assertNull(editor.richTextView.measuredAtomHeightForTesting("counterCard:0"))
         assertNull(child.parent)
         assertEquals(0, editor.atomChildCount)
+    }
+
+    @Test
+    fun `reassigning an atom child clears the old fallback key height`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("counterCard:0", "counterCard:1"))
+        val child = atomChild(view.context, "counterCard:0")
+        child.layout(0, 0, 280, 164)
+        view.mountAtomChild(child, "counterCard:0")
+        assertEquals(164, view.measuredAtomHeightForTesting("counterCard:0"))
+
+        view.mountAtomChild(child, "counterCard:1")
+
+        assertNull(view.measuredAtomHeightForTesting("counterCard:0"))
+        assertEquals(164, view.measuredAtomHeightForTesting("counterCard:1"))
+    }
+
+    @Test
+    fun `scrolling does not republish content anchored atom positions`() {
+        val editor = nativeEditorView()
+        val events = mutableListOf<List<AtomLayoutPosition>>()
+        editor.richTextView.onAtomLayoutChange = { _, positions -> events.add(positions) }
+        installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
+        layout(editor, 320, 240)
+        val initialPositions = events.last()
+        val initialCount = events.size
+
+        editor.richTextView.editorScrollView.scrollTo(0, 100)
+
+        assertEquals(initialPositions, events.last())
+        assertEquals(initialCount, events.size)
     }
 
     private fun installAtoms(view: RichTextEditorView, keys: List<String>) {

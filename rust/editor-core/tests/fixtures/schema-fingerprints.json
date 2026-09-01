@@ -117,7 +117,8 @@
                         },
                         "role": "block",
                         "htmlTag": "img",
-                        "isVoid": true
+                        "isVoid": true,
+                        "deletableOnBackspace": false
                     },
                     { "name": "text", "content": "", "group": "inline", "role": "text" }
                 ],
@@ -129,7 +130,7 @@
                     { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "dfba81f7cd3fd5b21370c97fb7600327b80d01ae586d2bdcd2e3ab9d8c74d821"
+            "expectedFingerprint": "23e672655a4e2d4ee6f97303d3275e5d88cea232fab4c1f8fc546dcc0dcda68b"
         },
         {
             "name": "default ProseMirror schema",
@@ -248,7 +249,8 @@
                         },
                         "role": "block",
                         "htmlTag": "img",
-                        "isVoid": true
+                        "isVoid": true,
+                        "deletableOnBackspace": false
                     },
                     { "name": "text", "content": "", "group": "inline", "role": "text" }
                 ],
@@ -260,7 +262,7 @@
                     { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "5128557cb5b3e1abfb7e01e95c51028a8201616595bbe3a7856ec7373bb97819"
+            "expectedFingerprint": "7b0508d346ce7fb31d7fc77b28fc01a2eda7d314ac84d057d3a10866423bb57e"
         },
         {
             "name": "custom root schema",

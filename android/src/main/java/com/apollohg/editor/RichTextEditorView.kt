@@ -226,7 +226,10 @@ class RichTextEditorView @JvmOverloads constructor(
 
     internal fun mountAtomChild(child: View, atomKey: String) {
         atomHostViews.entries.firstOrNull { it.value === child }?.let { existing ->
-            if (existing.key != atomKey) atomHostViews.remove(existing.key)
+            if (existing.key != atomKey) {
+                atomHostViews.remove(existing.key)
+                restoreConfiguredAtomHeight(existing.key)
+            }
         }
         atomHostViews[atomKey]?.takeIf { it !== child }?.let(::detachAtomView)
         atomHostViews[atomKey] = child
@@ -286,23 +289,25 @@ class RichTextEditorView @JvmOverloads constructor(
         val entry = atomHostViews.entries.firstOrNull { it.value === child } ?: return false
         atomHostViews.remove(entry.key)
         detachAtomView(child)
-        measuredAtomHeightsPx.remove(entry.key)
-        val fallbackHeight = atomRenderConfiguration?.measuredHeightsPx?.get(entry.key)
-            ?: atomRenderConfiguration?.let { configuration ->
-                val nodeType = atomSpan(entry.key)?.nodeType
-                nodeType?.let { type ->
-                    ((configuration.estimatedHeightsDp[type] ?: 0f) * resources.displayMetrics.density)
-                        .roundToInt()
-                }
+        restoreConfiguredAtomHeight(entry.key)
+        layoutAtomHostViews()
+        return true
+    }
+
+    private fun restoreConfiguredAtomHeight(atomKey: String) {
+        measuredAtomHeightsPx.remove(atomKey)
+        val nodeType = atomSpan(atomKey)?.nodeType
+        val fallbackHeight = atomRenderConfiguration?.let { configuration ->
+            nodeType?.let { type ->
+                configuration.reservedHeightPx(atomKey, type, resources.displayMetrics.density)
             }
+        }
             ?: 0
         editorEditText.applyAtomHeight(
-            entry.key,
+            atomKey,
             fallbackHeight,
             resolvedAtomRenderConfiguration()
         )
-        layoutAtomHostViews()
-        return true
     }
 
     private fun detachAtomView(child: View) {
@@ -312,14 +317,12 @@ class RichTextEditorView @JvmOverloads constructor(
 
     private fun setAtomHeight(atomKey: String, heightPx: Int) {
         if (heightPx <= 0 || measuredAtomHeightsPx[atomKey] == heightPx) return
-        val span = atomSpan(atomKey) ?: return
         measuredAtomHeightsPx[atomKey] = heightPx
         editorEditText.applyAtomHeight(
             atomKey,
             heightPx,
             resolvedAtomRenderConfiguration()
         )
-        span.reservedHeightPx = heightPx
     }
 
     private fun resolvedAtomRenderConfiguration(): AtomRenderConfiguration? {
@@ -336,12 +339,13 @@ class RichTextEditorView @JvmOverloads constructor(
     }
 
     internal fun layoutAtomHostViews() {
-        emitAtomLayoutIfAvailable()
-        if (atomHostViews.isEmpty()) return
         val content = editorEditText.text as? android.text.Spanned ?: return
         val textLayout = editorEditText.layout ?: return
-        val spans = content.getSpans(0, content.length, AtomBlockSpan::class.java)
-            .associateBy { it.atomKey }
+        val spanList = content.getSpans(0, content.length, AtomBlockSpan::class.java).toList()
+        emitAtomLayoutIfAvailable(content, textLayout, spanList)
+        if (atomHostViews.isEmpty()) return
+        val spans = spanList.associateBy { it.atomKey }
+        val origins = mutableMapOf<ViewGroup?, Pair<Int, Int>>()
         for ((atomKey, child) in atomHostViews) {
             val span = spans[atomKey]
             val spanStart = span?.let(content::getSpanStart) ?: -1
@@ -349,40 +353,47 @@ class RichTextEditorView @JvmOverloads constructor(
                 child.visibility = View.INVISIBLE
                 continue
             }
-            val line = textLayout.getLineForOffset(spanStart)
             val parent = child.parent as? ViewGroup
-            val contentOrigin = Rect()
-            if (parent != null && parent !== editorContentFrame) {
-                parent.offsetDescendantRectToMyCoords(editorContentFrame, contentOrigin)
-            }
-            child.translationX = (
-                contentOrigin.left +
-                    editorEditText.left +
-                    editorEditText.compoundPaddingLeft -
-                    child.left
-            ).toFloat()
-            child.translationY = (
-                contentOrigin.top +
-                    editorEditText.top +
-                    editorEditText.totalPaddingTop +
-                    textLayout.getLineTop(line) -
-                    editorEditText.scrollY -
-                    child.top
-            ).toFloat()
+            val origin = origins.getOrPut(parent) { atomContentOrigin(parent) }
+            val position = atomPosition(spanStart, textLayout, origin, contentAnchored = false)
+            child.translationX = (position.first - child.left).toFloat()
+            child.translationY = (position.second - child.top).toFloat()
             child.visibility = View.VISIBLE
-            parent?.bringChildToFront(child)
+        }
+        ensureAtomHostZOrder()
+    }
+
+    private fun ensureAtomHostZOrder() {
+        val atomsByParent = linkedMapOf<ViewGroup, MutableList<View>>()
+        for (child in atomHostViews.values) {
+            val parent = child.parent as? ViewGroup ?: continue
+            atomsByParent.getOrPut(parent, ::mutableListOf).add(child)
+        }
+        for ((parent, atoms) in atomsByParent) {
+            val firstAtomIndex = parent.childCount - atoms.size
+            val alreadyOrdered = firstAtomIndex >= 0 && atoms.indices.all { index ->
+                parent.getChildAt(firstAtomIndex + index) === atoms[index]
+            }
+            if (!alreadyOrdered) atoms.forEach(parent::bringChildToFront)
         }
     }
 
     internal fun emitAtomLayoutIfAvailable(force: Boolean = false) {
+        val content = editorEditText.text as? android.text.Spanned ?: return
+        val textLayout = editorEditText.layout ?: return
+        val spans = content.getSpans(0, content.length, AtomBlockSpan::class.java).toList()
+        emitAtomLayoutIfAvailable(content, textLayout, spans, force)
+    }
+
+    private fun emitAtomLayoutIfAvailable(
+        content: android.text.Spanned,
+        textLayout: android.text.Layout,
+        spans: List<AtomBlockSpan>,
+        force: Boolean = false,
+    ) {
         if (atomRenderConfiguration == null) return
-        val contentWidth = (
-            editorEditText.width -
-                editorEditText.compoundPaddingLeft -
-                editorEditText.compoundPaddingRight
-        ).coerceAtLeast(0)
-        if (contentWidth <= 0) return
-        val positions = atomLayoutPositions()
+        val contentWidth = atomContentWidthPx() ?: return
+        val positions = atomLayoutPositions(content, textLayout, spans)
         if (
             force ||
             contentWidth != lastAtomContentWidthPx ||
@@ -394,28 +405,62 @@ class RichTextEditorView @JvmOverloads constructor(
         }
     }
 
-    private fun atomLayoutPositions(): List<AtomLayoutPosition> {
-        val content = editorEditText.text as? android.text.Spanned ?: return emptyList()
-        val textLayout = editorEditText.layout ?: return emptyList()
-        val contentOrigin = Rect()
-        (parent as? ViewGroup)?.offsetDescendantRectToMyCoords(editorContentFrame, contentOrigin)
-        return content.getSpans(0, content.length, AtomBlockSpan::class.java)
-            .mapNotNull { span ->
-                val spanStart = content.getSpanStart(span)
-                if (spanStart < 0) return@mapNotNull null
-                val line = textLayout.getLineForOffset(spanStart)
-                spanStart to AtomLayoutPosition(
-                    span.atomKey,
-                    contentOrigin.left + editorEditText.left + editorEditText.compoundPaddingLeft,
-                    contentOrigin.top +
-                        editorEditText.top +
-                        editorEditText.totalPaddingTop +
-                        textLayout.getLineTop(line) -
-                        editorEditText.scrollY,
-                )
-            }
+    private fun atomLayoutPositions(
+        content: android.text.Spanned,
+        textLayout: android.text.Layout,
+        spans: List<AtomBlockSpan>,
+    ): List<AtomLayoutPosition> =
+        atomLayoutPositions(content, textLayout, spans, atomContentOrigin(parent as? ViewGroup))
+
+    private fun atomLayoutPositions(
+        content: android.text.Spanned,
+        textLayout: android.text.Layout,
+        spans: List<AtomBlockSpan>,
+        contentOrigin: Pair<Int, Int>,
+    ): List<AtomLayoutPosition> =
+        spans.mapNotNull { span ->
+            val spanStart = content.getSpanStart(span)
+            if (spanStart < 0) return@mapNotNull null
+            val position = atomPosition(
+                spanStart,
+                textLayout,
+                contentOrigin,
+                contentAnchored = true,
+            )
+            spanStart to AtomLayoutPosition(
+                span.atomKey,
+                position.first,
+                position.second,
+            )
+        }
             .sortedWith(compareBy({ it.first }, { it.second.key }))
             .map { it.second }
+
+    private fun atomPosition(
+        spanStart: Int,
+        textLayout: android.text.Layout,
+        contentOrigin: Pair<Int, Int>,
+        contentAnchored: Boolean,
+    ): Pair<Int, Int> {
+        val scrollX = editorScrollView.scrollX
+        val scrollY = editorScrollView.scrollY
+        val anchoredX = contentOrigin.first + scrollX +
+            editorEditText.left + editorEditText.compoundPaddingLeft
+        val line = textLayout.getLineForOffset(spanStart)
+        val anchoredY = contentOrigin.second + scrollY +
+            editorEditText.top + editorEditText.totalPaddingTop +
+            textLayout.getLineTop(line) - editorEditText.scrollY
+        return if (contentAnchored) anchoredX to anchoredY else {
+            (anchoredX - scrollX) to (anchoredY - scrollY)
+        }
+    }
+
+    private fun atomContentOrigin(targetParent: ViewGroup?): Pair<Int, Int> {
+        val contentOrigin = Rect()
+        if (targetParent != null && targetParent !== editorContentFrame) {
+            targetParent.offsetDescendantRectToMyCoords(editorContentFrame, contentOrigin)
+        }
+        return contentOrigin.left to contentOrigin.top
     }
 
     internal fun measuredAtomHeightForTesting(atomKey: String): Int? =

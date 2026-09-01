@@ -2,6 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import type { AtomComponentProps } from './atoms';
+import { DEFAULT_ATOM_CHIP_HEIGHT } from './atomConstants';
 
 export function DefaultAtomChip({ nodeType }: AtomComponentProps) {
     return (
@@ -13,7 +14,7 @@ export function DefaultAtomChip({ nodeType }: AtomComponentProps) {
 
 const styles = StyleSheet.create({
     container: {
-        minHeight: 32,
+        minHeight: DEFAULT_ATOM_CHIP_HEIGHT,
         justifyContent: 'center',
         paddingHorizontal: 10,
         borderRadius: 6,

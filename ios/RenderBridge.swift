@@ -108,6 +108,10 @@ struct AtomRenderConfiguration: Equatable {
     let estimatedHeights: [String: CGFloat]
     let measuredHeights: [String: CGFloat]
 
+    func reservedHeight(atomKey: String, nodeType: String) -> CGFloat? {
+        measuredHeights[atomKey] ?? estimatedHeights[nodeType]
+    }
+
     static func from(json: String?) -> AtomRenderConfiguration? {
         guard let json,
               let data = json.data(using: .utf8),
@@ -840,9 +844,10 @@ final class RenderBridge {
                     atomKey: atomKey,
                     nodeType: nodeType,
                     docPos: docPos,
-                    reservedHeight: atomConfiguration?.measuredHeights[atomKey]
-                        ?? atomConfiguration?.estimatedHeights[nodeType]
-                        ?? 0
+                    reservedHeight: atomConfiguration?.reservedHeight(
+                        atomKey: atomKey,
+                        nodeType: nodeType
+                    ) ?? 0
                 )
                 let attrStr = NSMutableAttributedString(attachment: attachment)
                 attrStr.addAttributes(attrs, range: NSRange(location: 0, length: attrStr.length))

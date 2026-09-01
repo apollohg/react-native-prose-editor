@@ -2070,7 +2070,55 @@ final class EditorAccessoryPlaceholderView: UIView {
     }
 }
 
+private final class PendingJSONRetry {
+    struct Token {
+        let generation: UInt64
+        let attempt: Int
+    }
+
+    private var json: String?
+    private var editorId: UInt64?
+    private var scheduled = false
+    private var generation: UInt64 = 0
+    private(set) var attempts = 0
+
+    func clear() {
+        json = nil
+        editorId = nil
+        scheduled = false
+        attempts = 0
+        generation &+= 1
+    }
+
+    func schedule(
+        json: String?,
+        editorId: UInt64,
+        maxAttempts: Int?
+    ) -> Token? {
+        self.json = json
+        self.editorId = editorId
+        guard !scheduled else { return nil }
+        if let maxAttempts, attempts >= maxAttempts { return nil }
+        attempts += 1
+        scheduled = true
+        generation &+= 1
+        return Token(generation: generation, attempt: attempts)
+    }
+
+    func consume(_ token: Token) -> (json: String?, editorId: UInt64?)? {
+        guard token.generation == generation else { return nil }
+        let result = (json, editorId)
+        json = nil
+        editorId = nil
+        scheduled = false
+        return result
+    }
+}
+
 class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognizerDelegate {
+    private static let layoutEpsilon: CGFloat = 0.5
+    private static let nativeActionRetryDelay: TimeInterval = 0.016
+    private static let maxPendingUpdateRetryAttempts = 5
 
     // MARK: - Subviews
 
@@ -2089,10 +2137,12 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var toolbarPlacement = "keyboard"
     private var heightBehavior: EditorHeightBehavior = .fixed
     private var lastAutoGrowWidth: CGFloat = 0
+    private var lastPublishedAutoGrowHeight: CGFloat?
     private var addons = NativeEditorAddons(mentions: nil)
     private var mentionQueryState: MentionQueryState?
     private var lastMentionEventJSON: String?
     private var desiredThemeJSON: String?
+    private var desiredAtomsJSON: String?
     private let imageLoadOwner = RenderImageLoadOwner(policy: .default)
     private var lastThemeJSON: String?
     private var lastAddonsJSON: String?
@@ -2101,6 +2151,8 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var lastToolbarItemsJSON: String?
     private var lastToolbarFrameJSON: String?
     private var isReparentingAtomChild = false
+    private var mountedReactChildren: [UIView] = []
+    private var mountedAtomKeys: [ObjectIdentifier: String] = [:]
     private var pendingEditorUpdateJSON: String?
     private var pendingEditorUpdateEditorId: String?
     private var pendingEditorUpdateRevision = 0
@@ -2122,10 +2174,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var pendingEditableRetryEditorId: UInt64?
     private var pendingEditableRetryScheduled = false
     private var pendingEditableRetryGeneration: UInt64 = 0
-    private var pendingThemeRetryJSON: String?
-    private var pendingThemeRetryEditorId: UInt64?
-    private var pendingThemeRetryScheduled = false
-    private var pendingThemeRetryGeneration: UInt64 = 0
+    private let pendingThemeRetry = PendingJSONRetry()
+    private let pendingAtomsRetry = PendingJSONRetry()
+    private var pendingAtomsWakeScheduled = false
+    var atomsRetryAttemptsForTesting: Int { pendingAtomsRetry.attempts }
+    var blockAtomConfigurationApplyForTesting = false
     private var pendingAccessoryRetryActions: [PendingAccessoryRetryAction] = []
     private var invalidatedAccessoryRetryActions = Set<PendingAccessoryRetryAction>()
     private var pendingAccessoryRetryEditorId: UInt64?
@@ -2228,6 +2281,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             self?.emitAtomLayout(width: width)
         }
         richTextView.textView.editorDelegate = self
+        richTextView.textView.onExternalUpdateReadinessMayChange = { [weak self] in
+            self?.schedulePendingAtomsWakeIfNeeded()
+        }
         configureAccessoryToolbar()
 
         // Observe UITextView focus changes via NotificationCenter.
@@ -2249,6 +2305,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     deinit {
         richTextView.textView.editorDelegate = nil
+        richTextView.textView.onExternalUpdateReadinessMayChange = nil
         if let resultJSON = richTextView.textView.discardTransientNativeInputForEditorRebind() {
             dispatchExternalTextCompositionEnd(resultJSON)
         }
@@ -2266,20 +2323,34 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     // MARK: - Layout
 
     override func mountChildComponentView(_ childComponentView: UIView, index: Int) {
-        guard let atomKey = Self.atomKey(for: childComponentView) else {
-            super.mountChildComponentView(childComponentView, index: index)
-            return
+        let reactIndex = min(max(index, 0), mountedReactChildren.count)
+        mountedReactChildren.insert(childComponentView, at: reactIndex)
+        let atomKey = Self.atomKey(for: childComponentView)
+        if let atomKey {
+            mountedAtomKeys[ObjectIdentifier(childComponentView)] = atomKey
+            richTextView.mountAtomChild(childComponentView, atomKey: atomKey)
+        } else {
+            let nativeSubviewCount = subviews.filter { subview in
+                !mountedReactChildren.contains(where: { $0 === subview })
+            }.count
+            let directIndex = nativeSubviewCount + mountedReactChildren[..<reactIndex].filter {
+                mountedAtomKeys[ObjectIdentifier($0)] == nil
+            }.count
+            super.mountChildComponentView(childComponentView, index: directIndex)
         }
-        richTextView.mountAtomChild(childComponentView, atomKey: atomKey)
     }
 
     override func unmountChildComponentView(_ childComponentView: UIView, index: Int) {
-        if Self.atomKey(for: childComponentView) != nil {
+        if let reactIndex = mountedReactChildren.firstIndex(where: { $0 === childComponentView }) {
+            mountedReactChildren.remove(at: reactIndex)
+        }
+        if mountedAtomKeys.removeValue(forKey: ObjectIdentifier(childComponentView)) != nil {
             _ = richTextView.unmountAtomChild(childComponentView)
             childComponentView.removeFromSuperview()
             return
         }
-        super.unmountChildComponentView(childComponentView, index: index)
+        let directIndex = subviews.firstIndex(where: { $0 === childComponentView }) ?? index
+        super.unmountChildComponentView(childComponentView, index: directIndex)
     }
 
     override func didAddSubview(_ subview: UIView) {
@@ -2351,6 +2422,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         clearPendingViewCommandUpdateRetry()
         clearPendingEditableRetry()
         clearPendingThemeRetry()
+        clearPendingAtomsRetry()
         clearPendingAccessoryRetry()
         clearPendingMentionSuggestionRetry()
         lastMentionEventJSON = nil
@@ -2399,6 +2471,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             clearPendingViewCommandUpdateRetry()
             clearPendingEditableRetry()
             clearPendingThemeRetry()
+            clearPendingAtomsRetry()
             clearPendingAccessoryRetry()
             clearPendingMentionSuggestionRetry()
         }
@@ -2435,6 +2508,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         }
         if desiredThemeJSON != lastThemeJSON {
             setThemeJson(desiredThemeJSON)
+        }
+        if desiredAtomsJSON != lastAtomsJSON {
+            setAtomsJson(desiredAtomsJSON)
         }
         refreshSystemAssistantToolbarIfNeeded()
         refreshMentionQuery()
@@ -2648,10 +2724,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private func clearPendingThemeRetry() {
-        pendingThemeRetryJSON = nil
-        pendingThemeRetryEditorId = nil
-        pendingThemeRetryScheduled = false
-        pendingThemeRetryGeneration &+= 1
+        pendingThemeRetry.clear()
+    }
+
+    private func clearPendingAtomsRetry() {
+        pendingAtomsRetry.clear()
     }
 
     private func clearPendingAccessoryRetry() {
@@ -2669,29 +2746,59 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private func scheduleThemeRetry(_ themeJson: String?) {
-        pendingThemeRetryJSON = themeJson
-        pendingThemeRetryEditorId = richTextView.editorId
-        guard !pendingThemeRetryScheduled else { return }
-        pendingThemeRetryScheduled = true
-        pendingThemeRetryGeneration &+= 1
-        let retryGeneration = pendingThemeRetryGeneration
+        guard let token = pendingThemeRetry.schedule(
+            json: themeJson,
+            editorId: richTextView.editorId,
+            maxAttempts: nil
+        ) else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            guard retryGeneration == self.pendingThemeRetryGeneration else { return }
-            let retryJSON = self.pendingThemeRetryJSON
-            self.pendingThemeRetryJSON = nil
-            let retryEditorId = self.pendingThemeRetryEditorId
-            self.pendingThemeRetryEditorId = nil
-            self.pendingThemeRetryScheduled = false
-            guard retryEditorId == self.richTextView.editorId else {
+            guard let retry = self.pendingThemeRetry.consume(token) else { return }
+            guard retry.editorId == self.richTextView.editorId else {
                 self.clearPendingThemeRetry()
                 return
             }
-            guard retryJSON == self.desiredThemeJSON else {
+            guard retry.json == self.desiredThemeJSON else {
                 self.clearPendingThemeRetry()
                 return
             }
-            self.setThemeJson(retryJSON)
+            self.setThemeJson(retry.json)
+        }
+    }
+
+    private func scheduleAtomsRetry(_ atomsJson: String?) {
+        guard let token = pendingAtomsRetry.schedule(
+            json: atomsJson,
+            editorId: richTextView.editorId,
+            maxAttempts: Self.maxPendingUpdateRetryAttempts
+        ) else { return }
+        let delay = Self.nativeActionRetryDelay * Double(token.attempt)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            guard let retry = self.pendingAtomsRetry.consume(token) else { return }
+            guard retry.editorId == self.richTextView.editorId else {
+                self.clearPendingAtomsRetry()
+                return
+            }
+            guard retry.json == self.desiredAtomsJSON else {
+                self.clearPendingAtomsRetry()
+                return
+            }
+            self.setAtomsJson(retry.json)
+        }
+    }
+
+    private func schedulePendingAtomsWakeIfNeeded() {
+        guard desiredAtomsJSON != lastAtomsJSON,
+              !pendingAtomsWakeScheduled
+        else { return }
+        clearPendingAtomsRetry()
+        pendingAtomsWakeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingAtomsWakeScheduled = false
+            guard self.desiredAtomsJSON != self.lastAtomsJSON else { return }
+            self.setAtomsJson(self.desiredAtomsJSON)
         }
     }
 
@@ -2822,10 +2929,23 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func setAtomsJson(_ atomsJson: String?) {
-        guard lastAtomsJSON != atomsJson else { return }
+        if desiredAtomsJSON != atomsJson {
+            clearPendingAtomsRetry()
+        }
+        desiredAtomsJSON = atomsJson
+        guard lastAtomsJSON != atomsJson else {
+            clearPendingAtomsRetry()
+            return
+        }
         let configuration = AtomRenderConfiguration.from(json: atomsJson)
-        guard richTextView.applyAtomRenderConfiguration(configuration) else { return }
+        guard !blockAtomConfigurationApplyForTesting,
+              richTextView.applyAtomRenderConfiguration(configuration)
+        else {
+            scheduleAtomsRetry(atomsJson)
+            return
+        }
         lastAtomsJSON = atomsJson
+        clearPendingAtomsRetry()
     }
 
     var imageLoadingPolicy: ImageLoadingPolicy {
@@ -3001,6 +3121,17 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private func publishAutoGrowStyleHeight(_ height: CGFloat?) {
+        if let height {
+            if let lastPublishedAutoGrowHeight,
+               abs(height - lastPublishedAutoGrowHeight) <= Self.layoutEpsilon
+            {
+                return
+            }
+            lastPublishedAutoGrowHeight = height
+        } else {
+            guard lastPublishedAutoGrowHeight != nil else { return }
+            lastPublishedAutoGrowHeight = nil
+        }
         let selector = NSSelectorFromString("setStyleSize:height:")
         guard responds(to: selector) else { return }
         _ = perform(selector, with: nil, with: height.map { NSNumber(value: Double($0)) })
@@ -3242,10 +3373,10 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         guard preflight.ready else {
             return .retryableDeferred
         }
-        // A preflight commit already rendered and adopted a current atomic
-        // snapshot. Reuse it rather than issuing a second current-state read.
-        let adoptedUpdateJSON = preflight.adoptedUpdateJSON
-            ?? adapter.adoptExternalRender(updateJson)
+        if preflight.adoptedUpdateJSON != nil {
+            return .applied
+        }
+        let adoptedUpdateJSON = adapter.adoptExternalRender(updateJson)
         guard let adoptedUpdateJSON else {
             // The adapter owns strict-parser and destroyed-race reporting.
             // Do not add a second view-side record for the same rejection.
@@ -3508,6 +3639,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         _ textView: EditorTextView,
         didEndExternalTextComposition resultJSON: String
     ) {
+        schedulePendingAtomsWakeIfNeeded()
         dispatchExternalTextCompositionEnd(resultJSON)
     }
 
@@ -3541,6 +3673,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
+        schedulePendingAtomsWakeIfNeeded()
         if let revision = renderRevision(fromUpdateJSON: updateJSON) {
             renderedRevision = revision
         }

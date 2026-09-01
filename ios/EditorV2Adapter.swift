@@ -832,7 +832,13 @@ final class EditorV2Adapter {
     private static func isValidRenderPatch(_ value: Any) -> Bool {
         if value is NSNull { return true }
         guard let object = value as? [String: Any],
-              Set(object.keys) == ["startIndex", "deleteCount", "renderBlocks"],
+              Set(object.keys) == [
+                "baseDocumentVersion",
+                "startIndex",
+                "deleteCount",
+                "renderBlocks",
+              ],
+              uint64Field(object, "baseDocumentVersion") != nil,
               uint32Field(object, "startIndex") != nil,
               uint32Field(object, "deleteCount") != nil,
               let renderBlocks = object["renderBlocks"],

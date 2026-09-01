@@ -56,6 +56,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -68,6 +69,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
     ];
@@ -89,6 +91,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                 )]),
             }),
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         });
     }
@@ -104,6 +107,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -116,6 +120,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -138,6 +143,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -150,6 +156,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -162,6 +169,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: true,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -174,6 +182,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: true,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -224,6 +233,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: true,
+            deletable_on_backspace: Some(false),
             allow_undeclared_attrs: false,
         },
         NodeSpec {
@@ -236,6 +246,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: false,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
     ]);

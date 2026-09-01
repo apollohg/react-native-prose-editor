@@ -133,6 +133,7 @@ fn render_parity_schema() -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: true,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: true,
         },
         NodeSpec {
@@ -145,6 +146,7 @@ fn render_parity_schema() -> Schema {
             html_rules: None,
             json_projection: None,
             is_void: true,
+            deletable_on_backspace: None,
             allow_undeclared_attrs: false,
         },
     ]);

@@ -774,6 +774,7 @@ final class EditorV2AdapterTests: XCTestCase {
             let renderBlocks = object["renderBlocks"]!
             object["renderBlocks"] = NSNull()
             object["renderPatch"] = [
+                "baseDocumentVersion": object["documentVersion"]!,
                 "startIndex": 0,
                 "deleteCount": 0,
                 "renderBlocks": renderBlocks,
@@ -975,6 +976,7 @@ final class EditorV2AdapterTests: XCTestCase {
             }),
             ("render patch invalid nested element", { object in
                 object["renderPatch"] = [
+                    "baseDocumentVersion": object["documentVersion"]!,
                     "startIndex": 0,
                     "deleteCount": 0,
                     "renderBlocks": [["type": "unknownElement"]],
@@ -982,6 +984,7 @@ final class EditorV2AdapterTests: XCTestCase {
             }),
             ("render patch fractional start", { object in
                 object["renderPatch"] = [
+                    "baseDocumentVersion": object["documentVersion"]!,
                     "startIndex": 0.5,
                     "deleteCount": 0,
                     "renderBlocks": object["renderBlocks"]!,

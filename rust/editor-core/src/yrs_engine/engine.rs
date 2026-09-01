@@ -1,6 +1,6 @@
 use serde_json::json;
 use sha2::Digest;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use yrs::branch::{Branch, BranchID};
 use yrs::sync::time::{Clock, SystemClock};
@@ -3140,6 +3140,12 @@ impl YrsDocumentEngine {
         self.derived_state
             .as_ref()
             .map(|state| Arc::clone(&state.render_blocks))
+    }
+
+    pub(crate) fn block_atom_ids(&self) -> Option<HashMap<u32, String>> {
+        let txn = self.doc.transact();
+        let fragment = txn.get_xml_fragment(self.fragment_name.as_str())?;
+        super::position::block_atom_ids(&txn, &fragment, &self.schema)
     }
 
     pub fn document_json(&self) -> Option<serde_json::Value> {

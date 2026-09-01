@@ -1043,6 +1043,47 @@ final class RichTextEditorViewTests: XCTestCase {
         }
     }
 
+    func testWrongRenderPatchBaseRecoversAFullNativeSnapshot() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Alpha</p>")
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p>")
+        let revision = adapter.baseDocumentRevision
+        let wrongBase = revision == 0 ? UInt64(1) : UInt64(0)
+        let stalePatch: [String: Any] = [
+            "documentVersion": String(revision),
+            "renderPatch": [
+                "baseDocumentVersion": String(wrongBase),
+                "startIndex": 0,
+                "deleteCount": 1,
+                "renderBlocks": [[
+                    ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+                    ["type": "textRun", "text": "Corrupt", "marks": []],
+                    ["type": "blockEnd"],
+                ]],
+            ],
+        ]
+        let staleData = try JSONSerialization.data(withJSONObject: stalePatch)
+        let staleJSON = try XCTUnwrap(String(data: staleData, encoding: .utf8))
+
+        XCTAssertTrue(textView.applyUpdateJSON(staleJSON, notifyDelegate: false))
+        XCTAssertEqual(textView.textStorage.string, "Alpha")
+        XCTAssertFalse(textView.lastRenderAppliedPatch())
+
+        let nextUpdate = EditorV2Shadow.insertTextScalar(
+            id: editorId,
+            scalarPos: 5,
+            text: "!"
+        )
+        XCTAssertTrue(textView.applyUpdateJSON(nextUpdate, notifyDelegate: false))
+        XCTAssertEqual(textView.textStorage.string, "Alpha!")
+    }
+
     func testTypingInsideListItemFallsBackToFullRenderAndPreservesTextOrder() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
@@ -5270,6 +5311,99 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertNotEqual(view.richTextView.textView.theme?.backgroundColor, EditorTheme.color(from: "#101820"))
     }
 
+    func testBlockedAtomsPropRetriesAfterCompositionEndsWithoutPropRedelivery() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+        setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 5)
+        flushMainQueue()
+        XCTAssertTrue(view.richTextView.textView.becomeFirstResponder())
+        view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+
+        view.setAtomsJson(
+            #"{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"#
+        )
+        XCTAssertNil(view.richTextView.textView.atomRenderConfiguration)
+
+        view.richTextView.textView.unmarkText()
+        let retried = expectation(description: "atoms configuration reapplied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            retried.fulfill()
+        }
+        wait(for: [retried], timeout: 1)
+
+        XCTAssertEqual(
+            view.richTextView.textView.atomRenderConfiguration?.registeredNodeTypes,
+            ["counterCard"]
+        )
+    }
+
+    func testBlockedAtomsPropRetryIsDelayedAndCapped() {
+        let view = NativeEditorExpoView()
+        view.blockAtomConfigurationApplyForTesting = true
+
+        view.setAtomsJson(
+            #"{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"#
+        )
+        let settled = expectation(description: "retry queue settles")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            settled.fulfill()
+        }
+        wait(for: [settled], timeout: 1)
+
+        XCTAssertEqual(view.atomsRetryAttemptsForTesting, 5)
+        XCTAssertNil(view.richTextView.textView.atomRenderConfiguration)
+    }
+
+    func testBlockedAtomsPropWakesAfterRetryCapWhenCompositionEnds() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+        view.blockAtomConfigurationApplyForTesting = true
+        view.setAtomsJson(
+            #"{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"#
+        )
+
+        let capped = expectation(description: "atom retries reach their cap")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            capped.fulfill()
+        }
+        wait(for: [capped], timeout: 1)
+        XCTAssertEqual(view.atomsRetryAttemptsForTesting, 5)
+        XCTAssertNil(view.richTextView.textView.atomRenderConfiguration)
+
+        view.blockAtomConfigurationApplyForTesting = false
+        setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 5)
+        XCTAssertTrue(view.richTextView.textView.becomeFirstResponder())
+        view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+        view.richTextView.textView.unmarkText()
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(
+            view.richTextView.textView.atomRenderConfiguration?.registeredNodeTypes,
+            ["counterCard"]
+        )
+    }
+
     func testMentionAddonRefreshDrainsPendingNativeAutocorrectBeforeReload() {
         assertPendingNativeAutocorrectSurvivesAccessoryChange(
             initialHTML: "<p>teh @al</p>",
@@ -7037,6 +7171,18 @@ final class RichTextEditorViewTests: XCTestCase {
         let publishedHeight = try XCTUnwrap(view.publishedStyleHeights.compactMap { $0 }.last)
         XCTAssertGreaterThan(publishedHeight, initialHeight)
         XCTAssertGreaterThan(view.publishedStyleHeights.count, initialPublicationCount)
+
+        let publicationCount = view.publishedStyleHeights.count
+        view.richTextView.onHeightMayChange?(publishedHeight)
+        view.richTextView.onHeightMayChange?(publishedHeight)
+        XCTAssertEqual(view.publishedStyleHeights.count, publicationCount)
+
+        view.frame.size.height = max(1, publishedHeight - 20)
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        XCTAssertEqual(view.publishedStyleHeights.count, publicationCount)
 
         view.setHeightBehavior("fixed")
         XCTAssertNil(view.publishedStyleHeights.last!)
@@ -10871,8 +11017,8 @@ final class EditorV2StagingViewTests: XCTestCase {
             in: textView.textContainer
         )
         return rect.offsetBy(
-            dx: textView.textContainerInset.left - textView.contentOffset.x,
-            dy: textView.textContainerInset.top - textView.contentOffset.y
+            dx: textView.textContainerInset.left,
+            dy: textView.textContainerInset.top
         )
     }
 
@@ -10992,9 +11138,10 @@ final class EditorV2StagingViewTests: XCTestCase {
         )
         view.textView.setContentOffset(CGPoint(x: 0, y: maximumOffset), animated: false)
         let visibleCaretRect = view.textView.caretRect(for: position)
+        XCTAssertEqual(visibleCaretRect, caretRect)
         XCTAssertLessThanOrEqual(
             visibleCaretRect.maxY,
-            view.textView.bounds.height - view.textView.textContainerInset.bottom + 0.5
+            view.textView.bounds.maxY - view.textView.textContainerInset.bottom + 0.5
         )
     }
 
@@ -11053,7 +11200,7 @@ final class EditorV2StagingViewTests: XCTestCase {
     }
 
     @MainActor
-    func testStagingSameViewTextDropMovesSelectionAndRestoresAfterUIKitCleanup() throws {
+    func testStagingSameViewTextDropRestoresCleanupAndAcceptsTypingBeforeSessionEnd() throws {
         let (view, adapter, window) = makeBoundView(html: "<p>abcd</p>")
         defer { view.removeFromSuperview(); window.isHidden = true }
         let delegate = EditorTextViewDelegateSpy()
@@ -11098,7 +11245,13 @@ final class EditorV2StagingViewTests: XCTestCase {
             in: NSRange(location: 0, length: 2),
             with: ""
         )
-        XCTAssertEqual(view.textView.textStorage.string, "ab")
+        XCTAssertEqual(view.textView.textStorage.string, "cdab")
+        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
+        view.textView.insertText("x")
+        flushMain()
+
+        XCTAssertEqual(v2DocumentText(adapter), "cdabx")
+        XCTAssertEqual(view.textView.textStorage.string, "cdabx")
 
         view.textView.textDraggableView(
             view.textView,
@@ -11107,12 +11260,54 @@ final class EditorV2StagingViewTests: XCTestCase {
         )
         flushMain()
 
-        XCTAssertEqual(v2DocumentText(adapter), "cdab")
-        XCTAssertEqual(view.textView.textStorage.string, "cdab")
-        XCTAssertEqual(delegate.receivedUpdates.count, 1)
+        XCTAssertEqual(v2DocumentText(adapter), "cdabx")
+        XCTAssertEqual(view.textView.textStorage.string, "cdabx")
+        XCTAssertEqual(delegate.receivedUpdates.count, 2)
 
         _ = adapter.undo()
+        XCTAssertEqual(v2DocumentText(adapter), "cdab")
+        _ = adapter.undo()
         XCTAssertEqual(v2DocumentText(adapter), "abcd")
+    }
+
+    @MainActor
+    func testStagingSameViewTextDropIgnoresCleanupAfterARenderMutation() throws {
+        let (view, adapter, window) = makeBoundView(html: "<p>abcd</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let item = UIDragItem(itemProvider: NSItemProvider(object: "ab" as NSString))
+        let dragSession = TestTextDragSession(items: [item])
+        let source = try XCTUnwrap(view.textView.textRange(
+            from: view.textView.beginningOfDocument,
+            to: try XCTUnwrap(view.textView.position(from: view.textView.beginningOfDocument, offset: 2))
+        ))
+        _ = view.textView.textDraggableView(
+            view.textView,
+            itemsForDrag: TestTextDragRequest(
+                dragRange: source,
+                suggestedItems: [item],
+                isSelected: true,
+                dragSession: dragSession
+            )
+        )
+        let drop = TestTextDropRequest(
+            dropPosition: try XCTUnwrap(
+                view.textView.position(from: view.textView.beginningOfDocument, offset: 4)
+            ),
+            isSameView: true,
+            dropSession: TestTextDropSession(dragSession: dragSession)
+        )
+        view.textView.textDroppableView(view.textView, willPerformDrop: drop)
+        XCTAssertEqual(v2DocumentText(adapter), "cdab")
+
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: view.textView.textStorage.length),
+            with: "cdab"
+        )
+        view.textView.textStorage.replaceCharacters(in: NSRange(location: 0, length: 2), with: "")
+        flushMain()
+
+        XCTAssertEqual(v2DocumentText(adapter), "cdab")
+        XCTAssertEqual(view.textView.textStorage.string, "cdab")
     }
 
     @MainActor

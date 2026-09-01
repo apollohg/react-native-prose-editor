@@ -397,7 +397,11 @@ internal class EditorV2Adapter private constructor(
     private fun validRenderPatch(value: Any?): Boolean {
         if (value === JSONObject.NULL) return true
         val patch = value as? JSONObject ?: return false
-        return exactKeys(patch, setOf("startIndex", "deleteCount", "renderBlocks")) &&
+        return exactKeys(
+            patch,
+            setOf("baseDocumentVersion", "startIndex", "deleteCount", "renderBlocks"),
+        ) &&
+            canonicalV2U64(patch.opt("baseDocumentVersion") as? String) != null &&
             scalarField(patch, "startIndex") != null && scalarField(patch, "deleteCount") != null &&
             validRenderBlocks(patch.opt("renderBlocks"))
     }
@@ -1461,6 +1465,24 @@ internal class EditorV2Adapter private constructor(
                 backend.applyCommand(editorId, requestJson)
             }
         }
+
+    override fun moveSelection(anchor: Int, head: Int, destination: Int): String? {
+        val from = minOf(anchor, head)
+        val to = maxOf(anchor, head)
+        return commandAtSelection(
+            JSONObject()
+                .put("type", "moveSelection")
+                .put(
+                    "range",
+                    JSONObject()
+                        .put("from", positionEnvelope(from))
+                        .put("to", positionEnvelope(to)),
+                )
+                .put("at", positionEnvelope(destination)),
+            anchor,
+            head,
+        )
+    }
 
     override fun insertNode(nodeType: String, anchor: Int, head: Int): String? =
         commandAtSelection(JSONObject().put("type", "insertNode").put("nodeType", nodeType), anchor, head)

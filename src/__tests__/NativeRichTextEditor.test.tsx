@@ -8,6 +8,7 @@ const mockNativeBeginExternalComposition = jest.fn();
 const mockNativeUpdateExternalComposition = jest.fn();
 const mockNativeCommitExternalComposition = jest.fn();
 const mockNativeCancelExternalComposition = jest.fn();
+const mockNativeViewRender = jest.fn();
 let mockExternalCompositionSupported = true;
 const mockNativeModule: Record<string, jest.Mock> = {};
 
@@ -17,6 +18,7 @@ jest.mock('expo-modules-core', () => {
 
     const MockNativeView = React.forwardRef(
         (props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+            mockNativeViewRender();
             React.useImperativeHandle(
                 ref,
                 () => ({
@@ -182,6 +184,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         mockNativeFocus.mockClear();
         mockNativeBlur.mockClear();
         mockNativeGetCaretRect.mockReset();
+        mockNativeViewRender.mockClear();
         mockExternalCompositionSupported = true;
         mockNativeBeginExternalComposition
             .mockReset()
@@ -1420,6 +1423,25 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         });
     }
 
+    it('does not schedule an extra render for an equivalent inline atoms array', () => {
+        const { definition } = counterAtomDefinition();
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const editor = (label: string) => (
+            <NativeRichTextEditor
+                documentHandle={handle}
+                accessibilityLabel={label}
+                atoms={[definition]}
+            />
+        );
+        const rendered = render(editor('Before'));
+        const before = mockNativeViewRender.mock.calls.length;
+
+        rendered.rerender(editor('After'));
+
+        expect(mockNativeViewRender.mock.calls.length - before).toBe(1);
+        handle.destroy();
+    });
+
     it('seeds atom children, waits for native width, and tracks selection', () => {
         const { definition } = counterAtomDefinition();
         const handle = createNativeEditorDocumentHandle({
@@ -1581,6 +1603,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         });
 
         act(() => {
+            const baseDocumentVersion = handle.bridge.getState().documentRevision;
             v2Runtime.module.editorV2ApplyInput(
                 handle.editorId,
                 JSON.stringify({
@@ -1592,7 +1615,12 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             );
             renderSource = {
                 renderBlocks: null,
-                renderPatch: { startIndex: 0, deleteCount: 0, renderBlocks: atomBlock() },
+                renderPatch: {
+                    baseDocumentVersion,
+                    startIndex: 0,
+                    deleteCount: 0,
+                    renderBlocks: atomBlock(),
+                },
             };
             view.props.onEditorUpdate({
                 nativeEvent: {
@@ -1605,6 +1633,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(getByTestId('counter-atom')).toBeTruthy();
 
         act(() => {
+            const baseDocumentVersion = handle.bridge.getState().documentRevision;
             v2Runtime.module.editorV2ApplyInput(
                 handle.editorId,
                 JSON.stringify({
@@ -1616,7 +1645,12 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             );
             renderSource = {
                 renderBlocks: null,
-                renderPatch: { startIndex: 0, deleteCount: 1, renderBlocks: [] },
+                renderPatch: {
+                    baseDocumentVersion,
+                    startIndex: 0,
+                    deleteCount: 1,
+                    renderBlocks: [],
+                },
             };
             view.props.onEditorUpdate({
                 nativeEvent: {
@@ -1627,6 +1661,87 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             });
         });
         expect(queryByTestId('counter-atom')).toBeNull();
+        handle.destroy();
+    });
+
+    it('resyncs instead of applying an atom patch to the wrong render base', () => {
+        const { definition } = counterAtomDefinition();
+        let renderSource:
+            | { renderBlocks: RenderElement[][]; renderPatch: null }
+            | { renderBlocks: null; renderPatch: RenderBlocksPatch } = {
+            renderBlocks: atomBlock('counterCard', 1, 'atom-a'),
+            renderPatch: null,
+        };
+        installAtomRenderSource(() => renderSource);
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const { getByTestId, getAllByTestId, UNSAFE_getByProps } = render(
+            <NativeRichTextEditor documentHandle={handle} atoms={[definition]} />
+        );
+        const view = getByTestId('native-editor-view');
+        act(() => {
+            view.props.onAtomLayout({
+                nativeEvent: { editorId: handle.editorId, width: 200 },
+            });
+        });
+        const initialRevision = handle.bridge.getState().documentRevision;
+
+        v2Runtime.module.editorV2ApplyInput(
+            handle.editorId,
+            JSON.stringify({
+                version: 1,
+                requestId: '1',
+                baseDocumentRevision: initialRevision,
+                text: '!',
+            })
+        );
+        const queuedRevision = handle.bridge.getState().documentRevision;
+        const queued = JSON.parse(renderUpdateValue(handle.editorId)) as Record<string, unknown>;
+        queued.renderBlocks = null;
+        queued.renderPatch = {
+            baseDocumentVersion: initialRevision,
+            startIndex: 0,
+            deleteCount: 1,
+            renderBlocks: atomBlock('counterCard', 2, 'atom-b'),
+        };
+        handle.bridge.replaceDocument({ setJson: V2_DOC_B, history: 'undoableBoundary' });
+
+        act(() => {
+            view.props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: JSON.stringify(queued),
+                    documentRevision: queuedRevision,
+                },
+            });
+        });
+
+        renderSource = {
+            renderBlocks: atomBlock('counterCard', 3, 'atom-c'),
+            renderPatch: null,
+        };
+        const currentRevision = handle.bridge.getState().documentRevision;
+        const current = JSON.parse(renderUpdateValue(handle.editorId)) as Record<string, unknown>;
+        current.renderBlocks = null;
+        current.renderPatch = {
+            baseDocumentVersion: queuedRevision,
+            startIndex: 1,
+            deleteCount: 0,
+            renderBlocks: atomBlock('counterCard', 3, 'atom-c'),
+        };
+
+        act(() => {
+            view.props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: JSON.stringify(current),
+                    documentRevision: currentRevision,
+                },
+            });
+        });
+
+        expect(getAllByTestId('counter-atom')).toHaveLength(1);
+        expect(getByTestId('counter-atom').props.atomProps.attrs.title).toBe('a');
+        expect(UNSAFE_getByProps({ nativeID: 'prose-atom:atom-c' })).toBeTruthy();
         handle.destroy();
     });
 
@@ -1690,8 +1805,10 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             command: { type: 'updateNodeAttrs', docPos: 1, attrs: { title: 'b' } },
         });
 
-        await expect(updateAttrs({ title: 'c' })).rejects.toMatchObject<AtomUpdateAttrsError>({
-            code: 'not-applicable',
+        await act(async () => {
+            await expect(updateAttrs({ title: 'c' })).rejects.toMatchObject<AtomUpdateAttrsError>({
+                code: 'not-applicable',
+            });
         });
         jest.spyOn(handle.bridge, 'applyCommand').mockImplementationOnce(() => {
             throw new NativeEditorV2OperationError({
@@ -1720,6 +1837,187 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         await expect(updateAttrs({ title: 'f' })).rejects.toMatchObject<AtomUpdateAttrsError>({
             code: 'not-ready',
         });
+    });
+
+    it('resolves an atom position by its stable id when an older updateAttrs callback runs', async () => {
+        const { definition } = counterAtomDefinition();
+        let renderSource:
+            | { renderBlocks: RenderElement[][]; renderPatch: null }
+            | { renderBlocks: null; renderPatch: RenderBlocksPatch } = {
+            renderBlocks: atomBlock('counterCard', 1, 'client-1:9'),
+            renderPatch: null,
+        };
+        installAtomRenderSource(() => renderSource);
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const { getByTestId } = render(
+            <NativeRichTextEditor documentHandle={handle} atoms={[definition]} />
+        );
+        const view = getByTestId('native-editor-view');
+        act(() => {
+            view.props.onAtomLayout({
+                nativeEvent: { editorId: handle.editorId, width: 200 },
+            });
+        });
+        const staleUpdateAttrs = getByTestId('counter-atom').props.atomProps.updateAttrs as (
+            attrs: Record<string, unknown>
+        ) => Promise<void>;
+
+        v2Runtime.module.editorV2ApplyInput(
+            handle.editorId,
+            JSON.stringify({
+                version: 1,
+                requestId: '1',
+                baseDocumentRevision: handle.bridge.getState().documentRevision,
+                text: '!',
+            })
+        );
+        renderSource = {
+            renderBlocks: atomBlock('counterCard', 5, 'client-1:9'),
+            renderPatch: null,
+        };
+        act(() => {
+            view.props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: renderUpdateValue(handle.editorId),
+                    documentRevision: handle.bridge.getState().documentRevision,
+                },
+            });
+        });
+        const revision = handle.bridge.getState().documentRevision;
+        mockNativeModule.editorV2ApplyCommand.mockImplementationOnce(() => ({
+            value: JSON.stringify({
+                type: 'transaction',
+                changed: true,
+                documentRevision: revision,
+                stateRevision: '2',
+                canUndo: true,
+                canRedo: false,
+            }),
+            error: null,
+        }));
+
+        await act(async () => staleUpdateAttrs({ title: 'b' }));
+
+        expect(
+            JSON.parse(mockNativeModule.editorV2ApplyCommand.mock.calls.at(-1)![1] as string)
+        ).toMatchObject({ command: { type: 'updateNodeAttrs', docPos: 5 } });
+        handle.destroy();
+    });
+
+    it('rejects an older positional atom callback after the document changes', async () => {
+        const { definition } = counterAtomDefinition();
+        let renderSource = { renderBlocks: atomBlock('counterCard', 1), renderPatch: null };
+        installAtomRenderSource(() => renderSource);
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const { getByTestId } = render(
+            <NativeRichTextEditor documentHandle={handle} atoms={[definition]} />
+        );
+        const view = getByTestId('native-editor-view');
+        act(() =>
+            view.props.onAtomLayout({ nativeEvent: { editorId: handle.editorId, width: 200 } })
+        );
+        const staleUpdateAttrs = getByTestId('counter-atom').props.atomProps.updateAttrs;
+
+        v2Runtime.module.editorV2ApplyInput(
+            handle.editorId,
+            JSON.stringify({
+                version: 1,
+                requestId: '1',
+                baseDocumentRevision: handle.bridge.getState().documentRevision,
+                text: '!',
+            })
+        );
+        renderSource = { renderBlocks: atomBlock('counterCard', 5), renderPatch: null };
+        act(() =>
+            view.props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: renderUpdateValue(handle.editorId),
+                    documentRevision: handle.bridge.getState().documentRevision,
+                },
+            })
+        );
+
+        await expect(staleUpdateAttrs({ title: 'b' })).rejects.toMatchObject({
+            code: 'not-applicable',
+        });
+        handle.destroy();
+    });
+
+    it('resyncs atom children when updateAttrs is no longer applicable', async () => {
+        const { definition } = counterAtomDefinition();
+        let renderSource:
+            | { renderBlocks: RenderElement[][]; renderPatch: null }
+            | { renderBlocks: null; renderPatch: RenderBlocksPatch } = {
+            renderBlocks: atomBlock('counterCard', 1, 'client-1:9'),
+            renderPatch: null,
+        };
+        installAtomRenderSource(() => renderSource);
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const { getByTestId, queryByTestId } = render(
+            <NativeRichTextEditor documentHandle={handle} atoms={[definition]} />
+        );
+        const view = getByTestId('native-editor-view');
+        act(() => {
+            view.props.onAtomLayout({
+                nativeEvent: { editorId: handle.editorId, width: 200 },
+            });
+        });
+        const updateAttrs = getByTestId('counter-atom').props.atomProps.updateAttrs as (
+            attrs: Record<string, unknown>
+        ) => Promise<void>;
+        renderSource = { renderBlocks: [], renderPatch: null };
+
+        await act(async () => {
+            await expect(updateAttrs({ title: 'b' })).rejects.toMatchObject<AtomUpdateAttrsError>({
+                code: 'not-applicable',
+            });
+        });
+
+        expect(queryByTestId('counter-atom')).toBeNull();
+        handle.destroy();
+    });
+
+    it('does not rerender an unchanged atom component for a native text commit', () => {
+        const { component, definition } = counterAtomDefinition();
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        installAtomRenderSource(() => ({
+            renderBlocks: atomBlock('counterCard', 1, 'client-1:9'),
+            renderPatch: null,
+        }));
+        const { getByTestId } = render(
+            <NativeRichTextEditor documentHandle={handle} atoms={[definition]} />
+        );
+        const view = getByTestId('native-editor-view');
+        act(() => {
+            view.props.onAtomLayout({
+                nativeEvent: { editorId: handle.editorId, width: 200 },
+            });
+        });
+        const renderCount = component.mock.calls.length;
+        v2Runtime.module.editorV2ApplyInput(
+            handle.editorId,
+            JSON.stringify({
+                version: 1,
+                requestId: '1',
+                baseDocumentRevision: handle.bridge.getState().documentRevision,
+                text: '!',
+            })
+        );
+
+        act(() => {
+            view.props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    updateJson: renderUpdateValue(handle.editorId),
+                    documentRevision: handle.bridge.getState().documentRevision,
+                },
+            });
+        });
+
+        expect(component).toHaveBeenCalledTimes(renderCount);
+        handle.destroy();
     });
 
     it('binds the native view to the session editor id and is editable by default', () => {
@@ -1776,6 +2074,42 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             handle.destroy();
         }
     );
+
+    it('accepts a queued native commit after the engine advances before event delivery', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const onContentChange = jest.fn();
+        const { getByTestId } = render(
+            <NativeRichTextEditor documentHandle={handle} onContentChange={onContentChange} />
+        );
+        const baseDocumentVersion = handle.bridge.getState().documentRevision;
+        v2Runtime.module.editorV2ApplyInput(
+            handle.editorId,
+            JSON.stringify({
+                version: 1,
+                requestId: '1',
+                baseDocumentRevision: baseDocumentVersion,
+                text: '!',
+            })
+        );
+        const queuedRevision = handle.bridge.getState().documentRevision;
+        const queuedUpdateJson = renderUpdateValue(handle.editorId);
+
+        handle.bridge.replaceDocument({ setJson: V2_DOC_B, history: 'undoableBoundary' });
+
+        act(() => {
+            getByTestId('native-editor-view').props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handle.editorId,
+                    documentRevision: queuedRevision,
+                    updateJson: queuedUpdateJson,
+                },
+            });
+        });
+
+        expect(onContentChange).toHaveBeenCalledTimes(1);
+        expect(handle.bridge.getContentSnapshot().json).toEqual(V2_DOC_B);
+        handle.destroy();
+    });
 
     it('suppresses a native-origin revision even when collaboration reports it before the native event', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
@@ -2081,12 +2415,13 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const { getByTestId } = render(
             <NativeRichTextEditor documentHandle={handle} onContentChange={onContentChange} />
         );
+        const baseDocumentVersion = handle.bridge.getState().documentRevision;
         v2Runtime.module.editorV2ApplyInput(
             handle.editorId,
             JSON.stringify({
                 version: 1,
                 requestId: '1',
-                baseDocumentRevision: handle.bridge.getState().documentRevision,
+                baseDocumentRevision: baseDocumentVersion,
                 text: '!',
             })
         );
@@ -2097,6 +2432,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const renderBlocks = atomicUpdate.renderBlocks as unknown[];
         atomicUpdate.renderBlocks = null;
         atomicUpdate.renderPatch = {
+            baseDocumentVersion,
             startIndex: 0,
             deleteCount: renderBlocks.length,
             renderBlocks,
@@ -3564,7 +3900,12 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             getByTestId('native-editor-view').props.onToolbarAction({
-                nativeEvent: { key: 'action:custom:0', editorId: handle.editorId },
+                nativeEvent: {
+                    key: 'action:custom:0',
+                    editorId: handle.editorId,
+                    documentRevision: '01',
+                    updateJson: '{}',
+                },
             });
         });
         expect(onToolbarAction).toHaveBeenCalledWith('action:custom:0');

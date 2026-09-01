@@ -12,6 +12,7 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.util.Base64
 import android.view.View
+import android.view.ViewGroup
 import android.widget.TextView
 import kotlin.math.abs
 import android.text.style.AbsoluteSizeSpan
@@ -77,8 +78,15 @@ class RenderBridgeTest {
         """.trimIndent()
         try {
             editor.applyRenderJSON(json)
+            editor.layoutParams = ViewGroup.LayoutParams(320, 24)
+            editor.measure(
+                View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(24, View.MeasureSpec.EXACTLY)
+            )
+            editor.layout(0, 0, editor.measuredWidth, editor.measuredHeight)
             editor.setSelection(2)
             editor.scrollTo(0, 7)
+            assertEquals(7, editor.scrollY)
 
             editor.setImageLoadingPolicyJson("""{"maxSourceBytes":1234}""")
 

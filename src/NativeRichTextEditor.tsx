@@ -34,7 +34,6 @@ import {
     type NativeEditorV2AtomicRenderSnapshot,
     type NativeEditorV2PositionAffinity,
     type ReadonlyActiveState,
-    type RenderElement,
     type Selection,
 } from './NativeEditorBridge';
 import { NativeEditorV2ErrorBase, NativeEditorV2OperationError } from './NativeEditorBoundaryError';
@@ -94,9 +93,10 @@ import {
     DEFAULT_ATOM_CHIP_HEIGHT,
     applyRenderPatch,
     atomSelected,
-    collectAtomInstances,
+    collectAtomInstanceBlocks,
     type AtomInstance,
 } from './atomInstances';
+import { ATOM_NATIVE_ID_PREFIX } from './atomConstants';
 
 export type {
     NativeRichTextEditorFocusPreservingElement,
@@ -272,28 +272,14 @@ const EMPTY_ACTIVE_STATE: ActiveState = {
     insertableNodes: [],
 };
 
-interface AtomRenderState {
-    blocks: RenderElement[][];
-    instances: AtomInstance[];
-}
+type AtomRenderBlocks = NonNullable<NativeEditorV2AtomicRenderSnapshot['renderBlocks']>;
 
-function copyRenderBlocks(
-    blocks:
-        | NonNullable<NativeEditorV2AtomicRenderSnapshot['renderBlocks']>
-        | ReadonlyArray<ReadonlyArray<RenderElement>>
-): RenderElement[][] {
-    return blocks.map((block) =>
-        block.map((element) => {
-            const copy = { ...element } as RenderElement;
-            if (element.marks != null) {
-                copy.marks = element.marks.map((mark) =>
-                    typeof mark === 'string' ? mark : { ...mark }
-                );
-            }
-            if (element.attrs != null) copy.attrs = { ...element.attrs };
-            return copy;
-        })
-    );
+interface AtomRenderState {
+    blocks: AtomRenderBlocks;
+    instanceBlocks: ReadonlyArray<ReadonlyArray<AtomInstance>>;
+    instances: AtomInstance[];
+    documentVersion: string | null;
+    hasOnlyStableAtomKeys: boolean;
 }
 
 function selectedAtomKeys(selection: Selection, instances: readonly AtomInstance[]): Set<string> {
@@ -306,6 +292,22 @@ function selectedAtomKeys(selection: Selection, instances: readonly AtomInstance
 
 function equalStringSets(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
     return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function equalAtomInstances(
+    left: readonly AtomInstance[],
+    right: readonly AtomInstance[]
+): boolean {
+    return (
+        left.length === right.length &&
+        left.every(
+            (instance, index) =>
+                instance.key === right[index]?.key &&
+                instance.nodeType === right[index]?.nodeType &&
+                instance.docPos === right[index]?.docPos &&
+                stringifyCachedJson(instance.attrs) === stringifyCachedJson(right[index]?.attrs)
+        )
+    );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -910,9 +912,10 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
     ) {
         _assertNativeEditorDocumentHandle(documentHandle);
         const documentDescriptor = _getNativeEditorDocumentHandleDescriptor(documentHandle);
+        const registeredAtomTypeKey = JSON.stringify((atoms ?? []).map((atom) => atom.name));
         const registeredAtomTypes = useMemo(
             () => new Set((atoms ?? []).map((atom) => atom.name)),
-            [atoms]
+            [registeredAtomTypeKey]
         );
         const atomComponents = useMemo(() => {
             const components = new Map<string, AtomComponent>();
@@ -1148,14 +1151,17 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const [mentionQuery, setMentionQuery] = useState<MentionQueryChangeEvent | null>(null);
         const [atomState, setAtomState] = useState<AtomRenderState>({
             blocks: [],
+            instanceBlocks: [],
             instances: [],
+            documentVersion: null,
+            hasOnlyStableAtomKeys: true,
         });
         const atomStateRef = useRef(atomState);
         const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(new Set());
         const [atomContentWidth, setAtomContentWidth] = useState<number | null>(null);
-        const [atomPositions, setAtomPositions] = useState<
-            ReadonlyMap<string, NativeAtomPosition>
-        >(new Map());
+        const [atomPositions, setAtomPositions] = useState<ReadonlyMap<string, NativeAtomPosition>>(
+            new Map()
+        );
         const warnedUnknownAtomTypesRef = useRef(new Set<string>());
         const atomSeedEditorIdRef = useRef<string | null>(null);
         const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
@@ -1220,7 +1226,13 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             setActiveState(EMPTY_ACTIVE_STATE);
             setPushedUpdate(null);
             setAutoGrowHeight(null);
-            const emptyAtomState: AtomRenderState = { blocks: [], instances: [] };
+            const emptyAtomState: AtomRenderState = {
+                blocks: [],
+                instanceBlocks: [],
+                instances: [],
+                documentVersion: null,
+                hasOnlyStableAtomKeys: true,
+            };
             atomStateRef.current = emptyAtomState;
             atomSeedEditorIdRef.current = null;
             setAtomState(emptyAtomState);
@@ -1272,31 +1284,75 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const refreshAtomsFromUpdate = useCallback(
             (update: NativeEditorV2AtomicRenderSnapshot) => {
                 const previous = atomStateRef.current;
+                const source =
+                    update.renderPatch != null &&
+                    update.renderPatch.baseDocumentVersion !== previous.documentVersion
+                        ? bridge.renderUpdate()
+                        : update;
+                if (
+                    source.renderPatch != null &&
+                    source.renderPatch.baseDocumentVersion !== previous.documentVersion
+                ) {
+                    return;
+                }
                 const blocks =
-                    update.renderBlocks != null
-                        ? copyRenderBlocks(update.renderBlocks)
+                    source.renderBlocks != null
+                        ? source.renderBlocks
                         : applyRenderPatch(previous.blocks, {
-                              startIndex: update.renderPatch.startIndex,
-                              deleteCount: update.renderPatch.deleteCount,
-                              renderBlocks: copyRenderBlocks(update.renderPatch.renderBlocks),
+                              startIndex: source.renderPatch.startIndex,
+                              deleteCount: source.renderPatch.deleteCount,
+                              renderBlocks: source.renderPatch.renderBlocks,
                           });
+                const patchedCollection =
+                    source.renderPatch != null && previous.hasOnlyStableAtomKeys
+                        ? collectAtomInstanceBlocks(
+                              source.renderPatch.renderBlocks,
+                              registeredAtomTypes
+                          )
+                        : null;
+                const collection =
+                    source.renderPatch != null && patchedCollection?.hasOnlyStableKeys
+                        ? {
+                              instanceBlocks: applyRenderPatch(previous.instanceBlocks, {
+                                  startIndex: source.renderPatch.startIndex,
+                                  deleteCount: source.renderPatch.deleteCount,
+                                  renderBlocks: patchedCollection.instanceBlocks,
+                              }),
+                              hasOnlyStableKeys: true,
+                          }
+                        : collectAtomInstanceBlocks(blocks, registeredAtomTypes);
+                const instances = collection.instanceBlocks.flat();
                 const next = {
                     blocks,
-                    instances: collectAtomInstances(blocks, registeredAtomTypes),
+                    instanceBlocks: collection.instanceBlocks,
+                    instances,
+                    documentVersion: source.documentVersion,
+                    hasOnlyStableAtomKeys: collection.hasOnlyStableKeys,
                 };
                 atomStateRef.current = next;
-                setAtomState(next);
+                if (!equalAtomInstances(previous.instances, next.instances)) {
+                    setAtomState(next);
+                }
                 updateAtomSelection(selectionRef.current, next.instances);
             },
-            [registeredAtomTypes, updateAtomSelection]
+            [bridge, registeredAtomTypes, updateAtomSelection]
         );
 
         useEffect(() => {
             const current = atomStateRef.current;
-            const instances = collectAtomInstances(current.blocks, registeredAtomTypes);
-            const next = { blocks: current.blocks, instances };
+            const collection = collectAtomInstanceBlocks(current.blocks, registeredAtomTypes);
+            const instances = collection.instances;
+            const next = {
+                blocks: current.blocks,
+                instanceBlocks: collection.instanceBlocks,
+                instances,
+                documentVersion: current.documentVersion,
+                hasOnlyStableAtomKeys: collection.hasOnlyStableKeys,
+            };
             atomStateRef.current = next;
-            setAtomState(next);
+            if (!equalAtomInstances(current.instances, instances)) {
+                setAtomState(next);
+            }
             updateAtomSelection(selectionRef.current, instances);
         }, [registeredAtomTypes, updateAtomSelection]);
 
@@ -1522,19 +1578,41 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         }, [document, pushEngineUpdateToView]);
 
         const updateAtomAttrs = useCallback(
-            async (docPos: number, attrs: Record<string, unknown>): Promise<void> => {
+            async (
+                atomKey: string,
+                nodeType: string,
+                expectedDocPos: number,
+                expectedDocumentVersion: string | null,
+                hasStableKey: boolean,
+                attrs: Record<string, unknown>
+            ): Promise<void> => {
                 const baseDocumentRevision = latestRevisionRef.current;
                 if (documentHandle.isDestroyed || baseDocumentRevision == null) {
                     throw new AtomUpdateAttrsError('not-ready', 'The editor is not ready');
+                }
+                const instance = atomStateRef.current.instances.find(
+                    (candidate) => candidate.key === atomKey && candidate.nodeType === nodeType
+                );
+                if (
+                    instance == null ||
+                    (!hasStableKey &&
+                        (atomStateRef.current.documentVersion !== expectedDocumentVersion ||
+                            instance.docPos !== expectedDocPos))
+                ) {
+                    throw new AtomUpdateAttrsError(
+                        'not-applicable',
+                        'The atom no longer exists in the document'
+                    );
                 }
                 let outcome;
                 try {
                     outcome = bridge.applyCommand({
                         baseDocumentRevision,
-                        command: { type: 'updateNodeAttrs', docPos, attrs },
+                        command: { type: 'updateNodeAttrs', docPos: instance.docPos, attrs },
                     });
                 } catch (error) {
                     if (isRevisionMismatchError(error)) {
+                        refreshAtomsFromUpdate(bridge.renderUpdate());
                         document.refresh();
                         throw new AtomUpdateAttrsError(
                             'stale-revision',
@@ -1555,6 +1633,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     );
                 }
                 if (outcome.type === 'notApplicable') {
+                    refreshAtomsFromUpdate(bridge.renderUpdate());
+                    document.refresh();
                     throw new AtomUpdateAttrsError(
                         'not-applicable',
                         'The atom no longer exists at this document position'
@@ -1568,7 +1648,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 afterLocalEngineMutation();
             },
-            [afterLocalEngineMutation, bridge, document, documentHandle]
+            [afterLocalEngineMutation, bridge, document, documentHandle, refreshAtomsFromUpdate]
         );
 
         const editableRef = useRef(editable);
@@ -1970,24 +2050,25 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 // must satisfy the same atomic admission path as typing; a pure
                 // action (link/image/custom key) has no commit to refresh.
                 if (updateJson != null || documentRevision != null) {
-                    if (typeof updateJson !== 'string' || typeof documentRevision !== 'string')
-                        return;
-                    const accepted = acceptNativeCommitPayload(
-                        {
-                            editorId: event.nativeEvent.editorId,
-                            documentRevision,
-                            updateJson,
-                        },
-                        documentHandle.editorId,
-                        lastAcceptedNativeCommitRevisionRef.current
-                    );
-                    if (accepted == null) return;
-                    lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
-                    lastNativeDrivenRevisionRef.current = accepted.documentRevision;
-                    refreshAtomsFromUpdate(accepted.snapshot);
-                    applyTypedUpdateState(accepted.snapshot);
-                    document.refresh();
-                    onLocalCommitRef.current?.();
+                    if (typeof updateJson === 'string' && typeof documentRevision === 'string') {
+                        const accepted = acceptNativeCommitPayload(
+                            {
+                                editorId: event.nativeEvent.editorId,
+                                documentRevision,
+                                updateJson,
+                            },
+                            documentHandle.editorId,
+                            lastAcceptedNativeCommitRevisionRef.current
+                        );
+                        if (accepted != null) {
+                            lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
+                            lastNativeDrivenRevisionRef.current = accepted.documentRevision;
+                            refreshAtomsFromUpdate(accepted.snapshot);
+                            applyTypedUpdateState(accepted.snapshot);
+                            document.refresh();
+                            onLocalCommitRef.current?.();
+                        }
+                    }
                 } else if (typeof stateJson === 'string') {
                     applyUpdateState(stateJson);
                 }
@@ -2427,6 +2508,69 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             }
         }, [atomComponents, atomState.instances]);
 
+        const updateAtomAttrsRef = useRef(updateAtomAttrs);
+        updateAtomAttrsRef.current = updateAtomAttrs;
+        const invokeAtomAttrsUpdate = useCallback(
+            (
+                instance: AtomInstance,
+                documentVersion: string | null,
+                attrs: Record<string, unknown>
+            ) =>
+                updateAtomAttrsRef.current(
+                    instance.key,
+                    instance.nodeType,
+                    instance.docPos,
+                    documentVersion,
+                    instance.hasStableKey,
+                    attrs
+                ),
+            []
+        );
+
+        const atomChildren = useMemo(
+            () =>
+                atomContentWidth == null
+                    ? null
+                    : atomState.instances.map((instance) => {
+                          const Component =
+                              atomComponents.get(instance.nodeType) ?? DefaultAtomChip;
+                          const position = atomPositions.get(instance.key);
+                          return (
+                              <View
+                                  key={instance.key}
+                                  nativeID={`${ATOM_NATIVE_ID_PREFIX}${instance.key}`}
+                                  collapsable={false}
+                                  style={{
+                                      position: 'absolute',
+                                      top: position?.y ?? 0,
+                                      left: position?.x ?? 0,
+                                      width: atomContentWidth,
+                                  }}>
+                                  <Component
+                                      attrs={instance.attrs}
+                                      selected={selectedKeys.has(instance.key)}
+                                      nodeType={instance.nodeType}
+                                      updateAttrs={(attrs) =>
+                                          invokeAtomAttrsUpdate(
+                                              instance,
+                                              atomState.documentVersion,
+                                              attrs
+                                          )
+                                      }
+                                  />
+                              </View>
+                          );
+                      }),
+            [
+                atomComponents,
+                atomContentWidth,
+                atomPositions,
+                atomState.instances,
+                invokeAtomAttrsUpdate,
+                selectedKeys,
+            ]
+        );
+
         const isLinkActive = activeState.marks.link === true;
         const allowsLink = activeState.allowedMarks.includes('link');
         const canInsertImage = activeState.insertableNodes.includes(IMAGE_NODE_NAME);
@@ -2495,33 +2639,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const toolbarFrameJson = serializeToolbarFrames(
             editable && isFocused ? focusPreservingFrames : undefined
         );
-        const atomChildren =
-            atomContentWidth == null
-                ? null
-                : atomState.instances.map((instance) => {
-                      const Component = atomComponents.get(instance.nodeType) ?? DefaultAtomChip;
-                      const position = atomPositions.get(instance.key);
-                      return (
-                          <View
-                              key={instance.key}
-                              nativeID={`prose-atom:${instance.key}`}
-                              collapsable={false}
-                              style={{
-                                  position: 'absolute',
-                                  top: position?.y ?? 0,
-                                  left: position?.x ?? 0,
-                                  width: atomContentWidth,
-                              }}>
-                              <Component
-                                  attrs={instance.attrs}
-                                  selected={selectedKeys.has(instance.key)}
-                                  nodeType={instance.nodeType}
-                                  updateAttrs={(attrs) => updateAtomAttrs(instance.docPos, attrs)}
-                              />
-                          </View>
-                      );
-                  });
-
         return (
             <View style={[styles.container, containerStyle]}>
                 <NativeEditorView

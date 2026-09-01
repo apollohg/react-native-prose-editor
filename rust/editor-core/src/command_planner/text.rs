@@ -107,14 +107,40 @@ pub(super) fn default_text_block(schema: &Schema) -> Option<Node> {
 }
 
 fn is_terminal_void_block_gap(document: &Document, schema: &Schema, position: u32) -> bool {
-    let root = document.root();
-    if position != root.content_size() {
+    let resolved = match document.resolve(position) {
+        Ok(resolved) => resolved,
+        Err(_) => return false,
+    };
+    let parent = resolved.parent(document);
+    if resolved.parent_offset != parent.content_size() {
         return false;
     }
-    root.content()
-        .and_then(|content| content.iter().last())
-        .and_then(|node| schema.node(node.node_type()))
+    let Some(content) = parent.content() else {
+        return false;
+    };
+    let Some(last) = content.iter().last() else {
+        return false;
+    };
+    if !schema
+        .node(last.node_type())
         .is_some_and(|spec| spec.is_void && matches!(spec.role, NodeRole::Block))
+    {
+        return false;
+    }
+    let Some(text_block) = schema.preferred_text_block() else {
+        return false;
+    };
+    let Some(parent_spec) = schema.node(parent.node_type()) else {
+        return false;
+    };
+    let child_types = content
+        .iter()
+        .map(Node::node_type)
+        .chain(std::iter::once(text_block.name.as_str()))
+        .collect::<Vec<_>>();
+    parent_spec.content.matches(&child_types, |child, symbol| {
+        schema.node_matches_symbol(child, symbol)
+    })
 }
 
 pub(super) fn node_delete_start(document: &Document, path: &[u32]) -> Option<u32> {
@@ -147,7 +173,7 @@ pub(crate) fn plan_delete_backward(
     let from = scalar_anchor.min(scalar_head);
     let to = scalar_anchor.max(scalar_head);
     if from < to {
-        return plan_delete_scalar_range(document, position_map, schema, from, to);
+        return plan_delete_scalar_range_impl(document, position_map, schema, from, to, true);
     }
     let cursor = selection.from(document);
     if let Some(plan) = super::plan_empty_split_action(document, schema, cursor) {
@@ -166,7 +192,7 @@ pub(crate) fn plan_delete_backward(
     if to == 0 {
         return Ok(None);
     }
-    plan_delete_scalar_range(document, position_map, schema, to - 1, to)
+    plan_delete_scalar_range_impl(document, position_map, schema, to - 1, to, true)
 }
 
 pub(crate) fn plan_delete_scalar_range(
@@ -175,6 +201,24 @@ pub(crate) fn plan_delete_scalar_range(
     schema: &Schema,
     scalar_from: u32,
     scalar_to: u32,
+) -> Result<Option<SemanticCommandPlan>, ()> {
+    plan_delete_scalar_range_impl(
+        document,
+        position_map,
+        schema,
+        scalar_from,
+        scalar_to,
+        false,
+    )
+}
+
+fn plan_delete_scalar_range_impl(
+    document: &Document,
+    position_map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    is_backward_delete: bool,
 ) -> Result<Option<SemanticCommandPlan>, ()> {
     let doc_from = position_map.scalar_to_doc(scalar_from, document);
     let doc_to = position_map.scalar_to_doc(scalar_to, document);
@@ -265,6 +309,17 @@ pub(crate) fn plan_delete_scalar_range(
     ) {
         return Ok(Some(plan));
     }
+    if let Some(plan) = super::delete_selection_through_previous_void_block_action(
+        document,
+        position_map,
+        schema,
+        scalar_from,
+        scalar_to,
+        doc_from,
+        doc_to,
+    ) {
+        return Ok(Some(plan));
+    }
     if let Some(plan) = super::delete_previous_void_block_action(
         document,
         position_map,
@@ -274,6 +329,19 @@ pub(crate) fn plan_delete_scalar_range(
         doc_to,
     ) {
         return Ok(Some(plan));
+    }
+    if is_backward_delete
+        && super::previous_void_block_at_text_head(
+            document,
+            position_map,
+            schema,
+            scalar_from,
+            scalar_to,
+            doc_to,
+        )
+        .is_some()
+    {
+        return Ok(None);
     }
     // Must precede the DeleteRange fallback: at the head of a non-empty text
     // block that range would straddle the block boundary, which the engine

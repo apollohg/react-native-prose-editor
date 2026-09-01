@@ -149,6 +149,9 @@ function canonicalNode(node: NodeSpec): CanonicalObject {
         ['htmlTag', node.htmlTag ?? null],
         ...jsonProjection,
         ['isVoid', node.isVoid ?? false],
+        ...(node.deletableOnBackspace == null
+            ? []
+            : ([['deletableOnBackspace', node.deletableOnBackspace]] as const)),
         ['allowUndeclaredAttrs', node.allowUndeclaredAttrs ?? false],
     ]);
 }

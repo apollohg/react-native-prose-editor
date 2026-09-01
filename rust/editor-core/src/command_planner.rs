@@ -703,7 +703,101 @@ fn delete_previous_void_block_action(
     scalar_to: u32,
     doc_to: u32,
 ) -> Option<SemanticCommandPlan> {
-    if scalar_from >= scalar_to || map.doc_to_scalar(doc_to, document) != scalar_to {
+    let (previous_path, previous) =
+        previous_void_block_at_text_head(document, map, schema, scalar_from, scalar_to, doc_to)?;
+    let previous_spec = schema.node(previous.node_type())?;
+    if !is_backspace_deletable_void_block(previous_spec) {
+        return None;
+    }
+    let from = node_delete_start(document, &previous_path)?;
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::DeleteRange {
+            from,
+            to: from.checked_add(previous.node_size())?,
+        }],
+        selection_after: Some(Selection::cursor(from.checked_add(1)?)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
+}
+
+fn delete_selection_through_previous_void_block_action(
+    document: &Document,
+    map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    doc_from: u32,
+    doc_to: u32,
+) -> Option<SemanticCommandPlan> {
+    if scalar_to <= scalar_from.checked_add(1)? || map.doc_to_scalar(doc_to, document) != scalar_to
+    {
+        return None;
+    }
+    let resolved_to = document.resolve(doc_to).ok()?;
+    let ending_block = resolved_to.parent(document);
+    if !is_text_block(schema, ending_block) || resolved_to.parent_offset != 0 {
+        return None;
+    }
+    let (&ending_index, parent_path) = resolved_to.node_path.split_last()?;
+    if ending_index == 0 {
+        return None;
+    }
+    let parent = document.node_at(parent_path)?;
+    let previous = parent.child(usize::try_from(ending_index).ok()?.checked_sub(1)?)?;
+    let previous_spec = schema.node(previous.node_type())?;
+    if !previous.is_void() || !matches!(previous_spec.role, NodeRole::Block) {
+        return None;
+    }
+    let resolved_from = document.resolve(doc_from).ok()?;
+    let (&starting_index, starting_parent_path) = resolved_from.node_path.split_last()?;
+    if starting_parent_path != parent_path
+        || starting_index >= ending_index
+        || !is_text_block(schema, resolved_from.parent(document))
+    {
+        return None;
+    }
+    let after = text::apply_operations(
+        document,
+        schema,
+        &[SemanticOperation::DeleteRange {
+            from: doc_from,
+            to: doc_to,
+        }],
+    )
+    .ok()?;
+    let replacement = after
+        .node_at(parent_path)?
+        .child(usize::try_from(starting_index).ok()?)?
+        .clone();
+    let from = node_delete_start(document, &resolved_from.node_path)?;
+    let mut ending_path = parent_path.to_vec();
+    ending_path.push(ending_index);
+    let to = node_delete_start(document, &ending_path)?.checked_add(ending_block.node_size())?;
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::ReplaceRange {
+            from,
+            to,
+            content: Fragment::from(vec![replacement]),
+        }],
+        selection_after: Some(Selection::cursor(doc_from)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
+}
+
+fn is_backspace_deletable_void_block(spec: &NodeSpec) -> bool {
+    matches!(spec.role, NodeRole::Block) && spec.deletable_on_backspace.unwrap_or(true)
+}
+
+fn previous_void_block_at_text_head<'a>(
+    document: &'a Document,
+    map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    doc_to: u32,
+) -> Option<(Vec<u32>, &'a Node)> {
+    if scalar_to != scalar_from.checked_add(1)? || map.doc_to_scalar(doc_to, document) != scalar_to
+    {
         return None;
     }
     let resolved = document.resolve(doc_to).ok()?;
@@ -715,26 +809,16 @@ fn delete_previous_void_block_action(
     if index == 0 {
         return None;
     }
-    let parent = document.node_at(parent_path)?;
-    let previous = parent.child(usize::try_from(index).ok()?.checked_sub(1)?)?;
-    if !(previous.is_void()
-        && schema
-            .node(previous.node_type())
-            .is_some_and(|spec| matches!(spec.role, NodeRole::Block)))
-    {
+    let previous = document
+        .node_at(parent_path)?
+        .child(usize::try_from(index).ok()?.checked_sub(1)?)?;
+    let previous_spec = schema.node(previous.node_type())?;
+    if !previous.is_void() || !matches!(previous_spec.role, NodeRole::Block) {
         return None;
     }
-    let mut previous_path = parent_path.to_vec();
-    previous_path.push(index - 1);
-    let from = node_delete_start(document, &previous_path)?;
-    Some(SemanticCommandPlan {
-        operations: vec![SemanticOperation::DeleteRange {
-            from,
-            to: from.checked_add(previous.node_size())?,
-        }],
-        selection_after: Some(Selection::cursor(from.checked_add(1)?)),
-        history: SemanticCommandHistory::InputBoundary,
-    })
+    let mut path = parent_path.to_vec();
+    path.push(index - 1);
+    Some((path, previous))
 }
 
 /// Backspace at the head of a blockquote's *first* line lifts that line out of

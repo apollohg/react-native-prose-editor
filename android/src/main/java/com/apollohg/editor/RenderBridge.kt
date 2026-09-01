@@ -117,6 +117,10 @@ data class AtomRenderConfiguration(
     val estimatedHeightsDp: Map<String, Float>,
     val measuredHeightsPx: Map<String, Int>
 ) {
+    fun reservedHeightPx(atomKey: String, nodeType: String, density: Float): Int =
+        measuredHeightsPx[atomKey]
+            ?: ((estimatedHeightsDp[nodeType] ?: 0f) * density).roundToInt()
+
     companion object {
         fun fromJson(json: String?): AtomRenderConfiguration? {
             if (json == null) return null
@@ -436,7 +440,8 @@ internal class AtomBlockSpan(
     val atomKey: String,
     val nodeType: String,
     val docPos: Int,
-    var reservedHeightPx: Int
+    var reservedHeightPx: Int,
+    val hasStableAtomId: Boolean,
 ) : ReplacementSpan() {
     override fun getSize(
         paint: Paint,
@@ -1116,7 +1121,8 @@ object RenderBridge {
                         topLevelChildIndex,
                         atomConfiguration,
                         atomKey,
-                        docPos
+                        docPos,
+                        atomId != null,
                     )
                 }
 
@@ -1610,7 +1616,8 @@ object RenderBridge {
         topLevelChildIndex: Int?,
         atomConfiguration: AtomRenderConfiguration?,
         atomKey: String,
-        docPos: Int?
+        docPos: Int?,
+        hasStableAtomId: Boolean,
     ) {
         when (nodeType) {
             "horizontalRule", "horizontal_rule" -> {
@@ -1669,11 +1676,19 @@ object RenderBridge {
                     docPos != null &&
                     atomConfiguration?.registeredNodeTypes?.contains(nodeType) == true
                 ) {
-                    val reservedHeightPx = atomConfiguration.measuredHeightsPx[atomKey]
-                        ?: ((atomConfiguration.estimatedHeightsDp[nodeType] ?: 0f) * density)
-                            .roundToInt()
+                    val reservedHeightPx = atomConfiguration.reservedHeightPx(
+                        atomKey,
+                        nodeType,
+                        density,
+                    )
                     builder.setSpan(
-                        AtomBlockSpan(atomKey, nodeType, docPos, reservedHeightPx),
+                        AtomBlockSpan(
+                            atomKey,
+                            nodeType,
+                            docPos,
+                            reservedHeightPx,
+                            hasStableAtomId,
+                        ),
                         start,
                         end,
                         Spanned.SPAN_EXCLUSIVE_EXCLUSIVE

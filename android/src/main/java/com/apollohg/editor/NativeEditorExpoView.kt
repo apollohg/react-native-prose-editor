@@ -894,6 +894,52 @@ class NativeEditorExpoView(
         val editorId: String,
     )
 
+    private enum class PendingPropertyRetryResult {
+        STALE,
+        EDITOR_CHANGED,
+        READY,
+    }
+
+    private class PendingPropertyRetry {
+        var editorId: Long? = null
+            private set
+        var attempts = 0
+            private set
+        private var scheduled = false
+        private var generation = 0
+
+        fun bind(editorId: Long) {
+            this.editorId = editorId
+        }
+
+        fun resetAttempts() {
+            attempts = 0
+        }
+
+        fun cancel() {
+            scheduled = false
+            editorId = null
+            attempts = 0
+            generation += 1
+        }
+
+        fun schedule(editorId: Long, maxAttempts: Int): Pair<Int, Int>? {
+            if (scheduled || attempts >= maxAttempts) return null
+            attempts += 1
+            this.editorId = editorId
+            scheduled = true
+            generation += 1
+            return generation to attempts
+        }
+
+        fun consume(scheduledGeneration: Int, currentEditorId: Long): PendingPropertyRetryResult {
+            if (scheduledGeneration != generation) return PendingPropertyRetryResult.STALE
+            if (editorId != currentEditorId) return PendingPropertyRetryResult.EDITOR_CHANGED
+            scheduled = false
+            return PendingPropertyRetryResult.READY
+        }
+    }
+
     val richTextView: RichTextEditorView = RichTextEditorView(context)
     private val keyboardToolbarView = EditorKeyboardToolbarView(context)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -965,19 +1011,21 @@ class NativeEditorExpoView(
     private var lastThemeJson: String? = null
     private var pendingThemeJson: String? = null
     private var hasPendingTheme = false
-    private var pendingThemeRetryScheduled = false
-    private var pendingThemeRetryEditorId: Long? = null
-    private var pendingThemeRetryGeneration = 0
-    private var pendingThemeRetryAttempts = 0
+    private val pendingThemeRetry = PendingPropertyRetry()
+    private var pendingAtomsJson: String? = null
+    private var hasPendingAtoms = false
+    private val pendingAtomsRetry = PendingPropertyRetry()
     private var lastAddonsJson: String? = null
     private var lastAtomsJson: String? = null
     private val reactChildren = mutableListOf<View>()
     private val atomScrollTouchSlopPx = ViewConfiguration.get(context).scaledTouchSlop
     private var atomScrollGestureActive = false
     private var atomScrollGestureIntercepted = false
-    private var atomScrollGestureForwarding = false
+    private var atomScrollGestureLockedToChild = false
     private var atomScrollDownX = 0f
     private var atomScrollDownY = 0f
+    internal var atomScrollTouchDispatchCountForTesting = 0
+        private set
     private var lastRemoteSelectionsJson: String? = null
     private var lastToolbarItemsJson: String? = null
     private var lastToolbarFrameJson: String? = null
@@ -1140,6 +1188,7 @@ class NativeEditorExpoView(
                 applyPendingEditorResetUpdateIfNeeded()
                 applyPendingEditorUpdateIfNeeded()
                 applyPendingThemeIfNeeded()
+                applyPendingAtomsIfNeeded()
                 refreshReadyStateIfSettled()
                 applyAutoFocusIfNeeded()
             } else if (id != 0L) {
@@ -1173,7 +1222,11 @@ class NativeEditorExpoView(
             clearPendingViewCommandUpdateRetry()
             cancelPendingThemeRetry()
             if (hasPendingTheme) {
-                pendingThemeRetryEditorId = id
+                pendingThemeRetry.bind(id)
+            }
+            cancelPendingAtomsRetry()
+            if (hasPendingAtoms) {
+                pendingAtomsRetry.bind(id)
             }
             cancelPendingBlurRetry()
             clearPendingNativeActionRetry()
@@ -1215,6 +1268,7 @@ class NativeEditorExpoView(
         applyPendingEditorResetUpdateIfNeeded()
         applyPendingEditorUpdateIfNeeded()
         applyPendingThemeIfNeeded()
+        applyPendingAtomsIfNeeded()
         refreshReadyStateIfSettled()
         applyAutoFocusIfNeeded()
         richTextView.emitAtomLayoutIfAvailable(force = true)
@@ -1224,8 +1278,8 @@ class NativeEditorExpoView(
         if (lastThemeJson == themeJson && !hasPendingTheme) return
         pendingThemeJson = themeJson
         hasPendingTheme = true
-        pendingThemeRetryEditorId = richTextView.editorId
-        pendingThemeRetryAttempts = 0
+        pendingThemeRetry.bind(richTextView.editorId)
+        pendingThemeRetry.resetAttempts()
         applyPendingThemeIfNeeded()
     }
 
@@ -1291,10 +1345,12 @@ class NativeEditorExpoView(
     }
 
     fun setAtomsJson(atomsJson: String?) {
-        if (lastAtomsJson == atomsJson) return
-        val configuration = AtomRenderConfiguration.fromJson(atomsJson)
-        if (!richTextView.applyAtomRenderConfiguration(configuration)) return
-        lastAtomsJson = atomsJson
+        if (lastAtomsJson == atomsJson && !hasPendingAtoms) return
+        pendingAtomsJson = atomsJson
+        hasPendingAtoms = true
+        pendingAtomsRetry.bind(richTextView.editorId)
+        pendingAtomsRetry.resetAttempts()
+        applyPendingAtomsIfNeeded()
     }
 
     internal val atomChildCount: Int
@@ -1331,28 +1387,25 @@ class NativeEditorExpoView(
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             atomScrollGestureActive = atomChildAt(event.x, event.y) != null
             atomScrollGestureIntercepted = false
-            atomScrollGestureForwarding = atomScrollGestureActive
+            atomScrollGestureLockedToChild = false
             atomScrollDownX = event.x
             atomScrollDownY = event.y
+            return super.dispatchTouchEvent(event)
         }
         if (!atomScrollGestureActive) return super.dispatchTouchEvent(event)
 
-        val horizontalIntent =
-            !atomScrollGestureIntercepted &&
-                atomScrollGestureForwarding &&
-                event.actionMasked == MotionEvent.ACTION_MOVE &&
-                atomScrollMovedHorizontallyBeyondSlop(event)
-        val scrollHandled = when {
-            horizontalIntent -> {
-                atomScrollGestureForwarding = false
-                cancelAtomScrollTouch(event)
-            }
-            atomScrollGestureForwarding -> dispatchAtomScrollTouch(event)
-            else -> false
-        }
         if (
             !atomScrollGestureIntercepted &&
-            atomScrollGestureForwarding &&
+            !atomScrollGestureLockedToChild &&
+            event.actionMasked == MotionEvent.ACTION_MOVE &&
+            atomScrollMovedHorizontallyBeyondSlop(event)
+        ) {
+            atomScrollGestureLockedToChild = true
+        }
+
+        if (
+            !atomScrollGestureIntercepted &&
+            !atomScrollGestureLockedToChild &&
             event.actionMasked == MotionEvent.ACTION_MOVE &&
             atomScrollMovedVerticallyBeyondSlop(event) &&
             richTextView.editorScrollView.let {
@@ -1364,17 +1417,33 @@ class NativeEditorExpoView(
             cancel.action = MotionEvent.ACTION_CANCEL
             super.dispatchTouchEvent(cancel)
             cancel.recycle()
+
+            val down = MotionEvent.obtain(
+                event.downTime,
+                event.eventTime,
+                MotionEvent.ACTION_DOWN,
+                atomScrollDownX,
+                atomScrollDownY,
+                event.metaState,
+            )
+            dispatchAtomScrollTouch(down)
+            down.recycle()
         }
-        val handled = if (atomScrollGestureIntercepted) true else super.dispatchTouchEvent(event)
+        val handled = if (atomScrollGestureIntercepted) {
+            dispatchAtomScrollTouch(event)
+            true
+        } else {
+            super.dispatchTouchEvent(event)
+        }
         if (
             event.actionMasked == MotionEvent.ACTION_UP ||
             event.actionMasked == MotionEvent.ACTION_CANCEL
         ) {
             atomScrollGestureActive = false
             atomScrollGestureIntercepted = false
-            atomScrollGestureForwarding = false
+            atomScrollGestureLockedToChild = false
         }
-        return handled || scrollHandled
+        return handled
     }
 
     private fun atomChildAt(x: Float, y: Float): View? = reactChildren.lastOrNull { child ->
@@ -1398,15 +1467,8 @@ class NativeEditorExpoView(
         return dx > atomScrollTouchSlopPx && dx >= dy
     }
 
-    private fun cancelAtomScrollTouch(event: MotionEvent): Boolean {
-        val cancel = MotionEvent.obtain(event)
-        cancel.action = MotionEvent.ACTION_CANCEL
-        val handled = dispatchAtomScrollTouch(cancel)
-        cancel.recycle()
-        return handled
-    }
-
     private fun dispatchAtomScrollTouch(event: MotionEvent): Boolean {
+        atomScrollTouchDispatchCountForTesting += 1
         val editorLocation = IntArray(2)
         val scrollLocation = IntArray(2)
         getLocationOnScreen(editorLocation)
@@ -1960,10 +2022,7 @@ class NativeEditorExpoView(
     }
 
     private fun cancelPendingThemeRetry() {
-        pendingThemeRetryScheduled = false
-        pendingThemeRetryEditorId = null
-        pendingThemeRetryAttempts = 0
-        pendingThemeRetryGeneration += 1
+        pendingThemeRetry.cancel()
     }
 
     private fun applyPendingThemeIfNeeded() {
@@ -1971,8 +2030,8 @@ class NativeEditorExpoView(
         if (!hasPendingTheme) return
         val themeJson = pendingThemeJson
         val editorId = richTextView.editorId
-        if (pendingThemeRetryEditorId != editorId) {
-            pendingThemeRetryEditorId = editorId
+        if (pendingThemeRetry.editorId != editorId) {
+            pendingThemeRetry.bind(editorId)
         }
         if (
             blockThemePreflightForTesting ||
@@ -1988,24 +2047,61 @@ class NativeEditorExpoView(
     }
 
     private fun schedulePendingThemeRetry() {
-        if (pendingThemeRetryScheduled) return
-        if (pendingThemeRetryAttempts >= MAX_PENDING_UPDATE_RETRY_ATTEMPTS) return
-        pendingThemeRetryAttempts += 1
-        pendingThemeRetryEditorId = richTextView.editorId
-        pendingThemeRetryScheduled = true
-        pendingThemeRetryGeneration += 1
-        val retryGeneration = pendingThemeRetryGeneration
-        val delayMs = NATIVE_ACTION_RETRY_DELAY_MS * pendingThemeRetryAttempts
-        val retry = Runnable {
-            if (retryGeneration != pendingThemeRetryGeneration) return@Runnable
-            if (pendingThemeRetryEditorId != richTextView.editorId) {
-                clearPendingThemeRetry()
-                return@Runnable
-            }
-            pendingThemeRetryScheduled = false
-            applyPendingThemeIfNeeded()
+        schedulePendingPropertyRetry(
+            pendingThemeRetry,
+            onEditorChanged = ::clearPendingThemeRetry,
+            apply = ::applyPendingThemeIfNeeded,
+        )
+    }
+
+    private fun cancelPendingAtomsRetry() {
+        pendingAtomsRetry.cancel()
+    }
+
+    private fun applyPendingAtomsIfNeeded() {
+        if (handleDestroyedCurrentEditorIfNeeded()) return
+        if (!hasPendingAtoms) return
+        val atomsJson = pendingAtomsJson
+        val editorId = richTextView.editorId
+        if (pendingAtomsRetry.editorId != editorId) {
+            pendingAtomsRetry.bind(editorId)
         }
-        mainHandler.postDelayed(retry, delayMs)
+        val configuration = AtomRenderConfiguration.fromJson(atomsJson)
+        if (!richTextView.applyAtomRenderConfiguration(configuration)) {
+            schedulePendingAtomsRetry()
+            return
+        }
+        lastAtomsJson = atomsJson
+        pendingAtomsJson = null
+        hasPendingAtoms = false
+        cancelPendingAtomsRetry()
+    }
+
+    private fun schedulePendingAtomsRetry() {
+        schedulePendingPropertyRetry(
+            pendingAtomsRetry,
+            onEditorChanged = ::cancelPendingAtomsRetry,
+            apply = ::applyPendingAtomsIfNeeded,
+        )
+    }
+
+    private fun schedulePendingPropertyRetry(
+        state: PendingPropertyRetry,
+        onEditorChanged: () -> Unit,
+        apply: () -> Unit,
+    ) {
+        val (generation, attempt) = state.schedule(
+            richTextView.editorId,
+            MAX_PENDING_UPDATE_RETRY_ATTEMPTS,
+        ) ?: return
+        val retry = Runnable {
+            when (state.consume(generation, richTextView.editorId)) {
+                PendingPropertyRetryResult.STALE -> return@Runnable
+                PendingPropertyRetryResult.EDITOR_CHANGED -> onEditorChanged()
+                PendingPropertyRetryResult.READY -> apply()
+            }
+        }
+        mainHandler.postDelayed(retry, NATIVE_ACTION_RETRY_DELAY_MS * attempt)
     }
 
     private fun clearPendingViewCommandUpdateRetry() {
@@ -2086,8 +2182,12 @@ class NativeEditorExpoView(
             applyPendingEditorUpdateIfNeeded()
         }
         if (hasPendingTheme) {
-            pendingThemeRetryAttempts = 0
+            pendingThemeRetry.resetAttempts()
             applyPendingThemeIfNeeded()
+        }
+        if (hasPendingAtoms) {
+            pendingAtomsRetry.resetAttempts()
+            applyPendingAtomsIfNeeded()
         }
         pendingViewCommandUpdateJson?.let { updateJson ->
             pendingViewCommandUpdateRetryAttempts = 0
@@ -2558,11 +2658,15 @@ class NativeEditorExpoView(
                 !hasPendingEditorUpdateForEditor(editorId)
         )
         if (hasPendingTheme) {
-            pendingThemeRetryEditorId = editorId
+            pendingThemeRetry.bind(editorId)
+        }
+        if (hasPendingAtoms) {
+            pendingAtomsRetry.bind(editorId)
         }
         applyPendingEditorResetUpdateIfNeeded()
         applyPendingEditorUpdateIfNeeded()
         applyPendingThemeIfNeeded()
+        applyPendingAtomsIfNeeded()
         refreshReadyStateIfSettled()
         applyAutoFocusIfNeeded()
     }
@@ -3129,6 +3233,7 @@ class NativeEditorExpoView(
         )
         onExternalTextCompositionEndForTesting?.invoke(payload)
             ?: onExternalTextCompositionEnd(payload)
+        wakePendingPreflightWork()
     }
 
     internal fun pendingEditorUpdateEventCountForTesting(): Int =
@@ -3636,9 +3741,13 @@ class NativeEditorExpoView(
 
     internal fun pendingThemeJsonForTesting(): String? = pendingThemeJson.takeIf { hasPendingTheme }
 
+    internal fun pendingAtomsJsonForTesting(): String? = pendingAtomsJson.takeIf { hasPendingAtoms }
+
+    internal fun lastAtomsJsonForTesting(): String? = lastAtomsJson
+
     internal fun lastThemeJsonForTesting(): String? = lastThemeJson
 
-    internal fun pendingThemeRetryAttemptsForTesting(): Int = pendingThemeRetryAttempts
+    internal fun pendingThemeRetryAttemptsForTesting(): Int = pendingThemeRetry.attempts
 
     internal fun applyPendingThemeForTesting() {
         applyPendingThemeIfNeeded()

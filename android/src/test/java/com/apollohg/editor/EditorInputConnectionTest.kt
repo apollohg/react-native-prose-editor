@@ -4188,6 +4188,177 @@ class EditorInputConnectionTest {
     }
 
     @Test
+    fun `replaced deferred patch rebuilds once and preserves the next patch base`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyUpdateJSON(renderBlocksUpdateJson("Alpha", "Beta"), notifyListener = false)
+
+        fun patchUpdate(
+            fullTexts: List<String>,
+            startIndex: Int,
+            replacementText: String
+        ): String = JSONObject()
+            .put(
+                "renderElements",
+                JSONArray().apply {
+                    fullTexts.forEach { text ->
+                        val block = paragraphRenderBlock(text)
+                        for (index in 0 until block.length()) put(block.get(index))
+                    }
+                }
+            )
+            .put(
+                "renderPatch",
+                JSONObject()
+                    .put("startIndex", startIndex)
+                    .put("deleteCount", 1)
+                    .put("renderBlocks", JSONArray().put(paragraphRenderBlock(replacementText)))
+            )
+            .toString()
+
+        editText.runWithDeferredRustUpdateApplication {
+            editText.applyRustUpdateJSONForTesting(
+                patchUpdate(listOf("Alpha 1", "Beta"), 0, "Alpha 1")
+            )
+            editText.applyRustUpdateJSONForTesting(
+                patchUpdate(listOf("Alpha 1", "Beta 2"), 1, "Beta 2")
+            )
+        }
+
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("Alpha 1\nBeta 2", editText.text.toString())
+        assertFalse(editText.lastRenderAppliedPatch())
+
+        editText.applyUpdateJSON(
+            patchUpdate(listOf("Alpha 1!", "Beta 2"), 0, "Alpha 1!"),
+            notifyListener = false,
+        )
+
+        assertEquals("Alpha 1!\nBeta 2", editText.text.toString())
+        assertTrue(editText.lastRenderAppliedPatch())
+    }
+
+    @Test
+    fun `direct patch advances through a pending deferred patch before applying`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyUpdateJSON(renderBlocksUpdateJson("Alpha", "Beta"), notifyListener = false)
+
+        editText.runWithDeferredRustUpdateApplication {
+            editText.applyRustUpdateJSONForTesting(
+                renderPatchUpdateJson(startIndex = 0, replacementText = "Alpha 1")
+            )
+        }
+
+        assertTrue(
+            editText.applyUpdateJSON(
+                renderPatchUpdateJson(startIndex = 1, replacementText = "Beta 2"),
+                notifyListener = false,
+            )
+        )
+        assertEquals("Alpha 1\nBeta 2", editText.text.toString())
+    }
+
+    @Test
+    fun `wrong render patch base recovers a full native snapshot`() {
+        val created = UniffiEditorV2Backend.create(
+            """{"initialization":{"type":"localEmpty"}}""",
+            null,
+        ) as EditorV2CallResult.Ok
+        val editorId = JSONObject(created.value).getString("editorId")
+        val adapter = EditorV2Adapter.attach(
+            UniffiEditorV2Backend,
+            editorId,
+            roomBound = false,
+        )!!
+        try {
+            adapter.claimNativeBindingIfUnowned(1L)
+            val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+                this.editorId = 1L
+                v2Driver = adapter
+            }
+            val initialUpdate = adapter.setContentHtml("<p>Alpha</p>")!!
+            assertTrue(editText.applyUpdateJSON(initialUpdate, notifyListener = false))
+            val revision = JSONObject(initialUpdate).getString("documentVersion")
+            val wrongBase = if (revision == "0") "1" else "0"
+            val stalePatch = JSONObject()
+                .put("documentVersion", revision)
+                .put(
+                    "renderPatch",
+                    JSONObject()
+                        .put("baseDocumentVersion", wrongBase)
+                        .put("startIndex", 0)
+                        .put("deleteCount", 1)
+                        .put("renderBlocks", JSONArray().put(paragraphRenderBlock("Corrupt"))),
+                )
+                .toString()
+
+            assertTrue(editText.applyUpdateJSON(stalePatch, notifyListener = false))
+            assertEquals("Alpha", editText.text.toString())
+            assertFalse(editText.lastRenderAppliedPatch())
+
+            val nextUpdate = adapter.insertText("!", atScalarPos = 5)!!
+            assertTrue(editText.applyUpdateJSON(nextUpdate, notifyListener = false))
+            assertEquals("Alpha!", editText.text.toString())
+        } finally {
+            adapter.destroy()
+        }
+    }
+
+    @Test
+    fun `authorizing optimistic text cannot skip an authoritative rebuild`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyUpdateJSON(renderBlocksUpdateJson("Alpha"), notifyListener = false)
+        editText.text!!.replace(0, editText.text!!.length, "Rejected")
+        editText.authorizeCurrentVisibleTextForPendingImeOperationForEditor()
+
+        assertTrue(editText.applyUpdateJSON(renderBlocksUpdateJson("Alpha"), notifyListener = false))
+        assertEquals("Alpha", editText.text.toString())
+        assertEquals("Alpha", editText.authorizedTextForTesting())
+    }
+
+    @Test
+    fun `local selection drop routes a move through Rust`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val update = JSONObject(renderUpdateJson("abcd"))
+            .put("documentVersion", "1")
+            .toString()
+        editText.applyUpdateJSON(update, notifyListener = false)
+        editText.editorId = 1
+        var moved: Triple<Int, Int, Int>? = null
+        editText.onMoveSelectionScalarForTesting = { from, to, destination ->
+            moved = Triple(from, to, destination)
+        }
+
+        assertTrue(editText.performLocalSelectionDropForTesting(0, 2, 4, "1"))
+        assertEquals(Triple(0, 2, 4), moved)
+    }
+
+    @Test
+    fun `local selection drop rejects a stale document revision`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val update = JSONObject(renderUpdateJson("abcd"))
+            .put("documentVersion", "2")
+            .toString()
+        editText.applyUpdateJSON(update, notifyListener = false)
+        editText.editorId = 1
+        var moved = false
+        editText.onMoveSelectionScalarForTesting = { _, _, _ -> moved = true }
+
+        assertFalse(editText.performLocalSelectionDropForTesting(0, 2, 4, "1"))
+        assertFalse(moved)
+    }
+
+    @Test
+    fun `local selection drop rejects a missing document revision`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.applyUpdateJSON(renderUpdateJson("abcd"), notifyListener = false)
+        editText.editorId = 1
+        editText.onMoveSelectionScalarForTesting = { _, _, _ -> error("must not move") }
+
+        assertFalse(editText.performLocalSelectionDropForTesting(0, 2, 4, null))
+    }
+
+    @Test
     fun `composition commit defers render so Samsung autocorrect space commit survives`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.applyUpdateJSON(renderUpdateJson("teh"), notifyListener = false)
@@ -5906,6 +6077,17 @@ class EditorInputConnectionTest {
                 JSONArray().apply {
                     texts.forEach { put(paragraphRenderBlock(it)) }
                 }
+            )
+            .toString()
+
+    private fun renderPatchUpdateJson(startIndex: Int, replacementText: String): String =
+        JSONObject()
+            .put(
+                "renderPatch",
+                JSONObject()
+                    .put("startIndex", startIndex)
+                    .put("deleteCount", 1)
+                    .put("renderBlocks", JSONArray().put(paragraphRenderBlock(replacementText)))
             )
             .toString()
 

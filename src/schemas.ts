@@ -78,6 +78,8 @@ export interface NodeSpec {
     html?: NodeHtmlRules;
     /** Whether the node holds no content of its own (an image or rule, say). */
     isVoid?: boolean;
+    /** Whether collapsed backspace may remove this void block from an adjacent caret. */
+    deletableOnBackspace?: boolean;
     /**
      * Opt-in escape hatch: when `true`, JSON ingestion (`set_json` /
      * `insert_content_json`) admits attrs on this node that are not declared
@@ -138,6 +140,7 @@ export interface SchemaNodeSpec {
     toDOM?: DOMOutputSpec | AttributeDOMOutputSpec;
     html?: NodeHtmlRules;
     isVoid?: boolean;
+    deletableOnBackspace?: boolean;
     allowUndeclaredAttrs?: boolean;
 }
 
@@ -319,6 +322,9 @@ export function defineSchema(spec: SchemaSpec): SchemaDefinition {
             role: schemaNodeRole(name, node),
             ...(node.html == null ? {} : { html: node.html }),
             ...(node.isVoid == null ? {} : { isVoid: node.isVoid }),
+            ...(node.deletableOnBackspace == null
+                ? {}
+                : { deletableOnBackspace: node.deletableOnBackspace }),
             ...(node.allowUndeclaredAttrs == null
                 ? {}
                 : { allowUndeclaredAttrs: node.allowUndeclaredAttrs }),
@@ -459,6 +465,7 @@ function imageSchemaNodeSpec(): SchemaNodeSpec {
         parseDOM: [{ tag: 'img' }],
         toDOM: ['img'],
         isVoid: true,
+        deletableOnBackspace: false,
     };
 }
 
@@ -907,6 +914,9 @@ function normalizeSchemaDefinition(
             ...(html == null ? {} : { html }),
             ...(json == null ? {} : { json }),
             isVoid: typeof raw.isVoid === 'boolean' ? raw.isVoid : false,
+            ...(typeof raw.deletableOnBackspace === 'boolean'
+                ? { deletableOnBackspace: raw.deletableOnBackspace }
+                : {}),
             ...(typeof raw.allowUndeclaredAttrs === 'boolean'
                 ? { allowUndeclaredAttrs: raw.allowUndeclaredAttrs }
                 : {}),

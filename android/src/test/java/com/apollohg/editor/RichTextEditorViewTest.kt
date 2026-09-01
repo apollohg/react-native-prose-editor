@@ -435,6 +435,71 @@ class RichTextEditorViewTest {
     }
 
     @Test
+    fun `registered atom types do not disable paragraph patching`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        assertTrue(editText.applyAtomRenderConfiguration(AtomRenderConfiguration.fromJson(
+            """{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"""
+        )))
+        editText.applyUpdateJSON(
+            renderUpdateJson(JSONArray().put(paragraphRenderBlock("Before"))),
+            notifyListener = false
+        )
+        val renderPatch = JSONObject()
+            .put("startIndex", 0)
+            .put("deleteCount", 1)
+            .put("renderBlocks", JSONArray().put(paragraphRenderBlock("After")))
+
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                JSONArray(),
+                includeFullRenderBlocks = false,
+                renderPatch = renderPatch
+            ),
+            notifyListener = false
+        )
+
+        assertEquals("After", editText.text.toString())
+        assertTrue(editText.lastRenderAppliedPatch())
+    }
+
+    @Test
+    fun `atom patch without stable ids falls back to a full render`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        assertTrue(editText.applyAtomRenderConfiguration(AtomRenderConfiguration.fromJson(
+            """{"nodeTypes":["counterCard"],"estimatedHeights":{"counterCard":120}}"""
+        )))
+        fun atomBlock(docPos: Int): JSONArray = JSONArray().put(
+            JSONObject()
+                .put("type", "voidBlock")
+                .put("nodeType", "counterCard")
+                .put("docPos", docPos)
+        )
+        val initialBlocks = JSONArray()
+            .put(atomBlock(1))
+            .put(atomBlock(2))
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+
+        val renderPatch = JSONObject()
+            .put("startIndex", 1)
+            .put("deleteCount", 1)
+            .put("renderBlocks", JSONArray().put(atomBlock(3)))
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                JSONArray(),
+                includeFullRenderBlocks = false,
+                renderPatch = renderPatch
+            ),
+            notifyListener = false
+        )
+
+        val content = editText.text as Spanned
+        val atomKeys = content.getSpans(0, content.length, AtomBlockSpan::class.java)
+            .map { it.atomKey }
+        assertEquals(listOf("counterCard:0", "counterCard:1"), atomKeys)
+        assertFalse(editText.lastRenderAppliedPatch())
+    }
+
+    @Test
     fun `nested list return patches preserve list and blockquote layout`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         val initialBlocks = JSONArray().apply {

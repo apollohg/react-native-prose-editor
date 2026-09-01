@@ -48,6 +48,7 @@ internal interface EditorV2Driver {
     fun deleteBackwardAtSelection(anchor: Int, head: Int): String?
     fun splitBlockAt(scalarPos: Int): EditorV2SplitRender?
     fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): EditorV2SplitRender?
+    fun moveSelection(anchor: Int, head: Int, destination: Int): String?
 
     fun insertNode(nodeType: String, anchor: Int, head: Int): String?
     fun insertContentHtmlAtSelection(html: String, anchor: Int, head: Int): String?

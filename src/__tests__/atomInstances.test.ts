@@ -22,9 +22,34 @@ test('collects registered voidBlocks with atomId keys', () => {
     );
 
     expect(instances).toEqual([
-        { key: 'y1-9', nodeType: 'counterCard', attrs: { title: 't' }, docPos: 1 },
-        { key: 'y1-3', nodeType: 'counterCard', attrs: { title: 't' }, docPos: 5 },
+        {
+            key: 'y1-9',
+            hasStableKey: true,
+            nodeType: 'counterCard',
+            attrs: { title: 't' },
+            docPos: 1,
+        },
+        {
+            key: 'y1-3',
+            hasStableKey: true,
+            nodeType: 'counterCard',
+            attrs: { title: 't' },
+            docPos: 5,
+        },
     ]);
+});
+
+test('retains immutable atom attrs instead of cloning them during collection', () => {
+    const attrs = Object.freeze({ title: 't' });
+    const element: RenderElement = {
+        type: 'voidBlock',
+        nodeType: 'counterCard',
+        docPos: 1,
+        atomId: 'y1-9',
+        attrs,
+    };
+
+    expect(collectAtomInstances([[element]], registered)[0]?.attrs).toBe(attrs);
 });
 
 test('falls back to per-type occurrence keys without atomId', () => {
@@ -41,7 +66,7 @@ test('collects unregistered non-native voidBlocks as chip instances', () => {
     };
 
     expect(collectAtomInstances([[mystery]], registered)).toEqual([
-        { key: 'callout:0', nodeType: 'callout', attrs: {}, docPos: 3 },
+        { key: 'callout:0', hasStableKey: false, nodeType: 'callout', attrs: {}, docPos: 3 },
     ]);
 });
 

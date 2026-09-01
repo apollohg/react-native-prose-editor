@@ -5,7 +5,7 @@ import {
     type AtomNodeConfig,
     withAtomsSchema,
 } from '../atoms';
-import { defaultSchema, defineSchema, type SchemaNodeSpec } from '../schemas';
+import { defaultSchema, defineSchema, imageNodeSpec, type SchemaNodeSpec } from '../schemas';
 
 const counterConfig = {
     name: 'counterCard',
@@ -37,6 +37,11 @@ test('defineAtomNode compiles a void block node spec', () => {
         attrs: counterConfig.attrs,
         html: counterConfig.html,
     });
+});
+
+test('atom and image helpers declare non-default collapsed-backspace policy only', () => {
+    expect(defineAtomNode(counterConfig).nodeSpec.deletableOnBackspace).toBeUndefined();
+    expect(imageNodeSpec('photo').deletableOnBackspace).toBe(false);
 });
 
 test('attrMap auto-derives kebab-cased data attributes when omitted', () => {
@@ -165,4 +170,14 @@ test('serializeEditorAtoms emits node types and estimated heights', () => {
     });
     expect(serializeEditorAtoms([])).toBeUndefined();
     expect(serializeEditorAtoms(undefined)).toBeUndefined();
+});
+
+test('atoms without an estimated height reserve the default chip height', () => {
+    const definition = defineAtomNode({ ...counterConfig, estimatedHeight: undefined });
+
+    expect(definition.estimatedHeight).toBe(32);
+    expect(JSON.parse(serializeEditorAtoms([definition])!)).toEqual({
+        nodeTypes: ['counterCard'],
+        estimatedHeights: { counterCard: 32 },
+    });
 });

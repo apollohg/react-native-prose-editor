@@ -148,6 +148,7 @@ export interface RenderElement {
  * blocks that changed.
  */
 export interface RenderBlocksPatch {
+    baseDocumentVersion: string;
     startIndex: number;
     deleteCount: number;
     renderBlocks: RenderElement[][];
@@ -882,15 +883,28 @@ function normalizeRenderPatch(value: unknown): RenderBlocksPatch | null | undefi
     if (value === null) return null;
     if (
         !isPlainRecord(value) ||
-        !hasExactOwnKeys(value, ['startIndex', 'deleteCount', 'renderBlocks'])
+        !hasExactOwnKeys(value, [
+            'baseDocumentVersion',
+            'startIndex',
+            'deleteCount',
+            'renderBlocks',
+        ])
     ) {
         return undefined;
     }
     const renderBlocks = normalizeRenderBlocks(value.renderBlocks);
+    const baseDocumentVersion = normalizeNativeEditorV2DecimalId(value.baseDocumentVersion);
     const startIndex = nativeEditorV2U32(value.startIndex);
     const deleteCount = nativeEditorV2U32(value.deleteCount);
-    if (renderBlocks == null || startIndex == null || deleteCount == null) return undefined;
-    return { startIndex, deleteCount, renderBlocks };
+    if (
+        renderBlocks == null ||
+        baseDocumentVersion == null ||
+        startIndex == null ||
+        deleteCount == null
+    ) {
+        return undefined;
+    }
+    return { baseDocumentVersion, startIndex, deleteCount, renderBlocks };
 }
 
 function normalizeRenderSelection(value: unknown): Selection | null {

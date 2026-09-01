@@ -122,12 +122,36 @@ function CounterCard({ attrs, selected, updateAttrs }: AtomComponentProps) {
     const title = typeof attrs.title === 'string' ? attrs.title : 'Untitled counter';
     const parsedCount = typeof attrs.count === 'number' ? attrs.count : Number(attrs.count);
     const count = Number.isFinite(parsedCount) ? parsedCount : 0;
+    const nextCountRef = useRef(count);
+    const pendingCountUpdatesRef = useRef(0);
+    const successfulCountUpdateRef = useRef<number | null>(null);
+    useEffect(() => {
+        nextCountRef.current =
+            pendingCountUpdatesRef.current === 0 ? count : Math.max(nextCountRef.current, count);
+    }, [count]);
 
     const handleIncrementCount = useCallback(() => {
         setUpdateError(null);
-        void updateAttrs({ count: count + 1 }).catch((error: unknown) => {
-            setUpdateError(error instanceof Error ? error.message : 'Could not update count');
-        });
+        const nextCount = nextCountRef.current + 1;
+        nextCountRef.current = nextCount;
+        pendingCountUpdatesRef.current += 1;
+        void updateAttrs({ count: nextCount })
+            .then(() => {
+                successfulCountUpdateRef.current = Math.max(
+                    successfulCountUpdateRef.current ?? count,
+                    nextCount
+                );
+            })
+            .catch((error: unknown) => {
+                setUpdateError(error instanceof Error ? error.message : 'Could not update count');
+            })
+            .finally(() => {
+                pendingCountUpdatesRef.current -= 1;
+                if (pendingCountUpdatesRef.current === 0) {
+                    nextCountRef.current = successfulCountUpdateRef.current ?? count;
+                    successfulCountUpdateRef.current = null;
+                }
+            });
     }, [count, updateAttrs]);
 
     const handleLocalPress = useCallback(() => {

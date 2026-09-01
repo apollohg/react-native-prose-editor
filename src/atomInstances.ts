@@ -1,10 +1,19 @@
-import type { RenderBlocksPatch, RenderElement, Selection } from './NativeEditorBridge';
+import type { Selection } from './NativeEditorBridge';
+
+export { DEFAULT_ATOM_CHIP_HEIGHT } from './atomConstants';
 
 export interface AtomInstance {
     key: string;
+    hasStableKey: boolean;
     nodeType: string;
-    attrs: Record<string, unknown>;
+    attrs: Readonly<Record<string, unknown>>;
     docPos: number;
+}
+
+export interface AtomInstanceCollection {
+    instanceBlocks: AtomInstance[][];
+    instances: AtomInstance[];
+    hasOnlyStableKeys: boolean;
 }
 
 export const NATIVE_VOID_BLOCK_TYPES: ReadonlySet<string> = new Set([
@@ -12,8 +21,6 @@ export const NATIVE_VOID_BLOCK_TYPES: ReadonlySet<string> = new Set([
     'horizontal_rule',
     'image',
 ]);
-
-export const DEFAULT_ATOM_CHIP_HEIGHT = 32;
 
 export type AtomUpdateAttrsErrorCode =
     | 'not-applicable'
@@ -31,13 +38,26 @@ export class AtomUpdateAttrsError extends Error {
     }
 }
 
-export function collectAtomInstances(
-    renderBlocks: ReadonlyArray<ReadonlyArray<RenderElement>>,
+interface AtomRenderElement {
+    readonly type: string;
+    readonly nodeType?: string;
+    readonly docPos?: number;
+    readonly atomId?: string;
+    readonly attrs?: Readonly<Record<string, unknown>>;
+}
+
+const EMPTY_ATOM_ATTRS: Readonly<Record<string, unknown>> = Object.freeze({});
+
+export function collectAtomInstanceBlocks(
+    renderBlocks: ReadonlyArray<ReadonlyArray<AtomRenderElement>>,
     registeredTypes: ReadonlySet<string>
-): AtomInstance[] {
+): AtomInstanceCollection {
     const occurrences = new Map<string, number>();
+    const instanceBlocks: AtomInstance[][] = [];
     const instances: AtomInstance[] = [];
+    let hasOnlyStableKeys = true;
     for (const block of renderBlocks) {
+        const blockInstances: AtomInstance[] = [];
         for (const element of block) {
             if (
                 element.type !== 'voidBlock' ||
@@ -54,24 +74,38 @@ export function collectAtomInstances(
             ) {
                 continue;
             }
-            instances.push({
-                key:
-                    typeof element.atomId === 'string'
-                        ? element.atomId
-                        : `${element.nodeType}:${occurrence}`,
+            const hasStableKey = typeof element.atomId === 'string';
+            const instance = {
+                key: hasStableKey ? element.atomId! : `${element.nodeType}:${occurrence}`,
+                hasStableKey,
                 nodeType: element.nodeType,
-                attrs: element.attrs ?? {},
+                attrs: element.attrs ?? EMPTY_ATOM_ATTRS,
                 docPos: element.docPos,
-            });
+            };
+            hasOnlyStableKeys &&= hasStableKey;
+            blockInstances.push(instance);
+            instances.push(instance);
         }
+        instanceBlocks.push(blockInstances);
     }
-    return instances;
+    return { instanceBlocks, instances, hasOnlyStableKeys };
 }
 
-export function applyRenderPatch(
-    previousBlocks: RenderElement[][],
-    patch: RenderBlocksPatch
-): RenderElement[][] {
+export function collectAtomInstances(
+    renderBlocks: ReadonlyArray<ReadonlyArray<AtomRenderElement>>,
+    registeredTypes: ReadonlySet<string>
+): AtomInstance[] {
+    return collectAtomInstanceBlocks(renderBlocks, registeredTypes).instances;
+}
+
+export function applyRenderPatch<Element>(
+    previousBlocks: ReadonlyArray<ReadonlyArray<Element>>,
+    patch: {
+        readonly startIndex: number;
+        readonly deleteCount: number;
+        readonly renderBlocks: ReadonlyArray<ReadonlyArray<Element>>;
+    }
+): Array<ReadonlyArray<Element>> {
     return [
         ...previousBlocks.slice(0, patch.startIndex),
         ...patch.renderBlocks,

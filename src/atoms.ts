@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 
 import type { DocumentJSON } from './NativeEditorBridge';
+import { DEFAULT_ATOM_CHIP_HEIGHT } from './atomConstants';
 import {
     ATOM_HTML_DENIED_ATTRS,
     ATOM_HTML_DENIED_TAGS,
@@ -16,7 +17,7 @@ import type {
 } from './schemas';
 
 export interface AtomComponentProps {
-    attrs: Record<string, unknown>;
+    attrs: Readonly<Record<string, unknown>>;
     selected: boolean;
     nodeType: string;
     updateAttrs: (partial: Record<string, unknown>) => Promise<void>;
@@ -174,7 +175,7 @@ export function defineAtomNode(config: AtomNodeConfig): AtomNodeDefinition {
         ...(config.attrs == null ? {} : { attrs: config.attrs }),
         html,
         component: config.component,
-        estimatedHeight: config.estimatedHeight ?? 0,
+        estimatedHeight: config.estimatedHeight ?? DEFAULT_ATOM_CHIP_HEIGHT,
         nodeSpec,
         buildFragmentJson(attrs, descriptor) {
             return {
@@ -267,7 +268,7 @@ export function serializeEditorAtoms(atoms?: readonly AtomNodeDefinition[]): str
     for (const atom of atoms) {
         if (Object.prototype.hasOwnProperty.call(serialized.estimatedHeights, atom.name)) continue;
         serialized.nodeTypes.push(atom.name);
-        serialized.estimatedHeights[atom.name] = atom.estimatedHeight ?? 0;
+        serialized.estimatedHeights[atom.name] = atom.estimatedHeight ?? DEFAULT_ATOM_CHIP_HEIGHT;
     }
     return JSON.stringify(serialized);
 }

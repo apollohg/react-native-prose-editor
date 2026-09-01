@@ -336,6 +336,7 @@ fn render_snapshot_json(
     let position_map = engine.position_map().ok_or_else(engine_not_ready)?;
     let schema = registered_schema(&editor_id)?;
     let current_render_blocks = engine.cached_render_blocks().ok_or_else(engine_not_ready)?;
+    let atom_ids = engine.block_atom_ids().ok_or_else(engine_not_ready)?;
     pause_render_snapshot_for_test(&editor_id);
 
     let (selection, selection_value, stored_marks) = match mirror {
@@ -374,35 +375,44 @@ fn render_snapshot_json(
     let (render_blocks, render_patch) = match previous_native_render {
         Some(previous) if previous.document_revision == document_version => (
             Value::Null,
-            serialize_render_patch(&crate::render::incremental::RenderBlocksPatch {
-                start_index: 0,
-                delete_count: 0,
-                blocks: Vec::new(),
-            }),
+            serialize_render_patch(
+                &crate::render::incremental::RenderBlocksPatch {
+                    start_index: 0,
+                    delete_count: 0,
+                    blocks: Vec::new(),
+                },
+                &atom_ids,
+                previous.document_revision,
+            ),
         ),
         Some(previous) if previous.document_revision < document_version => {
             match previous
                 .render_blocks
                 .classify_cached_transition_to(&current_render_blocks)
             {
-                crate::render::incremental::CachedRenderTransitionUpdate::Patch(patch) => {
-                    (Value::Null, serialize_render_patch(&patch))
-                }
+                crate::render::incremental::CachedRenderTransitionUpdate::Patch(patch) => (
+                    Value::Null,
+                    serialize_render_patch(&patch, &atom_ids, previous.document_revision),
+                ),
                 crate::render::incremental::CachedRenderTransitionUpdate::None => (
                     Value::Null,
-                    serialize_render_patch(&crate::render::incremental::RenderBlocksPatch {
-                        start_index: 0,
-                        delete_count: 0,
-                        blocks: Vec::new(),
-                    }),
+                    serialize_render_patch(
+                        &crate::render::incremental::RenderBlocksPatch {
+                            start_index: 0,
+                            delete_count: 0,
+                            blocks: Vec::new(),
+                        },
+                        &atom_ids,
+                        previous.document_revision,
+                    ),
                 ),
                 crate::render::incremental::CachedRenderTransitionUpdate::Full(blocks) => {
-                    (serialize_render_blocks(&blocks), Value::Null)
+                    (serialize_render_blocks(&blocks, &atom_ids), Value::Null)
                 }
             }
         }
         _ => (
-            serialize_render_blocks(&current_render_blocks.materialize()),
+            serialize_render_blocks(&current_render_blocks.materialize(), &atom_ids),
             Value::Null,
         ),
     };
@@ -478,7 +488,10 @@ pub fn editor_v2_scalar_to_doc(editor_id: String, scalar: u32) -> FfiJsonResult 
 // Legacy update-JSON serializers (hoisted from the pre-cutover lib.rs during
 // the cutover; this module is their only retained consumer — the v2 render
 // accessor emits the exact legacy update JSON shape by design).
-fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde_json::Value {
+fn serialize_render_elements(
+    elements: &[crate::render::RenderElement],
+    atom_ids: &HashMap<u32, String>,
+) -> serde_json::Value {
     let items: Vec<serde_json::Value> = elements
         .iter()
         .map(|el| match el {
@@ -536,6 +549,9 @@ fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde
                             })
                             .collect(),
                     );
+                }
+                if let Some(atom_id) = atom_ids.get(doc_pos) {
+                    obj["atomId"] = Value::String(atom_id.clone());
                 }
                 obj
             }
@@ -659,20 +675,28 @@ fn serialize_render_mark(mark: &crate::render::RenderMark) -> serde_json::Value 
     }
 }
 
-fn serialize_render_blocks(blocks: &[Vec<crate::render::RenderElement>]) -> serde_json::Value {
+fn serialize_render_blocks(
+    blocks: &[Vec<crate::render::RenderElement>],
+    atom_ids: &HashMap<u32, String>,
+) -> serde_json::Value {
     serde_json::Value::Array(
         blocks
             .iter()
-            .map(|block| serialize_render_elements(block))
+            .map(|block| serialize_render_elements(block, atom_ids))
             .collect(),
     )
 }
 
-fn serialize_render_patch(patch: &crate::render::incremental::RenderBlocksPatch) -> Value {
+fn serialize_render_patch(
+    patch: &crate::render::incremental::RenderBlocksPatch,
+    atom_ids: &HashMap<u32, String>,
+    base_document_version: u64,
+) -> Value {
     serde_json::json!({
+        "baseDocumentVersion": decimal_u64(base_document_version),
         "startIndex": patch.start_index,
         "deleteCount": patch.delete_count,
-        "renderBlocks": serialize_render_blocks(&patch.blocks),
+        "renderBlocks": serialize_render_blocks(&patch.blocks, atom_ids),
     })
 }
 

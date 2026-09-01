@@ -970,6 +970,39 @@ describe('NativeEditorBridge v2', () => {
             expect(handle.bridge.renderUpdate()).toEqual(expected);
         });
 
+        it('requires the native render base revision on incremental snapshots', () => {
+            const expected = {
+                ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                renderBlocks: null,
+                renderPatch: {
+                    baseDocumentVersion: '4',
+                    startIndex: 0,
+                    deleteCount: 1,
+                    renderBlocks: MOCK_ATOMIC_RENDER_SNAPSHOT.renderBlocks,
+                },
+            };
+            const handle = createHandle();
+            mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(
+                okRecord(JSON.stringify(expected))
+            );
+
+            expect(handle.bridge.renderUpdate()).toEqual(expected);
+
+            const missingBase = {
+                ...expected,
+                renderPatch: { ...expected.renderPatch, baseDocumentVersion: undefined },
+            };
+            delete (missingBase.renderPatch as { baseDocumentVersion?: string })
+                .baseDocumentVersion;
+            mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(
+                okRecord(JSON.stringify(missingBase))
+            );
+            expectNonRetryable(
+                catchRejectedNativeRecord(() => handle.bridge.renderUpdate()),
+                'FFI_RESULT_INVALID'
+            );
+        });
+
         const missingStateRevision = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
         delete missingStateRevision.stateRevision;
         const missingSelection = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
@@ -1293,7 +1326,12 @@ describe('NativeEditorBridge v2', () => {
                 const update: EditorUpdate = {
                     renderElements: [],
                     renderBlocks: [],
-                    renderPatch: { startIndex: 0, deleteCount: 0, renderBlocks: [] },
+                    renderPatch: {
+                        baseDocumentVersion: '0',
+                        startIndex: 0,
+                        deleteCount: 0,
+                        renderBlocks: [],
+                    },
                     selection: { type: 'all' },
                     activeState: {
                         marks: {},
