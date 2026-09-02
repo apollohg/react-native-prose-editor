@@ -21,6 +21,8 @@
 
 set -euo pipefail
 
+export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CRATE_DIR="$SCRIPT_DIR/editor-core"
 OUT_DIR="$SCRIPT_DIR/android"

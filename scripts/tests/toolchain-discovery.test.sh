@@ -72,7 +72,7 @@ make_cargo_ndk() {
   cat > "$bin_dir/cargo-ndk" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'CARGO=%s\n' "${CARGO:-}" >> "${CARGO_NDK_FIXTURE_LOG:?}"
+printf 'CARGO=%s RUST_MIN_STACK=%s\n' "${CARGO:-}" "${RUST_MIN_STACK:-}" >> "${CARGO_NDK_FIXTURE_LOG:?}"
 
 target=""
 target_dir=""
@@ -102,7 +102,7 @@ SCRIPT
   cat > "$bin_dir/nm" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
-for symbol in $(seq 1 30); do
+for symbol in $(seq 1 35); do
   printf 'uniffi_editor_core_fn_func_editor_v2_%s\n' "$symbol"
 done
 SCRIPT
@@ -217,8 +217,8 @@ env -i \
   CARGO_HOME="$cargo_home" \
   CARGO_NDK_FIXTURE_LOG="$fixture_root/cargo-ndk.log" \
   bash "$android_fixture_dir/build-android.sh"
-expected_cargo_ndk_log="$(printf 'CARGO=%s\n' "$arm64_dir/cargo" "$arm64_dir/cargo" "$arm64_dir/cargo" "$arm64_dir/cargo")"
+expected_cargo_ndk_log="$(printf 'CARGO=%s RUST_MIN_STACK=16777216\n' "$arm64_dir/cargo" "$arm64_dir/cargo" "$arm64_dir/cargo" "$arm64_dir/cargo")"
 [[ "$(cat "$fixture_root/cargo-ndk.log")" == "$expected_cargo_ndk_log" ]] || \
-  fail "cargo-ndk discovered through CARGO_HOME did not receive the pinned Cargo through CARGO"
+  fail "cargo-ndk did not receive the pinned Cargo and Android release compiler stack"
 
 echo "Toolchain discovery fixture tests passed."
