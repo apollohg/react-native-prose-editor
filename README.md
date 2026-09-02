@@ -4,10 +4,7 @@
 
 The package is under active development. Review the [changelog](./CHANGELOG.md) before upgrading between major versions.
 
-<p align="center">
-  <img src="https://github.com/apollohg/react-native-prose-editor/wiki/images/example-ios.png" alt="Example editor on iOS" width="45%" />
-  <img src="https://github.com/apollohg/react-native-prose-editor/wiki/images/example-android.png" alt="Example editor on Android" width="45%" />
-</p>
+<img src="https://github.com/apollohg/react-native-prose-editor/wiki/images/banner.png" alt="Example editor on iOS" width="100%" />
 
 ## Highlights
 
