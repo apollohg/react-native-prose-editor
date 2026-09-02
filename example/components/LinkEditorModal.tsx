@@ -1,49 +1,59 @@
-import React, { useEffect, useRef } from 'react';
-import { Modal, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Pressable,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
+} from 'react-native';
+import type { LinkRequestContext } from '@apollohg/react-native-prose-editor';
 
-import { FONT_SIZE, RADIUS, SPACE } from '../designTokens';
-import { sharedStyles } from '../sharedStyles';
-import type { ExampleAppChrome } from '../themePresets';
-import { ActionButton } from './ActionButton';
+import { FONT_SIZE, LINE_HEIGHT, MIN_TOUCH_TARGET, PALETTE, RADIUS, SPACE } from '../theme';
 
-/** URL prompt driven by `onRequestLink`. */
-
-const BACKDROP_COLOR = 'rgba(8, 6, 4, 0.45)';
+const BACKDROP_COLOR = 'rgba(27, 31, 42, 0.4)';
 
 type LinkEditorModalProps = {
-    visible: boolean;
-    isActive: boolean;
-    linkDraft: string;
-    onLinkDraftChange: (value: string) => void;
+    /** The pending toolbar link request, or null when the sheet is closed. */
+    request: LinkRequestContext | null;
     onClose: () => void;
-    onRemove: () => void;
-    onApply: () => void;
-    chrome: ExampleAppChrome;
 };
 
-function LinkEditorModalInner({
-    visible,
-    isActive,
-    linkDraft,
-    onLinkDraftChange,
-    onClose,
-    onRemove,
-    onApply,
-    chrome,
-}: LinkEditorModalProps) {
+/** Bottom sheet driven by `onRequestLink`. Saving an empty URL removes the link. */
+export function LinkEditorModal({ request, onClose }: LinkEditorModalProps) {
     const inputRef = useRef<TextInput>(null);
+    const [href, setHref] = useState('');
+    const visible = request != null;
+    const isActive = request?.isActive ?? false;
 
     useEffect(() => {
-        if (!visible) {
+        if (request == null) {
             return;
         }
-
-        const handle = requestAnimationFrame(() => {
-            inputRef.current?.focus();
-        });
-
+        setHref(request.href ?? '');
+        const handle = requestAnimationFrame(() => inputRef.current?.focus());
         return () => cancelAnimationFrame(handle);
-    }, [visible]);
+    }, [request]);
+
+    const apply = useCallback(() => {
+        if (request == null) {
+            return;
+        }
+        const trimmed = href.trim();
+        if (trimmed.length === 0) {
+            request.unsetLink();
+        } else {
+            request.setLink(trimmed);
+        }
+        onClose();
+    }, [href, onClose, request]);
+
+    const remove = useCallback(() => {
+        request?.unsetLink();
+        onClose();
+    }, [onClose, request]);
 
     return (
         <Modal
@@ -52,88 +62,132 @@ function LinkEditorModalInner({
             visible={visible}
             onRequestClose={onClose}
             accessibilityViewIsModal>
-            <View style={styles.backdrop}>
-                <View style={[styles.card, { backgroundColor: chrome.cardBackgroundColor }]}>
-                    <Text
-                        accessibilityRole='header'
-                        style={[sharedStyles.heading, { color: chrome.controlLabelColor }]}>
+            <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                style={styles.backdrop}>
+                <Pressable
+                    accessibilityLabel='Close'
+                    accessibilityRole='button'
+                    onPress={onClose}
+                    style={styles.dismissArea}
+                />
+                <View style={styles.sheet}>
+                    <Text accessibilityRole='header' style={styles.title}>
                         {isActive ? 'Edit link' : 'Add link'}
                     </Text>
-
-                    <Text style={[sharedStyles.controlHint, { color: chrome.controlHintColor }]}>
-                        Applies to the current selection. Saving an empty value removes the link.
-                    </Text>
-
                     <TextInput
                         ref={inputRef}
                         accessibilityLabel='Link URL'
                         autoCapitalize='none'
                         autoCorrect={false}
                         keyboardType='url'
-                        placeholder='https://example.com'
-                        placeholderTextColor={chrome.controlHintColor}
-                        style={[
-                            styles.input,
-                            {
-                                color: chrome.controlLabelColor,
-                                backgroundColor: chrome.controlSurfaceColor,
-                            },
-                        ]}
-                        value={linkDraft}
-                        onChangeText={onLinkDraftChange}
-                        onSubmitEditing={onApply}
+                        placeholder='https://'
+                        placeholderTextColor={PALETTE.inkFaint}
                         returnKeyType='done'
+                        style={styles.input}
+                        value={href}
+                        onChangeText={setHref}
+                        onSubmitEditing={apply}
                     />
-
-                    <View style={styles.buttonRow}>
-                        <ActionButton
-                            label='Cancel'
-                            tone='secondary'
-                            onPress={onClose}
-                            chrome={chrome}
-                        />
+                    <View style={styles.actions}>
                         {isActive ? (
-                            <ActionButton
-                                label='Remove'
-                                tone='secondary'
-                                onPress={onRemove}
-                                chrome={chrome}
-                                accessibilityHint='Removes the link but keeps the text.'
-                            />
+                            <Pressable
+                                accessibilityRole='button'
+                                accessibilityLabel='Remove link'
+                                onPress={remove}
+                                style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
+                                <Text style={[styles.buttonLabel, styles.removeLabel]}>Remove</Text>
+                            </Pressable>
                         ) : null}
-                        <ActionButton label='Save' onPress={onApply} chrome={chrome} />
+                        <View style={styles.spacer} />
+                        <Pressable
+                            accessibilityRole='button'
+                            accessibilityLabel='Cancel'
+                            onPress={onClose}
+                            style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
+                            <Text style={styles.buttonLabel}>Cancel</Text>
+                        </Pressable>
+                        <Pressable
+                            accessibilityRole='button'
+                            accessibilityLabel='Save link'
+                            onPress={apply}
+                            style={({ pressed }) => [
+                                styles.button,
+                                styles.primaryButton,
+                                pressed && styles.pressed,
+                            ]}>
+                            <Text style={[styles.buttonLabel, styles.primaryLabel]}>Save</Text>
+                        </Pressable>
                     </View>
                 </View>
-            </View>
+            </KeyboardAvoidingView>
         </Modal>
     );
 }
 
-export const LinkEditorModal = React.memo(LinkEditorModalInner);
-
 const styles = StyleSheet.create({
     backdrop: {
         flex: 1,
+        justifyContent: 'flex-end',
         backgroundColor: BACKDROP_COLOR,
-        justifyContent: 'center',
-        paddingHorizontal: SPACE.xl,
     },
-    card: {
-        borderRadius: RADIUS,
+    dismissArea: {
+        flex: 1,
+    },
+    sheet: {
+        backgroundColor: PALETTE.paper,
+        borderTopLeftRadius: RADIUS.sheet,
+        borderTopRightRadius: RADIUS.sheet,
         padding: SPACE.xl,
-        gap: SPACE.md,
+        paddingBottom: SPACE.xxl,
+        gap: SPACE.lg,
+    },
+    title: {
+        color: PALETTE.ink,
+        fontSize: FONT_SIZE.title,
+        lineHeight: LINE_HEIGHT.title,
+        fontWeight: '700',
     },
     input: {
-        borderRadius: RADIUS,
+        minHeight: MIN_TOUCH_TARGET + SPACE.xs,
         paddingHorizontal: SPACE.lg,
-        paddingVertical: SPACE.md,
-        fontSize: FONT_SIZE.label,
+        borderRadius: RADIUS.control,
+        borderWidth: 1,
+        borderColor: PALETTE.hairline,
+        backgroundColor: PALETTE.wash,
+        color: PALETTE.ink,
+        fontSize: FONT_SIZE.body,
     },
-    buttonRow: {
+    actions: {
         flexDirection: 'row',
-        flexWrap: 'wrap',
+        alignItems: 'center',
         gap: SPACE.sm,
-        justifyContent: 'flex-end',
-        paddingTop: SPACE.xs,
+    },
+    spacer: {
+        flex: 1,
+    },
+    button: {
+        minHeight: MIN_TOUCH_TARGET,
+        paddingHorizontal: SPACE.lg,
+        borderRadius: RADIUS.control,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    primaryButton: {
+        backgroundColor: PALETTE.spruce,
+    },
+    pressed: {
+        opacity: 0.6,
+    },
+    buttonLabel: {
+        color: PALETTE.inkMuted,
+        fontSize: FONT_SIZE.body,
+        fontWeight: '600',
+    },
+    primaryLabel: {
+        color: PALETTE.paper,
+    },
+    removeLabel: {
+        color: PALETTE.rose,
     },
 });

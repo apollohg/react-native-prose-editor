@@ -1,43 +1,37 @@
 # Example App
 
-A local Expo SDK 57 app for developing and manually testing the native editor package in this repository.
+A local Expo SDK 57 app showing `@apollohg/react-native-prose-editor` as a single, full-screen document editor with every editor feature switched on.
 
 The package requires Expo Modules, and Expo SDK 57 is the version tested in this repo.
 
-## What it covers
+## What it shows
 
-The screen is a coverage harness: every prop, ref method, and callback `NativeRichTextEditor` exposes is reachable from it. Settings are grouped one tab per API area so you can jump straight to whatever regressed.
+One screen: a title bar with a live word count, and the editor filling the rest of the screen with the toolbar attached to the keyboard.
 
-| Tab      | Covers                                                                                                                        |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Editor   | Base font size, mentions addon and schema, blockquote theme tokens                                                            |
-| Toolbar  | `appearance` plus every toolbar theme token, colour and metric                                                                |
-| Items    | `toolbarItems` — drag to reorder, add and remove, reset to package defaults                                                   |
-| Content  | `value`, `valueJSON`, `valueJSONRevision`, `valueJSONUpdateMode`, `documentRevision`                                          |
-| Commands | All 26 imperative ref methods as one-tap buttons. Mark buttons are read from the active schema, not hardcoded                 |
-| Input    | `editable`, `autoFocus`, `autoCorrect`, `autoCapitalize`, `keyboardType`, `heightBehavior`, `showToolbar`, `toolbarPlacement` |
-| Images   | `allowImageResizing`, every `imageLoadingPolicy` bound, insertion via picker and remote URL                                   |
+| Feature           | Where                                                                                                      |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| Marks             | Bold, italic, underline, strikethrough buttons                                                             |
+| Headings          | A `menu` group offering levels 1 through 6                                                                 |
+| Links             | The link button opens a URL sheet driven by `onRequestLink`; saving an empty URL removes the link          |
+| Images            | The image button opens the photo library through `onRequestImage`; picks are downscaled before insertion  |
+| Lists             | A menu group with bullet and numbered lists, indent and outdent                                            |
+| Blocks            | Blockquote button, plus divider and line break in the insert menu                                          |
+| History           | Undo and redo at the end of the toolbar                                                                    |
+| Mentions          | Type `@` to see suggestions filtered by the query through `onQueryChange`                                  |
+| Custom atoms      | The counter card is a React component inside the document; the insert menu's counter action adds another  |
+| Image resizing    | `allowImageResizing` is on, so a selected image shows native resize handles                                |
 
-The readout panel below the editor switches between the serialized HTML, the ProseMirror JSON, the mention payloads, and an event log carrying `onSelectionChange`, `onActiveStateChange`, `onHistoryStateChange`, `onLocalCommit`, `onToolbarAction`, `onFocus`, `onBlur`, `onRequestLink`, and `onRequestImage`.
+**Not covered:** Yjs collaboration. `useYjsCollaboration` needs a running sync server, so it is out of scope here. See the [Collaboration Guide](https://github.com/apollohg/react-native-prose-editor/wiki/Collaboration).
 
-**Not covered:** Yjs collaboration. `useYjsCollaboration` needs a running sync server to mean anything, so it is out of scope for this harness. See the [Collaboration Guide](https://github.com/apollohg/react-native-prose-editor/wiki/Collaboration).
+## Layout
 
-## Theme presets
-
-The four presets are **coverage fixtures, not recommended themes**. Do not copy them into a consuming app.
-
-Each one commits to a different colour strategy _and_ a different point in the numeric range, because a preset set that varies only by hue proves nothing about the half of the theme API that takes numbers.
-
-| Preset    | Strategy     | Covers                                                                                                                         |
-| --------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| Example 1 | Restrained   | Every radius is `0` and the toolbar sits flush. Catches native code reading a falsy `0` as "unset" and substituting a default. |
-| Example 2 | Committed    | Saturated chrome wrapped around a pale editor, at the loose end of the geometry range. Proves the two surfaces stay separable. |
-| Example 3 | Full palette | Four role hues on one dark ground, and the only preset using `appearance: 'native'` on the toolbar.                            |
-| Example 4 | Drenched     | Every surface carries real chroma (0.047–0.063), so a token silently falling back to a grey default is visible.                |
-
-App chrome colours are separate from editor content colours on purpose, so a rendering bug in the package can never be mistaken for app styling. Chrome text tokens are held at 4.5:1 against every background they render on and channel indicators at 3:1; editor content tokens are free to diverge because they are the thing under test.
-
-Colour controls are platform-split. iOS uses the system picker via `@expo/ui`'s SwiftUI `ColorPicker`; Android uses three RGB sliders. Both are constrained to opaque `#rrggbb` so a colour dialled in on one platform is reproducible on the other.
+```
+App.tsx                      Screen composition, editor wiring, image picking
+content.ts                   Initial document, mention suggestions, toolbar items
+theme.ts                     The one palette, spacing scale, editor and mention themes
+components/CounterCard.tsx   The custom atom node and its React component
+components/LinkEditorModal.tsx  URL sheet driven by onRequestLink
+```
 
 ## Install
 
@@ -76,35 +70,10 @@ npm run ios
 npm run android
 ```
 
-## Layout
-
-```
-App.tsx                  Screen composition, prop wiring, command dispatch, benchmark harness
-constants.ts             Content fixtures, option lists, command ids, tab definitions
-designTokens.ts          Radius, type, and spacing scales; touch-target minimum
-themePresets.ts          The four presets and the app chrome token contract
-sharedStyles.ts          Styles derived from designTokens
-types.ts                 Grouped settings shapes and the event log entry
-useReducedMotion.ts      OS reduce-motion subscription
-components/              One file per control or panel
-```
-
-`components/` splits into primitives used everywhere (`ActionButton`, `ChoiceRow`, `SliderField`, `ToggleRow`, `PanelSection`, `CollapsibleSection`) and one panel per settings tab.
-
 ## Notes
 
-- This package contains native code — use a development build, not Expo Go.
+- This package contains native code, so use a development build, not Expo Go.
 - The example app depends on the local package via `file:..` and resolves its types from `dist/`, so run the package build after changing `src/`.
 - If you change native code or Rust bindings, rebuild the app after updating the package binaries.
 - If the native build fails after pulling new changes, try running prebuild again.
-- On iOS, the outer `ScrollView` adjusts its keyboard insets without shrinking its frame, so content can pass beneath the keyboard toolbar while remaining reachable.
-- On Android, the example relies on the activity's `adjustResize` behavior instead of stacking `KeyboardAvoidingView` on top of the native editor insets.
-- The editor still manages its own internal caret visibility and fixed-height scrolling. Screen-level keyboard avoidance and native editor viewport handling are complementary, not interchangeable.
-- Slider-driven theme changes commit on release, not per step. An RGB channel at step 1 over 0-255 would otherwise push up to 255 theme rebuilds across the bridge in one drag.
-- Collapsed sections unmount their children rather than clipping them, so a collapsed panel's ~40 controls do not render or lay out on every parent state change.
-
-## Prepared viewer benchmark
-
-The button in the header opens a `FlatList` harness that drives the checked-in corpus in `scripts/tests/viewer-performance-corpus.json` through cold, warm, and images-disabled phases, then exports native counters.
-
-Its `renderItem` and `extraData` are memoized deliberately: an unstable `renderItem` puts React reconciliation cost inside the window the benchmark is measuring.
+- The editor uses `heightBehavior="fixed"` and scrolls internally. On iOS the sheet keeps its full height and the keyboard height is added to the editor's bottom content inset, so content scrolls behind the keyboard; on Android the activity's resize behavior shrinks the window instead.
