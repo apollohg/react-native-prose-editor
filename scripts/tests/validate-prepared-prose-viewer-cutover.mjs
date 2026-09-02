@@ -117,10 +117,21 @@ assert.deepEqual(
 );
 assert.doesNotMatch(read('expo-module.config.json'), /NativeProseViewer/);
 const expoModuleConfig = JSON.parse(read('expo-module.config.json'));
-assert.equal(
-    expoModuleConfig.android.name,
-    'apollohg_react-native-prose-editor',
-    'Expo and React Native autolinking must share one Android Gradle project',
+assert.deepEqual(
+    {
+        path: expoModuleConfig.android.path,
+        gradlePath: expoModuleConfig.android.gradlePath,
+    },
+    {
+        path: 'android/expo',
+        gradlePath: 'android/expo/build.gradle',
+    },
+    'Expo autolinking must use the isolated Android facade project',
+);
+assert.match(
+    read('android/expo/build.gradle'),
+    /api project\(':apollohg_react-native-prose-editor'\)/,
+    'the Expo facade must depend on the React Native Android project',
 );
 assert.ok(
     !exists('android/src/main/jni/ReactNativeProseEditorSpec.cpp'),

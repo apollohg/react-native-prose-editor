@@ -105,11 +105,14 @@ class RenderBridgeTest {
     fun `detach and reattach restarts existing image loads`() {
         RenderImageLoader.resetForTesting()
         val decodeCount = AtomicInteger(0)
-        val decodeStarted = CountDownLatch(2)
+        val firstDecodeStarted = CountDownLatch(1)
+        val restartedDecodeStarted = CountDownLatch(1)
         val release = CountDownLatch(1)
         RenderImageLoader.decodeSourceOverride = { _, _ ->
-            decodeCount.incrementAndGet()
-            decodeStarted.countDown()
+            when (decodeCount.incrementAndGet()) {
+                1 -> firstDecodeStarted.countDown()
+                2 -> restartedDecodeStarted.countDown()
+            }
             release.await(2, TimeUnit.SECONDS)
             Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         }
@@ -117,10 +120,11 @@ class RenderBridgeTest {
         val json = """[{"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"https://example.com/attach.png"}}]"""
         try {
             editor.applyRenderJSON(json)
+            assertTrue(firstDecodeStarted.await(2, TimeUnit.SECONDS))
             invokeLifecycle(editor, "onDetachedFromWindow")
             invokeLifecycle(editor, "onAttachedToWindow")
 
-            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            assertTrue(restartedDecodeStarted.await(2, TimeUnit.SECONDS))
             assertEquals(2, decodeCount.get())
         } finally {
             release.countDown()
