@@ -414,7 +414,7 @@ class RenderImageLoaderPolicyTest {
 
     @Test
     fun `cached main looper delivery after deadline is suppressed`() {
-        val policy = ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)
+        val policy = ImageLoadingPolicy.DEFAULT
         val source = "https://example.com/cached-deadline.png"
         RenderImageLoader.decodeSourceOverride = { _, _ ->
             Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
@@ -426,19 +426,14 @@ class RenderImageLoaderPolicyTest {
 
         val clock = FakeMonotonicClock()
         RenderImageLoader.monotonicClockOverride = clock
-        val schedulerRelease = CountDownLatch(1)
-        RenderImageLoader.deadlineExecutionGateOverride = {
-            schedulerRelease.await(2, TimeUnit.SECONDS)
-        }
         var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         val completed = CountDownLatch(1)
         RenderImageLoader.load(source, policy) {
             result = it
             completed.countDown()
         }
-        clock.advance(31)
+        clock.advance(policy.requestTimeoutMs.toLong() + 1)
         drainMainUntil(completed)
-        schedulerRelease.countDown()
 
         assertEquals(0L, completed.count)
         assertNull(result)
