@@ -113,7 +113,8 @@ targets:
           - $(inherited)
           - $(PODS_CONFIGURATION_BUILD_DIR)/ReactCodegen/libReactCodegen.a
           - $(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a
-    dependencies: []
+    dependencies:
+      - target: NativeEditorTestHost
 
 schemes:
   NativeEditorTests:

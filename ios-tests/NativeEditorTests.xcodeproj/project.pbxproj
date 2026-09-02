@@ -58,6 +58,16 @@
 		FF166FE6F4CB4E81B0144C80 /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 8124EA2F2AA895E829E051F4 /* libPods-NativeEditorTestHost.a */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		F10000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 445105AA8CEBE0832E1578CA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 36BE18DD6515FBAF43F806D5;
+			remoteInfo = NativeEditorTestHost;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		0A70A1000000000000000002 /* AtomMountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtomMountingTests.swift; sourceTree = "<group>"; };
 		073AA28E404CB1E78224E266 /* PreparedProseInstrumentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseInstrumentation.swift; sourceTree = "<group>"; };
@@ -368,6 +378,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				F10000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = NativeEditorTests;
 			productName = NativeEditorTests;
@@ -619,6 +630,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F10000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 36BE18DD6515FBAF43F806D5 /* NativeEditorTestHost */;
+			targetProxy = F10000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1DC8ACECC9EAFD09CE1BD287 /* Debug */ = {

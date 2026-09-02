@@ -783,15 +783,19 @@ class RenderImageLoaderPolicyTest {
 
     @Test
     fun `queued visible decode starts before queued prefetch`() {
-        val blockersStarted = CountDownLatch(RenderImageLoader.globalWorkerLimitForTesting())
-        val releaseBlockers = CountDownLatch(1)
-        val completed = CountDownLatch(RenderImageLoader.globalWorkerLimitForTesting() + 2)
+        val workerCount = RenderImageLoader.globalWorkerLimitForTesting()
+        val blockersStarted = CountDownLatch(workerCount)
+        val blockerReleases = List(workerCount) { CountDownLatch(1) }
+        val visibleStarted = CountDownLatch(1)
+        val completed = CountDownLatch(workerCount + 2)
         val starts = CopyOnWriteArrayList<String>()
         RenderImageLoader.decodeSourceOverride = { source, _ ->
             starts += source
             if (source.contains("blocker")) {
                 blockersStarted.countDown()
-                releaseBlockers.await(2, TimeUnit.SECONDS)
+                blockerReleases[source.substringAfterLast('/').toInt()].await(2, TimeUnit.SECONDS)
+            } else if (source.contains("queued-visible")) {
+                visibleStarted.countDown()
             }
             Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         }
@@ -803,19 +807,25 @@ class RenderImageLoaderPolicyTest {
                 completed.countDown()
             }
         }
-        repeat(RenderImageLoader.globalWorkerLimitForTesting()) { index ->
-            enqueue("https://example.com/blocker/$index", DecodedBitmapPriority.PREFETCH)
+        try {
+            repeat(workerCount) { index ->
+                enqueue("https://example.com/blocker/$index", DecodedBitmapPriority.PREFETCH)
+            }
+            assertTrue(blockersStarted.await(2, TimeUnit.SECONDS))
+            val prefetch = "https://example.com/queued-prefetch"
+            val visible = "https://example.com/queued-visible"
+            enqueue(prefetch, DecodedBitmapPriority.PREFETCH)
+            enqueue(visible, DecodedBitmapPriority.VISIBLE)
+
+            blockerReleases.first().countDown()
+            assertTrue(visibleStarted.await(2, TimeUnit.SECONDS))
+            blockerReleases.drop(1).forEach { it.countDown() }
+            drainMainUntil(completed)
+
+            assertTrue(starts.indexOf(visible) < starts.indexOf(prefetch))
+        } finally {
+            blockerReleases.forEach { it.countDown() }
         }
-        assertTrue(blockersStarted.await(2, TimeUnit.SECONDS))
-        val prefetch = "https://example.com/queued-prefetch"
-        val visible = "https://example.com/queued-visible"
-        enqueue(prefetch, DecodedBitmapPriority.PREFETCH)
-        enqueue(visible, DecodedBitmapPriority.VISIBLE)
-
-        releaseBlockers.countDown()
-        drainMainUntil(completed)
-
-        assertTrue(starts.indexOf(visible) < starts.indexOf(prefetch))
     }
 
     @Test
