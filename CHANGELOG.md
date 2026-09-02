@@ -1,27 +1,30 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.1] - 2026-09-02
 
 ### Added
 
-- Added `defineAtomNode`, `withAtomsSchema`, the `defineSchema` `atoms` key, and the `NativeRichTextEditor` `atoms` prop for consumer-rendered custom atom blocks.
-- Added the revision-guarded `updateNodeAttrs` command and atom component `updateAttrs` helper for changing declared void-node attributes.
-- Added declarative schema HTML rules for parsing and serializing custom nodes with lossless declared-attribute mappings.
-
-## [1.0.1] - 2026-08-30
-
-### Added
-
-- Added an API 24 instrumentation smoke test and a packaged React Native 0.76/Expo 52 New Architecture release consumer to the Android CI and publish-validation matrices.
+- Added consumer-rendered custom atom blocks with `defineAtomNode`, `withAtomsSchema`, the `defineSchema` `atoms` key, and the `NativeRichTextEditor` `atoms` prop.
+- Added revision-guarded atom attribute updates through the component `updateAttrs` helper. Declared attributes participate in JSON and HTML conversion, undo history, persistence, and Yjs collaboration.
+- Added declarative schema HTML rules for losslessly parsing and serializing custom nodes, including validated attribute mappings and stable atom identities.
+- Added native iOS and Android atom mounting with measured layout, theme-controlled spacing, selection state, interactive React children, and drag-and-drop movement.
+- Added an interactive counter-card atom to the example app and expanded the README and GitHub wiki with custom-atom API, persistence, schema, and lifecycle guidance.
 
 ### Fixed
 
+- Fixed height measurement, auto-grow layout, theme spacing, touch forwarding, selection, deletion, drag cleanup, and render synchronization across iOS and Android.
 - Made Rust-owned Android content and selection authoritative across external renders, rejected native input, IME composition, host detach, caret geometry, resize handles, and final Fabric layout handoff.
+- Preserved Android incremental render-patch baselines across optimistic IME input and external engine updates.
 - Preserved native collaboration transport state and protocol boundaries across editor host lifecycles.
 - Bounded decoded-image ownership by process, viewer, and request limits; constrained approximate decoder results before admission; and exposed `maxDecodedBytes` consistently to Android image loading.
 - Kept Android viewer semantics actionable and synchronized viewer fonts, dynamic appearance invalidation, and toolbar border rendering.
 - Preserved API 24 runtime compatibility and restored package compatibility with React Native 0.76 and Expo 52 consumers while retaining current React Native and Expo support.
 - Isolated the Expo Android facade project from React Native codegen outputs so current Expo example and consumer apps assemble reliably.
+
+### Tests
+
+- Added cross-platform regression coverage for atom schema composition, HTML and JSON round-tripping, attribute updates, mounting, interaction, layout, editing, and lifecycle behavior.
+- Expanded Android regression coverage for IME reconciliation, collaboration lifecycles, image budgets, viewer behavior, API 24, React Native 0.76 consumers, and CI timing boundaries.
 
 ## [1.0.0] - 2026-08-28
 
@@ -544,6 +547,7 @@ This is a hard cutover to shared native document, collaboration, and viewer boun
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.1]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.7...1.0.0
 [1.0.0-alpha.7]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.6...1.0.0-alpha.7
 [1.0.0-alpha.6]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.5...1.0.0-alpha.6
