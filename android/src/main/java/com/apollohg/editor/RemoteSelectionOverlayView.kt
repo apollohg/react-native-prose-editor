@@ -8,10 +8,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.util.TypedValue
-import android.view.View
 import androidx.appcompat.content.res.AppCompatResources
-import com.facebook.react.uimanager.PointerEvents
-import com.facebook.react.uimanager.ReactPointerEventsView
 import org.json.JSONArray
 
 data class RemoteSelectionDecoration(
@@ -95,9 +92,7 @@ class RemoteSelectionOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-) : View(context, attrs, defStyleAttr), ReactPointerEventsView {
-    override val pointerEvents = PointerEvents.NONE
-
+) : PointerTransparentView(context, attrs, defStyleAttr) {
     private data class CachedSelectionGeometry(
         val clientId: String,
         val selectionPath: Path?,
