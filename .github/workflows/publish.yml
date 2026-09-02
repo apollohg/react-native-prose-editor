@@ -57,15 +57,11 @@ jobs:
 
             - name: Cache Cargo
               if: steps.release-build-cache.outputs.cache-hit != 'true'
-              uses: actions/cache@v5
+              uses: Swatinem/rust-cache@v2
               with:
-                  path: |
-                      ~/.cargo/registry
-                      ~/.cargo/git
-                      ~/.cargo/bin/cargo-ndk
-                      rust/editor-core/target
-                  key: cargo-release-${{ runner.os }}-rust-1.95.0-ndk-4.1.2-android-27.1.12297006-${{ hashFiles('rust/editor-core/Cargo.lock') }}
-                  restore-keys: cargo-release-${{ runner.os }}-rust-1.95.0-
+                  workspaces: rust/editor-core
+                  shared-key: editor-core
+                  cache-on-failure: true
 
             - name: Install cargo-ndk
               if: steps.release-build-cache.outputs.cache-hit != 'true'
@@ -166,14 +162,11 @@ jobs:
               uses: dtolnay/rust-toolchain@1.95.0
 
             - name: Cache Cargo
-              uses: actions/cache@v5
+              uses: Swatinem/rust-cache@v2
               with:
-                  path: |
-                      ~/.cargo/registry
-                      ~/.cargo/git
-                      rust/editor-core/target
-                  key: cargo-contracts-${{ runner.os }}-rust-1.95.0-${{ hashFiles('rust/editor-core/Cargo.lock') }}
-                  restore-keys: cargo-contracts-${{ runner.os }}-rust-1.95.0-
+                  workspaces: rust/editor-core
+                  shared-key: editor-core
+                  cache-on-failure: true
 
             - name: Install dependencies
               run: |
@@ -238,14 +231,11 @@ jobs:
               uses: dtolnay/rust-toolchain@1.95.0
 
             - name: Cache Cargo
-              uses: actions/cache@v5
+              uses: Swatinem/rust-cache@v2
               with:
-                  path: |
-                      ~/.cargo/registry
-                      ~/.cargo/git
-                      rust/editor-core/target
-                  key: cargo-security-${{ runner.os }}-rust-1.95.0-${{ hashFiles('rust/editor-core/Cargo.lock') }}
-                  restore-keys: cargo-security-${{ runner.os }}-rust-1.95.0-
+                  workspaces: rust/editor-core
+                  shared-key: editor-core
+                  cache-on-failure: true
 
             - name: Install dependencies
               run: npm ci
@@ -301,8 +291,6 @@ jobs:
         needs: build-package
         runs-on: ubuntu-latest
         timeout-minutes: 25
-        env:
-            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/publish
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -328,14 +316,10 @@ jobs:
             - name: Setup Android NDK
               run: sdkmanager --install 'ndk;27.1.12297006'
 
-            - name: Cache Gradle
-              uses: actions/cache@v5
+            - name: Setup Gradle
+              uses: gradle/actions/setup-gradle@v5
               with:
-                  path: |
-                      ${{ env.GRADLE_USER_HOME }}/caches
-                      ${{ env.GRADLE_USER_HOME }}/wrapper
-                  key: gradle-publish-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
-                  restore-keys: gradle-publish-${{ runner.os }}-
+                  cache-read-only: false
 
             - name: Install dependencies
               run: |
@@ -440,8 +424,6 @@ jobs:
         needs: build-package
         runs-on: ubuntu-latest
         timeout-minutes: 25
-        env:
-            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/publish
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -467,14 +449,10 @@ jobs:
             - name: Setup Android NDK
               run: sdkmanager --install 'ndk;27.1.12297006'
 
-            - name: Cache Gradle
-              uses: actions/cache@v5
+            - name: Setup Gradle
+              uses: gradle/actions/setup-gradle@v5
               with:
-                  path: |
-                      ${{ env.GRADLE_USER_HOME }}/caches
-                      ${{ env.GRADLE_USER_HOME }}/wrapper
-                  key: gradle-publish-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
-                  restore-keys: gradle-publish-${{ runner.os }}-
+                  cache-read-only: false
 
             - name: Install dependencies
               run: |
@@ -505,8 +483,6 @@ jobs:
         needs: build-package
         runs-on: ubuntu-latest
         timeout-minutes: 25
-        env:
-            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/publish
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -532,14 +508,10 @@ jobs:
             - name: Setup Android NDK
               run: sdkmanager --install 'ndk;27.1.12297006'
 
-            - name: Cache Gradle
-              uses: actions/cache@v5
+            - name: Setup Gradle
+              uses: gradle/actions/setup-gradle@v5
               with:
-                  path: |
-                      ${{ env.GRADLE_USER_HOME }}/caches
-                      ${{ env.GRADLE_USER_HOME }}/wrapper
-                  key: gradle-publish-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts') }}
-                  restore-keys: gradle-publish-${{ runner.os }}-
+                  cache-read-only: false
 
             - name: Install dependencies
               run: |
@@ -562,8 +534,6 @@ jobs:
         needs: build-package
         runs-on: macos-14
         timeout-minutes: 60
-        env:
-            GRADLE_USER_HOME: ${{ github.workspace }}/.gradle/android-release-validation
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -587,14 +557,11 @@ jobs:
               uses: dtolnay/rust-toolchain@1.95.0
 
             - name: Cache Cargo
-              uses: actions/cache@v5
+              uses: Swatinem/rust-cache@v2
               with:
-                  path: |
-                      ~/.cargo/registry
-                      ~/.cargo/git
-                      rust/editor-core/target
-                  key: cargo-android-release-${{ runner.os }}-rust-1.95.0-${{ hashFiles('rust/editor-core/Cargo.lock') }}
-                  restore-keys: cargo-android-release-${{ runner.os }}-rust-1.95.0-
+                  workspaces: rust/editor-core
+                  shared-key: editor-core
+                  cache-on-failure: true
 
             - name: Setup Android SDK
               uses: android-actions/setup-android@v4
@@ -605,14 +572,10 @@ jobs:
             - name: Setup RN 0.76 Android SDK
               run: sdkmanager --install 'platforms;android-36' 'build-tools;34.0.0'
 
-            - name: Cache Gradle
-              uses: actions/cache@v5
+            - name: Setup Gradle
+              uses: gradle/actions/setup-gradle@v5
               with:
-                  path: |
-                      ${{ env.GRADLE_USER_HOME }}/caches
-                      ${{ env.GRADLE_USER_HOME }}/wrapper
-                  key: gradle-android-release-${{ runner.os }}-${{ hashFiles('package-lock.json', 'example/package-lock.json', 'example/package.json', 'example/app.config.ts', 'scripts/tests/android-rn076-consumer/package.json') }}
-                  restore-keys: gradle-android-release-${{ runner.os }}-
+                  cache-read-only: false
 
             - name: Install dependencies
               run: |
@@ -650,7 +613,7 @@ jobs:
               uses: reactivecircus/android-emulator-runner@v2.38.0
               with:
                   api-level: 24
-                  arch: x86_64
+                  arch: ${{ runner.arch == 'ARM64' && 'arm64-v8a' || 'x86_64' }}
                   disable-animations: true
                   script: npm run test:android:api24
 

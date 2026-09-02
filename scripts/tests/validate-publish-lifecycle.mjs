@@ -30,18 +30,56 @@ const rn076ConsumerManifest = JSON.parse(
 );
 const distTagResolver = path.join(repoRoot, 'scripts/resolve-npm-dist-tag.mjs');
 
-const jobsSource = publishWorkflow.slice(publishWorkflow.search(/^jobs:\s*$/m));
-const jobIndent = jobsSource.match(/^(\s+)[a-z0-9-]+:\s*$/m)?.[1];
-assert.ok(jobIndent, 'publish workflow must contain jobs');
-const jobHeaders = [
-  ...jobsSource.matchAll(new RegExp(`^${jobIndent}([a-z0-9-]+):\\s*$`, 'gm')),
-];
-const requireJob = (jobName) => {
+const workflowJob = (workflow, jobName, workflowName) => {
+  const jobsSource = workflow.slice(workflow.search(/^jobs:\s*$/m));
+  const jobIndent = jobsSource.match(/^(\s+)[a-z0-9-]+:\s*$/m)?.[1];
+  assert.ok(jobIndent, `${workflowName} workflow must contain jobs`);
+  const jobHeaders = [
+    ...jobsSource.matchAll(new RegExp(`^${jobIndent}([a-z0-9-]+):\\s*$`, 'gm')),
+  ];
   const index = jobHeaders.findIndex((match) => match[1] === jobName);
-  assert.notEqual(index, -1, `publish workflow must define ${jobName}`);
+  assert.notEqual(index, -1, `${workflowName} workflow must define ${jobName}`);
   const start = jobHeaders[index].index;
-  const end = jobHeaders[index + 1]?.index ?? publishWorkflow.length;
+  const end = jobHeaders[index + 1]?.index ?? jobsSource.length;
   return jobsSource.slice(start, end);
+};
+const requireJob = (jobName) => workflowJob(publishWorkflow, jobName, 'publish');
+const requireCiJob = (jobName) => workflowJob(ciWorkflow, jobName, 'CI');
+
+const assertRustCache = (job, jobName) => {
+  assert.match(
+    job,
+    /uses: Swatinem\/rust-cache@v2/,
+    `${jobName} must use the dependency-aware Rust cache`,
+  );
+  assert.match(
+    job,
+    /workspaces:\s*rust\/editor-core/,
+    `${jobName} must cache the editor-core workspace`,
+  );
+  assert.match(
+    job,
+    /shared-key:\s*editor-core/,
+    `${jobName} must share sanitized editor-core dependencies`,
+  );
+  assert.match(
+    job,
+    /cache-on-failure:\s*true/,
+    `${jobName} must preserve warmed Rust dependencies after failures`,
+  );
+};
+
+const assertGradleCache = (job, jobName, readOnlyExpression) => {
+  assert.match(
+    job,
+    /uses: gradle\/actions\/setup-gradle@v5/,
+    `${jobName} must use Gradle's rolling commit-aware cache`,
+  );
+  assert.match(
+    job,
+    new RegExp(`cache-read-only:\\s*${readOnlyExpression}`),
+    `${jobName} must use the expected Gradle cache write policy`,
+  );
 };
 
 assert.match(
@@ -49,7 +87,6 @@ assert.match(
   /^permissions:\s*\n\s+contents:\s*read\s*$/m,
   'workflow-level permissions must be read-only',
 );
-assert.match(ciWorkflow, /actions\/cache@v5/, 'CI caches must use the Node.js 24 action major');
 assert.doesNotMatch(
   `${ciWorkflow}\n${publishWorkflow}`,
   /actions\/cache(?:\/(?:restore|save))?@v4/,
@@ -113,6 +150,18 @@ assert.match(
   'restored and freshly built outputs must both be uploaded for validation',
 );
 assert.match(buildJob, /release-artifact\/\*\.tgz/);
+assertRustCache(buildJob, 'build-package');
+
+for (const jobName of ['js-and-android', 'ios']) {
+  assertRustCache(requireCiJob(jobName), `CI ${jobName}`);
+}
+for (const jobName of [
+  'package-contracts',
+  'security-rust-typescript',
+  'android-release-validation',
+]) {
+  assertRustCache(requireJob(jobName), jobName);
+}
 
 for (const jobName of [
   'package-contracts',
@@ -134,6 +183,9 @@ for (const jobName of [
 }
 
 const androidReleaseJob = requireJob('android-release-validation');
+const ciAndroidApi24Job = requireCiJob('android-api-24');
+const hostCompatibleEmulatorArchitecture =
+  /arch:\s*\$\{\{\s*runner\.arch == 'ARM64' && 'arm64-v8a' \|\| 'x86_64'\s*\}\}/;
 assert.match(androidReleaseJob, /runs-on:\s*macos-14/);
 assert.match(androidReleaseJob, /timeout-minutes:\s*60/);
 assert.match(androidReleaseJob, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
@@ -143,6 +195,16 @@ assert.match(androidReleaseJob, /:apollohg_react-native-prose-editor:assembleRel
 assert.match(androidReleaseJob, /npm run validate:package:android:rn076/);
 assert.match(androidReleaseJob, /reactivecircus\/android-emulator-runner@v2\.38\.0/);
 assert.match(androidReleaseJob, /api-level:\s*24/);
+assert.match(
+  androidReleaseJob,
+  hostCompatibleEmulatorArchitecture,
+  'publish API 24 emulator architecture must match the runner host',
+);
+assert.match(
+  ciAndroidApi24Job,
+  hostCompatibleEmulatorArchitecture,
+  'CI API 24 emulator architecture must match the runner host',
+);
 assert.match(
   ciWorkflow,
   /RELEASE_TARBALL="\$tarball" npm run validate:package:android:rn076/,
@@ -157,22 +219,25 @@ for (const jobName of [
   const job = requireJob(jobName);
   assert.match(job, /android-actions\/setup-android@v4/);
   assert.match(job, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
-  assert.match(
-    job,
-    /GRADLE_USER_HOME:\s*\$\{\{ github\.workspace \}\}\/\.gradle\/publish/,
-    `${jobName} must use the shared publish Gradle home`,
-  );
-  assert.match(
-    job,
-    /key: gradle-publish-\$\{\{ runner\.os \}\}-\$\{\{ hashFiles\('package-lock\.json', 'example\/package-lock\.json', 'example\/package\.json', 'example\/app\.config\.ts'\) \}\}/,
-    `${jobName} must use the shared publish Gradle cache key`,
-  );
-  assert.match(
-    job,
-    /restore-keys: gradle-publish-\$\{\{ runner\.os \}\}-/,
-    `${jobName} must restore prior shared publish Gradle caches`,
-  );
+  assertGradleCache(job, jobName, 'false');
 }
+
+assertGradleCache(
+  requireCiJob('js-and-android'),
+  'CI js-and-android',
+  "\\$\\{\\{ github\\.event_name == 'pull_request' \\}\\}",
+);
+assertGradleCache(
+  ciAndroidApi24Job,
+  'CI android-api-24',
+  "\\$\\{\\{ github\\.event_name == 'pull_request' \\}\\}",
+);
+assertGradleCache(androidReleaseJob, 'android-release-validation', 'false');
+assert.doesNotMatch(
+  `${ciWorkflow}\n${publishWorkflow}`,
+  /key: gradle-(?:publish|android-release)-/,
+  'manual immutable Gradle cache keys must not return',
+);
 
 const publishJob = requireJob('publish');
 for (const dependency of [
