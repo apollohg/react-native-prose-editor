@@ -59,11 +59,14 @@ class RenderBridgeTest {
     fun `initial render policy change reloads images preserving selection and scroll`() {
         RenderImageLoader.resetForTesting()
         val decodeCount = AtomicInteger(0)
-        val decodeStarted = CountDownLatch(2)
+        val initialDecodeStarted = CountDownLatch(1)
+        val reloadedDecodeStarted = CountDownLatch(1)
         val release = CountDownLatch(1)
         RenderImageLoader.decodeSourceOverride = { _, _ ->
-            decodeCount.incrementAndGet()
-            decodeStarted.countDown()
+            when (decodeCount.incrementAndGet()) {
+                1 -> initialDecodeStarted.countDown()
+                2 -> reloadedDecodeStarted.countDown()
+            }
             release.await(2, TimeUnit.SECONDS)
             Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         }
@@ -78,6 +81,7 @@ class RenderBridgeTest {
         """.trimIndent()
         try {
             editor.applyRenderJSON(json)
+            assertTrue(initialDecodeStarted.await(2, TimeUnit.SECONDS))
             editor.layoutParams = ViewGroup.LayoutParams(320, 24)
             editor.measure(
                 View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
@@ -90,7 +94,7 @@ class RenderBridgeTest {
 
             editor.setImageLoadingPolicyJson("""{"maxSourceBytes":1234}""")
 
-            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            assertTrue(reloadedDecodeStarted.await(2, TimeUnit.SECONDS))
             assertEquals(2, decodeCount.get())
             assertEquals(2, editor.selectionStart)
             assertEquals(2, editor.selectionEnd)
@@ -136,9 +140,16 @@ class RenderBridgeTest {
     fun `policy reload and reattach preserve live edits after initial render`() {
         RenderImageLoader.resetForTesting()
         val release = CountDownLatch(1)
-        val decodeStarted = CountDownLatch(3)
+        val decodeCount = AtomicInteger(0)
+        val initialDecodeStarted = CountDownLatch(1)
+        val policyDecodeStarted = CountDownLatch(1)
+        val reattachedDecodeStarted = CountDownLatch(1)
         RenderImageLoader.decodeSourceOverride = { _, _ ->
-            decodeStarted.countDown()
+            when (decodeCount.incrementAndGet()) {
+                1 -> initialDecodeStarted.countDown()
+                2 -> policyDecodeStarted.countDown()
+                3 -> reattachedDecodeStarted.countDown()
+            }
             release.await(2, TimeUnit.SECONDS)
             Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         }
@@ -153,14 +164,16 @@ class RenderBridgeTest {
         """.trimIndent()
         try {
             editor.applyRenderJSON(json)
+            assertTrue(initialDecodeStarted.await(2, TimeUnit.SECONDS))
             editor.editableText.insert(0, "live ")
 
             editor.setImageLoadingPolicyJson("""{"readTimeoutMs":123}""")
+            assertTrue(policyDecodeStarted.await(2, TimeUnit.SECONDS))
             assertTrue(editor.text.toString().startsWith("live initial"))
             invokeLifecycle(editor, "onDetachedFromWindow")
             invokeLifecycle(editor, "onAttachedToWindow")
 
-            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            assertTrue(reattachedDecodeStarted.await(2, TimeUnit.SECONDS))
             assertTrue(editor.text.toString().startsWith("live initial"))
         } finally {
             release.countDown()
