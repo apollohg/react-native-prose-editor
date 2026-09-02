@@ -184,9 +184,9 @@ for (const jobName of [
 
 const androidReleaseJob = requireJob('android-release-validation');
 const ciAndroidApi24Job = requireCiJob('android-api-24');
-const hostCompatibleEmulatorArchitecture =
-  /arch:\s*\$\{\{\s*runner\.arch == 'ARM64' && 'arm64-v8a' \|\| 'x86_64'\s*\}\}/;
-assert.match(androidReleaseJob, /runs-on:\s*macos-14/);
+const linuxKvmSetup =
+  /- name: Enable KVM\s+run: \|\s+echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS\+="static_node=kvm"' \| sudo tee \/etc\/udev\/rules\.d\/99-kvm4all\.rules\s+sudo udevadm control --reload-rules\s+sudo udevadm trigger --name-match=kvm/;
+assert.match(androidReleaseJob, /runs-on:\s*ubuntu-latest/);
 assert.match(androidReleaseJob, /timeout-minutes:\s*60/);
 assert.match(androidReleaseJob, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
 assert.match(androidReleaseJob, /npm run test:android/);
@@ -197,14 +197,25 @@ assert.match(androidReleaseJob, /reactivecircus\/android-emulator-runner@v2\.38\
 assert.match(androidReleaseJob, /api-level:\s*24/);
 assert.match(
   androidReleaseJob,
-  hostCompatibleEmulatorArchitecture,
-  'publish API 24 emulator architecture must match the runner host',
+  linuxKvmSetup,
+  'publish API 24 validation must enable KVM on Linux',
 );
 assert.match(
   ciAndroidApi24Job,
-  hostCompatibleEmulatorArchitecture,
-  'CI API 24 emulator architecture must match the runner host',
+  /runs-on:\s*ubuntu-latest/,
+  'CI API 24 validation must use Linux',
 );
+assert.match(
+  ciAndroidApi24Job,
+  linuxKvmSetup,
+  'CI API 24 validation must enable KVM on Linux',
+);
+for (const [job, jobName] of [
+  [androidReleaseJob, 'publish API 24 validation'],
+  [ciAndroidApi24Job, 'CI API 24 validation'],
+]) {
+  assert.match(job, /arch:\s*x86_64/, `${jobName} must use the accelerated x86_64 image`);
+}
 assert.match(
   ciWorkflow,
   /RELEASE_TARBALL="\$tarball" npm run validate:package:android:rn076/,
