@@ -988,7 +988,6 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     private var visibleSelectionTintColor: UIColor = .systemBlue
     private var hidesNativeSelectionChrome = false
     private var isPreviewingImageResize = false
-    private var terminalAtomGapContentInsetBottom: CGFloat = 0
     var allowImageResizing = true
 
     override var isEditable: Bool {
@@ -1060,7 +1059,6 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         didSet {
             guard oldValue != heightBehavior else { return }
             isScrollEnabled = heightBehavior == .fixed
-            updateTerminalAtomGapScrollExtent()
             invalidateAutoGrowHeightMeasurement()
             invalidateIntrinsicContentSize()
             notifyHeightChangeIfNeeded(force: true)
@@ -1802,7 +1800,6 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        updateTerminalAtomGapScrollExtent()
         let placeholderX = textContainerInset.left + textContainer.lineFragmentPadding
         let placeholderY = textContainerInset.top
         let placeholderWidth = max(
@@ -2018,6 +2015,42 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         return NSRange(location: location, length: length)
     }
 
+    private func isAtomBoundaryCaretOffset(_ offset: Int) -> Bool {
+        guard offset >= 0, offset <= textStorage.length else { return false }
+        if offset < textStorage.length,
+           textStorage.attribute(.attachment, at: offset, effectiveRange: nil) is AtomBlockAttachment
+        {
+            return true
+        }
+        return offset > 0
+            && textStorage.attribute(.attachment, at: offset - 1, effectiveRange: nil)
+                is AtomBlockAttachment
+    }
+
+    private func isCollapsedAtomBoundary(_ range: NSRange?) -> Bool {
+        guard let range, range.length == 0 else { return false }
+        return isAtomBoundaryCaretOffset(range.location)
+    }
+
+    @discardableResult
+    private func restoreSelectionFromAtomBoundaryIfNeeded() -> Bool {
+        guard isCollapsedAtomBoundary(selectedUtf16Range()) else { return false }
+        logicalSelectionScalarRange = nil
+        logicalSelectionUtf16Range = nil
+        if let authorized = lastAuthorizedSelectedUtf16Range,
+           NSMaxRange(authorized) <= textStorage.length,
+           !isCollapsedAtomBoundary(authorized)
+        {
+            performTransientTextMutation {
+                selectedRange = authorized
+                noteSelectionDidChange()
+            }
+        }
+        refreshNativeSelectionChromeVisibility()
+        onSelectionOrContentMayChange?()
+        return true
+    }
+
     private func noteSelectionDidChange() {
         selectionRevision &+= 1
     }
@@ -2163,6 +2196,31 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         return resolvedRange
     }
 
+    private func atomAttachmentRange(at location: CGPoint) -> NSRange? {
+        guard textStorage.length > 0 else { return nil }
+        var resolvedRange: NSRange?
+        textStorage.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: textStorage.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, stop in
+            guard value is AtomBlockAttachment, range.length > 0 else { return }
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: range,
+                actualCharacterRange: nil
+            )
+            guard glyphRange.length > 0 else { return }
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textContainerInset.left - contentOffset.x
+            rect.origin.y += textContainerInset.top - contentOffset.y
+            if rect.contains(location) {
+                resolvedRange = range
+                stop.pointee = true
+            }
+        }
+        return resolvedRange
+    }
+
     func isPlaceholderVisibleForTesting() -> Bool {
         !placeholderLabel.isHidden
     }
@@ -2282,6 +2340,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         if hidesNativeSelectionChrome {
             return .zero
         }
+        let utf16Offset = offset(from: beginningOfDocument, to: position)
+        if isAtomBoundaryCaretOffset(utf16Offset) {
+            return .zero
+        }
         let rect = resolvedCaretReferenceRect(for: position)
         guard rect.height > 0 else { return rect }
 
@@ -2307,15 +2369,26 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     }
 
     override func closestPosition(to point: CGPoint) -> UITextPosition? {
-        if let gapRect = terminalAtomGapCaretRect(),
-           point.y >= gapRect.minY,
-           point.y <= gapRect.maxY,
-           point.x >= textContainerInset.left,
-           point.x <= bounds.width - textContainerInset.right
+        if atomAttachmentRange(at: point) != nil,
+           let selectedTextRange,
+           selectedTextRange.isEmpty
         {
-            return endOfDocument
+            return selectedTextRange.start
         }
         return super.closestPosition(to: point)
+    }
+
+    override func closestPosition(
+        to point: CGPoint,
+        within range: UITextRange
+    ) -> UITextPosition? {
+        if atomAttachmentRange(at: point) != nil,
+           let selectedTextRange,
+           selectedTextRange.isEmpty
+        {
+            return selectedTextRange.start
+        }
+        return super.closestPosition(to: point, within: range)
     }
 
     func measuredAutoGrowHeightForTesting(width: CGFloat) -> CGFloat {
@@ -2324,11 +2397,6 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
 
     private func resolvedCaretReferenceRect(for position: UITextPosition) -> CGRect {
         let directRect = super.caretRect(for: position)
-        if offset(from: beginningOfDocument, to: position) == textStorage.length,
-           let gapRect = terminalAtomGapCaretRect(caretWidth: max(directRect.width, 2))
-        {
-            return gapRect
-        }
         if let horizontalRuleRect = resolvedHorizontalRuleAdjacentCaretRect(
             for: position,
             directRect: directRect
@@ -2370,65 +2438,6 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         }
 
         return directRect
-    }
-
-    private func terminalAtomGapCaretRect(caretWidth: CGFloat = 2) -> CGRect? {
-        guard let gap = terminalAtomGapLayout() else { return nil }
-        return CGRect(
-            x: textContainerInset.left + textContainer.lineFragmentPadding,
-            y: textContainerInset.top + gap.originY,
-            width: caretWidth,
-            height: gap.height
-        )
-    }
-
-    private func terminalAtomGapLayout() -> (originY: CGFloat, height: CGFloat)? {
-        guard let attachmentRect = terminalAtomAttachmentRect() else { return nil }
-        return (attachmentRect.maxY, ceil(resolvedDefaultFont().lineHeight))
-    }
-
-    private func terminalAtomGapRequiredContentHeight() -> CGFloat? {
-        guard let gap = terminalAtomGapLayout() else { return nil }
-        return ceil(
-            textContainerInset.top
-                + gap.originY
-                + gap.height
-                + textContainerInset.bottom
-        )
-    }
-
-    private func updateTerminalAtomGapScrollExtent() {
-        let baseBottom = max(0, contentInset.bottom - terminalAtomGapContentInsetBottom)
-        let requiredHeight = heightBehavior == .fixed
-            ? terminalAtomGapRequiredContentHeight() ?? 0
-            : 0
-        let gapBottom = max(0, requiredHeight - contentSize.height)
-        terminalAtomGapContentInsetBottom = gapBottom
-        let targetBottom = baseBottom + gapBottom
-        guard abs(contentInset.bottom - targetBottom) > 0.5 else { return }
-        var updated = contentInset
-        updated.bottom = targetBottom
-        contentInset = updated
-    }
-
-    private func terminalAtomAttachmentRect() -> CGRect? {
-        guard textStorage.length > 0 else { return nil }
-        let characterIndex = textStorage.length - 1
-        guard textStorage.attribute(
-            .attachment,
-            at: characterIndex,
-            effectiveRange: nil
-        ) is AtomBlockAttachment else {
-            return nil
-        }
-
-        editorLayoutManager.ensureLayout(for: textContainer)
-        let glyphRange = editorLayoutManager.glyphRange(
-            forCharacterRange: NSRange(location: characterIndex, length: 1),
-            actualCharacterRange: nil
-        )
-        guard glyphRange.length > 0 else { return nil }
-        return editorLayoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
     }
 
     private func resolvedHorizontalRuleAdjacentCaretRect(
@@ -2552,6 +2561,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             enqueueDeferredInsertText(text)
             return
         }
+        guard !isCollapsedAtomBoundary(selectedUtf16Range()) else { return }
 
         if interceptReturnInput(text) { return }
 
@@ -2615,6 +2625,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         guard !isApplyingRustState, editorId != 0, isEditable else { return }
         guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
+        guard !isCollapsedAtomBoundary(selectedUtf16Range()) else { return }
         performInterceptedInput {
             insertNodeInRust(preferredHardBreakNodeType())
         }
@@ -2642,6 +2653,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         }
         guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
+        guard !isCollapsedAtomBoundary(selectedUtf16Range()) else { return }
 
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
             performTransientTextMutation {
@@ -2793,7 +2805,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             return nil
         }
         let attrs = textStorage.attributes(at: utf16Offset, effectiveRange: nil)
-        guard attrs[.attachment] is NSTextAttachment,
+        guard let attachment = attrs[.attachment] as? NSTextAttachment,
+              !(attachment is AtomBlockAttachment),
               attrs[RenderBridgeAttributes.voidNodeType] as? String != nil
         else {
             return nil
@@ -2881,6 +2894,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         }
         guard finishExternalTextCompositionBeforeInteractionIfNeeded() else { return }
         guard flushPendingNativeTextMutationCommitIfNeeded() else { return }
+        let replacementUtf16Range = NSRange(
+            location: offset(from: beginningOfDocument, to: range.start),
+            length: offset(from: range.start, to: range.end)
+        )
+        guard !isCollapsedAtomBoundary(replacementUtf16Range) else { return }
 
         if interceptReturnInput(text, replacing: range) { return }
 
@@ -2892,8 +2910,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         }
 
         let scalarRange = PositionBridge.textRangeToScalarRange(range, in: self)
-        let replacementStartUtf16 = offset(from: beginningOfDocument, to: range.start)
-        let replacementEndUtf16 = offset(from: beginningOfDocument, to: range.end)
+        let replacementStartUtf16 = replacementUtf16Range.location
+        let replacementEndUtf16 = NSMaxRange(replacementUtf16Range)
         let preservesAcceptedSpace = textStorage.string == lastAuthorizedText
             && shouldPreserveAcceptedAutocorrectSpace(
                 authorizedText: lastAuthorizedText as NSString,
@@ -3700,6 +3718,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
         else {
             return
         }
+        if restoreSelectionFromAtomBoundaryIfNeeded() {
+            return
+        }
         if normalizeSelectionForEmptyBlockAutocapitalizationIfNeeded() {
             return
         }
@@ -4102,11 +4123,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
             }
             lastHeightNotifyUsedRectNanosForTesting =
                 DispatchTime.now().uptimeNanoseconds - usedRectStartedAt
-            let terminalGapBottom = terminalAtomGapLayout().map {
-                $0.originY + $0.height
-            } ?? 0
             let layoutHeight = ceil(
-                max(usedRect.height, terminalGapBottom)
+                usedRect.height
                     + textContainerInset.top
                     + textContainerInset.bottom
             )

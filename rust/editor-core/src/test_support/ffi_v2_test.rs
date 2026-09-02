@@ -709,7 +709,7 @@ fn schema_policy_can_preserve_a_custom_void_block_on_backspace() {
 }
 
 #[test]
-fn terminal_custom_atom_gap_accepts_text_in_one_transaction() {
+fn terminal_custom_atom_boundary_does_not_accept_text() {
     let id = create_handle(terminal_custom_atom_config());
 
     ok_json(&v2::editor_v2_set_selection(
@@ -721,22 +721,8 @@ fn terminal_custom_atom_gap_accepts_text_in_one_transaction() {
         input_envelope(2, revision_of(&id), "x"),
     ));
 
-    assert_eq!(outcome["type"], "transaction");
-    assert_eq!(outcome["changed"], true);
-    assert_eq!(
-        document_json_of(&id),
-        json!({
-            "type": "doc",
-            "content": [
-                { "type": "counterCard", "attrs": { "count": 7 } },
-                { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] },
-            ],
-        })
-    );
-    assert_eq!(
-        ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3))),
-        json!({ "changed": true })
-    );
+    assert_eq!(caret_scalar(&id), 0);
+    assert_eq!(outcome, json!({ "type": "notApplicable" }));
     assert_eq!(
         document_json_of(&id),
         terminal_custom_atom_config()["initialization"]["json"]
@@ -745,7 +731,7 @@ fn terminal_custom_atom_gap_accepts_text_in_one_transaction() {
 }
 
 #[test]
-fn terminal_custom_atom_gap_accepts_return_in_one_transaction() {
+fn terminal_custom_atom_boundary_does_not_accept_return() {
     let id = create_handle(terminal_custom_atom_config());
 
     ok_json(&v2::editor_v2_set_selection(
@@ -757,22 +743,8 @@ fn terminal_custom_atom_gap_accepts_return_in_one_transaction() {
         command_envelope(2, revision_of(&id), json!({ "type": "splitBlock" })),
     ));
 
-    assert_eq!(outcome["type"], "transaction");
-    assert_eq!(outcome["changed"], true);
-    assert_eq!(
-        document_json_of(&id),
-        json!({
-            "type": "doc",
-            "content": [
-                { "type": "counterCard", "attrs": { "count": 7 } },
-                { "type": "paragraph" },
-            ],
-        })
-    );
-    assert_eq!(
-        ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3))),
-        json!({ "changed": true })
-    );
+    assert_eq!(caret_scalar(&id), 0);
+    assert_eq!(outcome, json!({ "type": "notApplicable" }));
     assert_eq!(
         document_json_of(&id),
         terminal_custom_atom_config()["initialization"]["json"]
@@ -781,7 +753,7 @@ fn terminal_custom_atom_gap_accepts_return_in_one_transaction() {
 }
 
 #[test]
-fn nested_terminal_void_gap_accepts_text_inside_its_container() {
+fn nested_terminal_void_boundary_does_not_accept_text() {
     let id = create_handle(local_json_config(
         r#"{
             "type":"doc",
@@ -803,7 +775,7 @@ fn nested_terminal_void_gap_accepts_text_inside_its_container() {
         input_envelope(2, revision_of(&id), "x"),
     ));
 
-    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(outcome, json!({ "type": "notApplicable" }));
     assert_eq!(
         document_json_of(&id),
         json!({
@@ -812,8 +784,7 @@ fn nested_terminal_void_gap_accepts_text_inside_its_container() {
                 "type": "blockquote",
                 "content": [
                     { "type": "paragraph", "content": [{ "type": "text", "text": "caption" }] },
-                    { "type": "image", "attrs": { "src": "https://example.com/a.png" } },
-                    { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] }
+                    { "type": "image", "attrs": { "src": "https://example.com/a.png" } }
                 ]
             }]
         })
@@ -822,7 +793,7 @@ fn nested_terminal_void_gap_accepts_text_inside_its_container() {
 }
 
 #[test]
-fn terminal_custom_atom_gap_backspace_deletes_atom_in_one_transaction() {
+fn terminal_custom_atom_boundary_backspace_is_not_applicable() {
     let id = create_handle(terminal_custom_atom_config());
 
     ok_json(&v2::editor_v2_set_selection(
@@ -834,23 +805,39 @@ fn terminal_custom_atom_gap_backspace_deletes_atom_in_one_transaction() {
         command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
     ));
 
-    assert_eq!(outcome["type"], "transaction");
-    assert_eq!(outcome["changed"], true);
-    assert_eq!(
-        document_json_of(&id),
-        json!({
-            "type": "doc",
-            "content": [{ "type": "paragraph" }],
-        })
-    );
-    assert_eq!(
-        ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3))),
-        json!({ "changed": true })
-    );
+    assert_eq!(caret_scalar(&id), 0);
+    assert_eq!(outcome, json!({ "type": "notApplicable" }));
     assert_eq!(
         document_json_of(&id),
         terminal_custom_atom_config()["initialization"]["json"]
     );
+    destroy_handle(&id);
+}
+
+#[test]
+fn backspace_in_empty_paragraph_after_custom_atom_keeps_atom() {
+    let mut config = terminal_custom_atom_config();
+    config["initialization"]["json"]["content"] = json!([
+        { "type": "counterCard", "attrs": { "count": 7 } },
+        { "type": "paragraph" },
+    ]);
+    let id = create_handle(config);
+
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 3, 3, "before"),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(
+        document_json_of(&id),
+        terminal_custom_atom_config()["initialization"]["json"]
+    );
+    assert_eq!(caret_scalar(&id), 0);
     destroy_handle(&id);
 }
 
@@ -1070,7 +1057,7 @@ fn explicit_non_first_blank_paragraph_range_preserves_mapped_selection() {
 }
 
 #[test]
-fn terminal_custom_atom_backspace_leaves_optional_root_empty() {
+fn terminal_custom_atom_boundary_backspace_preserves_optional_root_atom() {
     let mut config = terminal_custom_atom_config();
     config["schema"]["nodes"][0]["content"] = json!("block*");
     let id = create_handle(config);
@@ -1084,9 +1071,11 @@ fn terminal_custom_atom_backspace_leaves_optional_root_empty() {
         command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
     ));
 
-    assert_eq!(outcome["type"], "transaction");
-    assert_eq!(outcome["changed"], true);
-    assert_eq!(document_json_of(&id), json!({ "type": "doc" }));
+    assert_eq!(outcome, json!({ "type": "notApplicable" }));
+    assert_eq!(
+        document_json_of(&id),
+        terminal_custom_atom_config()["initialization"]["json"]
+    );
     destroy_handle(&id);
 }
 

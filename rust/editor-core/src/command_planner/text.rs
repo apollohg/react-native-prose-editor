@@ -1,7 +1,7 @@
 use crate::boundary::ResourceLimits;
 use crate::model::{Document, Fragment, Node};
 use crate::position::PositionMap;
-use crate::schema::{NodeRole, Schema};
+use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::transform::Transaction;
 
@@ -37,24 +37,10 @@ pub(crate) fn plan_insert_text(
     if anchor != head || text.is_empty() {
         return None;
     }
-    let marks = insertion_marks(document, schema, *anchor, stored_marks, true);
-    if is_terminal_void_block_gap(document, schema, *anchor) {
-        let text_len = u32::try_from(text.chars().count()).ok()?;
-        let block = default_text_block_with_content(
-            schema,
-            Fragment::from(vec![Node::text(text.to_string(), marks)]),
-        )?;
-        return Some(SemanticCommandPlan {
-            operations: vec![SemanticOperation::InsertNode {
-                pos: *anchor,
-                node: block,
-            }],
-            selection_after: Some(Selection::cursor(
-                anchor.checked_add(1)?.checked_add(text_len)?,
-            )),
-            history: SemanticCommandHistory::InputBoundary,
-        });
+    if is_block_void_at_position(document, schema, *anchor) {
+        return None;
     }
+    let marks = insertion_marks(document, schema, *anchor, stored_marks, true);
     Some(SemanticCommandPlan::one(SemanticOperation::InsertText {
         pos: *anchor,
         text: text.to_string(),
@@ -106,41 +92,27 @@ pub(super) fn default_text_block(schema: &Schema) -> Option<Node> {
     default_text_block_with_content(schema, Fragment::empty())
 }
 
-fn is_terminal_void_block_gap(document: &Document, schema: &Schema, position: u32) -> bool {
-    let resolved = match document.resolve(position) {
-        Ok(resolved) => resolved,
-        Err(_) => return false,
-    };
-    let parent = resolved.parent(document);
-    if resolved.parent_offset != parent.content_size() {
+fn is_block_void_at_position(document: &Document, schema: &Schema, position: u32) -> bool {
+    let Ok(resolved) = document.resolve(position) else {
         return false;
+    };
+    let Some(content) = resolved.parent(document).content() else {
+        return false;
+    };
+    let mut offset = 0;
+    for child in content.iter() {
+        if offset == resolved.parent_offset {
+            return child.is_void()
+                && schema
+                    .node(child.node_type())
+                    .is_some_and(|spec| matches!(spec.role, crate::schema::NodeRole::Block));
+        }
+        let Some(next) = offset.checked_add(child.node_size()) else {
+            return false;
+        };
+        offset = next;
     }
-    let Some(content) = parent.content() else {
-        return false;
-    };
-    let Some(last) = content.iter().last() else {
-        return false;
-    };
-    if !schema
-        .node(last.node_type())
-        .is_some_and(|spec| spec.is_void && matches!(spec.role, NodeRole::Block))
-    {
-        return false;
-    }
-    let Some(text_block) = schema.preferred_text_block() else {
-        return false;
-    };
-    let Some(parent_spec) = schema.node(parent.node_type()) else {
-        return false;
-    };
-    let child_types = content
-        .iter()
-        .map(Node::node_type)
-        .chain(std::iter::once(text_block.name.as_str()))
-        .collect::<Vec<_>>();
-    parent_spec.content.matches(&child_types, |child, symbol| {
-        schema.node_matches_symbol(child, symbol)
-    })
+    false
 }
 
 pub(super) fn node_delete_start(document: &Document, path: &[u32]) -> Option<u32> {
@@ -275,6 +247,19 @@ fn plan_delete_scalar_range_impl(
     ) {
         return Ok(Some(plan));
     }
+    let empty_block_plan = super::empty_block_delete_action(
+        document,
+        position_map,
+        schema,
+        scalar_from,
+        scalar_to,
+        doc_from,
+        doc_to,
+        is_collapsed_backward_delete,
+    );
+    if is_collapsed_backward_delete && empty_block_plan.is_some() {
+        return Ok(empty_block_plan);
+    }
     if let Some(plan) = super::replace_void_and_empty_block(
         document,
         position_map,
@@ -296,16 +281,7 @@ fn plan_delete_scalar_range_impl(
     ) {
         return Ok(Some(plan));
     }
-    if let Some(plan) = super::empty_block_delete_action(
-        document,
-        position_map,
-        schema,
-        scalar_from,
-        scalar_to,
-        doc_from,
-        doc_to,
-        is_collapsed_backward_delete,
-    ) {
+    if let Some(plan) = empty_block_plan {
         return Ok(Some(plan));
     }
     if let Some(plan) = super::move_into_previous_blockquote_action(
@@ -391,16 +367,8 @@ pub(crate) fn plan_split(
     let doc_from = position_map.scalar_to_doc(scalar_from, document);
     let doc_to = position_map.scalar_to_doc(scalar_to, document);
 
-    if doc_from == doc_to && is_terminal_void_block_gap(document, schema, doc_from) {
-        let block = default_text_block(schema).ok_or(())?;
-        return Ok(Some(SemanticCommandPlan {
-            operations: vec![SemanticOperation::InsertNode {
-                pos: doc_from,
-                node: block,
-            }],
-            selection_after: Some(Selection::cursor(doc_from.checked_add(1).ok_or(())?)),
-            history: SemanticCommandHistory::InputBoundary,
-        }));
+    if doc_from == doc_to && is_block_void_at_position(document, schema, doc_from) {
+        return Ok(None);
     }
 
     if doc_from == doc_to {

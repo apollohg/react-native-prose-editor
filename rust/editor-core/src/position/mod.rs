@@ -277,13 +277,6 @@ impl PositionMap {
         }
 
         let last_idx = self.blocks.len() - 1;
-        let last = &self.blocks[last_idx];
-        if last.is_void_block
-            && doc_pos == self.effective_doc_start(last_idx).saturating_add(1)
-            && is_gap_after_last_child(last, _doc)
-        {
-            return doc_pos;
-        }
 
         // Check if the position is inside a block.
         if let Some(block_idx) = self.find_block_for_doc_pos(doc_pos) {
@@ -446,15 +439,6 @@ impl PositionMap {
             .checked_add(hard_break_table_bytes)?
             .checked_add(hard_break_string_bytes)
     }
-}
-
-fn is_gap_after_last_child(block: &BlockMapping, document: &Document) -> bool {
-    let Some((&index, parent_path)) = block.node_path.split_last() else {
-        return false;
-    };
-    document
-        .node_at(parent_path)
-        .is_some_and(|parent| index as usize + 1 == parent.child_count())
 }
 
 // Intra-block scalar ↔ doc offset conversion

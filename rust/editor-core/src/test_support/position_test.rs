@@ -1022,7 +1022,7 @@ fn test_normalize_cursor_pos_nested_list() {
 }
 
 #[test]
-fn terminal_gap_after_nested_void_block_is_cursorable() {
+fn terminal_boundary_after_nested_void_block_normalizes_to_the_void() {
     let document = Document::new(doc(vec![blockquote(vec![
         paragraph(vec![text("caption")]),
         image(),
@@ -1033,7 +1033,10 @@ fn terminal_gap_after_nested_void_block_is_cursorable() {
 
     assert!(void_block.is_void_block);
     assert_eq!(void_block.node_path.as_slice(), &[0, 1]);
-    assert_eq!(map.normalize_cursor_pos(nested_gap, &document), nested_gap);
+    assert_eq!(
+        map.normalize_cursor_pos(nested_gap, &document),
+        void_block.doc_start
+    );
 }
 
 #[test]

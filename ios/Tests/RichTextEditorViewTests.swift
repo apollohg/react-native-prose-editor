@@ -11076,77 +11076,47 @@ final class EditorV2StagingViewTests: XCTestCase {
         XCTAssertTrue(view.textView.textDropDelegate === view.textView)
     }
 
-    func testStagingTerminalAtomExposesVirtualGapCaretWithoutChangingDocument() {
+    func testStagingTerminalAtomDoesNotExposeAdjacentCaretsOrExtraHeight() {
         let (view, _, window) = makeTerminalAtomView()
         defer { view.removeFromSuperview(); window.isHidden = true }
-        let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
         let atomRect = terminalAtomRect(in: view.textView)
-
-        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
-        guard let position = view.textView.selectedTextRange?.start else {
-            XCTFail("expected terminal gap caret")
-            return
-        }
-        let caretRect = view.textView.caretRect(for: position)
-        guard let tappedPosition = view.textView.closestPosition(
-            to: CGPoint(x: caretRect.midX, y: caretRect.midY)
-        ) else {
-            XCTFail("expected terminal gap tap position")
-            return
+        for offset in [0, view.textView.textStorage.length] {
+            setCollapsedCaret(in: view.textView, utf16Offset: offset)
+            guard let position = view.textView.selectedTextRange?.start else {
+                XCTFail("expected selected position")
+                return
+            }
+            XCTAssertTrue(view.textView.caretRect(for: position).isEmpty)
         }
         let measuredHeight = view.textView.measuredAutoGrowHeightForTesting(
             width: view.textView.bounds.width
         )
 
-        XCTAssertGreaterThanOrEqual(caretRect.minY, atomRect.maxY - 0.5)
-        XCTAssertEqual(
-            view.textView.offset(
-                from: view.textView.beginningOfDocument,
-                to: tappedPosition
-            ),
-            view.textView.textStorage.length
-        )
-        XCTAssertGreaterThanOrEqual(
-            measuredHeight,
-            ceil(caretRect.maxY + view.textView.textContainerInset.bottom)
-        )
-        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
-    }
-
-    func testStagingFixedHeightTerminalAtomGapIsScrollableIntoView() {
-        let (view, _, window) = makeTerminalAtomView()
-        defer { view.removeFromSuperview(); window.isHidden = true }
-        view.frame.size.height = 60
-        view.layoutIfNeeded()
-        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
-        guard let position = view.textView.selectedTextRange?.start else {
-            XCTFail("expected terminal gap caret")
-            return
-        }
-        let caretRect = view.textView.caretRect(for: position)
-
-        XCTAssertGreaterThanOrEqual(
-            view.textView.contentSize.height + view.textView.adjustedContentInset.bottom,
-            ceil(caretRect.maxY + view.textView.textContainerInset.bottom)
-        )
-
-        let maximumOffset = max(
-            0,
-            view.textView.contentSize.height
-                - view.textView.bounds.height
-                + view.textView.adjustedContentInset.bottom
-        )
-        view.textView.setContentOffset(CGPoint(x: 0, y: maximumOffset), animated: false)
-        let visibleCaretRect = view.textView.caretRect(for: position)
-        XCTAssertEqual(visibleCaretRect, caretRect)
         XCTAssertLessThanOrEqual(
-            visibleCaretRect.maxY,
-            view.textView.bounds.maxY - view.textView.textContainerInset.bottom + 0.5
+            measuredHeight,
+            ceil(atomRect.maxY + view.textView.textContainerInset.bottom) + 0.5
         )
     }
 
-    func testStagingTypingAtTerminalAtomGapCreatesParagraphInOneUndoStep() {
-        let (view, adapter, window) = makeTerminalAtomView()
+    func testStagingAtomBoundarySelectionRestoresLastParagraphCaret() {
+        let (view, _, window) = makeTerminalAtomView(
+            html: #"<p>Before</p><div data-type="counter-card" data-count="7"></div>"#
+        )
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let validRange = NSRange(location: 3, length: 0)
+        setCollapsedCaret(in: view.textView, utf16Offset: validRange.location)
+        view.textView.textViewDidChangeSelection(view.textView)
+        let atomOffset = view.textView.textStorage.length - 1
+
+        for offset in [atomOffset, atomOffset + 1] {
+            setCollapsedCaret(in: view.textView, utf16Offset: offset)
+            view.textView.textViewDidChangeSelection(view.textView)
+            XCTAssertEqual(view.textView.selectedRange, validRange)
+        }
+    }
+
+    func testStagingTypingAtTerminalAtomBoundaryDoesNotChangeDocument() {
+        let (view, _, window) = makeTerminalAtomView()
         defer { view.removeFromSuperview(); window.isHidden = true }
         let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
         setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
@@ -11154,13 +11124,11 @@ final class EditorV2StagingViewTests: XCTestCase {
 
         view.textView.insertText("x")
 
-        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore + "<p>x</p>")
-        _ = adapter.undo()
         XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
     }
 
-    func testStagingReturnAtTerminalAtomGapCreatesParagraphInOneUndoStep() {
-        let (view, adapter, window) = makeTerminalAtomView()
+    func testStagingReturnAtTerminalAtomBoundaryDoesNotChangeDocument() {
+        let (view, _, window) = makeTerminalAtomView()
         defer { view.removeFromSuperview(); window.isHidden = true }
         let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
         setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
@@ -11168,41 +11136,51 @@ final class EditorV2StagingViewTests: XCTestCase {
 
         view.textView.insertText("\n")
 
-        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore + "<p></p>")
-        _ = adapter.undo()
         XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
     }
 
-    func testStagingConstrainedTerminalGapHitThenReturnCreatesParagraph() throws {
+    func testStagingBackspaceInEmptyParagraphAfterTerminalAtomKeepsAtom() {
         let (view, _, window) = makeTerminalAtomView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
+        setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
+        flushMain()
+
+        view.textView.insertText("\n")
+        view.textView.deleteBackward()
+
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
+    }
+
+    func testStagingAtomLineHitKeepsExistingParagraphPosition() throws {
+        let (view, _, window) = makeTerminalAtomView(
+            html: #"<p>Before</p><div data-type="counter-card" data-count="7"></div>"#
+        )
         defer { view.removeFromSuperview(); window.isHidden = true }
         let textView = view.textView
         let atomRect = terminalAtomRect(in: textView)
-        let gapPoint = CGPoint(
-            x: textView.textContainerInset.left + textView.textContainer.lineFragmentPadding,
-            y: atomRect.maxY + ceil(textView.font?.lineHeight ?? 17) / 2
-        )
-        let documentRange = try XCTUnwrap(
-            textView.textRange(
-                from: textView.beginningOfDocument,
-                to: textView.endOfDocument
-            )
-        )
-        let hitPosition = try XCTUnwrap(
-            textView.closestPosition(to: gapPoint, within: documentRange)
-        )
-        textView.selectedTextRange = try XCTUnwrap(
-            textView.textRange(from: hitPosition, to: hitPosition)
-        )
+        setCollapsedCaret(in: textView, utf16Offset: 3)
         textView.textViewDidChangeSelection(textView)
-        flushMain()
 
-        let selectedRange = try XCTUnwrap(textView.selectedTextRange)
-        textView.replace(selectedRange, withText: "\n")
+        let hitPosition = try XCTUnwrap(textView.closestPosition(
+            to: CGPoint(x: atomRect.maxX - 1, y: atomRect.midY)
+        ))
+        let documentRange = try XCTUnwrap(textView.textRange(
+            from: textView.beginningOfDocument,
+            to: textView.endOfDocument
+        ))
+        let constrainedHitPosition = try XCTUnwrap(textView.closestPosition(
+            to: CGPoint(x: atomRect.maxX - 1, y: atomRect.midY),
+            within: documentRange
+        ))
 
         XCTAssertEqual(
-            EditorV2Shadow.getHtml(id: view.editorId),
-            #"<div data-type="counter-card" data-count="7"></div><p></p>"#
+            textView.offset(from: textView.beginningOfDocument, to: hitPosition),
+            3
+        )
+        XCTAssertEqual(
+            textView.offset(from: textView.beginningOfDocument, to: constrainedHitPosition),
+            3
         )
     }
 
@@ -11247,8 +11225,8 @@ final class EditorV2StagingViewTests: XCTestCase {
         )
     }
 
-    func testStagingBackspaceAtTerminalAtomGapDeletesAtomInOneUndoStep() {
-        let (view, adapter, window) = makeTerminalAtomView()
+    func testStagingBackspaceAtTerminalAtomBoundaryDoesNotChangeDocument() {
+        let (view, _, window) = makeTerminalAtomView()
         defer { view.removeFromSuperview(); window.isHidden = true }
         let htmlBefore = EditorV2Shadow.getHtml(id: view.editorId)
         setCollapsedCaret(in: view.textView, utf16Offset: view.textView.textStorage.length)
@@ -11256,8 +11234,6 @@ final class EditorV2StagingViewTests: XCTestCase {
 
         view.textView.deleteBackward()
 
-        XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), "<p></p>")
-        _ = adapter.undo()
         XCTAssertEqual(EditorV2Shadow.getHtml(id: view.editorId), htmlBefore)
     }
 
