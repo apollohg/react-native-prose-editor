@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.2] - 2026-09-03
+
+### Fixed
+
+- Fixed iOS caret hit testing in fixed-height editors created from an initially zero-sized Fabric frame, including content that scrolls beneath the keyboard.
+- Fixed Android images reflowing after asynchronous decoding and preserved theme spacing below rendered images.
+- Positioned the Android image-resize overlay correctly while scrolling, enlarged its handle touch targets, protected edge handles from system gestures, and hid the text-selection tint beneath selected images.
+- Preserved the selected image and editor position after resizing on Android instead of moving the caret to the start of the document.
+
+### Tests
+
+- Added native regression coverage for iOS fixed-height caret placement and Android image rendering, selection, resize-overlay positioning, handle interaction, and post-resize selection.
+- Removed obsolete package-contract assertions for the benchmark screen retired by the example-app redesign.
+
 ## [1.0.1] - 2026-09-02
 
 ### Added
