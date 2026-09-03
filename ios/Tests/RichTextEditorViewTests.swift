@@ -10929,6 +10929,8 @@ final class EditorV2StagingViewTests: XCTestCase {
     private func makeBoundView(
         configJson: String = #"{"initialization":{"type":"localEmpty"}}"#,
         html: String = "<p>Hello</p>",
+        initialFrame: CGRect = CGRect(x: 0, y: 0, width: 320, height: 120),
+        finalFrame: CGRect? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) -> (view: RichTextEditorView, adapter: EditorV2Adapter, window: UIWindow) {
@@ -10939,15 +10941,21 @@ final class EditorV2StagingViewTests: XCTestCase {
         }
         adapters.append(adapter)
         syntheticIds.append(syntheticId)
-        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let view = RichTextEditorView(frame: initialFrame)
         let window = hostStagingView(view)
         view.editorId = syntheticId
         view.setContent(html: html)
+        if let finalFrame {
+            view.frame = finalFrame
+            view.layoutIfNeeded()
+        }
         return (view, adapter, window)
     }
 
     private func makeTerminalAtomView(
         html: String = #"<div data-type="counter-card" data-count="7"></div>"#,
+        initialFrame: CGRect = CGRect(x: 0, y: 0, width: 320, height: 120),
+        finalFrame: CGRect? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) -> (view: RichTextEditorView, adapter: EditorV2Adapter, window: UIWindow) {
@@ -10980,6 +10988,8 @@ final class EditorV2StagingViewTests: XCTestCase {
         let bound = makeBoundView(
             configJson: configJson,
             html: html,
+            initialFrame: initialFrame,
+            finalFrame: finalFrame,
             file: file,
             line: line
         )
@@ -11182,6 +11192,56 @@ final class EditorV2StagingViewTests: XCTestCase {
             textView.offset(from: textView.beginningOfDocument, to: constrainedHitPosition),
             3
         )
+    }
+
+    func testStagingFixedHeightParagraphHitBeforeOffscreenAtomMovesCaret() throws {
+        let (view, _, window) = makeTerminalAtomView(
+            html: #"""
+            <p>First line</p><p>Second line</p><p>Third line</p><p>Fourth line</p>
+            <p>Fifth line</p><p>Sixth line</p><p>Seventh line</p><p>Eighth line</p>
+            <p>Ninth line</p><p>Tenth line</p>
+            <div data-type="counter-card" data-count="7"></div>
+            """#,
+            initialFrame: .zero,
+            finalFrame: CGRect(x: 0, y: 0, width: 320, height: 480)
+        )
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let textView = view.textView
+        view.applyTheme(EditorTheme(dictionary: [
+            "contentInsets": [
+                "top": 28,
+                "right": 20,
+                "bottom": 336,
+                "left": 20,
+            ],
+        ]))
+        view.layoutIfNeeded()
+        XCTAssertTrue(textView.becomeFirstResponder())
+        flushMain()
+        XCTAssertEqual(textView.textContainer.size.height, CGFloat.greatestFiniteMagnitude)
+        setCollapsedCaret(in: textView, utf16Offset: 3)
+        textView.textViewDidChangeSelection(textView)
+        let afterRange = (textView.textStorage.string as NSString).range(of: "Second")
+        let glyphRange = textView.layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: afterRange.location + 2, length: 1),
+            actualCharacterRange: nil
+        )
+        let glyphRect = textView.layoutManager.boundingRect(
+            forGlyphRange: glyphRange,
+            in: textView.textContainer
+        )
+        let point = CGPoint(
+            x: glyphRect.midX + textView.textContainerInset.left,
+            y: glyphRect.midY + textView.textContainerInset.top
+        )
+
+        let hitPosition = try XCTUnwrap(textView.closestPosition(to: point))
+        let hitOffset = textView.offset(
+            from: textView.beginningOfDocument,
+            to: hitPosition
+        )
+
+        XCTAssertTrue(afterRange.location...NSMaxRange(afterRange) ~= hitOffset)
     }
 
     func testStagingReturnReplacementUsesCollapsedSuppliedRange() throws {

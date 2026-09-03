@@ -27,6 +27,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -1287,6 +1289,158 @@ class RichTextEditorViewTest {
     }
 
     @Test
+    fun `image selection suppresses native text highlight until selection leaves`() {
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java)
+            .setup()
+            .get()
+        val view = RichTextEditorView(activity)
+        activity.setContentView(view)
+        view.editorEditText.applyRenderJSON(imageRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+        assertTrue(view.editorEditText.requestFocus())
+
+        val originalHighlightColor = view.editorEditText.highlightColor
+        val text = view.editorEditText.text as Spanned
+        val imageSpan = text.getSpans(0, text.length, BlockImageSpan::class.java).single()
+        view.editorEditText.setSelection(text.getSpanStart(imageSpan), text.getSpanEnd(imageSpan))
+
+        assertEquals(Color.TRANSPARENT, view.editorEditText.highlightColor)
+
+        view.editorEditText.setSelection(0, 1)
+
+        assertEquals(originalHighlightColor, view.editorEditText.highlightColor)
+    }
+
+    @Test
+    fun `selected image overlay includes content inset while scrolled`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.setHeightBehavior(EditorHeightBehavior.FIXED)
+        view.applyTheme(
+            EditorTheme.fromJson(
+                """
+                {
+                  "contentInsets": { "top": 24 }
+                }
+                """.trimIndent()
+            )
+        )
+        view.editorEditText.applyRenderJSON(imageRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+        view.editorScrollView.scrollTo(0, 12)
+
+        val text = view.editorEditText.text as Spanned
+        val imageSpan = text.getSpans(0, text.length, BlockImageSpan::class.java).single()
+        view.editorEditText.setSelection(text.getSpanStart(imageSpan), text.getSpanEnd(imageSpan))
+        view.editorEditText.onSelectionOrContentMayChange?.invoke()
+
+        val imageRect = requireNotNull(view.editorEditText.selectedImageGeometry()).rect
+        val editorOrigin = Rect()
+        view.editorViewport.offsetDescendantRectToMyCoords(view.editorEditText, editorOrigin)
+        val overlayRect = requireNotNull(view.imageResizeOverlayRectForTesting())
+
+        assertTrue(view.editorScrollView.scrollY > 0)
+        assertEquals(editorOrigin.left + imageRect.left, overlayRect.left, 0.1f)
+        assertEquals(editorOrigin.top + imageRect.top, overlayRect.top, 0.1f)
+        assertEquals(editorOrigin.right + imageRect.right, overlayRect.right, 0.1f)
+        assertEquals(editorOrigin.bottom + imageRect.bottom, overlayRect.bottom, 0.1f)
+    }
+
+    @Test
+    fun `loaded image reflows its line without overlapping preceding text`() {
+        RenderImageLoader.resetForTesting()
+        val decodeStarted = CountDownLatch(1)
+        val releaseDecode = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            decodeStarted.countDown()
+            releaseDecode.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1200, 800, Bitmap.Config.ARGB_8888)
+        }
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java)
+            .setup()
+            .get()
+        val parent = FrameLayout(activity)
+        val view = RichTextEditorView(activity)
+        parent.addView(view, FrameLayout.LayoutParams(600, 900))
+        activity.setContentView(parent)
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(900, View.MeasureSpec.EXACTLY)
+        parent.measure(widthSpec, heightSpec)
+        parent.layout(0, 0, 600, 900)
+
+        try {
+            view.editorEditText.applyRenderJSON(
+                """
+                [
+                  {"type":"blockStart","nodeType":"paragraph","depth":0},
+                  {"type":"textRun","text":"Before","marks":[]},
+                  {"type":"blockEnd"},
+                  {"type":"voidBlock","nodeType":"image","docPos":8,"attrs":{"src":"data:image/png;base64,AQ=="}},
+                  {"type":"blockStart","nodeType":"paragraph","depth":0},
+                  {"type":"textRun","text":"After","marks":[]},
+                  {"type":"blockEnd"}
+                ]
+                """.trimIndent()
+            )
+            parent.measure(widthSpec, heightSpec)
+            parent.layout(0, 0, 600, 900)
+            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+
+            releaseDecode.countDown()
+            var attempts = 0
+            while (
+                view.editorEditText.activeImageLoadHandleCountForTesting() > 0 &&
+                attempts < 50
+            ) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                Thread.sleep(10)
+                attempts += 1
+            }
+            assertEquals(0, view.editorEditText.activeImageLoadHandleCountForTesting())
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            parent.measure(widthSpec, heightSpec)
+            parent.layout(0, 0, 600, 900)
+            view.editorEditText.draw(Canvas(Bitmap.createBitmap(600, 900, Bitmap.Config.ARGB_8888)))
+
+            val liveText = view.editorEditText.text as Spanned
+            val liveImageSpan = liveText.getSpans(
+                0,
+                liveText.length,
+                BlockImageSpan::class.java,
+            ).single()
+            val imageOffset = liveText.getSpanStart(liveImageSpan)
+            val layout = requireNotNull(view.editorEditText.layout)
+            val imageLine = layout.getLineForOffset(imageOffset)
+            val imageLineTop = view.editorEditText.totalPaddingTop + layout.getLineTop(imageLine)
+            val imageRect = requireNotNull(liveImageSpan.currentDrawRect())
+            val followingOffset = liveText.toString().indexOf("After")
+            val followingLine = layout.getLineForOffset(followingOffset)
+            val followingLineTop = view.editorEditText.totalPaddingTop +
+                layout.getLineTop(followingLine)
+
+            assertTrue(
+                "Image top ${imageRect.top} must not precede its line top $imageLineTop",
+                imageRect.top >= imageLineTop,
+            )
+            assertTrue(
+                "Following line top $followingLineTop must not precede image bottom ${imageRect.bottom}",
+                followingLineTop >= imageRect.bottom,
+            )
+        } finally {
+            releaseDecode.countDown()
+            RenderImageLoader.resetForTesting()
+        }
+    }
+
+    @Test
     fun `semantic overlay transitions cancel active image resize gestures`() {
         val transitions = listOf<Pair<String, (ImageResizeGestureFixture) -> Unit>>(
             "render refresh" to { fixture ->
@@ -1344,6 +1498,61 @@ class RichTextEditorViewTest {
             up.recycle()
             assertTrue(name, fixture.resizeCommands.isEmpty())
         }
+    }
+
+    @Test
+    fun `image resize handle receives drag through view hierarchy`() {
+        val fixture = imageResizeGestureFixture(imageRenderJson())
+        val rect = requireNotNull(fixture.view.imageResizeOverlayRectForTesting())
+        val events = listOf(
+            MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, rect.right, rect.bottom, 0),
+            MotionEvent.obtain(0, 8, MotionEvent.ACTION_MOVE, rect.right + 24f, rect.bottom + 24f, 0),
+            MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, rect.right + 24f, rect.bottom + 24f, 0),
+        )
+
+        events.forEach { event ->
+            fixture.view.dispatchTouchEvent(event)
+            event.recycle()
+        }
+
+        assertEquals(1, fixture.resizeCommands.size)
+    }
+
+    @Test
+    fun `image resize handle accepts a 48dp touch target`() {
+        val fixture = imageResizeGestureFixture(imageRenderJson())
+        val rect = requireNotNull(fixture.view.imageResizeOverlayRectForTesting())
+        val density = fixture.view.resources.displayMetrics.density
+        val downX = rect.left + (20f * density)
+        val events = listOf(
+            MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, downX, rect.bottom, 0),
+            MotionEvent.obtain(0, 8, MotionEvent.ACTION_MOVE, rect.left - 24f, rect.bottom + 24f, 0),
+            MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, rect.left - 24f, rect.bottom + 24f, 0),
+        )
+
+        events.forEach { event ->
+            fixture.view.dispatchTouchEvent(event)
+            event.recycle()
+        }
+
+        assertEquals(1, fixture.resizeCommands.size)
+    }
+
+    @Test
+    fun `image resize handles exclude system edge gestures while visible`() {
+        val fixture = imageResizeGestureFixture(imageRenderJson())
+        val overlay = fixture.view.editorViewport.getChildAt(2) as ImageResizeOverlayView
+        val rect = requireNotNull(fixture.view.imageResizeOverlayRectForTesting())
+
+        val exclusions = overlay.systemGestureExclusionRects
+        assertEquals(4, exclusions.size)
+        assertTrue(exclusions.any { exclusion ->
+            exclusion.contains(rect.left.toInt(), rect.top.toInt())
+        })
+
+        fixture.view.setImageResizingEnabled(false)
+
+        assertTrue(overlay.systemGestureExclusionRects.isEmpty())
     }
 
     @Test

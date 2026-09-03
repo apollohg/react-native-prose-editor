@@ -1,6 +1,7 @@
 package com.apollohg.editor
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
@@ -604,6 +605,47 @@ class RenderBridgeTest {
         val (widthPx, heightPx) = imageSpans.single().currentSizePx()
         assertEquals(140, widthPx)
         assertEquals(80, heightPx)
+    }
+
+    @Test
+    fun `layout - image leaves themed spacing before following block`() {
+        fun imageGap(spacingAfter: Int): Float {
+            val json = """
+                [
+                  {"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"data:image/png;base64,%","width":140,"height":80}},
+                  {"type":"blockStart","nodeType":"paragraph","depth":0},
+                  {"type":"textRun","text":"After","marks":[]},
+                  {"type":"blockEnd"}
+                ]
+            """.trimIndent()
+            val theme = EditorTheme.fromJson(
+                """{"text":{"spacingAfter":$spacingAfter}}"""
+            )
+            val result = RenderBridge.buildSpannable(
+                json,
+                baseFontSize,
+                textColor,
+                theme,
+                density = 1f,
+            )
+            val layout = StaticLayout.Builder
+                .obtain(result, 0, result.length, TextPaint().apply { textSize = baseFontSize }, 320)
+                .setIncludePad(false)
+                .build()
+            layout.draw(
+                Canvas(Bitmap.createBitmap(320, layout.height, Bitmap.Config.ARGB_8888))
+            )
+
+            val imageSpan = result.getSpans(0, result.length, BlockImageSpan::class.java).single()
+            val imageBottom = requireNotNull(imageSpan.currentDrawRect()).bottom
+            val followingLine = layout.getLineForOffset(result.indexOf("After"))
+            return layout.getLineTop(followingLine) - imageBottom
+        }
+
+        val unspacedGap = imageGap(spacingAfter = 0)
+        val themedGap = imageGap(spacingAfter = 12)
+
+        assertEquals(12f, themedGap - unspacedGap, 0.5f)
     }
 
     @Test

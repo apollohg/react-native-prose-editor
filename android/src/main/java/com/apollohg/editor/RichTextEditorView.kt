@@ -707,14 +707,13 @@ class RichTextEditorView @JvmOverloads constructor(
 
     internal fun selectedImageGeometry(): EditorEditText.SelectedImageGeometry? {
         val geometry = editorEditText.selectedImageGeometry() ?: return null
+        val editorOrigin = Rect()
+        editorViewport.offsetDescendantRectToMyCoords(editorEditText, editorOrigin)
         return EditorEditText.SelectedImageGeometry(
             docPos = geometry.docPos,
-            rect = RectF(
-                editorViewport.left + editorScrollView.left + editorEditText.left + geometry.rect.left,
-                editorViewport.top + editorScrollView.top + editorEditText.top + geometry.rect.top - editorScrollView.scrollY,
-                editorViewport.left + editorScrollView.left + editorEditText.left + geometry.rect.right,
-                editorViewport.top + editorScrollView.top + editorEditText.top + geometry.rect.bottom - editorScrollView.scrollY
-            )
+            rect = RectF(geometry.rect).apply {
+                offset(editorOrigin.left.toFloat(), editorOrigin.top.toFloat())
+            }
         )
     }
 

@@ -69,9 +69,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		0A70A1000000000000000002 /* AtomMountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtomMountingTests.swift; sourceTree = "<group>"; };
 		073AA28E404CB1E78224E266 /* PreparedProseInstrumentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseInstrumentation.swift; sourceTree = "<group>"; };
 		08E2E15E6EE0B9E2C50A927D /* NativeEditorTestHost.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NativeEditorTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A70A1000000000000000002 /* AtomMountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtomMountingTests.swift; sourceTree = "<group>"; };
 		1561A9AC095AC3464D02B016 /* RichTextEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorView.swift; sourceTree = "<group>"; };
 		1FCFAF19E668BD6BAF3FE81E /* PreparedProseAccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseAccessibilityTests.swift; sourceTree = "<group>"; };
 		2261CB51C233C88B5737A00A /* NativeCollaborationTransportRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCollaborationTransportRegistry.swift; sourceTree = "<group>"; };

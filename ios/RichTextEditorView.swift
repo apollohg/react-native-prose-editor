@@ -1239,7 +1239,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         let layoutManager = EditorLayoutManager()
-        let container = textContainer ?? NSTextContainer(size: .zero)
+        let container = textContainer ?? NSTextContainer(
+            size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        )
         let textStorage = NSTextStorage()
         layoutManager.addTextContainer(container)
         textStorage.addLayoutManager(layoutManager)

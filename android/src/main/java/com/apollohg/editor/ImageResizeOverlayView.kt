@@ -4,10 +4,14 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
+import android.os.Build
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 
 internal class ImageResizeOverlayView @JvmOverloads constructor(
@@ -36,6 +40,7 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
 
     private val density = resources.displayMetrics.density
     private val handleRadiusPx = 10f * density
+    private val handleTouchRadiusPx = 24f * density
     private val minimumImageSizePx = 48f * density
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#0A84FF")
@@ -54,7 +59,7 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
 
     init {
         setWillNotDraw(false)
-        visibility = GONE
+        visibility = INVISIBLE
     }
 
     fun bind(editorView: RichTextEditorView) {
@@ -72,6 +77,7 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
         currentGeometry = nextGeometry
         visibility = VISIBLE
         bringToFront()
+        updateSystemGestureExclusionRects()
         invalidate()
     }
 
@@ -79,7 +85,8 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
         dragState = null
         currentGeometry = null
         parent?.requestDisallowInterceptTouchEvent(false)
-        visibility = GONE
+        visibility = INVISIBLE
+        updateSystemGestureExclusionRects()
         invalidate()
     }
 
@@ -130,6 +137,7 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
                 )
                 state.previewRect = RectF(nextRect)
                 currentGeometry = EditorEditText.SelectedImageGeometry(state.docPos, nextRect)
+                updateSystemGestureExclusionRects()
                 invalidate()
                 return true
             }
@@ -158,12 +166,38 @@ internal class ImageResizeOverlayView @JvmOverloads constructor(
         super.onDetachedFromWindow()
     }
 
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        updateSystemGestureExclusionRects()
+    }
+
     private fun cornerAt(x: Float, y: Float, rect: RectF): Corner? {
         return Corner.entries.firstOrNull { corner ->
             val center = handleCenter(corner, rect)
             val dx = x - center.x
             val dy = y - center.y
-            (dx * dx) + (dy * dy) <= handleRadiusPx * handleRadiusPx * 2
+            (dx * dx) + (dy * dy) <= handleTouchRadiusPx * handleTouchRadiusPx
+        }
+    }
+
+    private fun updateSystemGestureExclusionRects() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        val geometry = currentGeometry
+        val nextRects = if (geometry == null || visibility != VISIBLE || width == 0 || height == 0) {
+            emptyList()
+        } else {
+            Corner.entries.map { corner ->
+                val center = handleCenter(corner, geometry.rect)
+                Rect(
+                    floor(center.x - handleTouchRadiusPx).toInt().coerceIn(0, width),
+                    floor(center.y - handleTouchRadiusPx).toInt().coerceIn(0, height),
+                    ceil(center.x + handleTouchRadiusPx).toInt().coerceIn(0, width),
+                    ceil(center.y + handleTouchRadiusPx).toInt().coerceIn(0, height),
+                )
+            }
+        }
+        if (systemGestureExclusionRects != nextRects) {
+            systemGestureExclusionRects = nextRects
         }
     }
 

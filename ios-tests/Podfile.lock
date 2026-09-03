@@ -74,12 +74,6 @@ PODS:
   - ExpoModulesWorklets (57.0.14):
     - ExpoModulesCore
     - ExpoModulesJSI
-  - ExpoSymbols (57.0.2):
-    - ExpoModulesCore
-  - ExpoUI (57.0.14):
-    - ExpoModulesCore
-    - ExpoModulesWorklets
-    - React-RCTFabric
   - FBLazyVector (0.86.3)
   - hermes-engine (250829098.0.17):
     - hermes-engine/Pre-built (= 250829098.0.17)
@@ -1936,8 +1930,6 @@ DEPENDENCIES:
   - ExpoModulesCore (from `../example/node_modules/expo-modules-core`)
   - ExpoModulesJSI (from `../example/node_modules/expo-modules-jsi/apple`)
   - ExpoModulesWorklets (from `../example/node_modules/expo-modules-core`)
-  - ExpoSymbols (from `../example/node_modules/expo-symbols/ios`)
-  - "ExpoUI (from `../example/node_modules/@expo/ui/ios`)"
   - FBLazyVector (from `../example/node_modules/react-native/Libraries/FBLazyVector`)
   - hermes-engine (from `../example/node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
   - RCTDeprecation (from `../example/node_modules/react-native/ReactApple/Libraries/RCTFoundation/RCTDeprecation`)
@@ -2048,10 +2040,6 @@ EXTERNAL SOURCES:
     :path: "../example/node_modules/expo-modules-jsi/apple"
   ExpoModulesWorklets:
     :path: "../example/node_modules/expo-modules-core"
-  ExpoSymbols:
-    :path: "../example/node_modules/expo-symbols/ios"
-  ExpoUI:
-    :path: "../example/node_modules/@expo/ui/ios"
   FBLazyVector:
     :path: "../example/node_modules/react-native/Libraries/FBLazyVector"
   hermes-engine:
@@ -2218,8 +2206,6 @@ SPEC CHECKSUMS:
   ExpoModulesCore: b93ba4e7b656938709c7458ac9dfd8ff99b8cf5b
   ExpoModulesJSI: 1529d4289b9a3647d8901a27b41f1af173598b45
   ExpoModulesWorklets: 57a11e6ae984c2680e7967b785ded96199caed8c
-  ExpoSymbols: 0efd93edf0f825bf3c762582b0769dd3b296235c
-  ExpoUI: 6867422a567a251dcc25444c706b53f479e457ae
   FBLazyVector: 2138c6c2ab66c31bf5754dc18097fbc498a49c7f
   hermes-engine: 2b8962c3b6277fd0ef73cbcc122d43c95896d5c7
   libwebp: af5937a13536ef73f3784d69cc342b98961acf33

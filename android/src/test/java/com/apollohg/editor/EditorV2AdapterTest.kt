@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import android.text.Spanned
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,6 +11,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
@@ -153,6 +155,68 @@ class EditorV2AdapterTest {
             .put("stateRevision", revision)
             .put("scalarLength", text.codePointCount(0, text.length))
             .put("documentIsEmpty", text.isEmpty())
+            .toString()
+
+    private fun imageAtomicRenderSnapshot(revision: String, width: Int): String =
+        JSONObject()
+            .put(
+                "renderBlocks",
+                org.json.JSONArray()
+                    .put(
+                        org.json.JSONArray()
+                            .put(
+                                JSONObject()
+                                    .put("type", "blockStart")
+                                    .put("nodeType", "paragraph")
+                                    .put("depth", 0)
+                            )
+                            .put(
+                                JSONObject()
+                                    .put("type", "textRun")
+                                    .put("text", "Hello")
+                                    .put("marks", org.json.JSONArray())
+                            )
+                            .put(JSONObject().put("type", "blockEnd"))
+                    )
+                    .put(
+                        org.json.JSONArray().put(
+                            JSONObject()
+                                .put("type", "voidBlock")
+                                .put("nodeType", "image")
+                                .put("docPos", 7)
+                                .put(
+                                    "attrs",
+                                    JSONObject()
+                                        .put("src", "https://example.com/cat.png")
+                                        .put("width", width)
+                                        .put("height", 80)
+                                )
+                        )
+                    )
+            )
+            .put("renderPatch", JSONObject.NULL)
+            .put(
+                "selection",
+                JSONObject()
+                    .put("type", "node")
+                    .put("pos", 7)
+                    .put("posScalar", 6)
+            )
+            .put(
+                "activeState",
+                JSONObject()
+                    .put("marks", JSONObject())
+                    .put("markAttrs", JSONObject())
+                    .put("nodes", JSONObject().put("image", true))
+                    .put("commands", JSONObject())
+                    .put("allowedMarks", org.json.JSONArray())
+                    .put("insertableNodes", org.json.JSONArray())
+            )
+            .put("historyState", JSONObject().put("canUndo", true).put("canRedo", false))
+            .put("documentVersion", revision)
+            .put("stateRevision", revision)
+            .put("scalarLength", 7)
+            .put("documentIsEmpty", false)
             .toString()
 
     private fun adoptExternalRender(adapter: EditorV2Adapter, snapshot: String): String? =
@@ -554,6 +618,67 @@ class EditorV2AdapterTest {
         assertEquals(120, command.getInt("width"))
         assertEquals(80, command.getInt("height"))
         assertTrue(backend.calls.contains("docToScalar"))
+    }
+
+    @Test
+    fun `resize image retains the engine node selection in its update`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>HelloX</p>")
+        backend.nextRenderUpdateResult = EditorV2CallResult.Ok(
+            imageAtomicRenderSnapshot(revision = "2", width = 120)
+        )
+
+        val update = JSONObject(requireNotNull(adapter.resizeImageAtDocPos(7, 120, 80)))
+
+        assertTrue("Resize update must retain the engine selection", update.has("selection"))
+        val selection = update.optJSONObject("selection")
+        assertNotNull(selection)
+        selection ?: return
+        assertEquals("node", selection.getString("type"))
+        assertEquals(7, selection.getInt("pos"))
+    }
+
+    @Test
+    fun `applying an image resize keeps the image selected`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>HelloX</p>")
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            editorId = 987654L
+            v2Driver = adapter
+        }
+
+        try {
+            editText.applyUpdateJSON(
+                imageAtomicRenderSnapshot(revision = "1", width = 140),
+                notifyListener = false,
+            )
+            val initialText = editText.text as Spanned
+            val initialImage = initialText.getSpans(
+                0,
+                initialText.length,
+                BlockImageSpan::class.java,
+            ).single()
+            editText.setSelection(
+                initialText.getSpanStart(initialImage),
+                initialText.getSpanEnd(initialImage),
+            )
+            backend.nextRenderUpdateResult = EditorV2CallResult.Ok(
+                imageAtomicRenderSnapshot(revision = "2", width = 120)
+            )
+
+            editText.resizeImageAtDocPos(7, 120f, 80f)
+
+            val resizedText = editText.text as Spanned
+            val resizedImage = resizedText.getSpans(
+                0,
+                resizedText.length,
+                BlockImageSpan::class.java,
+            ).single()
+            assertEquals(resizedText.getSpanStart(resizedImage), editText.selectionStart)
+            assertEquals(resizedText.getSpanEnd(resizedImage), editText.selectionEnd)
+        } finally {
+            editText.unbindEditor()
+        }
     }
 
     // MARK: Task 16B render accessor (probe replacement)

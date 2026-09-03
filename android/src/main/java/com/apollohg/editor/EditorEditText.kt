@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ColorFilter
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -391,6 +392,7 @@ class EditorEditText @JvmOverloads constructor(
     private var lastAuthorizedTextRevision: Long = 0L
     private var lastAuthorizedRenderedText: CharSequence? = null
     private var explicitSelectedImageRange: ImageSelectionRange? = null
+    private var suppressedImageSelectionHighlightColor: Int? = null
     private var pendingImageGesture: ImageGesture? = null
     private var lastRenderAppliedPatchForTesting: Boolean = false
     internal var captureApplyUpdateTraceForTesting: Boolean = false
@@ -1355,6 +1357,7 @@ class EditorEditText @JvmOverloads constructor(
         } else {
             onSelectionOrContentMayChange?.invoke()
         }
+        updateImageSelectionHighlightAppearance()
     }
 
     fun setImageLoadingPolicyJson(policyJson: String?) {
@@ -1379,6 +1382,20 @@ class EditorEditText @JvmOverloads constructor(
 
     internal fun activeImageLoadHandleCountForTesting(): Int = synchronized(imageLoadHandles) {
         imageLoadHandles.size
+    }
+
+    internal fun onImageSpanSizeMayChange(span: BlockImageSpan) {
+        val content = text ?: return
+        val start = content.getSpanStart(span)
+        val end = content.getSpanEnd(span)
+        val flags = content.getSpanFlags(span)
+        if (start < 0 || end <= start) return
+        content.removeSpan(span)
+        content.setSpan(span, start, end, flags)
+        requestLayout()
+        invalidate()
+        onContentSizeMayChange?.invoke()
+        onSelectionOrContentMayChange?.invoke()
     }
 
     private fun cancelPendingImageLoads() {
@@ -3604,6 +3621,7 @@ class EditorEditText @JvmOverloads constructor(
      */
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
+        updateImageSelectionHighlightAppearance(selStart, selEnd)
         if (restoreSelectionFromAtomBoundaryIfNeeded(selStart, selEnd)) return
         canonicalListCaretOffset(selStart, selEnd)?.let { canonicalOffset ->
             setSelection(canonicalOffset)
@@ -6011,6 +6029,7 @@ class EditorEditText @JvmOverloads constructor(
 
     override fun onFocusChanged(focused: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(focused, direction, previouslyFocusedRect)
+        updateImageSelectionHighlightAppearance(focused = focused)
         if (focused) {
             clearNativeTextMutationAfterBlurWindow()
         } else {
@@ -6048,6 +6067,29 @@ class EditorEditText @JvmOverloads constructor(
         if (explicitSelectedImageRange == null) return
         explicitSelectedImageRange = null
         onSelectionOrContentMayChange?.invoke()
+    }
+
+    private fun updateImageSelectionHighlightAppearance(
+        start: Int = selectionStart,
+        end: Int = selectionEnd,
+        focused: Boolean = isFocused,
+    ) {
+        val content = text as? Spanned
+        val shouldSuppress = focused &&
+            imageResizingEnabled &&
+            content != null &&
+            isExactImageSpanRange(content, start, end)
+        if (shouldSuppress) {
+            if (suppressedImageSelectionHighlightColor == null) {
+                suppressedImageSelectionHighlightColor = highlightColor
+                highlightColor = Color.TRANSPARENT
+            }
+            return
+        }
+
+        val restoredColor = suppressedImageSelectionHighlightColor ?: return
+        suppressedImageSelectionHighlightColor = null
+        highlightColor = restoredColor
     }
 
     private fun resolvedSelectedImageRange(spannable: Spanned): ImageSelectionRange? {

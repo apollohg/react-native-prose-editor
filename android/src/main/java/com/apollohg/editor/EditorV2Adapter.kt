@@ -1100,6 +1100,7 @@ internal class EditorV2Adapter private constructor(
         preSelection: IntArray? = null,
         postSelectionMirror: IntArray? = null,
         includeSelectionInUpdate: Boolean = false,
+        adoptEngineSelection: Boolean = false,
         call: () -> EditorV2CallResult<String>,
     ): String? {
         if (destroyed) {
@@ -1130,7 +1131,11 @@ internal class EditorV2Adapter private constructor(
                             outcome.changed
                         }
                         is MutationOutcome.NotApplicable -> {
-                            return refreshInternal(post ?: pre)
+                            val fallbackMirror = if (adoptEngineSelection) null else post ?: pre
+                            return refreshInternal(
+                                fallbackMirror,
+                                stripViewSelection = !adoptEngineSelection && fallbackMirror == null,
+                            )
                         }
                         is MutationOutcome.Replacement -> {
                             baseDocumentRevision = outcome.revision
@@ -1140,10 +1145,16 @@ internal class EditorV2Adapter private constructor(
                             outcome.changed
                         }
                     }
-                    val mirror = if (includeSelectionInUpdate) post ?: pre else null
+                    val mirror = if (adoptEngineSelection) {
+                        null
+                    } else if (includeSelectionInUpdate) {
+                        post ?: pre
+                    } else {
+                        null
+                    }
                     val update = refreshInternal(
                         mirror,
-                        stripViewSelection = mirror == null,
+                        stripViewSelection = !adoptEngineSelection && mirror == null,
                     ) ?: return null
                     if (outcome is MutationOutcome.Transaction && mirror != null && post != null) {
                         lastSyncedScalarSelection = post
@@ -1566,7 +1577,7 @@ internal class EditorV2Adapter private constructor(
 
     override fun resizeImageAtDocPos(docPos: Int, width: Int, height: Int): String? {
         val scalar = scalarPositionForDoc(docPos) ?: return null
-        return performMutation {
+        return performMutation(adoptEngineSelection = true) {
             callWithEnvelope(
                 JSONObject().put(
                     "command",

@@ -532,9 +532,12 @@ internal class BlockImageSpan(
                         close()
                         return@post
                     }
-                    currentHost.requestLayout()
-                    currentHost.invalidate()
-                    (currentHost as? EditorEditText)?.onSelectionOrContentMayChange?.invoke()
+                    if (currentHost is EditorEditText) {
+                        currentHost.onImageSpanSizeMayChange(this@BlockImageSpan)
+                    } else {
+                        currentHost.requestLayout()
+                        currentHost.invalidate()
+                    }
                 }
             }
             if (!loadHandle.compareAndSet(null, handle) || retired.get()) {
@@ -590,9 +593,9 @@ internal class BlockImageSpan(
         val (widthPx, heightPx) = currentSizePx()
         val rect = RectF(
             x,
-            (bottom - heightPx).toFloat(),
+            (y - heightPx).toFloat(),
             x + widthPx,
-            bottom.toFloat()
+            y.toFloat()
         )
         val host = hostRef.get()
         lastDrawRect = RectF(rect).apply {
