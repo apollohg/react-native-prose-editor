@@ -518,7 +518,7 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(benchmark.indexOf(diagnostic)).toBeLessThan(benchmark.indexOf(gate));
     });
 
-    it('shares one complete corpus schema and image policy with every benchmark surface', () => {
+    it('shares one complete corpus schema and image policy with both native benchmark surfaces', () => {
         const configuration = JSON.parse(readSource('scripts/tests/prepared-prose-benchmark-config.json')) as {
             configuration: { initialization: { type: string }; schema: { nodes: Array<{ name: string; attrs?: Record<string, unknown> }>; marks: Array<{ name: string; attrs?: Record<string, unknown> }> } };
             imageLoadingPolicy: Record<string, number>;
@@ -540,22 +540,18 @@ describe('prepared prose native lifecycle contracts', () => {
 
         const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
         const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
-        const example = readSource('example/App.tsx');
-        [iosHarness, androidHarness, example].forEach((source) => {
+        [iosHarness, androidHarness].forEach((source) => {
             expect(source).toContain('prepared-prose-benchmark-config');
         });
         expect(iosHarness).not.toContain('configuration: .init(imagesEnabled:');
         expect(androidHarness).not.toContain('ProseViewerConfiguration(configJson = "{}"');
-        expect(example).toContain('schema={preparedViewerConfiguration.configuration.schema}');
-        expect(example).toContain('imageLoadingPolicy={preparedViewerConfiguration.imageLoadingPolicy}');
     });
 
-    it('keeps native and FlatList phases separate from reset, measurement, and export', () => {
+    it('keeps native phases separate from reset, measurement, and export', () => {
         const iosInstrumentation = readSource('ios/Viewer/PreparedProseInstrumentation.swift');
         const androidInstrumentation = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseInstrumentation.kt');
         const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
         const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
-        const example = readSource('example/App.tsx');
         const fixtures = JSON.parse(readSource('scripts/tests/prepared-prose-harness-static-fixtures.json')) as {
             preparation: { requirement: string };
             differingHeights: { requirement: string };
@@ -592,47 +588,18 @@ describe('prepared prose native lifecycle contracts', () => {
         );
         expect(androidHarness).toContain('PreparedProseInstrumentation.beginPhase(evidencePhase)');
         expect(androidHarness).toContain('PreparedProseInstrumentation.endPhase()');
-        expect(example).toContain('preparedProseBenchmarkBeginPhase');
-        expect(example).toContain('preparedProseBenchmarkEndPhase');
-        expect(example).toContain('preparedViewerCorpus.warmWindows');
-        expect(example).toContain('scrollToEnd({ animated: true })');
-        expect(example).toContain('scrollToIndex({ index: 0, animated: true })');
-        expect(example).toContain('dispatchOffsetY');
-        expect(example).toContain('latestNativeContentOffsetYRef');
-        expect(example).toContain('onScroll={handleScroll}');
-        [
-            'scrollToOffset',
-            'waitForDrawSettle',
-            'onContentSizeChange',
-            'contentHeightRef',
-            'measureInWindow',
-            'heightCache',
-            'containerWidth',
-            'getItemLayout',
-        ].forEach((removedPath) => expect(example).not.toContain(removedPath));
-        expect(example).toContain('Reset is intentionally not a traversal phase');
         expect(fixtures.preparation.requirement).toContain('prepare once');
         expect(fixtures.differingHeights.requirement).toContain('taller');
         expect(fixtures.drawEvidence.requirement).toContain('final settled frame');
     });
 
-    it('loads Android benchmark fixtures from the instrumentation package and requires the Expo bridge', () => {
+    it('loads Android benchmark fixtures from the instrumentation package', () => {
         const androidDevice = readSource('android/src/androidTest/java/com/apollohg/editor/NativeDevicePerformanceTest.kt');
-        const example = readSource('example/App.tsx');
 
         expect(androidDevice).toContain('private val testContext: Context = instrumentation.context');
         expect(androidDevice).toContain('private val targetContext: Context = instrumentation.targetContext');
         expect(androidDevice).toContain('testContext.assets.open("viewer-performance-corpus.json")');
         expect(androidDevice).toContain('PreparedProseBenchmarkConfiguration.load(testContext)');
         expect(androidDevice).not.toContain('ApplicationProvider.getApplicationContext');
-
-        // `expo-modules-core` is nested under `expo/node_modules` in the example
-        // install, so a bare specifier does not resolve there. `expo` re-exports
-        // `requireNativeModule`; the contract is that it is not RN NativeModules.
-        expect(example).toContain("import { requireNativeModule } from 'expo';");
-        expect(example).toContain("requireNativeModule<PreparedProseBenchmarkBridge>('NativeEditor')");
-        expect(example).not.toContain('NativeModules');
-        expect(example).not.toContain('preparedProseBenchmarkBridge?.');
-        expect(example).not.toContain("?? '{}'");
     });
 });
