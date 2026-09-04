@@ -1878,13 +1878,10 @@ final class EditorV2AdapterTests: XCTestCase {
         let update = adapter.insertText("X", atScalar: 2)
         XCTAssertEqual(renderedText(update), "Xitem")
 
-        // The block-separator scalar is not a text position: the v2 boundary
-        // rejects it structurally, atomically, with no partial commit
-        // (legacy transform-error parity for the same pathological position).
+        // Atom boundaries cannot host a caret, so typing there is a no-op.
         let boundaryInsert = adapter.insertText("Z", atScalar: 1)
-        XCTAssertNil(boundaryInsert)
-        XCTAssertEqual(spy.last?.domain, "operation")
-        XCTAssertEqual(spy.last?.code, "OPERATION_INVALID")
+        XCTAssertEqual(renderedText(boundaryInsert), "Xitem")
+        XCTAssertNil(spy.last)
         XCTAssertEqual(documentText(adapter), "Xitem")
         let after = documentJsonObject(adapter)
         XCTAssertEqual((after["content"] as? [[String: Any]])?.first?["type"] as? String, "image")
