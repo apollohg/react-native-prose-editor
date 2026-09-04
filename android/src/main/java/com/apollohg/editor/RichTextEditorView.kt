@@ -1,6 +1,7 @@
 package com.apollohg.editor
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.RectF
@@ -29,7 +30,7 @@ class RichTextEditorView @JvmOverloads constructor(
     val editorViewport: FrameLayout
     val editorContentFrame: FrameLayout
 
-    private class EditorScrollView(context: Context) : ScrollView(context) {
+    private inner class EditorScrollView(context: Context) : ScrollView(context) {
         private fun updateParentIntercept(action: Int) {
             val canScroll = canScrollVertically(-1) || canScrollVertically(1)
             if (!canScroll) return
@@ -49,6 +50,13 @@ class RichTextEditorView @JvmOverloads constructor(
         override fun onTouchEvent(ev: MotionEvent): Boolean {
             updateParentIntercept(ev.actionMasked)
             return super.onTouchEvent(ev)
+        }
+
+        override fun drawChild(canvas: Canvas, child: View, drawingTime: Long): Boolean {
+            val more = super.drawChild(canvas, child, drawingTime)
+            // Keep React atom RenderNodes in the ScrollView's edge-stretch recording.
+            if (child === editorContentFrame) onDrawAtomHosts?.invoke(canvas, drawingTime)
+            return more
         }
     }
 
@@ -94,6 +102,7 @@ class RichTextEditorView @JvmOverloads constructor(
     private var baseBackgroundColor: Int = Color.WHITE
     private var viewportBottomInsetPx: Int = 0
     internal var onAtomLayoutChange: ((Float, List<AtomLayoutPosition>) -> Unit)? = null
+    internal var onDrawAtomHosts: ((Canvas, Long) -> Unit)? = null
     private var atomRenderConfiguration: AtomRenderConfiguration? = null
     private val atomHostViews = linkedMapOf<String, View>()
     private val atomLayoutListeners = mutableMapOf<View, View.OnLayoutChangeListener>()
@@ -233,6 +242,7 @@ class RichTextEditorView @JvmOverloads constructor(
         }
         atomHostViews[atomKey]?.takeIf { it !== child }?.let(::detachAtomView)
         atomHostViews[atomKey] = child
+        editorScrollView.invalidate()
         val listener = View.OnLayoutChangeListener { view, _, top, _, bottom, _, oldTop, _, oldBottom ->
             val height = renderedAtomHeightPx(view) ?: bottom - top
             val oldHeight = oldBottom - oldTop
@@ -288,6 +298,7 @@ class RichTextEditorView @JvmOverloads constructor(
     internal fun unmountAtomChild(child: View): Boolean {
         val entry = atomHostViews.entries.firstOrNull { it.value === child } ?: return false
         atomHostViews.remove(entry.key)
+        editorScrollView.invalidate()
         detachAtomView(child)
         restoreConfiguredAtomHeight(entry.key)
         layoutAtomHostViews()
@@ -346,20 +357,29 @@ class RichTextEditorView @JvmOverloads constructor(
         if (atomHostViews.isEmpty()) return
         val spans = spanList.associateBy { it.atomKey }
         val origins = mutableMapOf<ViewGroup?, Pair<Int, Int>>()
+        var atomDrawingChanged = false
         for ((atomKey, child) in atomHostViews) {
             val span = spans[atomKey]
             val spanStart = span?.let(content::getSpanStart) ?: -1
             if (spanStart < 0) {
+                atomDrawingChanged = atomDrawingChanged || child.visibility != View.INVISIBLE
                 child.visibility = View.INVISIBLE
                 continue
             }
             val parent = child.parent as? ViewGroup
             val origin = origins.getOrPut(parent) { atomContentOrigin(parent) }
             val position = atomPosition(spanStart, textLayout, origin, contentAnchored = false)
-            child.translationX = (position.first - child.left).toFloat()
-            child.translationY = (position.second - child.top).toFloat()
+            val translationX = (position.first - child.left).toFloat()
+            val translationY = (position.second - child.top).toFloat()
+            atomDrawingChanged = atomDrawingChanged ||
+                child.translationX != translationX ||
+                child.translationY != translationY ||
+                child.visibility != View.VISIBLE
+            child.translationX = translationX
+            child.translationY = translationY
             child.visibility = View.VISIBLE
         }
+        if (atomDrawingChanged) editorScrollView.invalidate()
         ensureAtomHostZOrder()
     }
 

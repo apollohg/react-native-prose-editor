@@ -2,6 +2,8 @@ package com.apollohg.editor
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -103,6 +105,67 @@ class AtomMountingTest {
         assertSame(editor, child.parent)
         assertEquals(1, editor.atomChildCount)
         assertSame(child, editor.atomChildAt(0))
+    }
+
+    @Test
+    fun `atom child renders once from inside the scroll view`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val editor = nativeEditorView()
+        editor.onAtomLayoutForTesting = {}
+        activity.setContentView(editor)
+        installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
+        val drawAtomHosts = requireNotNull(editor.richTextView.onDrawAtomHosts)
+        var drawingFromScrollView = false
+        editor.richTextView.onDrawAtomHosts = { canvas, drawingTime ->
+            drawingFromScrollView = true
+            try {
+                drawAtomHosts(canvas, drawingTime)
+            } finally {
+                drawingFromScrollView = false
+            }
+        }
+        var drawCount = 0
+        var drawnFromScrollView = false
+        val host = object : FrameLayout(activity) {
+            init {
+                setWillNotDraw(false)
+                setTag(R.id.view_tag_native_id, "prose-atom:fourth")
+                layoutParams = FrameLayout.LayoutParams(280, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+
+            override fun onDraw(canvas: Canvas) {
+                super.onDraw(canvas)
+                drawCount += 1
+                drawnFromScrollView = drawingFromScrollView
+            }
+        }
+        editor.addAtomChild(host, 0)
+        layout(editor, 320, 240)
+        host.layout(0, 0, 280, 100)
+        editor.richTextView.layoutAtomHostViews()
+        val initialAtomY = host.y.toInt()
+        val requestedScrollY = (host.y.toInt() - 160).coerceAtLeast(1)
+        editor.richTextView.editorScrollView.scrollTo(0, requestedScrollY)
+        editor.richTextView.layoutAtomHostViews()
+        val atomY = host.y.toInt()
+        drawCount = 0
+        val bitmap = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
+
+        editor.draw(Canvas(bitmap))
+
+        assertSame(editor, host.parent)
+        assertTrue(editor.richTextView.editorScrollView.scrollY > 0)
+        assertTrue(atomY in 0 until bitmap.height)
+        assertEquals(
+            initialAtomY - editor.richTextView.editorScrollView.scrollY,
+            atomY,
+        )
+        assertEquals(1, drawCount)
+        assertTrue(drawnFromScrollView)
+        assertEquals(
+            View.OVER_SCROLL_IF_CONTENT_SCROLLS,
+            editor.richTextView.editorScrollView.overScrollMode,
+        )
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.apollohg.editor
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Canvas
 import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.RectF
@@ -1106,6 +1107,7 @@ class NativeEditorExpoView(
     init {
         addView(richTextView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         richTextView.onAtomLayoutChange = ::emitAtomLayout
+        richTextView.onDrawAtomHosts = ::drawAtomHostsIntoScrollView
         richTextView.editorEditText.editorListener = this
         richTextView.onBeforeDetachedFromWindow = {
             prepareForDetachFromWindow()
@@ -1381,6 +1383,35 @@ class NativeEditorExpoView(
         if (!richTextView.unmountAtomChild(child)) {
             (child.parent as? ViewGroup)?.removeView(child)
         }
+    }
+
+    override fun drawChild(canvas: Canvas, child: View, drawingTime: Long): Boolean {
+        if (reactChildren.contains(child) && atomKey(child) != null) return false
+        return super.drawChild(canvas, child, drawingTime)
+    }
+
+    private fun drawAtomHostsIntoScrollView(canvas: Canvas, drawingTime: Long) {
+        val scrollView = richTextView.editorScrollView
+        val scrollBounds = Rect(0, 0, scrollView.width, scrollView.height)
+        offsetDescendantRectToMyCoords(scrollView, scrollBounds)
+        val saveCount = canvas.save()
+        canvas.clipRect(
+            scrollView.scrollX,
+            scrollView.scrollY,
+            scrollView.scrollX + scrollView.width,
+            scrollView.scrollY + scrollView.height,
+        )
+        canvas.translate(-scrollBounds.left.toFloat(), -scrollBounds.top.toFloat())
+        reactChildren.forEach { child ->
+            if (
+                child.parent === this &&
+                atomKey(child) != null &&
+                child.visibility == View.VISIBLE
+            ) {
+                super.drawChild(canvas, child, drawingTime)
+            }
+        }
+        canvas.restoreToCount(saveCount)
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
