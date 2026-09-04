@@ -678,10 +678,10 @@ jobs:
                   tarball="$RELEASE_TARBALL"
                   npm publish "$tarball" --ignore-scripts --tag "${{ steps.npm-dist-tag.outputs.tag }}"
 
-            - name: Dry-run npm publish
+            - name: Validate npm artifact locally
               if: github.event_name == 'workflow_dispatch'
               shell: bash
               run: |
                   set -euo pipefail
                   tarball="$RELEASE_TARBALL"
-                  npm publish "$tarball" --dry-run --ignore-scripts --tag "${{ steps.npm-dist-tag.outputs.tag }}"
+                  npm pack "$tarball" --dry-run --ignore-scripts --offline

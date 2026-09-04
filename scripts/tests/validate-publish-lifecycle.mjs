@@ -278,14 +278,19 @@ assert.match(
 );
 assert.match(
   publishJob,
-  /- name: Dry-run npm publish\s+if: github\.event_name == 'workflow_dispatch'/,
-  'manual workflow dispatches must use the npm publish dry run',
+  /- name: Validate npm artifact locally\s+if: github\.event_name == 'workflow_dispatch'/,
+  'manual workflow dispatches must validate the npm artifact locally',
 );
 assert.match(publishJob, /npm publish "\$tarball" --ignore-scripts --tag/);
 assert.match(
   publishJob,
-  /npm publish "\$tarball" --dry-run --ignore-scripts --tag/,
-  'the manual publish rehearsal must dry-run the exact release tarball and dist-tag',
+  /npm pack "\$tarball" --dry-run --ignore-scripts --offline/,
+  'the manual publish rehearsal must inspect the exact release tarball without publishing it',
+);
+assert.doesNotMatch(
+  publishJob,
+  /npm publish "\$tarball" --dry-run/,
+  'manual workflow dispatches must never enter npm publish',
 );
 assert.doesNotMatch(publishJob, /npm run (?:build|validate:package|build:rust)/);
 
