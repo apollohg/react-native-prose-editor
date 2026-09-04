@@ -47,6 +47,8 @@
 		B11CE700B11CE700B11CE700 /* NativeToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11CE700A11CE700A11CE700 /* NativeToolbar.swift */; };
 		B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */; };
 		B8B54E1CFD58906815926009 /* SharedNativeImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A255E0D6D0056A2815C3AF /* SharedNativeImagePipeline.swift */; };
+		C11ED701C11ED701C11ED701 /* EditorTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11ED700C11ED700C11ED700 /* EditorTextView.swift */; };
+		C11ED711C11ED711C11ED711 /* EditorInteractionOverlays.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11ED710C11ED710C11ED710 /* EditorInteractionOverlays.swift */; };
 		CD2F0516C03F1703053D7129 /* PreparedProseRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B87A96C703617DB8635AEF2 /* PreparedProseRenderingTests.swift */; };
 		CF81434F1BF8598ADBF2A46E /* prepared-prose-benchmark-config.json in Resources */ = {isa = PBXBuildFile; fileRef = C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */; };
 		CFD4E81EA2D422B4EF4A965E /* PreparedProseDrawingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83DF91687ACD8DF8B0E18736 /* PreparedProseDrawingView.swift */; };
@@ -115,6 +117,8 @@
 		AD2EDD1353EF86CAD0E419CB /* PreparedProseViewerShadowNode.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PreparedProseViewerShadowNode.cpp; sourceTree = "<group>"; };
 		B44533DC8D4FA27875F041AC /* ProseViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProseViewerView.swift; sourceTree = "<group>"; };
 		BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2Shadow.swift; sourceTree = "<group>"; };
+		C11ED700C11ED700C11ED700 /* EditorTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorTextView.swift; sourceTree = "<group>"; };
+		C11ED710C11ED710C11ED710 /* EditorInteractionOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorInteractionOverlays.swift; sourceTree = "<group>"; };
 		C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "prepared-prose-benchmark-config.json"; sourceTree = "<group>"; };
 		C4A498FA7F1B3DFE437AD093 /* PreparedProseLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayout.swift; sourceTree = "<group>"; };
 		C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorViewTests.swift; sourceTree = "<group>"; };
@@ -167,8 +171,10 @@
 				A1B0488D87C3F2E91B9D51E8 /* Tests */,
 				3A87646ED458E075A9149BAB /* Viewer */,
 				CA17728099475A1BA3392F9D /* EditorAddons.swift */,
+				C11ED710C11ED710C11ED710 /* EditorInteractionOverlays.swift */,
 				22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */,
 				E11DE710E11DE710E11DE710 /* EditorNodeTypes.swift */,
+				C11ED700C11ED700C11ED700 /* EditorTextView.swift */,
 				2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */,
 				4493157DC02C94D7F7D40FEB /* EditorV2Adapter.swift */,
 				BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */,
@@ -598,8 +604,10 @@
 				0A70A1000000000000000001 /* AtomMountingTests.swift in Sources */,
 				89908516B0B1D833BAF39B24 /* CoreTextProseLayoutEngine.swift in Sources */,
 				41CB569BDACE6252AAA1E146 /* EditorAddons.swift in Sources */,
+				C11ED711C11ED711C11ED711 /* EditorInteractionOverlays.swift in Sources */,
 				D706191CC74381BEB84776D7 /* EditorLayoutManager.swift in Sources */,
 				E11DE711E11DE711E11DE711 /* EditorNodeTypes.swift in Sources */,
+				C11ED701C11ED701C11ED701 /* EditorTextView.swift in Sources */,
 				43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */,
 				1F1FFFFC3EFDB8DDED227B5F /* EditorV2Adapter.swift in Sources */,
 				9E7DACEBB0DD1AD90F33066C /* EditorV2AdapterTests.swift in Sources */,
