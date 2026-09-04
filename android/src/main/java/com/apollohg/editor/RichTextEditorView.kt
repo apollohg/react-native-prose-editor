@@ -368,7 +368,7 @@ class RichTextEditorView @JvmOverloads constructor(
             }
             val parent = child.parent as? ViewGroup
             val origin = origins.getOrPut(parent) { atomContentOrigin(parent) }
-            val position = atomPosition(spanStart, textLayout, origin, contentAnchored = false)
+            val position = atomViewportPosition(spanStart, textLayout, origin)
             val translationX = (position.first - child.left).toFloat()
             val translationY = (position.second - child.top).toFloat()
             atomDrawingChanged = atomDrawingChanged ||
@@ -441,12 +441,7 @@ class RichTextEditorView @JvmOverloads constructor(
         spans.mapNotNull { span ->
             val spanStart = content.getSpanStart(span)
             if (spanStart < 0) return@mapNotNull null
-            val position = atomPosition(
-                spanStart,
-                textLayout,
-                contentOrigin,
-                contentAnchored = true,
-            )
+            val position = atomViewportPosition(spanStart, textLayout, contentOrigin)
             spanStart to AtomLayoutPosition(
                 span.atomKey,
                 position.first,
@@ -456,23 +451,18 @@ class RichTextEditorView @JvmOverloads constructor(
             .sortedWith(compareBy({ it.first }, { it.second.key }))
             .map { it.second }
 
-    private fun atomPosition(
+    private fun atomViewportPosition(
         spanStart: Int,
         textLayout: android.text.Layout,
         contentOrigin: Pair<Int, Int>,
-        contentAnchored: Boolean,
     ): Pair<Int, Int> {
-        val scrollX = editorScrollView.scrollX
-        val scrollY = editorScrollView.scrollY
-        val anchoredX = contentOrigin.first + scrollX +
+        val x = contentOrigin.first +
             editorEditText.left + editorEditText.compoundPaddingLeft
         val line = textLayout.getLineForOffset(spanStart)
-        val anchoredY = contentOrigin.second + scrollY +
+        val y = contentOrigin.second +
             editorEditText.top + editorEditText.totalPaddingTop +
             textLayout.getLineTop(line) - editorEditText.scrollY
-        return if (contentAnchored) anchoredX to anchoredY else {
-            (anchoredX - scrollX) to (anchoredY - scrollY)
-        }
+        return x to y
     }
 
     private fun atomContentOrigin(targetParent: ViewGroup?): Pair<Int, Int> {

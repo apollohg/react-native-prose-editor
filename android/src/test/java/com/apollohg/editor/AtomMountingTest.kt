@@ -574,7 +574,7 @@ class AtomMountingTest {
     }
 
     @Test
-    fun `scrolling does not republish content anchored atom positions`() {
+    fun `scrolling republishes viewport atom positions for React hit testing`() {
         val editor = nativeEditorView()
         val events = mutableListOf<List<AtomLayoutPosition>>()
         editor.richTextView.onAtomLayoutChange = { _, positions -> events.add(positions) }
@@ -585,8 +585,15 @@ class AtomMountingTest {
 
         editor.richTextView.editorScrollView.scrollTo(0, 100)
 
-        assertEquals(initialPositions, events.last())
-        assertEquals(initialCount, events.size)
+        val scrollY = editor.richTextView.editorScrollView.scrollY
+        assertTrue(scrollY > 0)
+        assertEquals(
+            initialPositions.map { position ->
+                position.copy(yPx = position.yPx - scrollY)
+            },
+            events.last(),
+        )
+        assertTrue(events.size > initialCount)
     }
 
     private fun installAtoms(view: RichTextEditorView, keys: List<String>) {
