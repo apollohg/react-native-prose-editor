@@ -1,8 +1,8 @@
 import Foundation
 
 /// Owns unmounted layouts and exact Yoga-to-Fabric handoffs. A lease shares
-/// its immutable artifact with the LRU; lifecycle release owns a live
-/// handoff's retirement so its eventual mount cannot fall back to a cache.
+/// its immutable artifact with the LRU; lifecycle release retires any live
+/// handoff before a later component can acquire it.
 final class PreparedProseLayoutCache {
     static let pixelGridRoundingSlackPixels = 1
 
@@ -172,7 +172,9 @@ final class PreparedProseLayoutCache {
         generationIdentity: String,
         widthPixels: Int,
         displayScale: CGFloat,
-        leaseHandle: UInt64
+        leaseHandle: UInt64,
+        allowCompletedFallback: Bool = false,
+        shouldAcquire: () -> Bool = { true }
     ) -> PreparedProseLayout? {
         condition.lock()
         defer { condition.unlock() }
@@ -183,15 +185,14 @@ final class PreparedProseLayoutCache {
             displayScale: displayScale
         )
         // UIKit-only callers use the documented zero token because they have
-        // no Fabric owner. They retain the ordinary completed-cache lookup;
-        // every real Fabric surface must consume its own pending handoff.
+        // no Fabric owner. They retain the ordinary completed-cache lookup.
         if surface.surfaceId == 0, surface.componentTag == 0,
            let key = mountIndex[requestedMountKey], let layout = completed[key] {
             touch(key)
             return layout
         }
         let owner = FabricLeaseOwner(surface: surface, leaseHandle: leaseHandle)
-        guard let leaseKey = (pendingLeaseKeysByOwner[owner] ?? [])
+        if let leaseKey = (pendingLeaseKeysByOwner[owner] ?? [])
             .filter({
                 $0.layout.generationIdentity == requestedMountKey.generationIdentity
                     && $0.layout.displayScaleBits == requestedMountKey.displayScaleBits
@@ -201,23 +202,28 @@ final class PreparedProseLayoutCache {
                 (abs($0.layout.widthPixels - widthPixels), $0.layout.widthPixels)
                     < (abs($1.layout.widthPixels - widthPixels), $1.layout.widthPixels)
             }),
-            let layout = pendingLeases[leaseKey]
-        else { return nil }
+            let layout = pendingLeases[leaseKey] {
+            guard shouldAcquire() else { return nil }
+            removePendingLeaseLocked(leaseKey)
+            for stale in mountedLeaseKeysByOwner[owner] ?? [] where stale != leaseKey {
+                removeMountedLeaseLocked(stale)
+            }
+            insertMountedLeaseLocked(layout, for: leaseKey)
+            enforceBudgetLocked()
+            return layout
+        }
 
-        // A Fabric mount can only consume the Yoga handoff once. Do not fall
-        // back to completed here: that would let a second/recycled component
-        // mount an artifact that was never measured for its own owner. Move
-        // the pending handoff to mounted ownership under this lock, retiring
-        // only other widths for the same surface/generation/handle in the same
-        // critical section. A replacement that never reaches this point
-        // therefore cannot disturb the currently mounted artifact.
-        removePendingLeaseLocked(leaseKey)
+        guard allowCompletedFallback,
+              shouldAcquire(),
+              let key = mountIndex[requestedMountKey],
+              let layout = completed[key]
+        else { return nil }
+        let leaseKey = FabricLeaseKey(surface: surface, layout: key, leaseHandle: leaseHandle)
         for stale in mountedLeaseKeysByOwner[owner] ?? [] where stale != leaseKey {
             removeMountedLeaseLocked(stale)
         }
         insertMountedLeaseLocked(layout, for: leaseKey)
-        // Replacing the mounted owner can make the stale artifact's completed
-        // entry budgeted again. Reclaim it before reporting cache ownership.
+        touch(key)
         enforceBudgetLocked()
         return layout
     }

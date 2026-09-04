@@ -830,6 +830,26 @@ class PreparedProseLayoutTest {
     }
 
     @Test
+    fun `committed Fabric generation does not collapse prospective measurement`() {
+        val registry = testRegistry(CountingLayoutEngine())
+        val first = request("first")
+        val second = request("second")
+        val surface = FabricSurfaceToken(44, 440)
+        val handle = 44L
+        val g1 = FabricGenerationToken(surface, first.generationIdentity, handle)
+        val g2 = FabricGenerationToken(surface, second.generationIdentity, handle)
+
+        registry.registerFabricLease(surface, handle)
+        assertTrue(registry.measure(first, 320, 1f, surface, handle).heightPx > 0)
+        registry.activateFabricGeneration(g1)
+        assertNotNull(registry.acquireForFabricMount(g1, first, 320, 1f))
+
+        assertTrue(registry.measure(second, 320, 1f, surface, handle).heightPx > 0)
+        registry.activateFabricGeneration(g2)
+        assertNotNull(registry.acquireForFabricMount(g2, second, 320, 1f))
+    }
+
+    @Test
     fun `terminal Fabric owner sweep removes retained G1 and pending G2 exactly once`() {
         val registry = testRegistry(CountingLayoutEngine())
         val first = request("mounted G1")

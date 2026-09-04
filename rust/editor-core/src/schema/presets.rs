@@ -5,23 +5,23 @@ use crate::schema::{AttrSpec, MarkSpec, NodeJsonProjection, NodeRole, NodeSpec, 
 
 /// Build the Tiptap-compatible schema using camelCase node names.
 ///
-/// Node names: doc, paragraph, blockquote, bulletList, orderedList, listItem,
-///             hardBreak, horizontalRule, image, text.
-/// Mark names: bold, italic, underline, strike, link.
+/// Node names: doc, paragraph, blockquote, codeBlock, bulletList, orderedList,
+///             listItem, hardBreak, horizontalRule, image, text.
+/// Mark names: bold, italic, underline, strike, code, link.
 pub fn tiptap_schema() -> Schema {
     build_schema(NamingConvention::CamelCase)
 }
 
-/// Build the default schema using ProseMirror snake_case node names.
+/// Build the default schema using ProseMirror names, including upstream `codeBlock`.
 pub fn default_schema() -> Schema {
     prosemirror_schema()
 }
 
-/// Build the standard ProseMirror schema using snake_case node names.
+/// Build the standard ProseMirror schema, including upstream `codeBlock`.
 ///
-/// Node names: doc, paragraph, blockquote, bullet_list, ordered_list, list_item,
-///             hard_break, horizontal_rule, image, text.
-/// Mark names: bold, italic, underline, strike, link.
+/// Node names: doc, paragraph, blockquote, codeBlock, bullet_list, ordered_list,
+///             list_item, hard_break, horizontal_rule, image, text.
+/// Mark names: bold, italic, underline, strike, code, link.
 pub fn prosemirror_schema() -> Schema {
     build_schema(NamingConvention::SnakeCase)
 }
@@ -104,6 +104,19 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::Block,
             html_tag: Some("blockquote".to_string()),
+            html_rules: None,
+            json_projection: None,
+            is_void: false,
+            deletable_on_backspace: None,
+            allow_undeclared_attrs: false,
+        },
+        NodeSpec {
+            name: "codeBlock".to_string(),
+            content: ContentRule::parse("text*").unwrap(),
+            group: Some("block".to_string()),
+            attrs: HashMap::new(),
+            role: NodeRole::TextBlock,
+            html_tag: Some("pre".to_string()),
             html_rules: None,
             json_projection: None,
             is_void: false,
@@ -281,6 +294,13 @@ fn build_schema(convention: NamingConvention) -> Schema {
             allow_undeclared_attrs: false,
         },
         MarkSpec {
+            name: "code".to_string(),
+            html_tag: Some("code".to_string()),
+            attrs: HashMap::new(),
+            excludes: None,
+            allow_undeclared_attrs: false,
+        },
+        MarkSpec {
             name: "link".to_string(),
             html_tag: Some("a".to_string()),
             attrs: {
@@ -319,6 +339,7 @@ mod tests {
             "h5",
             "h6",
             "blockquote",
+            "codeBlock",
             "bulletList",
             "orderedList",
             "listItem",
@@ -348,6 +369,7 @@ mod tests {
             "h5",
             "h6",
             "blockquote",
+            "codeBlock",
             "bullet_list",
             "ordered_list",
             "list_item",
@@ -367,7 +389,7 @@ mod tests {
     #[test]
     fn test_both_schemas_have_all_marks() {
         for schema in &[tiptap_schema(), prosemirror_schema()] {
-            for mark_name in &["bold", "italic", "underline", "strike", "link"] {
+            for mark_name in &["bold", "italic", "underline", "strike", "code", "link"] {
                 assert!(
                     schema.mark(mark_name).is_some(),
                     "schema missing mark '{mark_name}'"
@@ -397,6 +419,7 @@ mod tests {
         let block_names: Vec<&str> = block_nodes.iter().map(|n| n.name.as_str()).collect();
         assert!(block_names.contains(&"paragraph"));
         assert!(block_names.contains(&"blockquote"));
+        assert!(block_names.contains(&"codeBlock"));
         assert!(block_names.contains(&"bulletList"));
         assert!(block_names.contains(&"orderedList"));
         assert!(block_names.contains(&"horizontalRule"));

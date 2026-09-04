@@ -148,9 +148,7 @@ internal class PreparedProseLayoutRegistry(
         val generation = fabricSurface?.takeIf { fabricLeaseHandle > 0 }
             ?.let { FabricGenerationToken(it, request.generationIdentity, fabricLeaseHandle) }
         val leaseActive = generation?.let(::activeLeaseFor)
-        // Every Android Fabric measurement is state-owned. A late H1 callback
-        // cannot resurrect its sidecar, compiler pin, or exact cache lease.
-        if (generation != null && leaseActive == null) return invalidWidthArtifact(request)
+        val ownedGeneration = generation?.takeIf { isLeaseActive(it, leaseActive) }
         if (!isValidMeasurement(widthPx, density)) {
             // An old zero-width pass is not a lifecycle event.  Retire only
             // this handle's pending handoffs and leave every mounted layout,
@@ -159,22 +157,26 @@ internal class PreparedProseLayoutRegistry(
             return invalidWidthArtifact(request)
         }
         val densityBits = density.toRawBits().toLong()
-        // Fabric resolves exactly its stable surface/component sidecar; direct
-        // hosts pass their own mounted state. Neither path scans other hosts.
-        val imageMeasurementState = generation?.let {
+        // Owned Fabric generations use their stable sidecar. Prospective
+        // generations measure with isolated state until component commit.
+        val imageMeasurementState = ownedGeneration?.let {
             FabricAttachmentSidecars.beginIfActive(it, request.semanticGenerationIdentity) {
                 isLeaseActive(it, leaseActive)
             }
-        } ?: measurementImageState
+        } ?: measurementImageState ?: generation?.let {
+            ViewerAttachmentRevisionState().also { state ->
+                state.beginSemanticGeneration(request.semanticGenerationIdentity)
+            }
+        }
         return try {
-            if (generation != null && !isLeaseActive(generation, leaseActive)) return invalidWidthArtifact(request)
-            val document = preparedDocument(request, generation, compiledDocument, leaseActive)
-            if (generation != null && !isLeaseActive(generation, leaseActive)) return invalidWidthArtifact(request)
+            if (ownedGeneration != null && !isLeaseActive(ownedGeneration, leaseActive)) return invalidWidthArtifact(request)
+            val document = preparedDocument(request, ownedGeneration, compiledDocument, leaseActive)
+            if (ownedGeneration != null && !isLeaseActive(ownedGeneration, leaseActive)) return invalidWidthArtifact(request)
             val theme = resolveTheme(request, density, fontScale)
             val key = layoutKey(document, request, widthPx, densityBits)
-            layoutCache.value(key, generation, shouldCreateFabricLease = {
-                generation == null ||
-                    (isLeaseActive(generation, leaseActive) && fabricLeaseEligibility?.invoke() != false)
+            layoutCache.value(key, ownedGeneration, shouldCreateFabricLease = {
+                ownedGeneration == null ||
+                    (isLeaseActive(ownedGeneration, leaseActive) && fabricLeaseEligibility?.invoke() != false)
             }) {
                 val layoutStarted = PreparedProseInstrumentation.now()
                 layoutPreparationCount += 1
@@ -202,7 +204,7 @@ internal class PreparedProseLayoutRegistry(
                 }
             }
         } catch (error: ProseViewerError) {
-            cachedErrorArtifact(request, widthPx, densityBits, error, generation, leaseActive)
+            cachedErrorArtifact(request, widthPx, densityBits, error, ownedGeneration, leaseActive)
         }
     }
 
@@ -218,6 +220,7 @@ internal class PreparedProseLayoutRegistry(
             generation,
             widthPx,
             density.toRawBits().toLong(),
+            allowCompletedFallback = true,
         ) { isLeaseActive(generation, activeLeaseFor(generation)) }
     }
 

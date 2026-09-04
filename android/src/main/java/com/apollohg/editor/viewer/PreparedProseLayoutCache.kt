@@ -99,11 +99,12 @@ internal class PreparedProseLayoutCache(
         publishOwnersLocked()
     }
 
-    /** Fabric consumes only the exact Yoga-created pending handoff. */
+    /** Fabric acquires the exact measured artifact for its active generation. */
     fun acquireForFabricMount(
         generation: FabricGenerationToken,
         widthPx: Int,
         densityBits: Long,
+        allowCompletedFallback: Boolean = false,
         shouldAcquire: () -> Boolean = { true },
     ): PreparedProseLayout? = synchronized(lock) {
         mountedLeases.entries.firstOrNull { (key, layout) ->
@@ -118,7 +119,21 @@ internal class PreparedProseLayoutCache(
                 key.generation == generation && layout.key.densityBits == densityBits &&
                     abs(layout.key.widthPx - widthPx) <= PIXEL_GRID_ROUNDING_SLACK_PX
             }
-            .minByOrNull { abs(it.value.key.widthPx - widthPx) } ?: return@synchronized null
+            .minByOrNull { abs(it.value.key.widthPx - widthPx) }
+        if (lease == null) {
+            if (!allowCompletedFallback || !shouldAcquire()) return@synchronized null
+            val key = mountIndex[ProseMountKey(generation.generationIdentity, widthPx, densityBits)]
+                ?: return@synchronized null
+            val layout = completed[key] ?: return@synchronized null
+            val leaseKey = FabricLeaseKey(generation, key)
+            mountedLeases.keys
+                .filter { it.owner == leaseKey.owner && it != leaseKey }
+                .forEach(mountedLeases::remove)
+            mountedLeases[leaseKey] = layout
+            retireUnownedPublicationsLocked()
+            publishOwnersLocked()
+            return@synchronized layout
+        }
         if (!shouldAcquire()) return@synchronized null
         pendingLeases.remove(lease.key)
         mountedLeases.keys

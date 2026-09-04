@@ -129,6 +129,54 @@ fn equivalent_requests_produce_a_stable_semantic_key() {
 }
 
 #[test]
+fn starter_kit_code_content_compiles_with_the_builtin_schema() {
+    let inline = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "text",
+                "marks": [{"type": "code", "attrs": {}}],
+                "text": "inline"
+            }]
+        }]
+    }));
+    let block = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "codeBlock",
+            "content": [{
+                "type": "text",
+                "marks": [{"type": "code", "attrs": {}}],
+                "text": "block"
+            }]
+        }]
+    }));
+
+    let inline = inline
+        .value
+        .unwrap_or_else(|| panic!("inline code should compile: {:?}", inline.error));
+    let block = block
+        .value
+        .unwrap_or_else(|| panic!("code block should compile: {:?}", block.error));
+
+    assert!(inline.elements().iter().any(|element| matches!(
+        element,
+        FfiViewerElement::TextRun { text, marks }
+            if text == "inline" && marks.iter().any(|mark| mark.mark_type == "code")
+    )));
+    assert!(matches!(
+        block.elements().first(),
+        Some(FfiViewerElement::BlockStart { node_type, .. }) if node_type == "codeBlock"
+    ));
+    assert!(block.elements().iter().any(|element| matches!(
+        element,
+        FfiViewerElement::TextRun { text, marks }
+            if text == "block" && marks.iter().any(|mark| mark.mark_type == "code")
+    )));
+}
+
+#[test]
 fn changed_input_changes_the_semantic_key() {
     let first = compile_json(serde_json::json!({
         "type": "doc",

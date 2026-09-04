@@ -2048,6 +2048,56 @@ final class PreparedProseLayoutTests: XCTestCase {
         XCTAssertFalse(registry.hasFabricGenerationOwnershipForTesting(g1))
     }
 
+    func testCommittedFabricGenerationDoesNotCollapseProspectiveMeasurement() {
+        let registry = PreparedProseLayoutRegistry(
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(key: key, size: CGSize(width: width, height: 20), blocks: [], retainedBytes: 1)
+            }
+        )
+        let first = request(source: "first")
+        let second = request(source: "second")
+        let surface = FabricSurfaceToken(surfaceId: 44, componentTag: 440)
+        let handle: UInt64 = 44
+        let g1 = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(first, registry: registry),
+            leaseHandle: handle
+        )
+        let g2 = FabricGenerationToken(
+            surface: surface,
+            generationIdentity: canonicalFabricGenerationIdentity(second, registry: registry),
+            leaseHandle: handle
+        )
+        registry.registerFabricLease(surfaceId: surface.surfaceId, componentTag: surface.componentTag, leaseHandle: handle)
+
+        XCTAssertEqual(
+            registry.measure(
+                request: first,
+                widthPoints: 160,
+                scale: 2,
+                fabricSurface: surface,
+                fabricLeaseHandle: handle
+            ).size.height,
+            20
+        )
+        registry.activateFabricGeneration(g1)
+        XCTAssertTrue(install(first, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry, leaseHandle: handle))
+
+        XCTAssertEqual(
+            registry.measure(
+                request: second,
+                widthPoints: 160,
+                scale: 2,
+                fabricSurface: surface,
+                fabricLeaseHandle: handle
+            ).size.height,
+            20
+        )
+        registry.activateFabricGeneration(g2)
+        XCTAssertTrue(install(second, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry, leaseHandle: handle))
+    }
+
     func testTerminalFabricOwnerSweepRemovesRetainedMountedReplacementAndIsExact() {
         let registry = PreparedProseLayoutRegistry(
             compile: { [document = self.document] _ in document },

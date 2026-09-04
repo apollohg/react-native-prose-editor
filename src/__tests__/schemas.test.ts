@@ -98,6 +98,20 @@ describe('defineSchema', () => {
         });
     });
 
+    it('includes the StarterKit code node and mark in the Tiptap-compatible preset', () => {
+        expect(tiptapCompatibleSchema.nodes.find((node) => node.name === 'codeBlock')).toMatchObject(
+            {
+                content: 'text*',
+                group: 'block',
+                role: 'textBlock',
+                htmlTag: 'pre',
+            }
+        );
+        expect(tiptapCompatibleSchema.marks.find((mark) => mark.name === 'code')).toMatchObject({
+            htmlTag: 'code',
+        });
+    });
+
     it('compiles keyed static DOM specs into the native schema representation', () => {
         expect(
             defineSchema({

@@ -561,6 +561,13 @@ export const tiptapCompatibleSchemaSpec: SchemaSpec = {
             parseDOM: [{ tag: 'blockquote' }],
             toDOM: ['blockquote', 0],
         },
+        codeBlock: {
+            content: 'text*',
+            group: 'block',
+            role: 'textBlock',
+            parseDOM: [{ tag: 'pre' }],
+            toDOM: ['pre', 0],
+        },
         bulletList: {
             content: 'listItem+',
             group: 'block',
@@ -604,6 +611,7 @@ export const tiptapCompatibleSchemaSpec: SchemaSpec = {
         italic: { parseDOM: [{ tag: 'em' }], toDOM: ['em', 0] },
         underline: { parseDOM: [{ tag: 'u' }], toDOM: ['u', 0] },
         strike: { parseDOM: [{ tag: 's' }], toDOM: ['s', 0] },
+        code: { parseDOM: [{ tag: 'code' }], toDOM: ['code', 0] },
         link: { attrs: { href: {} }, parseDOM: [{ tag: 'a' }], toDOM: ['a', 0] },
     },
 };
@@ -611,13 +619,14 @@ export const tiptapCompatibleSchemaSpec: SchemaSpec = {
 /** Tiptap-compatible serializable schema using camelCase node names. */
 export const tiptapCompatibleSchema: SchemaDefinition = defineSchema(tiptapCompatibleSchemaSpec);
 
-/** Keyed authoring definition using ProseMirror snake_case node names. */
+/** Keyed authoring definition using ProseMirror names, including upstream `codeBlock`. */
 export const prosemirrorSchemaSpec: SchemaSpec = {
     nodes: {
         doc: tiptapCompatibleSchemaSpec.nodes.doc,
         paragraph: tiptapCompatibleSchemaSpec.nodes.paragraph,
         heading: tiptapCompatibleSchemaSpec.nodes.heading,
         blockquote: tiptapCompatibleSchemaSpec.nodes.blockquote,
+        codeBlock: tiptapCompatibleSchemaSpec.nodes.codeBlock,
         bullet_list: {
             ...tiptapCompatibleSchemaSpec.nodes.bulletList,
             content: 'list_item+',
@@ -635,7 +644,7 @@ export const prosemirrorSchemaSpec: SchemaSpec = {
     marks: tiptapCompatibleSchemaSpec.marks,
 };
 
-/** ProseMirror-compatible serializable schema using snake_case node names. */
+/** ProseMirror-compatible serializable schema, including upstream `codeBlock`. */
 export const prosemirrorSchema: SchemaDefinition = defineSchema(prosemirrorSchemaSpec);
 
 /** Keyed authoring definition used when callers do not provide a schema. */

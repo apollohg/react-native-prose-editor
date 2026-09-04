@@ -234,20 +234,14 @@ public final class PreparedProseLayoutRegistry: NSObject {
             )
         }
         let beganFabricMeasure = generation.map(beginFabricMeasure) ?? false
-        guard generation == nil || beganFabricMeasure else {
-            return invalidWidthArtifact(
-                request: request,
-                scale: scale,
-                error: .layout(message: "A retired or superseded Fabric lease attempted another measurement.")
-            )
-        }
+        let ownedGeneration = beganFabricMeasure ? generation : nil
         defer {
             if let generation, beganFabricMeasure { endFabricMeasure(generation) }
         }
         let canonicalWidth = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
         // Yoga can prepare before a component view exists. Reset the matching
         // surface sidecar before Core Text asks for intrinsic fallback.
-        let imageMeasurementState = generation.flatMap { token -> ViewerAttachmentRevisionState? in
+        let imageMeasurementState = ownedGeneration.flatMap { token -> ViewerAttachmentRevisionState? in
             guard isFabricLeaseActive(token) else { return nil }
             let state = FabricAttachmentSidecars.begin(
                 token.surface,
@@ -264,34 +258,31 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 return nil
             }
             return state
-        } ?? measurementImageState
-        if generation != nil && imageMeasurementState == nil {
-            return invalidWidthArtifact(
-                request: request,
-                scale: scale,
-                error: .layout(message: "A superseded Fabric generation attempted sidecar publication.")
-            )
+        } ?? measurementImageState ?? generation.map { _ in
+            let state = ViewerAttachmentRevisionState()
+            _ = state.beginSemanticGeneration(request.semanticGenerationIdentity)
+            return state
         }
         do {
-            if let generation, !isFabricLeaseActive(generation) {
+            if let ownedGeneration, !isFabricLeaseActive(ownedGeneration) {
                 throw FabricMeasurementCancelled()
             }
             let document = try preparedDocument(
                 request: request,
                 compiledDocument: compiledDocument,
-                fabricGeneration: generation
+                fabricGeneration: ownedGeneration
             )
             let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
-            if let generation, !isFabricLeaseActive(generation) {
+            if let ownedGeneration, !isFabricLeaseActive(ownedGeneration) {
                 throw FabricMeasurementCancelled()
             }
             let layout = try layoutCache.value(
                 for: key,
-                fabricSurface: fabricSurface,
-                fabricLeaseHandle: generation?.leaseHandle,
+                fabricSurface: ownedGeneration?.surface,
+                fabricLeaseHandle: ownedGeneration?.leaseHandle,
                 shouldCreateFabricLease: {
-                    guard let generation else { return true }
-                    return self.isFabricLeaseActive(generation)
+                    guard let ownedGeneration else { return true }
+                    return self.isFabricLeaseActive(ownedGeneration)
                 }
             ) {
                 let layoutStarted = PreparedProseInstrumentation.now()
@@ -323,7 +314,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
                     )
                 }
             }
-            if let generation,
+            if let generation = ownedGeneration,
                !retainFabricGenerationOwnership(
                     generation,
                     document: document,
@@ -337,7 +328,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
             }
             return layout
         } catch is FabricMeasurementCancelled {
-            if let generation { discardCancelledFabricMeasurement(generation, widthPixels: widthPixels, scale: scale) }
+            if let ownedGeneration {
+                discardCancelledFabricMeasurement(ownedGeneration, widthPixels: widthPixels, scale: scale)
+            }
             return invalidWidthArtifact(
                 request: request,
                 scale: scale,
@@ -349,11 +342,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 widthPixels: widthPixels,
                 scale: scale,
                 error: error,
-                fabricSurface: fabricSurface,
-                fabricGeneration: generation,
-                fabricLeaseHandle: generation?.leaseHandle
+                fabricSurface: ownedGeneration?.surface,
+                fabricGeneration: ownedGeneration,
+                fabricLeaseHandle: ownedGeneration?.leaseHandle
             )
-            if let generation,
+            if let generation = ownedGeneration,
                !retainFabricGenerationFailure(generation, error: error) {
                 discardCancelledFabricMeasurement(
                     generation,
@@ -368,11 +361,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 widthPixels: widthPixels,
                 scale: scale,
                 error: .layout(message: String(describing: error)),
-                fabricSurface: fabricSurface,
-                fabricGeneration: generation,
-                fabricLeaseHandle: generation?.leaseHandle
+                fabricSurface: ownedGeneration?.surface,
+                fabricGeneration: ownedGeneration,
+                fabricLeaseHandle: ownedGeneration?.leaseHandle
             )
-            if let generation,
+            if let generation = ownedGeneration,
                !retainFabricGenerationFailure(generation, error: error) {
                 discardCancelledFabricMeasurement(
                     generation,
@@ -544,12 +537,19 @@ public final class PreparedProseLayoutRegistry: NSObject {
             return false
         }
         let fabricSurface = FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag)
+        let generation = FabricGenerationToken(
+            surface: fabricSurface,
+            generationIdentity: request.generationIdentity,
+            leaseHandle: leaseHandle
+        )
         if let artifact = layoutCache.acquireForFabricMount(
             surface: fabricSurface,
             generationIdentity: request.generationIdentity,
             widthPixels: widthPixels,
             displayScale: scale,
-            leaseHandle: leaseHandle
+            leaseHandle: leaseHandle,
+            allowCompletedFallback: true,
+            shouldAcquire: { self.isFabricLeaseActive(generation) }
         ) {
             drawingView.install(layout: artifact)
             return true

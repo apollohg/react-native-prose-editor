@@ -68,6 +68,13 @@
                         "htmlTag": "blockquote"
                     },
                     {
+                        "name": "codeBlock",
+                        "content": "text*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "pre"
+                    },
+                    {
                         "name": "bulletList",
                         "content": "listItem+",
                         "group": "block",
@@ -127,10 +134,11 @@
                     { "name": "italic", "htmlTag": "em" },
                     { "name": "underline", "htmlTag": "u" },
                     { "name": "strike", "htmlTag": "s" },
+                    { "name": "code", "htmlTag": "code" },
                     { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "23e672655a4e2d4ee6f97303d3275e5d88cea232fab4c1f8fc546dcc0dcda68b"
+            "expectedFingerprint": "51c0df6074a5a70866c82f1388aaf8849667074ae39adc3912ca9906ba80984a"
         },
         {
             "name": "default ProseMirror schema",
@@ -200,6 +208,13 @@
                         "htmlTag": "blockquote"
                     },
                     {
+                        "name": "codeBlock",
+                        "content": "text*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "pre"
+                    },
+                    {
                         "name": "bullet_list",
                         "content": "list_item+",
                         "group": "block",
@@ -259,10 +274,11 @@
                     { "name": "italic", "htmlTag": "em" },
                     { "name": "underline", "htmlTag": "u" },
                     { "name": "strike", "htmlTag": "s" },
+                    { "name": "code", "htmlTag": "code" },
                     { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "7b0508d346ce7fb31d7fc77b28fc01a2eda7d314ac84d057d3a10866423bb57e"
+            "expectedFingerprint": "f7bd5bcc7d18ca5c66f7b3bf34bca0c6d0e724f669d6e0ebc85565b3687bc469"
         },
         {
             "name": "custom root schema",
