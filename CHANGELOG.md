@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.3] - 2026-09-04
+
+### Fixed
+
+- Added StarterKit `code` marks and `codeBlock` nodes to the built-in Tiptap and ProseMirror schema presets so prepared viewers render these documents instead of producing a zero-height error view.
+- Prevented React Native viewers from collapsing to zero height when Fabric measures a new generation after the previous generation has mounted, including after the app returns from the background.
+
+### Changed
+
+- Updated the built-in schema fingerprints. Stored snapshots created with either previous built-in schema must be refetched, re-exported, or reconnected before restoration.
+
+### Tests
+
+- Added iOS and Android regression coverage for measuring and mounting a new Fabric generation after an earlier generation has committed.
+
 ## [1.0.2] - 2026-09-03
 
 ### Fixed
@@ -561,6 +576,7 @@ This is a hard cutover to shared native document, collaboration, and viewer boun
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[1.0.3]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.2...1.0.3
 [1.0.2]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.1...1.0.2
 [1.0.1]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/apollohg/react-native-prose-editor/compare/1.0.0-alpha.7...1.0.0
