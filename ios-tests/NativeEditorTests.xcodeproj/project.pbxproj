@@ -54,6 +54,7 @@
 		DAB688E56423DF3A525C7750 /* PreparedProseLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A498FA7F1B3DFE437AD093 /* PreparedProseLayout.swift */; };
 		DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */; };
 		E0497F12FE357FCA9190C51B /* NativeCollaborationTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B991A14504C9E29076097E /* NativeCollaborationTransport.swift */; };
+		E11DE711E11DE711E11DE711 /* EditorNodeTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11DE710E11DE710E11DE710 /* EditorNodeTypes.swift */; };
 		ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */; };
 		FA494E1FD4D112BBA6BDBC7C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 542F8BBC5410DE5DFB15900A /* PrivacyInfo.xcprivacy */; };
 		FF166FE6F4CB4E81B0144C80 /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 8124EA2F2AA895E829E051F4 /* libPods-NativeEditorTestHost.a */; };
@@ -124,6 +125,7 @@
 		E6D474133975B772D0171A1A /* ViewerDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerDocument.swift; sourceTree = "<group>"; };
 		E81F40EDFFF4ED5A11F4DF0C /* PreparedProseLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayoutTests.swift; sourceTree = "<group>"; };
 		EAAEA72D6B36B64387DAC8D3 /* viewer-performance-corpus.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "viewer-performance-corpus.json"; sourceTree = "<group>"; };
+		E11DE710E11DE710E11DE710 /* EditorNodeTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorNodeTypes.swift; sourceTree = "<group>"; };
 		EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerFontEnvironment.swift; sourceTree = "<group>"; };
 		F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionBridge.swift; sourceTree = "<group>"; };
 		FED85E6F34BC6FB48B3EE3A5 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTestHost/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
@@ -164,6 +166,7 @@
 				3A87646ED458E075A9149BAB /* Viewer */,
 				CA17728099475A1BA3392F9D /* EditorAddons.swift */,
 				22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */,
+				E11DE710E11DE710E11DE710 /* EditorNodeTypes.swift */,
 				2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */,
 				4493157DC02C94D7F7D40FEB /* EditorV2Adapter.swift */,
 				BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */,
@@ -593,6 +596,7 @@
 				89908516B0B1D833BAF39B24 /* CoreTextProseLayoutEngine.swift in Sources */,
 				41CB569BDACE6252AAA1E146 /* EditorAddons.swift in Sources */,
 				D706191CC74381BEB84776D7 /* EditorLayoutManager.swift in Sources */,
+				E11DE711E11DE711E11DE711 /* EditorNodeTypes.swift in Sources */,
 				43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */,
 				1F1FFFFC3EFDB8DDED227B5F /* EditorV2Adapter.swift in Sources */,
 				9E7DACEBB0DD1AD90F33066C /* EditorV2AdapterTests.swift in Sources */,
