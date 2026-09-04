@@ -27,6 +27,12 @@
 		41D57FCA7CB45A181563B8DC /* libPods-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A73C3B3A56B96545251AA8A /* libPods-NativeEditorTests.a */; };
 		43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */; };
 		464AF0D70C477A92AE784052 /* RichTextEditorViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */; };
+		6E391A0A9B3A80C26EF14019 /* RichTextEditorViewTests+NativeMutationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1C62B5ECC1B9A6EDF52A75 /* RichTextEditorViewTests+NativeMutationTests.swift */; };
+		3E9AD7067FB6F90FEF4436C6 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A9EAAAD9B0AE0BD12F7176 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift */; };
+		6BEE10E5BDAEC3110DA75F79 /* RichTextEditorViewTests+ExternalCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CFC5367EC43E7456649FB62 /* RichTextEditorViewTests+ExternalCompositionTests.swift */; };
+		B6A44BA703B87E4D9C3AF335 /* RichTextEditorViewTests+LayoutRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 732E5EBF40F9EB2B798C8EC8 /* RichTextEditorViewTests+LayoutRenderingTests.swift */; };
+		6C0247C41F64CD98F5B7BB17 /* RichTextEditorViewTests+MentionsImagesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0CDDAA60A46C98575CBF62 /* RichTextEditorViewTests+MentionsImagesTests.swift */; };
+		84EAC08B58A0D275F7054BB0 /* EditorV2StagingViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E0FB789730788D37089B12 /* EditorV2StagingViewTests.swift */; };
 		4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F15AFE005F23CA6452674D /* PositionBridgeTests.swift */; };
 		512B8F095CBF6793BD82B241 /* PreparedProseAccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FCFAF19E668BD6BAF3FE81E /* PreparedProseAccessibilityTests.swift */; };
 		5642EBDE70DB95F3337A753E /* RenderBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */; };
@@ -122,6 +128,12 @@
 		C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "prepared-prose-benchmark-config.json"; sourceTree = "<group>"; };
 		C4A498FA7F1B3DFE437AD093 /* PreparedProseLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayout.swift; sourceTree = "<group>"; };
 		C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorViewTests.swift; sourceTree = "<group>"; };
+		BC1C62B5ECC1B9A6EDF52A75 /* RichTextEditorViewTests+NativeMutationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+NativeMutationTests.swift"; sourceTree = "<group>"; };
+		E9A9EAAAD9B0AE0BD12F7176 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+UpdatesLifecycleTests.swift"; sourceTree = "<group>"; };
+		1CFC5367EC43E7456649FB62 /* RichTextEditorViewTests+ExternalCompositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+ExternalCompositionTests.swift"; sourceTree = "<group>"; };
+		732E5EBF40F9EB2B798C8EC8 /* RichTextEditorViewTests+LayoutRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+LayoutRenderingTests.swift"; sourceTree = "<group>"; };
+		6E0CDDAA60A46C98575CBF62 /* RichTextEditorViewTests+MentionsImagesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+MentionsImagesTests.swift"; sourceTree = "<group>"; };
+		91E0FB789730788D37089B12 /* EditorV2StagingViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2StagingViewTests.swift; sourceTree = "<group>"; };
 		CA17728099475A1BA3392F9D /* EditorAddons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorAddons.swift; sourceTree = "<group>"; };
 		CCF83BC143D0A11E95F2C7A2 /* PreparedProseLayoutCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayoutCache.swift; sourceTree = "<group>"; };
 		D2081B4BC81317EC9224BD90 /* CoreTextProseLayoutEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTextProseLayoutEngine.swift; sourceTree = "<group>"; };
@@ -303,6 +315,12 @@
 				9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */,
 				A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */,
 				C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */,
+				BC1C62B5ECC1B9A6EDF52A75 /* RichTextEditorViewTests+NativeMutationTests.swift */,
+				E9A9EAAAD9B0AE0BD12F7176 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift */,
+				1CFC5367EC43E7456649FB62 /* RichTextEditorViewTests+ExternalCompositionTests.swift */,
+				732E5EBF40F9EB2B798C8EC8 /* RichTextEditorViewTests+LayoutRenderingTests.swift */,
+				6E0CDDAA60A46C98575CBF62 /* RichTextEditorViewTests+MentionsImagesTests.swift */,
+				91E0FB789730788D37089B12 /* EditorV2StagingViewTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -642,6 +660,12 @@
 				5642EBDE70DB95F3337A753E /* RenderBridgeTests.swift in Sources */,
 				63686847E2C46533E28401AF /* RichTextEditorView.swift in Sources */,
 				464AF0D70C477A92AE784052 /* RichTextEditorViewTests.swift in Sources */,
+				6E391A0A9B3A80C26EF14019 /* RichTextEditorViewTests+NativeMutationTests.swift in Sources */,
+				3E9AD7067FB6F90FEF4436C6 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift in Sources */,
+				6BEE10E5BDAEC3110DA75F79 /* RichTextEditorViewTests+ExternalCompositionTests.swift in Sources */,
+				B6A44BA703B87E4D9C3AF335 /* RichTextEditorViewTests+LayoutRenderingTests.swift in Sources */,
+				6C0247C41F64CD98F5B7BB17 /* RichTextEditorViewTests+MentionsImagesTests.swift in Sources */,
+				84EAC08B58A0D275F7054BB0 /* EditorV2StagingViewTests.swift in Sources */,
 				B8B54E1CFD58906815926009 /* SharedNativeImagePipeline.swift in Sources */,
 				81A987FAE78E964982371CDE /* ViewerDocument.swift in Sources */,
 				DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */,
