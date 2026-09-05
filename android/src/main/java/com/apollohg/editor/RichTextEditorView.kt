@@ -21,6 +21,7 @@ internal data class AtomLayoutPosition(
     val key: String,
     val xPx: Int,
     val yPx: Int,
+    val heightPx: Int,
 )
 
 /** Container view that owns the native editor text field. */
@@ -103,6 +104,7 @@ class RichTextEditorView @JvmOverloads constructor(
     private var theme: EditorTheme? = null
     private var baseBackgroundColor: Int = Color.WHITE
     private var viewportBottomInsetPx: Int = 0
+    private var lastAtomViewportHeight = -1
     internal var onAtomLayoutChange: ((Float, List<AtomLayoutPosition>) -> Unit)? = null
     internal var onDrawAtomHosts: ((Canvas, Long) -> Unit)? = null
     private var atomRenderConfiguration: AtomRenderConfiguration? = null
@@ -184,6 +186,7 @@ class RichTextEditorView @JvmOverloads constructor(
         editorEditText.onBeforeRenderRefresh = imageResizeOverlayView::cancelActiveResize
         editorScrollView.setOnScrollChangeListener { _, _, _, _, _ ->
             refreshOverlays()
+            emitAtomLayoutIfAvailable(force = true)
         }
         editorEditText.onSelectionOrContentMayChange = { refreshOverlays() }
         editorEditText.onContentSizeMayChange = {
@@ -445,9 +448,11 @@ class RichTextEditorView @JvmOverloads constructor(
         val positions = atomLayoutPositions(content, textLayout, spans)
         if (
             force ||
+            editorScrollView.height != lastAtomViewportHeight ||
             contentWidth != lastAtomContentWidthPx ||
             positions != lastAtomLayoutPositions
         ) {
+            lastAtomViewportHeight = editorScrollView.height
             lastAtomContentWidthPx = contentWidth
             lastAtomLayoutPositions = positions
             onAtomLayoutChange?.invoke(contentWidth.toFloat(), positions)
@@ -475,6 +480,7 @@ class RichTextEditorView @JvmOverloads constructor(
                 span.atomKey,
                 position.first,
                 position.second,
+                span.reservedHeightPx,
             )
         }
             .sortedWith(compareBy({ it.first }, { it.second.key }))

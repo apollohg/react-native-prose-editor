@@ -1,3 +1,4 @@
+import { validateAttributeSpec, validateAttributes } from './attributeValidation';
 import type { ComponentType } from 'react';
 
 import type { DocumentJSON } from './NativeEditorBridge';
@@ -16,32 +17,110 @@ import type {
     SchemaDefinition,
 } from './schemas';
 
-export interface AtomComponentProps {
-    attrs: Readonly<Record<string, unknown>>;
+export type AtomAttrsUpdate<A = Record<string, unknown>> =
+    | Partial<A>
+    | ((current: Readonly<A>) => Partial<A>)
+    | readonly (Partial<A> | ((current: Readonly<A>) => Partial<A>))[];
+
+export interface AtomEditorActions {
+    select(): Promise<void>;
+    delete(): Promise<void>;
+    focusBefore(): Promise<void>;
+    focusAfter(): Promise<void>;
+}
+
+export interface AtomComponentProps<A = Record<string, unknown>> {
+    attrs: Readonly<A>;
     selected: boolean;
     readOnly: boolean;
     isViewer: boolean;
     nodeType: string;
-    updateAttrs: (partial: Record<string, unknown>) => Promise<void>;
+    updateAttrs: (update: AtomAttrsUpdate<A>) => Promise<void>;
+    interactive: boolean;
+    updatePending: boolean;
+    updateError: Error | null;
+    editor?: AtomEditorActions;
+    setActive: (active: boolean) => void;
 }
 
-export type AtomComponent = ComponentType<AtomComponentProps>;
+export type AtomComponent<A = Record<string, unknown>> = ComponentType<AtomComponentProps<A>>;
 
-export interface AtomNodeConfig {
+type JsonAttributeKind<T> = T extends string
+    ? 'string'
+    : T extends number
+      ? 'number'
+      : T extends boolean
+        ? 'boolean'
+        : T extends readonly unknown[]
+          ? 'array'
+          : T extends object
+            ? 'object'
+            : never;
+type AttributeKind<T> = unknown extends T ? AttrSpec['type'] : JsonAttributeKind<NonNullable<T>>;
+type AtomAttributeSpecs<A> = {
+    [K in keyof A]-?: Omit<AttrSpec, 'default' | 'type' | 'enum'> & {
+        default?: A[K];
+        type?: AttributeKind<A[K]>;
+        enum?: readonly A[K][];
+    };
+};
+type WidenDefault<T> = T extends string
+    ? string
+    : T extends number
+      ? number
+      : T extends boolean
+        ? boolean
+        : T extends readonly (infer Item)[]
+          ? [Item] extends [never]
+              ? unknown[]
+              : WidenDefault<Item>[]
+          : T extends object
+            ? { -readonly [K in keyof T]: WidenDefault<T[K]> }
+            : T;
+type HasDefault<S> = S extends { default: infer D } ? (undefined extends D ? false : true) : false;
+
+export interface AtomNodeConfig<A = Record<string, unknown>> {
     name: string;
-    attrs?: Record<string, AttrSpec>;
+    attrs?: AtomAttributeSpecs<A>;
     html: NodeHtmlRules;
-    component: AtomComponent;
+    component: AtomComponent<A>;
     estimatedHeight?: number;
+    idAttribute?: string;
 }
 
-export interface AtomNodeDefinition extends Readonly<AtomNodeConfig> {
+type RequiredKeys<A> = { [K in keyof A]-?: {} extends Pick<A, K> ? never : K }[keyof A];
+export interface AtomNodeDefinition<A = Record<string, unknown>, Input = A> extends Readonly<
+    AtomNodeConfig<A>
+> {
     readonly nodeSpec: NodeSpec;
     buildFragmentJson(
-        attrs?: Record<string, unknown>,
-        descriptor?: Pick<ResolvedDocumentSchema, 'documentNodeName'>
+        ...args: RequiredKeys<Input> extends never
+            ? [attrs?: Input, descriptor?: Pick<ResolvedDocumentSchema, 'documentNodeName'>]
+            : [attrs: Input, descriptor?: Pick<ResolvedDocumentSchema, 'documentNodeName'>]
     ): DocumentJSON;
 }
+
+type AttrValue<S> = S extends { enum: readonly (infer E)[] }
+    ? E
+    : S extends { type: 'string' }
+      ? string
+      : S extends { type: 'number' }
+        ? number
+        : S extends { type: 'boolean' }
+          ? boolean
+          : S extends { type: 'object' }
+            ? Record<string, unknown>
+            : S extends { type: 'array' }
+              ? unknown[]
+              : S extends { default: infer D }
+                ? WidenDefault<D>
+                : unknown;
+export type InferAtomAttrs<S extends Record<string, AttrSpec>> = {
+    -readonly [K in keyof S]: AttrValue<S[K]>;
+};
+type AtomInput<S extends Record<string, AttrSpec>> = {
+    -readonly [K in keyof S as HasDefault<S[K]> extends true ? never : K]: AttrValue<S[K]>;
+} & { -readonly [K in keyof S as HasDefault<S[K]> extends true ? K : never]?: AttrValue<S[K]> };
 
 export interface SerializedEditorAtoms {
     nodeTypes: string[];
@@ -92,7 +171,7 @@ function kebabCase(value: string): string {
         .toLowerCase();
 }
 
-function normalizedHtmlRules(config: AtomNodeConfig): NodeHtmlRules {
+function normalizedHtmlRules(config: AtomNodeConfig<any>): NodeHtmlRules {
     if (config.html == null || typeof config.html !== 'object' || Array.isArray(config.html)) {
         throw new Error(`atom '${config.name}' requires HTML rules`);
     }
@@ -146,7 +225,13 @@ function normalizedHtmlRules(config: AtomNodeConfig): NodeHtmlRules {
     return { tag: raw.tag, staticAttrs, attrMap };
 }
 
-export function defineAtomNode(config: AtomNodeConfig): AtomNodeDefinition {
+export function defineAtomNode<const S extends Record<string, AttrSpec>>(
+    config: Omit<AtomNodeConfig<NoInfer<InferAtomAttrs<S>>>, 'attrs'> & { attrs: S }
+): AtomNodeDefinition<InferAtomAttrs<S>, AtomInput<S>> & { readonly attrs: S };
+export function defineAtomNode<A = Record<string, unknown>>(
+    config: AtomNodeConfig<A> & (string extends keyof A ? {} : { attrs: AtomAttributeSpecs<A> })
+): AtomNodeDefinition<A, Required<A>>;
+export function defineAtomNode(config: AtomNodeConfig<any>): AtomNodeDefinition<any> {
     if (config == null || typeof config !== 'object') {
         throw new Error('atom config must be an object');
     }
@@ -172,6 +257,10 @@ export function defineAtomNode(config: AtomNodeConfig): AtomNodeDefinition {
         throw new Error(`atom '${config.name}' attrs must be an object`);
     }
 
+    for (const [name, spec] of Object.entries(config.attrs ?? {}))
+        validateAttributeSpec(spec, name);
+    if (config.idAttribute !== undefined && config.attrs?.[config.idAttribute]?.type !== 'string')
+        throw new Error(`atom '${config.name}' identifier attribute must declare type string`);
     const html = normalizedHtmlRules(config);
     const nodeSpec: NodeSpec = {
         name: config.name,
@@ -187,9 +276,11 @@ export function defineAtomNode(config: AtomNodeConfig): AtomNodeDefinition {
         ...(config.attrs == null ? {} : { attrs: config.attrs }),
         html,
         component: config.component,
+        ...(config.idAttribute === undefined ? {} : { idAttribute: config.idAttribute }),
         estimatedHeight: config.estimatedHeight ?? DEFAULT_ATOM_CHIP_HEIGHT,
         nodeSpec,
         buildFragmentJson(attrs, descriptor) {
+            validateAttributes(attrs ?? {}, config.attrs ?? {});
             return {
                 type: descriptor?.documentNodeName ?? 'doc',
                 content: [
@@ -252,7 +343,7 @@ function assertUnambiguousHtmlRules(nodes: readonly NodeSpec[]): void {
 
 export function withAtomsSchema(
     schema: SchemaDefinition,
-    atoms: readonly AtomNodeDefinition[]
+    atoms: readonly AtomNodeDefinition<any>[]
 ): SchemaDefinition {
     const nodes = [...schema.nodes];
     let changed = false;
@@ -271,7 +362,9 @@ export function withAtomsSchema(
     return changed ? { ...schema, nodes } : schema;
 }
 
-export function serializeEditorAtoms(atoms?: readonly AtomNodeDefinition[]): string | undefined {
+export function serializeEditorAtoms(
+    atoms?: readonly AtomNodeDefinition<any>[]
+): string | undefined {
     if (atoms == null || atoms.length === 0) return undefined;
     const serialized: SerializedEditorAtoms = {
         nodeTypes: [],

@@ -1,3 +1,4 @@
+import { validateAttributeSpec } from './attributeValidation';
 import type { DocumentJSON } from './NativeEditorBridge';
 import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
 import { withAtomsSchema, type AtomNodeDefinition } from './atoms';
@@ -23,6 +24,10 @@ import {
 export interface AttrSpec {
     /** Value used when the attribute is absent. Omit to make the attribute required. */
     default?: unknown;
+    type?: 'string' | 'number' | 'boolean' | 'object' | 'array';
+    enum?: readonly unknown[];
+    min?: number;
+    max?: number;
 }
 
 /** Static DOM output supported by the native HTML serializer. */
@@ -157,7 +162,7 @@ export interface SchemaMarkSpec {
 export interface SchemaSpec {
     nodes: Readonly<Record<string, SchemaNodeSpec>>;
     marks?: Readonly<Record<string, SchemaMarkSpec>>;
-    atoms?: readonly AtomNodeDefinition[];
+    atoms?: readonly AtomNodeDefinition<any>[];
 }
 
 export {
@@ -767,10 +772,13 @@ function normalizeAttrs(value: unknown): Record<string, AttrSpec> {
             if (rawSpec == null || typeof rawSpec !== 'object' || Array.isArray(rawSpec)) {
                 return [name, {}];
             }
-            return Object.prototype.hasOwnProperty.call(rawSpec, 'default') &&
-                (rawSpec as AttrSpec).default !== undefined
-                ? [name, { default: (rawSpec as AttrSpec).default }]
-                : [name, {}];
+            validateAttributeSpec(rawSpec as AttrSpec, name);
+            return [
+                name,
+                Object.fromEntries(
+                    Object.entries(rawSpec).filter(([, entry]) => entry !== undefined)
+                ),
+            ];
         })
     );
 }

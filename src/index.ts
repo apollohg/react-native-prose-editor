@@ -119,6 +119,9 @@ export {
     defineAtomNode,
     withAtomsSchema,
     serializeEditorAtoms,
+    type AtomAttrsUpdate,
+    type AtomEditorActions,
+    type InferAtomAttrs,
     type AtomComponent,
     type AtomComponentProps,
     type AtomNodeConfig,
@@ -256,3 +259,5 @@ export {
     type NativeEditorErrorDomain,
     type NativeEditorV2Error,
 } from './NativeEditorBoundaryError';
+
+export type { AtomViewport } from './AtomHost';

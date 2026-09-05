@@ -147,6 +147,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     AttrSpec {
                         default: Some(serde_json::Value::Number(1.into())),
                         has_default: true,
+                        ..AttrSpec::default()
                     },
                 );
                 attrs
@@ -209,6 +210,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     AttrSpec {
                         default: None,
                         has_default: false,
+                        ..AttrSpec::default()
                     },
                 );
                 attrs.insert(
@@ -216,6 +218,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     AttrSpec {
                         default: Some(serde_json::Value::Null),
                         has_default: true,
+                        ..AttrSpec::default()
                     },
                 );
                 attrs.insert(
@@ -223,6 +226,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     AttrSpec {
                         default: Some(serde_json::Value::Null),
                         has_default: true,
+                        ..AttrSpec::default()
                     },
                 );
                 attrs.insert(
@@ -230,6 +234,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     AttrSpec {
                         default: Some(serde_json::Value::Null),
                         has_default: true,
+                        ..AttrSpec::default()
                     },
                 );
                 attrs.insert(
@@ -237,6 +242,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     AttrSpec {
                         default: Some(serde_json::Value::Null),
                         has_default: true,
+                        ..AttrSpec::default()
                     },
                 );
                 attrs
@@ -310,6 +316,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     AttrSpec {
                         default: None,
                         has_default: false,
+                        ..AttrSpec::default()
                     },
                 );
                 attrs

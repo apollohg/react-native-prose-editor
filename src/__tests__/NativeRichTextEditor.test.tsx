@@ -1442,80 +1442,85 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
-    it('seeds atom children, waits for native width, and tracks selection', () => {
-        const { definition } = counterAtomDefinition();
-        const handle = createNativeEditorDocumentHandle({
-            schema: withAtomsSchema(tiptapCompatibleSchema, [definition]),
-            initialization: {
-                type: 'localJson',
-                json: {
-                    type: 'doc',
-                    content: [{ type: 'counterCard', attrs: { title: 'a' } }],
-                },
-            },
-        });
-        installAtomRenderSource(() => ({
-            renderBlocks: atomBlock('counterCard', 1, 'client-1:9'),
-            renderPatch: null,
-        }));
-
-        const { getByTestId, queryByTestId, UNSAFE_getByProps } = render(
-            <NativeRichTextEditor documentHandle={handle} atoms={[definition]} />
-        );
-        const nativeView = getByTestId('native-editor-view');
-        expect(queryByTestId('counter-atom')).toBeNull();
-        expect(JSON.parse(nativeView.props.atomsJson)).toEqual({
-            nodeTypes: ['counterCard'],
-            estimatedHeights: { counterCard: 120 },
-        });
-
-        act(() => {
-            nativeView.props.onAtomLayout({
-                nativeEvent: {
-                    editorId: handle.editorId,
-                    width: 280,
-                    positions: [{ key: 'client-1:9', x: 12, y: 34 }],
+    it.each(['ios', 'android'] as const)(
+        'seeds and positions atom hosts on %s and tracks selection',
+        (platform) => {
+            const platformSpy = jest.replaceProperty(Platform, 'OS', platform);
+            const { definition } = counterAtomDefinition();
+            const handle = createNativeEditorDocumentHandle({
+                schema: withAtomsSchema(tiptapCompatibleSchema, [definition]),
+                initialization: {
+                    type: 'localJson',
+                    json: {
+                        type: 'doc',
+                        content: [{ type: 'counterCard', attrs: { title: 'a' } }],
+                    },
                 },
             });
-        });
-        const atom = getByTestId('counter-atom');
-        const atomHost = UNSAFE_getByProps({ nativeID: 'prose-atom:client-1:9' });
-        expect(StyleSheet.flatten(atomHost.props.style)).toMatchObject({
-            width: 280,
-            left: 12,
-            top: 34,
-        });
-        expect(atom.props.atomProps.selected).toBe(false);
-        expect(atom.props.atomProps.isViewer).toBe(false);
-        expect(atom.props.atomProps.readOnly).toBe(false);
+            installAtomRenderSource(() => ({
+                renderBlocks: atomBlock('counterCard', 1, 'client-1:9'),
+                renderPatch: null,
+            }));
 
-        act(() => {
-            nativeView.props.onSelectionChange({
-                nativeEvent: {
-                    editorId: handle.editorId,
-                    anchor: 0,
-                    head: 2,
-                    stateJson: JSON.stringify({ selection: { type: 'node', pos: 1 } }),
-                },
+            const { getByTestId, queryByTestId, UNSAFE_getByProps } = render(
+                <NativeRichTextEditor documentHandle={handle} atoms={[definition]} />
+            );
+            const nativeView = getByTestId('native-editor-view');
+            expect(queryByTestId('counter-atom')).toBeNull();
+            expect(JSON.parse(nativeView.props.atomsJson)).toEqual({
+                nodeTypes: ['counterCard'],
+                estimatedHeights: { counterCard: 120 },
             });
-        });
-        expect(getByTestId('counter-atom').props.atomProps.selected).toBe(true);
 
-        act(() => {
-            nativeView.props.onSelectionChange({
-                nativeEvent: {
-                    editorId: handle.editorId,
-                    anchor: 0,
-                    head: 0,
-                    stateJson: JSON.stringify({
-                        selection: { type: 'text', anchor: 0, head: 0 },
-                    }),
-                },
+            act(() => {
+                nativeView.props.onAtomLayout({
+                    nativeEvent: {
+                        editorId: handle.editorId,
+                        width: 280,
+                        positions: [{ key: 'client-1:9', x: 12, y: 34 }],
+                    },
+                });
             });
-        });
-        expect(getByTestId('counter-atom').props.atomProps.selected).toBe(false);
-        handle.destroy();
-    });
+            const atom = getByTestId('counter-atom');
+            const atomHost = UNSAFE_getByProps({ nativeID: 'prose-atom:client-1:9' });
+            expect(StyleSheet.flatten(atomHost.props.style)).toMatchObject({
+                width: 280,
+                left: platform === 'ios' ? 0 : 12,
+                top: platform === 'ios' ? 0 : 34,
+            });
+            expect(atom.props.atomProps.selected).toBe(false);
+            expect(atom.props.atomProps.isViewer).toBe(false);
+            expect(atom.props.atomProps.readOnly).toBe(false);
+
+            act(() => {
+                nativeView.props.onSelectionChange({
+                    nativeEvent: {
+                        editorId: handle.editorId,
+                        anchor: 0,
+                        head: 2,
+                        stateJson: JSON.stringify({ selection: { type: 'node', pos: 1 } }),
+                    },
+                });
+            });
+            expect(getByTestId('counter-atom').props.atomProps.selected).toBe(true);
+
+            act(() => {
+                nativeView.props.onSelectionChange({
+                    nativeEvent: {
+                        editorId: handle.editorId,
+                        anchor: 0,
+                        head: 0,
+                        stateJson: JSON.stringify({
+                            selection: { type: 'text', anchor: 0, head: 0 },
+                        }),
+                    },
+                });
+            });
+            expect(getByTestId('counter-atom').props.atomProps.selected).toBe(false);
+            platformSpy.restore();
+            handle.destroy();
+        }
+    );
 
     it('refreshes atom children after JS and remote document changes', () => {
         const { definition } = counterAtomDefinition();
@@ -1820,6 +1825,128 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         }
     );
 
+    it('exposes atom selection and caret actions using document positions', async () => {
+        const { definition } = counterAtomDefinition();
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        installAtomRenderSource(() => ({
+            renderBlocks: atomBlock('counterCard', 5, 'stable'),
+            renderPatch: null,
+        }));
+        const view = render(<NativeRichTextEditor documentHandle={handle} atoms={[definition]} />);
+        act(() =>
+            view
+                .getByTestId('native-editor-view')
+                .props.onAtomLayout({ nativeEvent: { editorId: handle.editorId, width: 200 } })
+        );
+        const actions = view.getByTestId('counter-atom').props.atomProps.editor;
+        expect(actions).toBeDefined();
+        const state = handle.bridge.getState();
+        const result = {
+            value: JSON.stringify({
+                type: 'transaction',
+                changed: false,
+                documentRevision: state.documentRevision,
+                stateRevision: '2',
+                canUndo: false,
+                canRedo: false,
+            }),
+            error: null,
+        };
+        mockNativeModule.editorV2SetSelection.mockReturnValue(result);
+        await act(async () => {
+            await actions.select();
+            await actions.focusBefore();
+            await actions.focusAfter();
+        });
+        expect(
+            mockNativeModule.editorV2SetSelection.mock.calls
+                .slice(-3)
+                .map((call) => JSON.parse(call[1]).selection)
+        ).toEqual([
+            { type: 'atom', docPos: 5, edge: 'node' },
+            { type: 'atom', docPos: 5, edge: 'before' },
+            { type: 'atom', docPos: 5, edge: 'after' },
+        ]);
+        expect(mockNativeFocus).toHaveBeenCalledTimes(2);
+        view.rerender(
+            <NativeRichTextEditor documentHandle={handle} atoms={[definition]} editable={false} />
+        );
+        await act(async () => {
+            await expect(actions.delete()).rejects.toMatchObject({ code: 'not-applicable' });
+        });
+        view.unmount();
+        await expect(actions.select()).rejects.toMatchObject({ code: 'not-ready' });
+        handle.destroy();
+    });
+
+    it('groups functional atom updates into one transaction', async () => {
+        const { definition } = counterAtomDefinition();
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        installAtomRenderSource(() => ({
+            renderBlocks: atomBlock('counterCard', 1, 'stable'),
+            renderPatch: null,
+        }));
+        const view = render(<NativeRichTextEditor documentHandle={handle} atoms={[definition]} />);
+        act(() =>
+            view
+                .getByTestId('native-editor-view')
+                .props.onAtomLayout({ nativeEvent: { editorId: handle.editorId, width: 200 } })
+        );
+        mockNativeModule.editorV2ApplyCommand.mockImplementationOnce(() => ({
+            value: JSON.stringify({
+                type: 'transaction',
+                changed: true,
+                documentRevision: handle.bridge.getState().documentRevision,
+                stateRevision: '2',
+                canUndo: true,
+                canRedo: false,
+            }),
+            error: null,
+        }));
+        await act(async () =>
+            view
+                .getByTestId('counter-atom')
+                .props.atomProps.updateAttrs([
+                    (attrs: any) => ({ title: attrs.title + 'b' }),
+                    (attrs: any) => ({ title: attrs.title + 'c' }),
+                ])
+        );
+        expect(
+            JSON.parse(mockNativeModule.editorV2ApplyCommand.mock.calls.at(-1)![1])
+        ).toMatchObject({ command: { type: 'updateNodeAttrs', attrs: { title: 'abc' } } });
+        handle.destroy();
+    });
+
+    it('virtualizes offscreen atom renderers while keeping their native hosts', () => {
+        const { definition } = counterAtomDefinition();
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        installAtomRenderSource(() => ({
+            renderBlocks: atomBlock('counterCard', 1, 'stable'),
+            renderPatch: null,
+        }));
+        const view = render(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                atoms={[definition]}
+                atomViewport={{ y: 0, height: 200, overscan: 0 }}
+            />
+        );
+        act(() =>
+            view
+                .getByTestId('native-editor-view')
+                .props.onAtomLayout({
+                    nativeEvent: {
+                        editorId: handle.editorId,
+                        width: 200,
+                        positions: [{ key: 'stable', x: 0, y: 1000 }],
+                    },
+                })
+        );
+        expect(view.queryByTestId('counter-atom')).toBeNull();
+        expect(view.UNSAFE_getByProps({ nativeID: 'prose-atom:stable' })).toBeTruthy();
+        handle.destroy();
+    });
+
     it('maps atom updateAttrs outcomes and uses the current document revision', async () => {
         const { definition } = counterAtomDefinition();
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
@@ -1881,12 +2008,16 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         jest.spyOn(handle.bridge, 'applyCommand').mockImplementationOnce(() => {
             throw new Error('boom');
         });
-        await expect(updateAttrs({ title: 'e' })).rejects.toMatchObject<AtomUpdateAttrsError>({
-            code: 'engine-error',
+        await act(async () => {
+            await expect(updateAttrs({ title: 'e' })).rejects.toMatchObject<AtomUpdateAttrsError>({
+                code: 'engine-error',
+            });
         });
         handle.destroy();
-        await expect(updateAttrs({ title: 'f' })).rejects.toMatchObject<AtomUpdateAttrsError>({
-            code: 'not-ready',
+        await act(async () => {
+            await expect(updateAttrs({ title: 'f' })).rejects.toMatchObject<AtomUpdateAttrsError>({
+                code: 'not-ready',
+            });
         });
     });
 
@@ -1990,8 +2121,10 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             })
         );
 
-        await expect(staleUpdateAttrs({ title: 'b' })).rejects.toMatchObject({
-            code: 'not-applicable',
+        await act(async () => {
+            await expect(staleUpdateAttrs({ title: 'b' })).rejects.toMatchObject({
+                code: 'not-applicable',
+            });
         });
         handle.destroy();
     });

@@ -105,6 +105,18 @@ function canonicalAttrs(attrs: Record<string, AttrSpec> | undefined): CanonicalO
                 canonicalObject([
                     ['hasDefault', hasDefault],
                     ['default', canonicalJson(hasDefault ? attr.default : null)],
+                    ...(Object.keys(attr).some((key) => key !== 'default')
+                        ? ([
+                              [
+                                  'constraints',
+                                  canonicalMap(
+                                      Object.entries(attr)
+                                          .filter(([key]) => key !== 'default')
+                                          .map(([key, value]) => [key, canonicalJson(value)])
+                                  ),
+                              ],
+                          ] as Array<[string, CanonicalValue]>)
+                        : []),
                 ]),
             ] as const;
         })

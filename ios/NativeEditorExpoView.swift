@@ -1033,7 +1033,14 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     private func emitAtomLayout(width: CGFloat) {
         guard let event = Self.editorScopedEventPayload(
-            ["width": Double(width)],
+            [
+                "width": Double(width),
+                "positions": richTextView.atomLayoutPositions(),
+                "viewport": [
+                    "y": Double(richTextView.textView.contentOffset.y),
+                    "height": Double(richTextView.textView.bounds.height),
+                ],
+            ],
             originatingEditorId: richTextView.editorId
         ) else { return }
         onAtomLayout(event)

@@ -1423,6 +1423,7 @@ fn test_wrap_in_list_applies_item_attrs_to_created_items() {
             AttrSpec {
                 default: Some(serde_json::Value::Bool(false)),
                 has_default: true,
+                ..AttrSpec::default()
             },
         );
     let schema = Schema::new(nodes, base_schema.all_marks().cloned().collect());

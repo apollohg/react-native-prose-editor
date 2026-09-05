@@ -3889,3 +3889,94 @@ fn imported_marks_still_refuse_what_canonicalization_cannot_repair() {
         destroy_handle(&id);
     }
 }
+
+#[test]
+fn atom_doc_selection_maps_nested_unicode_and_deletes_with_undo() {
+    let mut config = terminal_custom_atom_config();
+    config["schema"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "name": "blockquote", "content": "block+", "group": "block", "role": "block"
+        }));
+    let content = json!([
+        { "type": "blockquote", "content": [
+            { "type": "paragraph", "content": [{ "type": "text", "text": "😀é" }] },
+            { "type": "counterCard", "attrs": { "count": 7 } },
+            { "type": "paragraph", "content": [{ "type": "text", "text": "after" }] }
+        ] }
+    ]);
+    config["initialization"]["json"]["content"] = content.clone();
+    let id = create_handle(config);
+    let select = |request_id: u64, revision: u64, doc_pos: u32, edge: &str| {
+        json!({
+        "version": 1, "requestId": request_id.to_string(), "baseDocumentRevision": revision.to_string(),
+        "selection": { "type": "atom", "docPos": doc_pos, "edge": edge }
+    }).to_string()
+    };
+    for (edge, scalar) in [("before", 2), ("after", 5)] {
+        ok_json(&v2::editor_v2_set_selection(
+            id.clone(),
+            select(1, revision_of(&id), 5, edge),
+        ));
+        let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
+        assert_eq!(
+            update["selection"]["anchorScalar"], scalar,
+            "{edge}: {update}"
+        );
+        assert_eq!(update["selection"]["headScalar"], scalar);
+    }
+    for doc_pos in [2, 4, 6, 999] {
+        let outcome = ok_json(&v2::editor_v2_set_selection(
+            id.clone(),
+            select(2, revision_of(&id), doc_pos, "node"),
+        ));
+        assert_eq!(outcome["type"], "notApplicable");
+    }
+    let stale_revision = revision_of(&id);
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        select(3, revision_of(&id), 5, "node"),
+    ));
+    let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
+    assert_eq!(update["selection"]["type"], "node");
+    assert_eq!(update["selection"]["posScalar"], 3);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(4, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+    assert_eq!(
+        document_json_of(&id)["content"][0]["content"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let stale = err_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        select(5, stale_revision, 999, "node"),
+    ));
+    assert_eq!(stale.code, "REVISION_MISMATCH");
+    ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(6)));
+    assert_eq!(document_json_of(&id)["content"], content);
+    destroy_handle(&id);
+}
+
+#[test]
+fn atom_doc_selection_accepts_terminal_caret_boundaries() {
+    let id = create_handle(terminal_custom_atom_config());
+    for edge in ["before", "after", "node"] {
+        ok_json(&v2::editor_v2_set_selection(id.clone(), json!({
+            "version": 1, "requestId": "1", "baseDocumentRevision": revision_of(&id).to_string(),
+            "selection": { "type": "atom", "docPos": 0, "edge": edge }
+        }).to_string()));
+    }
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+    assert!(!document_json_of(&id).to_string().contains("counterCard"));
+    ok_json(&v2::editor_v2_undo(id.clone(), history_envelope(3)));
+    assert!(document_json_of(&id).to_string().contains("counterCard"));
+    destroy_handle(&id);
+}

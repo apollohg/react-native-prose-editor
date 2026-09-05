@@ -228,10 +228,143 @@ pub struct MarkSpec {
 }
 
 /// Specification for a single attribute on a node or mark type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AttrSpec {
     pub default: Option<serde_json::Value>,
     pub has_default: bool,
+    pub constraints: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn attribute_values_equal(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    match (left, right) {
+        (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| attribute_values_equal(a, b))
+        }
+        (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter().all(|(key, value)| {
+                    b.get(key)
+                        .is_some_and(|other| attribute_values_equal(value, other))
+                })
+        }
+        _ => json_projection_values_equal(left, right),
+    }
+}
+
+impl AttrSpec {
+    fn from_json(value: &serde_json::Value) -> Result<Self, BoundaryError> {
+        let mut spec = Self {
+            default: value.get("default").cloned(),
+            has_default: value.get("default").is_some(),
+            ..Self::default()
+        };
+        if let Some(fields) = value.as_object() {
+            for (key, value) in fields {
+                if key == "default" {
+                    continue;
+                }
+                if !["type", "enum", "min", "max"].contains(&key.as_str()) {
+                    return Err(BoundaryError::new(
+                        "SCHEMA_INVALID",
+                        "unknown attribute constraint",
+                    ));
+                }
+                spec.constraints.insert(key.clone(), value.clone());
+            }
+        }
+        spec.validate_definition()
+            .map_err(|message| BoundaryError::new("SCHEMA_INVALID", message))?;
+        Ok(spec)
+    }
+
+    pub fn declared_type(&self) -> Option<&str> {
+        self.constraints.get("type").and_then(|v| v.as_str())
+    }
+
+    pub fn validate_value(&self, value: &serde_json::Value) -> Result<(), String> {
+        let valid = match self.declared_type() {
+            Some("string") => value.is_string(),
+            Some("number") => value.is_number(),
+            Some("boolean") => value.is_boolean(),
+            Some("array") => value.is_array(),
+            Some("object") => value.is_object(),
+            None => true,
+            _ => false,
+        };
+        if !valid {
+            return Err("attribute has invalid type".into());
+        }
+        if let Some(values) = self.constraints.get("enum").and_then(|v| v.as_array()) {
+            if !values
+                .iter()
+                .any(|candidate| attribute_values_equal(candidate, value))
+            {
+                return Err("attribute outside enum".into());
+            }
+        }
+        let size = value
+            .as_f64()
+            .or_else(|| value.as_str().map(|s| s.chars().count() as f64))
+            .or_else(|| value.as_array().map(|a| a.len() as f64));
+        for (key, minimum) in [("min", true), ("max", false)] {
+            if let Some(bound) = self.constraints.get(key).and_then(|v| v.as_f64()) {
+                if size.map_or(
+                    true,
+                    |size| if minimum { size < bound } else { size > bound },
+                ) {
+                    return Err("attribute outside bounds".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_definition(&self) -> Result<(), String> {
+        if self.constraints.contains_key("type")
+            && !matches!(
+                self.declared_type(),
+                Some("string" | "number" | "boolean" | "object" | "array")
+            )
+        {
+            return Err("invalid attribute type".into());
+        }
+        for key in ["min", "max"] {
+            if let Some(value) = self.constraints.get(key) {
+                let bound = value.as_f64().ok_or("invalid attribute bound")?;
+                if !matches!(self.declared_type(), Some("number" | "string" | "array"))
+                    || (self.declared_type() != Some("number")
+                        && (bound < 0.0 || bound.fract() != 0.0))
+                {
+                    return Err("invalid attribute bounds".into());
+                }
+            }
+        }
+        if let (Some(min), Some(max)) = (
+            self.constraints.get("min").and_then(|v| v.as_f64()),
+            self.constraints.get("max").and_then(|v| v.as_f64()),
+        ) {
+            if min > max {
+                return Err("invalid attribute bounds".into());
+            }
+        }
+        if let Some(values) = self.constraints.get("enum") {
+            let values = values
+                .as_array()
+                .filter(|v| !v.is_empty())
+                .ok_or("invalid attribute enum")?;
+            let kind = std::mem::discriminant(&values[0]);
+            for value in values {
+                if std::mem::discriminant(value) != kind {
+                    return Err("attribute enum values must share one JSON type".into());
+                }
+                self.validate_value(value)?;
+            }
+        }
+        if let Some(value) = &self.default {
+            self.validate_value(value)?;
+        }
+        Ok(())
+    }
 }
 
 const DEFAULT_DOCUMENT_MAX_DEPTH: usize = 128;
@@ -359,11 +492,9 @@ impl Schema {
                     node.name, name
                 )));
             }
-            if node
-                .attrs
-                .values()
-                .any(|attr| attr.has_default != attr.default.is_some())
-            {
+            if node.attrs.values().any(|attr| {
+                attr.has_default != attr.default.is_some() || attr.validate_definition().is_err()
+            }) {
                 return Err(SchemaValidationError::semantic(format!(
                     "node '{}' has an inconsistent attribute default",
                     node.name
@@ -501,11 +632,9 @@ impl Schema {
                     mark.name, name
                 )));
             }
-            if mark
-                .attrs
-                .values()
-                .any(|attr| attr.has_default != attr.default.is_some())
-            {
+            if mark.attrs.values().any(|attr| {
+                attr.has_default != attr.default.is_some() || attr.validate_definition().is_err()
+            }) {
                 return Err(SchemaValidationError::semantic(format!(
                     "mark '{}' has an inconsistent attribute default",
                     mark.name
@@ -1413,13 +1542,7 @@ impl Schema {
             let mut attrs = HashMap::new();
             if let Some(attrs_obj) = node_val.get("attrs").and_then(|v| v.as_object()) {
                 for (attr_name, attr_val) in attrs_obj {
-                    attrs.insert(
-                        attr_name.clone(),
-                        AttrSpec {
-                            default: attr_val.get("default").cloned(),
-                            has_default: attr_val.get("default").is_some(),
-                        },
-                    );
+                    attrs.insert(attr_name.clone(), AttrSpec::from_json(attr_val)?);
                 }
             }
 
@@ -1451,13 +1574,7 @@ impl Schema {
             let mut attrs = HashMap::new();
             if let Some(attrs_obj) = mark_val.get("attrs").and_then(|v| v.as_object()) {
                 for (attr_name, attr_val) in attrs_obj {
-                    attrs.insert(
-                        attr_name.clone(),
-                        AttrSpec {
-                            default: attr_val.get("default").cloned(),
-                            has_default: attr_val.get("default").is_some(),
-                        },
-                    );
+                    attrs.insert(attr_name.clone(), AttrSpec::from_json(attr_val)?);
                 }
             }
 
@@ -1546,6 +1663,11 @@ fn admit_schema_attrs(
         admit_schema_string(name, budget, work_limit)?;
         if let Some(default) = spec.get("default") {
             admit_schema_value(default, budget, work_limit, 1)?;
+        }
+        for key in ["type", "enum", "min", "max"] {
+            if let Some(value) = spec.get(key) {
+                admit_schema_value(value, budget, work_limit, 1)?;
+            }
         }
     }
     Ok(())

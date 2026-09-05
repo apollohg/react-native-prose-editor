@@ -342,6 +342,23 @@ final class AtomMountingTests: XCTestCase {
         XCTAssertNotEqual(widths[0], widths[1])
     }
 
+    func testAtomLayoutReportsReservedHeightAndScrollAtStableWidth() {
+        let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        installAtom(key: "counter:1", height: 90, in: editor)
+        editor.layoutIfNeeded()
+        let positions = editor.atomLayoutPositions()
+        XCTAssertEqual(positions.count, 1)
+        XCTAssertEqual(positions[0]["key"], "counter:1")
+        XCTAssertEqual(positions[0]["height"], 90.0)
+        var widths: [CGFloat] = []
+        editor.onAtomContentWidthChange = { widths.append($0) }
+        editor.emitAtomContentWidthIfAvailable(force: true)
+        editor.textView.contentOffset.y = 30
+        XCTAssertGreaterThan(widths.count, 1)
+        XCTAssertEqual(widths.first, widths.last)
+        XCTAssertEqual(editor.atomLayoutPositions(), positions)
+    }
+
     @discardableResult
     private func installAtom(
         key: String,

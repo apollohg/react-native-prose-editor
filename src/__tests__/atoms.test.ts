@@ -200,3 +200,27 @@ test('atoms without an estimated height reserve the default chip height', () => 
         estimatedHeights: { counterCard: 32 },
     });
 });
+
+test('declarative attrs reject invalid definitions, defaults and fragment values', () => {
+    const config = {
+        ...counterConfig,
+        html: { tag: 'div', staticAttrs: { 'data-type': 'counter-card' } },
+        attrs: { count: { type: 'number', min: 0, max: 5, default: 0 } },
+    } as AtomNodeConfig;
+    const atom = defineAtomNode(config);
+    expect(() => atom.buildFragmentJson({ count: -1 })).toThrow(/count/);
+    expect(() => atom.buildFragmentJson({ count: '1' })).toThrow(/count/);
+    expect(() => atom.buildFragmentJson({ other: 1 })).toThrow(/other/);
+    expect(() =>
+        defineAtomNode({
+            ...config,
+            attrs: { count: { type: 'number', default: 'bad' } },
+        } as AtomNodeConfig)
+    ).toThrow(/count/);
+});
+
+test('identifier attributes require a declared string type', () => {
+    expect(() =>
+        defineAtomNode({ ...counterConfig, idAttribute: 'missing' } as AtomNodeConfig)
+    ).toThrow(/identifier/);
+});

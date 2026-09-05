@@ -382,7 +382,20 @@ enum SelectionEnvelope {
     Node {
         at: PositionEnvelope,
     },
+    Atom {
+        #[serde(rename = "docPos")]
+        doc_pos: u32,
+        edge: AtomSelectionEdge,
+    },
     All,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum AtomSelectionEdge {
+    Node,
+    Before,
+    After,
 }
 
 impl From<SelectionEnvelope> for SelectionInput {
@@ -394,6 +407,9 @@ impl From<SelectionEnvelope> for SelectionInput {
             },
             SelectionEnvelope::Node { at } => Self::Node { at: at.into() },
             SelectionEnvelope::All => Self::All,
+            SelectionEnvelope::Atom { .. } => {
+                unreachable!("atom selections require document mapping")
+            }
         }
     }
 }
@@ -637,12 +653,56 @@ impl<'session> NativeTransactionBridge<'session> {
         admit_version(envelope.version, envelope.request_id)?;
         let request_id = envelope.request_id;
         self.admit_base_revision(request_id, envelope.base_document_revision)?;
+        let selection = match envelope.selection {
+            SelectionEnvelope::Atom { doc_pos, edge } => {
+                let engine = &self.session.engine;
+                let map = engine
+                    .position_map()
+                    .ok_or_else(|| operation_error(OperationError::engine_not_ready(request_id)))?;
+                let document = engine
+                    .document()
+                    .ok_or_else(|| operation_error(OperationError::engine_not_ready(request_id)))?;
+                let Some(block_index) = map.find_block_for_doc_pos(doc_pos) else {
+                    return Ok(NativeBridgeOutcome::NotApplicable);
+                };
+                let block = map.block(block_index).expect("mapped block exists");
+                let scalar = map.doc_to_scalar(doc_pos, document);
+                if !block.is_void_block || map.effective_doc_start(block_index) != doc_pos {
+                    return Ok(NativeBridgeOutcome::NotApplicable);
+                }
+                let (offset, affinity) = match edge {
+                    AtomSelectionEdge::Node => (scalar, Affinity::After),
+                    AtomSelectionEdge::Before => (
+                        scalar.saturating_sub(1),
+                        if scalar == 0 {
+                            Affinity::After
+                        } else {
+                            Affinity::Before
+                        },
+                    ),
+                    AtomSelectionEdge::After => (
+                        (scalar + block.scalar_len + block.rendered_break_after)
+                            .min(map.total_scalars()),
+                        Affinity::After,
+                    ),
+                };
+                let point = scalar_position(offset, map.total_scalars(), affinity);
+                match edge {
+                    AtomSelectionEdge::Node => SelectionInput::Node { at: point },
+                    _ => SelectionInput::Text {
+                        anchor: point,
+                        head: point,
+                    },
+                }
+            }
+            selection => selection.into(),
+        };
         let transaction = TypedTransaction {
             request_id,
             base_document_revision: envelope.base_document_revision,
             origin: TransactionOrigin::LocalInput,
             operations: Vec::new(),
-            selection_intent: SelectionIntent::Set(envelope.selection.into()),
+            selection_intent: SelectionIntent::Set(selection),
             history_policy: HistoryPolicy::Skip,
         };
         let (engine, outbox) = self.session.engine_and_outbox();

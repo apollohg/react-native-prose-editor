@@ -138,6 +138,8 @@ final class RichTextEditorView: UIView {
     private var measuredAtomHeights: [String: CGFloat] = [:]
     private var fallbackAtomHeights: [String: CGFloat] = [:]
     private var lastAtomContentWidth: CGFloat = 0
+    private var lastAtomPositions: [[String: AnyHashable]] = []
+    private var lastAtomViewport = CGRect.zero
     private(set) var atomLayoutInvalidationCountForTesting = 0
     private var remoteSelections: [RemoteSelectionDecoration] = []
     private var initialUpdateJSONForNextEditorBind: String?
@@ -261,6 +263,7 @@ final class RichTextEditorView: UIView {
         }
         textView.onViewportMayChange = { [weak self] in
             self?.refreshOverlaysIfNeeded()
+            self?.emitAtomContentWidthIfAvailable()
         }
         textView.onSelectionOrContentMayChange = { [weak self] in
             self?.scheduleRefreshOverlaysIfNeeded()
@@ -397,11 +400,32 @@ final class RichTextEditorView: UIView {
 
     func emitAtomContentWidthIfAvailable(force: Bool = false) {
         let width = atomContentWidth()
+        let positions = atomLayoutPositions()
+        let viewport = textView.bounds
         guard width > 0,
               force || abs(width - lastAtomContentWidth) > 0.5
+                || positions != lastAtomPositions || viewport != lastAtomViewport
         else { return }
         lastAtomContentWidth = width
+        lastAtomPositions = positions
+        lastAtomViewport = viewport
         onAtomContentWidthChange?(width)
+    }
+
+    func atomLayoutPositions() -> [[String: AnyHashable]] {
+        let padding = textView.textContainer.lineFragmentPadding
+        return atomAttachmentEntries().sorted { $0.value.1.location < $1.value.1.location }.map { key, entry in
+            let (attachment, range) = entry
+            textView.layoutManager.ensureLayout(forCharacterRange: range)
+            let glyphs = textView.layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let rect = textView.layoutManager.boundingRect(forGlyphRange: glyphs, in: textView.textContainer)
+            return [
+                "key": key,
+                "x": Double(textView.textContainerInset.left + padding),
+                "y": Double(textView.textContainerInset.top + rect.minY),
+                "height": Double(attachment.reservedHeight),
+            ]
+        }
     }
 
     fileprivate func atomHostContainer(

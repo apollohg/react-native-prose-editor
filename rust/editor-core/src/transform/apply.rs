@@ -2619,6 +2619,14 @@ fn validate_attrs(
 ) -> BoundaryResult<()> {
     for (name, spec) in specs {
         consume_document_work(budget, work_limit, 1)?;
+        if let Some(value) = attrs.get(name).or(spec.default.as_ref()) {
+            spec.validate_value(value).map_err(|message| {
+                BoundaryError::new(
+                    "DOCUMENT_INVALID",
+                    format!("'{owner}' attribute '{name}': {message}"),
+                )
+            })?;
+        }
         if !spec.has_default && !attrs.contains_key(name) {
             return Err(BoundaryError::new(
                 "REQUIRED_ATTRIBUTE_MISSING",

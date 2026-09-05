@@ -46,6 +46,76 @@ function publish(view: ReturnType<typeof render>, positions = [position]) {
 }
 
 describe('NativeProseViewer custom atoms', () => {
+    it('allows read-only interactions while rejecting mutations', async () => {
+        const view = render(<NativeProseViewer contentJSON={content} atoms={atoms} />);
+        publish(view);
+        const props = view.getByTestId('counter').props.atomProps;
+        expect(props.interactive).toBe(true);
+        await act(async () => {
+            await expect(props.updateAttrs({ count: 3 })).rejects.toMatchObject({
+                code: 'not-applicable',
+            });
+        });
+    });
+
+    it('preserves explicit identity when content before an atom moves', () => {
+        const mounted = jest.fn();
+        const Card = () => {
+            React.useEffect(mounted, []);
+            return <View testID='identified' />;
+        };
+        const definitions = [
+            {
+                ...atom,
+                idAttribute: 'id',
+                attrs: { ...atom.attrs, id: { default: '' } },
+                component: Card,
+            },
+        ];
+        const view = render(<NativeProseViewer contentJSON={content} atoms={definitions} />);
+        publish(view, [{ ...position, attrsJson: '{"id":"one","count":2}' }]);
+        view.rerender(<NativeProseViewer contentJSON={{ ...content }} atoms={definitions} />);
+        publish(view, [{ ...position, docPos: 10, attrsJson: '{"id":"one","count":2}' }]);
+        expect(mounted).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects duplicate identities and reports the invalid layout', () => {
+        const definitions = [{ ...atom, idAttribute: 'id' }];
+        const onError = jest.fn();
+        const view = render(
+            <NativeProseViewer contentJSON={content} atoms={definitions} onError={onError} />
+        );
+        publish(
+            view,
+            [0, 1].map((docPos) => ({ ...position, docPos, attrsJson: '{"id":"same","count":2}' }))
+        );
+        expect(onError).toHaveBeenCalledWith(
+            expect.objectContaining({ code: 'INVALID_ATOM_LAYOUT' })
+        );
+        expect(view.queryByTestId('counter')).toBeNull();
+    });
+
+    it('composes queued functional updates from acknowledged attrs', async () => {
+        const onUpdateAtomAttrs = jest.fn();
+        const view = render(
+            <NativeProseViewer
+                contentJSON={content}
+                atoms={atoms}
+                readOnly={false}
+                onUpdateAtomAttrs={onUpdateAtomAttrs}
+            />
+        );
+        publish(view);
+        const update = view.getByTestId('counter').props.atomProps.updateAttrs;
+        await act(async () => {
+            await Promise.all([
+                update((a: any) => ({ count: a.count + 1 })),
+                update((a: any) => ({ count: a.count + 1 })),
+            ]);
+        });
+        expect(onUpdateAtomAttrs.mock.calls.map(([event]) => event.partial.count)).toEqual([3, 4]);
+    });
+
     it('composes schemas and mounts native HTML atom snapshots as read-only viewer components', () => {
         const view = render(
             <NativeProseViewer
@@ -83,7 +153,14 @@ describe('NativeProseViewer custom atoms', () => {
                 />
             );
         };
-        const definitions = [{ ...atom, component: StatefulCounter }];
+        const definitions = [
+            {
+                ...atom,
+                idAttribute: 'id',
+                attrs: { ...atom.attrs, id: { default: 'one' } },
+                component: StatefulCounter,
+            },
+        ];
         const onUpdateAtomAttrs = jest.fn();
         const view = render(
             <NativeProseViewer
@@ -93,7 +170,7 @@ describe('NativeProseViewer custom atoms', () => {
                 onUpdateAtomAttrs={onUpdateAtomAttrs}
             />
         );
-        publish(view);
+        publish(view, [{ ...position, attrsJson: '{"count":2,"id":"one"}' }]);
         fireEvent(view.getByTestId('stateful-counter'), 'change', 'local draft');
         fireEvent(view.getByTestId('stateful-counter').parent!, 'layout', {
             nativeEvent: { layout: { width: 276, height: 123, x: 0, y: 0 } },
@@ -111,8 +188,10 @@ describe('NativeProseViewer custom atoms', () => {
             />
         );
         expect(unmounted).not.toHaveBeenCalled();
-        await expect(oldUpdate({ count: 4 })).rejects.toMatchObject({ code: 'stale-revision' });
-        publish(view, [{ ...position, attrsJson: '{"count":3}' }]);
+        await act(async () => {
+            await expect(oldUpdate({ count: 4 })).rejects.toMatchObject({ code: 'stale-revision' });
+        });
+        publish(view, [{ ...position, attrsJson: '{"count":3,"id":"one"}' }]);
         expect(view.getByTestId('stateful-counter').props.draft).toBe('local draft');
         expect(view.getByTestId('stateful-counter').props.atomProps.attrs.count).toBe(3);
         expect(mounted).toHaveBeenCalledTimes(1);
@@ -120,10 +199,14 @@ describe('NativeProseViewer custom atoms', () => {
             JSON.parse(view.getByTestId('prepared-prose-viewer').props.themeJson).viewerAtoms
                 .measurements['0']
         ).toEqual({ width: 276, height: 123 });
-        await expect(oldUpdate({ count: 4 })).rejects.toMatchObject({ code: 'stale-revision' });
-        await view.getByTestId('stateful-counter').props.atomProps.updateAttrs({ count: 4 });
+        await act(async () => {
+            await expect(oldUpdate({ count: 4 })).rejects.toMatchObject({ code: 'stale-revision' });
+        });
+        await act(async () => {
+            await view.getByTestId('stateful-counter').props.atomProps.updateAttrs({ count: 4 });
+        });
         expect(onUpdateAtomAttrs).toHaveBeenCalledWith(
-            expect.objectContaining({ attrs: { count: 3 } })
+            expect.objectContaining({ attrs: { count: 3, id: 'one' } })
         );
         publish(view, []);
         expect(unmounted).toHaveBeenCalledTimes(1);
@@ -133,8 +216,19 @@ describe('NativeProseViewer custom atoms', () => {
         const Replacement = (props: AtomComponentProps) => (
             <View testID='replacement' atomProps={props} />
         );
-        const view = render(<NativeProseViewer contentJSON={content} atoms={atoms} />);
-        publish(view);
+        const view = render(
+            <NativeProseViewer
+                contentJSON={content}
+                atoms={[
+                    {
+                        ...atom,
+                        idAttribute: 'id',
+                        attrs: { ...atom.attrs, id: { default: 'one' } },
+                    },
+                ]}
+            />
+        );
+        publish(view, [{ ...position, attrsJson: '{"count":2,"id":"one"}' }]);
         fireEvent(view.getByTestId('counter').parent!, 'layout', {
             nativeEvent: { layout: { width: 276, height: 123, x: 0, y: 0 } },
         });
@@ -147,7 +241,14 @@ describe('NativeProseViewer custom atoms', () => {
                     type: 'doc',
                     content: [{ type: 'counterCard', attrs: { count: 3 } }],
                 }}
-                atoms={[{ ...atom, component: Replacement }]}
+                atoms={[
+                    {
+                        ...atom,
+                        idAttribute: 'id',
+                        attrs: { ...atom.attrs, id: { default: 'one' } },
+                        component: Replacement,
+                    },
+                ]}
             />
         );
         fireEvent(
@@ -162,7 +263,7 @@ describe('NativeProseViewer custom atoms', () => {
             JSON.parse(view.getByTestId('prepared-prose-viewer').props.themeJson).viewerAtoms
                 .measurements
         ).toEqual({});
-        publish(view, [{ ...position, attrsJson: '{"count":3}' }]);
+        publish(view, [{ ...position, attrsJson: '{"count":3,"id":"one"}' }]);
         expect(
             JSON.parse(view.getByTestId('prepared-prose-viewer').props.themeJson).viewerAtoms
                 .measurements['0']
@@ -173,8 +274,19 @@ describe('NativeProseViewer custom atoms', () => {
         const Replacement = (props: AtomComponentProps) => (
             <View testID='replacement' atomProps={props} />
         );
-        const view = render(<NativeProseViewer contentJSON={content} atoms={atoms} />);
-        publish(view);
+        const view = render(
+            <NativeProseViewer
+                contentJSON={content}
+                atoms={[
+                    {
+                        ...atom,
+                        idAttribute: 'id',
+                        attrs: { ...atom.attrs, id: { default: 'one' } },
+                    },
+                ]}
+            />
+        );
+        publish(view, [{ ...position, attrsJson: '{"count":2,"id":"one"}' }]);
         fireEvent(view.getByTestId('counter').parent!, 'layout', {
             nativeEvent: { layout: { width: 276, height: 123, x: 0, y: 0 } },
         });
@@ -184,10 +296,17 @@ describe('NativeProseViewer custom atoms', () => {
                     type: 'doc',
                     content: [{ type: 'counterCard', attrs: { count: 3 } }],
                 }}
-                atoms={[{ ...atom, component: Replacement }]}
+                atoms={[
+                    {
+                        ...atom,
+                        idAttribute: 'id',
+                        attrs: { ...atom.attrs, id: { default: 'one' } },
+                        component: Replacement,
+                    },
+                ]}
             />
         );
-        publish(view, [{ ...position, attrsJson: '{"count":3}' }]);
+        publish(view, [{ ...position, attrsJson: '{"count":3,"id":"one"}' }]);
         expect(
             JSON.parse(view.getByTestId('prepared-prose-viewer').props.themeJson).viewerAtoms
                 .measurements['0']
@@ -269,7 +388,9 @@ describe('NativeProseViewer custom atoms', () => {
             />
         );
         publish(view);
-        await view.getByTestId('counter').props.atomProps.updateAttrs({ count: 3 });
+        await act(async () => {
+            await view.getByTestId('counter').props.atomProps.updateAttrs({ count: 3 });
+        });
         expect(onUpdateAtomAttrs).toHaveBeenCalledWith({
             nodeType: 'counterCard',
             docPos: 0,
@@ -282,13 +403,17 @@ describe('NativeProseViewer custom atoms', () => {
     it('rejects updates when read-only, missing a handler, or given undeclared attrs', async () => {
         const view = render(<NativeProseViewer contentJSON={content} atoms={atoms} />);
         publish(view);
-        await expect(
-            view.getByTestId('counter').props.atomProps.updateAttrs({ count: 3 })
-        ).rejects.toMatchObject({ code: 'not-applicable' });
+        await act(async () => {
+            await expect(
+                view.getByTestId('counter').props.atomProps.updateAttrs({ count: 3 })
+            ).rejects.toMatchObject({ code: 'not-applicable' });
+        });
         view.rerender(<NativeProseViewer contentJSON={content} atoms={atoms} readOnly={false} />);
-        await expect(
-            view.getByTestId('counter').props.atomProps.updateAttrs({ count: 3 })
-        ).rejects.toMatchObject({ code: 'not-applicable' });
+        await act(async () => {
+            await expect(
+                view.getByTestId('counter').props.atomProps.updateAttrs({ count: 3 })
+            ).rejects.toMatchObject({ code: 'not-applicable' });
+        });
         const onUpdateAtomAttrs = jest.fn();
         view.rerender(
             <NativeProseViewer
@@ -298,9 +423,11 @@ describe('NativeProseViewer custom atoms', () => {
                 onUpdateAtomAttrs={onUpdateAtomAttrs}
             />
         );
-        await expect(
-            view.getByTestId('counter').props.atomProps.updateAttrs({ other: 3 })
-        ).rejects.toMatchObject({ code: 'not-applicable' });
+        await act(async () => {
+            await expect(
+                view.getByTestId('counter').props.atomProps.updateAttrs({ other: 3 })
+            ).rejects.toMatchObject({ code: 'not-applicable' });
+        });
         expect(onUpdateAtomAttrs).not.toHaveBeenCalled();
     });
 
@@ -336,7 +463,9 @@ describe('NativeProseViewer custom atoms', () => {
             })
         );
         expect(view.queryByTestId('counter')).toBeNull();
-        await expect(update({ count: 3 })).rejects.toMatchObject({ code: 'stale-revision' });
+        await act(async () => {
+            await expect(update({ count: 3 })).rejects.toMatchObject({ code: 'stale-revision' });
+        });
         expect(onUpdateAtomAttrs).not.toHaveBeenCalled();
     });
 
@@ -367,9 +496,13 @@ describe('NativeProseViewer custom atoms', () => {
         );
         publish(view);
         const update = view.getByTestId('counter').props.atomProps.updateAttrs;
-        await expect(update({ count: 3 })).rejects.toBe(error);
+        await act(async () => {
+            await expect(update({ count: 3 })).rejects.toBe(error);
+        });
         view.unmount();
-        await expect(update({ count: 4 })).rejects.toMatchObject({ code: 'not-ready' });
+        await act(async () => {
+            await expect(update({ count: 4 })).rejects.toMatchObject({ code: 'not-ready' });
+        });
         expect(onUpdateAtomAttrs).toHaveBeenCalledTimes(1);
     });
     it('clears removed atoms and rejects malformed native attributes', () => {

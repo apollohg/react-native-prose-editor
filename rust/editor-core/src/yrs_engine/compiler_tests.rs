@@ -120,6 +120,7 @@ fn render_parity_schema() -> Schema {
         AttrSpec {
             default: Some(serde_json::Value::Null),
             has_default: true,
+            ..AttrSpec::default()
         },
     )]);
     nodes.extend([

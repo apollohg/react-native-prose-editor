@@ -1937,6 +1937,7 @@ export type NativeEditorV2SelectionEnvelope =
           head: NativeEditorV2PositionEnvelope;
       }
     | { type: 'node'; at: NativeEditorV2PositionEnvelope }
+    | { type: 'atom'; docPos: number; edge: 'node' | 'before' | 'after' }
     | { type: 'all' };
 
 export interface NativeEditorV2SelectionRequest {

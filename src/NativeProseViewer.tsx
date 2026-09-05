@@ -1,3 +1,4 @@
+import type { AtomViewport } from './AtomHost';
 import React, { useCallback, useMemo } from 'react';
 import { View, type NativeSyntheticEvent, type ViewProps } from 'react-native';
 
@@ -91,9 +92,13 @@ export interface RichTextViewerBaseProps extends ViewProps {
     /** Schema the content is parsed against. Defaults to {@link defaultSchema}; the mention node is always added. */
     schema?: SchemaDefinition;
     /** React renderers for custom block atoms; their node specs are added to the schema. */
-    atoms?: readonly AtomNodeDefinition[];
-    /** Whether custom atoms are inert. Defaults to true; prose is always read-only. */
+    atoms?: readonly AtomNodeDefinition<any>[];
+    /** Whether persisted atom attributes are read-only. Defaults to true; prose is always read-only. */
     readOnly?: boolean;
+    /** Whether atom controls receive input. Defaults to true, independently of readOnly. */
+    atomsInteractive?: boolean;
+    /** Opt-in atom virtualization; range is relative to the native viewer content. */
+    atomViewport?: AtomViewport;
     /** Handles an atom update request. Persist it in the app and supply updated content. */
     onUpdateAtomAttrs?: (event: RichTextViewerAtomAttrsUpdateEvent) => void | Promise<void>;
     /** Native content theme. See {@link EditorTheme}. */
@@ -159,7 +164,7 @@ function resolveViewerConfiguration(
     allowBase64Images: boolean,
     resourceLimits: ResolvedEditorResourceLimits | undefined,
     mentions: RichTextViewerMentionsConfig | undefined,
-    atoms: readonly AtomNodeDefinition[] | undefined
+    atoms: readonly AtomNodeDefinition<any>[] | undefined
 ): PreparedProseViewerConfiguration {
     return {
         initialization: { type: 'localEmpty' },
@@ -201,6 +206,8 @@ export function RichTextViewer(props: RichTextViewerProps) {
         schema,
         atoms,
         readOnly = true,
+        atomsInteractive = true,
+        atomViewport,
         onUpdateAtomAttrs,
         theme,
         allowBase64Images = false,
@@ -266,6 +273,8 @@ export function RichTextViewer(props: RichTextViewerProps) {
         identity: atomIdentity,
         themeJson,
         readOnly,
+        interactive: atomsInteractive,
+        viewport: atomViewport,
         onUpdateAtomAttrs,
         onError,
     });

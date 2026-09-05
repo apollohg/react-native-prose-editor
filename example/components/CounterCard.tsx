@@ -1,35 +1,30 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import {
-    AtomUpdateAttrsError,
-    defineAtomNode,
-    type AtomComponentProps,
-} from 'react-native-rich-text-editor';
+import { defineAtomNode, type AtomComponentProps } from 'react-native-rich-text-editor';
 
 import { FONT_SIZE, LINE_HEIGHT, MIN_TOUCH_TARGET, PALETTE, RADIUS, SPACE } from '../theme';
 
 const COUNTER_CARD_HEIGHT = 96;
 const DEFAULT_TITLE = 'Untitled counter';
 
-/** A block-level React component living inside the document as an atom. */
-function CounterCard({ attrs, selected, readOnly, isViewer, updateAttrs }: AtomComponentProps) {
-    const [updateError, setUpdateError] = useState<string | null>(null);
-    const title = typeof attrs.title === 'string' ? attrs.title : DEFAULT_TITLE;
-    const parsedCount = Number(attrs.count);
-    const count = Number.isFinite(parsedCount) ? parsedCount : 0;
+type CounterAttrs = { title: string; count: number };
 
+function CounterCard({
+    attrs,
+    selected,
+    readOnly,
+    interactive,
+    isViewer,
+    updateAttrs,
+    updatePending,
+    updateError,
+}: AtomComponentProps<CounterAttrs>) {
+    const { title, count } = attrs;
     const adjust = useCallback(
         (delta: number) => {
-            setUpdateError(null);
-            updateAttrs({ count: count + delta }).catch((error: unknown) => {
-                setUpdateError(
-                    error instanceof AtomUpdateAttrsError
-                        ? `Could not update (${error.code})`
-                        : 'Could not update'
-                );
-            });
+            void updateAttrs((current) => ({ count: current.count + delta })).catch(() => {});
         },
-        [count, updateAttrs]
+        [updateAttrs]
     );
 
     const decrement = useCallback(() => adjust(-1), [adjust]);
@@ -45,7 +40,8 @@ function CounterCard({ attrs, selected, readOnly, isViewer, updateAttrs }: AtomC
                     {title}
                 </Text>
                 <Text style={styles.hint}>
-                    {updateError ??
+                    {updateError?.message ??
+                        (updatePending ? 'Saving…' : undefined) ??
                         (readOnly
                             ? 'Read-only counter'
                             : isViewer
@@ -55,8 +51,8 @@ function CounterCard({ attrs, selected, readOnly, isViewer, updateAttrs }: AtomC
             </View>
             <View style={styles.stepper}>
                 <Pressable
-                    disabled={readOnly}
-                    accessibilityState={{ disabled: readOnly }}
+                    disabled={readOnly || interactive === false}
+                    accessibilityState={{ disabled: readOnly || interactive === false }}
                     accessibilityRole='button'
                     accessibilityLabel='Subtract one'
                     hitSlop={SPACE.xs}
@@ -66,8 +62,8 @@ function CounterCard({ attrs, selected, readOnly, isViewer, updateAttrs }: AtomC
                 </Pressable>
                 <Text style={styles.count}>{count}</Text>
                 <Pressable
-                    disabled={readOnly}
-                    accessibilityState={{ disabled: readOnly }}
+                    disabled={readOnly || interactive === false}
+                    accessibilityState={{ disabled: readOnly || interactive === false }}
                     accessibilityRole='button'
                     accessibilityLabel='Add one'
                     hitSlop={SPACE.xs}
@@ -83,8 +79,8 @@ function CounterCard({ attrs, selected, readOnly, isViewer, updateAttrs }: AtomC
 export const counterCardAtom = defineAtomNode({
     name: 'counterCard',
     attrs: {
-        title: { default: DEFAULT_TITLE },
-        count: { default: 0 },
+        title: { type: 'string', default: DEFAULT_TITLE },
+        count: { type: 'number', default: 0 },
     },
     html: {
         tag: 'div',

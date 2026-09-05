@@ -1,12 +1,16 @@
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { View, type LayoutChangeEvent, type NativeSyntheticEvent } from 'react-native';
 
-import { serializeEditorAtoms, type AtomNodeDefinition } from './atoms';
+import { serializeEditorAtoms, type AtomNodeDefinition, type AtomAttrsUpdate } from './atoms';
+import { AtomHost, atomIsVisible, type AtomViewport } from './AtomHost';
+import { resolveAtomAttrsUpdate } from './atomUpdates';
+import { validateAttributes } from './attributeValidation';
 import { AtomUpdateAttrsError } from './atomInstances';
 import type { RichTextViewerErrorEvent } from './NativeProseViewer';
 
 export interface RichTextViewerAtomAttrsUpdateEvent {
     nodeType: string;
+    atomId?: string;
     /** Position in the content snapshot rendered by this viewer. */
     docPos: number;
     attrs: Readonly<Record<string, unknown>>;
@@ -21,6 +25,8 @@ export interface ViewerAtomLayoutEvent {
 }
 
 interface AtomPosition {
+    key: string;
+    atomId?: string;
     nodeType: string;
     docPos: number;
     attrsJson: string;
@@ -46,11 +52,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parsePositions(
     json: string,
-    definitions: ReadonlyMap<string, AtomNodeDefinition>
+    definitions: ReadonlyMap<string, AtomNodeDefinition<any>>,
+    snapshot: string
 ): AtomPosition[] {
     const values: unknown = JSON.parse(json);
     if (!Array.isArray(values)) throw new Error('Atom positions must be an array.');
     const seen = new Set<number>();
+    const identities = new Set<string>();
     return values.map((value: unknown) => {
         if (
             !isRecord(value) ||
@@ -71,8 +79,18 @@ function parsePositions(
         }
         const attrs: unknown = JSON.parse(value.attrsJson);
         if (!isRecord(attrs)) throw new Error('Atom attributes must be a JSON object.');
+        const idAttribute = definitions.get(value.nodeType)?.idAttribute;
+        const atomId = idAttribute == null ? undefined : attrs[idAttribute];
+        if (idAttribute != null && (typeof atomId !== 'string' || atomId.length === 0))
+            throw new Error('Atom identity must be a non-empty string.');
+        const key =
+            typeof atomId === 'string'
+                ? JSON.stringify([value.nodeType, atomId])
+                : `${snapshot}:${value.docPos}:${value.nodeType}`;
+        if (identities.has(key)) throw new Error('Duplicate atom identity.');
+        identities.add(key);
         seen.add(Number(value.docPos));
-        return { ...value, attrs } as unknown as AtomPosition;
+        return { ...value, attrs, key, atomId } as unknown as AtomPosition;
     });
 }
 
@@ -81,19 +99,28 @@ export function useViewerAtoms({
     identity,
     themeJson,
     readOnly,
+    interactive = true,
+    viewport,
     onUpdateAtomAttrs,
     onError,
 }: {
-    atoms?: readonly AtomNodeDefinition[];
+    atoms?: readonly AtomNodeDefinition<any>[];
     identity: object;
     themeJson?: string;
     readOnly: boolean;
+    interactive?: boolean;
+    viewport?: AtomViewport;
     onUpdateAtomAttrs?: UpdateHandler;
     onError?: (event: RichTextViewerErrorEvent) => void;
 }) {
     const [width, setWidth] = useState<number | null>(null);
+    const snapshot = useMemo(() => String(++nextGeneration), [identity]);
     const serializedAtoms = serializeEditorAtoms(atoms);
-    const generation = useMemo(() => String(++nextGeneration), [identity, serializedAtoms, width]);
+    const identifiers = JSON.stringify((atoms ?? []).map((atom) => [atom.name, atom.idAttribute]));
+    const generation = useMemo(
+        () => String(++nextGeneration),
+        [identity, identifiers, serializedAtoms, width]
+    );
     const definitions = useMemo(
         () => new Map((atoms ?? []).map((atom) => [atom.name, atom])),
         [atoms]
@@ -131,6 +158,7 @@ export function useViewerAtoms({
     }, []);
     const current = useRef({
         generation,
+        snapshot,
         revision,
         positions,
         renderedPositions,
@@ -143,6 +171,7 @@ export function useViewerAtoms({
     });
     current.current = {
         generation,
+        snapshot,
         revision,
         positions,
         renderedPositions,
@@ -183,11 +212,11 @@ export function useViewerAtoms({
         )
             return;
         try {
-            const next = parsePositions(value.atomsJson, latest.definitions);
+            const next = parsePositions(value.atomsJson, latest.definitions, latest.snapshot);
             const retainedMeasurements: Measurements = {};
             const retainedKeys = new Set<string>();
             for (const atom of next) {
-                const key = `${atom.docPos}:${atom.nodeType}`;
+                const key = atom.key;
                 retainedKeys.add(key);
                 const measured = mountedMeasurements.current.get(key);
                 if (measured?.size.width === atom.width) {
@@ -230,46 +259,76 @@ export function useViewerAtoms({
             setWidth((previous) => (previous === next ? previous : next));
     }, []);
 
+    const updateQueues = useRef(new Map<string, Promise<void>>());
+    const acknowledged = useRef(
+        new Map<string, { generation: string; attrs: Record<string, unknown> }>()
+    );
+    useLayoutEffect(() => {
+        acknowledged.current.clear();
+    }, [generation]);
     const updateAttrs = useCallback(
-        async (owner: string, atom: AtomPosition, partial: Record<string, unknown>) => {
-            const latest = current.current;
-            if (!mounted.current)
-                throw new AtomUpdateAttrsError('not-ready', 'The viewer is unmounted.');
-            if (
-                owner !== latest.generation ||
-                !latest.positions.some(
-                    (position) =>
-                        position.docPos === atom.docPos &&
-                        position.nodeType === atom.nodeType &&
-                        position.attrsJson === atom.attrsJson
-                )
-            ) {
-                throw new AtomUpdateAttrsError('stale-revision', 'The viewer content has changed.');
-            }
-            if (latest.readOnly || !latest.onUpdateAtomAttrs) {
-                throw new AtomUpdateAttrsError(
-                    'not-applicable',
-                    'Viewer updates require readOnly={false} and onUpdateAtomAttrs.'
-                );
-            }
-            const declared = latest.definitions.get(atom.nodeType)?.attrs ?? {};
-            if (
-                !isRecord(partial) ||
-                Object.keys(partial).some(
-                    (key) => !Object.prototype.hasOwnProperty.call(declared, key)
-                )
-            ) {
-                throw new AtomUpdateAttrsError(
-                    'not-applicable',
-                    'Atom updates must contain only declared attributes.'
-                );
-            }
-            await latest.onUpdateAtomAttrs({
-                nodeType: atom.nodeType,
-                docPos: atom.docPos,
-                attrs: atom.attrs,
-                partial,
-            });
+        (owner: string, atom: AtomPosition, update: AtomAttrsUpdate): Promise<void> => {
+            const execute = async () => {
+                const latest = current.current;
+                if (!mounted.current)
+                    throw new AtomUpdateAttrsError('not-ready', 'The viewer is unmounted.');
+                if (
+                    owner !== latest.generation ||
+                    !latest.positions.some(
+                        (position) =>
+                            position.key === atom.key && position.attrsJson === atom.attrsJson
+                    )
+                ) {
+                    throw new AtomUpdateAttrsError(
+                        'stale-revision',
+                        'The viewer content has changed.'
+                    );
+                }
+                if (latest.readOnly || !latest.onUpdateAtomAttrs)
+                    throw new AtomUpdateAttrsError(
+                        'not-applicable',
+                        'Viewer updates require readOnly={false} and onUpdateAtomAttrs.'
+                    );
+                const accepted = acknowledged.current.get(atom.key);
+                const attrs = accepted?.generation === owner ? accepted.attrs : atom.attrs;
+                const partial = resolveAtomAttrsUpdate(attrs, update);
+                const definition = latest.definitions.get(atom.nodeType)!;
+                try {
+                    validateAttributes({ ...attrs, ...partial }, definition.attrs ?? {});
+                    if (
+                        definition.idAttribute &&
+                        Object.prototype.hasOwnProperty.call(partial, definition.idAttribute) &&
+                        partial[definition.idAttribute] !== attrs[definition.idAttribute]
+                    )
+                        throw new Error('An atom identity cannot be changed.');
+                } catch (error) {
+                    throw new AtomUpdateAttrsError(
+                        'not-applicable',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                }
+                await latest.onUpdateAtomAttrs({
+                    nodeType: atom.nodeType,
+                    atomId: atom.atomId,
+                    docPos: atom.docPos,
+                    attrs,
+                    partial,
+                });
+                if (mounted.current && current.current.generation === owner)
+                    acknowledged.current.set(atom.key, {
+                        generation: owner,
+                        attrs: { ...attrs, ...partial },
+                    });
+            };
+            const previous = updateQueues.current.get(atom.key);
+            const result = previous ? previous.catch(() => {}).then(execute) : execute();
+            updateQueues.current.set(atom.key, result);
+            const clean = () => {
+                if (updateQueues.current.get(atom.key) === result)
+                    updateQueues.current.delete(atom.key);
+            };
+            void result.then(clean, clean);
+            return result;
         },
         []
     );
@@ -301,7 +360,7 @@ export function useViewerAtoms({
                 )
             )
                 return;
-            mountedMeasurements.current.set(`${atom.docPos}:${atom.nodeType}`, {
+            mountedMeasurements.current.set(atom.key, {
                 nodeType: atom.nodeType,
                 size: { width: atom.width, height: measured.height },
             });
@@ -329,9 +388,9 @@ export function useViewerAtoms({
         if (!Component) return null;
         return (
             <View
-                key={`${atom.docPos}:${atom.nodeType}`}
+                key={atom.key}
                 collapsable={false}
-                pointerEvents={readOnly || pendingLayout ? 'none' : 'box-none'}
+                pointerEvents={!interactive || pendingLayout ? 'none' : 'box-none'}
                 accessibilityElementsHidden={pendingLayout}
                 importantForAccessibility={pendingLayout ? 'no-hide-descendants' : 'auto'}
                 style={{
@@ -342,13 +401,21 @@ export function useViewerAtoms({
                     opacity: pendingLayout ? 0 : 1,
                 }}
                 onLayout={(event) => measure(generation, atom, Component, event)}>
-                <Component
-                    attrs={atom.attrs}
-                    nodeType={atom.nodeType}
-                    selected={false}
-                    readOnly={readOnly}
-                    isViewer
-                    updateAttrs={(partial) => updateAttrs(layout!.generation, atom, partial)}
+                <AtomHost
+                    component={Component}
+                    width={atom.width}
+                    estimatedHeight={atom.height}
+                    visible={atomIsVisible(atom.y, atom.height, viewport)}
+                    onMeasure={(event) => measure(generation, atom, Component, event)}
+                    atomProps={{
+                        attrs: atom.attrs,
+                        nodeType: atom.nodeType,
+                        selected: false,
+                        readOnly,
+                        interactive: interactive && !pendingLayout,
+                        isViewer: true,
+                        updateAttrs: (partial) => updateAttrs(layout!.generation, atom, partial),
+                    }}
                 />
             </View>
         );

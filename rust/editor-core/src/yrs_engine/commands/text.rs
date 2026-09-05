@@ -755,6 +755,43 @@ pub(super) fn plan(
             );
             return semantic_transaction(&context, &selection, plan);
         }
+        TypedCommand::DeleteBackward
+            if matches!(
+                context.selection,
+                crate::yrs_engine::ResolvedSelection::Node { .. }
+            ) =>
+        {
+            let crate::yrs_engine::ResolvedSelection::Node { at } = context.selection else {
+                unreachable!();
+            };
+            let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
+            let end = context
+                .position_map
+                .doc_to_scalar(at.document + 1, context.document);
+            let Some(mut plan) = crate::command_planner::plan_delete_scalar_range(
+                context.document,
+                context.position_map,
+                context.schema,
+                at.scalar,
+                end,
+            )
+            .map_err(|()| {
+                OperationError::operation_invalid(
+                    context.request_id,
+                    0,
+                    "command",
+                    "node deletion planning failed",
+                )
+            })?
+            else {
+                return Ok(CommandPlan::NotApplicable);
+            };
+            if plan.selection_after.is_none() {
+                plan.selection_after =
+                    Some(crate::selection::Selection::text(at.document, at.document));
+            }
+            return semantic_transaction(&context, &selection, plan);
+        }
         TypedCommand::InsertText { text } => {
             let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
             let Some(plan) = crate::command_planner::plan_insert_text(

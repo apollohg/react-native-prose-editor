@@ -80,6 +80,8 @@ struct CanonicalMark<'a> {
 struct CanonicalAttr {
     has_default: bool,
     default: CanonicalJsonValue,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    constraints: BTreeMap<String, CanonicalJsonValue>,
 }
 
 #[derive(Serialize)]
@@ -131,6 +133,11 @@ impl From<&serde_json::Value> for CanonicalJsonValue {
 impl CanonicalAttr {
     fn from_spec(spec: &AttrSpec) -> Self {
         Self {
+            constraints: spec
+                .constraints
+                .iter()
+                .map(|(k, v)| (k.clone(), CanonicalJsonValue::from(v)))
+                .collect(),
             has_default: spec.has_default,
             default: spec
                 .default
@@ -406,6 +413,52 @@ mod tests {
             ],
             vec![],
         )
+    }
+
+    #[test]
+    fn declarative_attrs_reject_document_values_and_coerce_html() {
+        let schema = Schema::from_json(&json!({
+            "nodes": [
+                {"name":"doc", "role":"doc", "content":"block*"},
+                {"name":"text", "role":"text", "content":""},
+                {"name":"card", "role":"block", "group":"block", "content":"", "isVoid":true,
+                 "attrs":{"count":{"type":"number", "min":0, "max":5}},
+                 "html":{"tag":"div", "staticAttrs":{"data-card":"yes"}, "attrMap":{"count":"data-count"}}}
+            ], "marks":[]
+        })).unwrap();
+        let limits = crate::boundary::ResourceLimits::default();
+        for value in [json!(-1), json!(6), json!("1"), json!(null)] {
+            let document = crate::model::Document::new(crate::model::Node::element(
+                "doc".into(),
+                HashMap::new(),
+                crate::model::Fragment::from(vec![crate::model::Node::void(
+                    "card".into(),
+                    HashMap::from([("count".into(), value)]),
+                )]),
+            ));
+            assert!(
+                crate::transform::DocumentValidator::validate(&document, &schema, &limits).is_err()
+            );
+        }
+        let document = crate::serialize::from_html(
+            "<div data-card=\"yes\" data-count=\"2\"></div>",
+            &schema,
+            &crate::serialize::FromHtmlOptions::default(),
+        )
+        .unwrap();
+        assert!(crate::transform::DocumentValidator::validate(&document, &schema, &limits).is_ok());
+    }
+
+    #[test]
+    fn declarative_attrs_validate_and_affect_fingerprint() {
+        let invalid = schema_with_attr(json!({"type":"number", "default":"bad"}));
+        assert!(Schema::from_json(&invalid).is_err());
+        let plain = Schema::from_json(&schema_with_attr(json!({"default":0}))).unwrap();
+        let constrained = Schema::from_json(&schema_with_attr(
+            json!({"type":"number", "min":0, "default":0}),
+        ))
+        .unwrap();
+        assert_ne!(schema_fingerprint(&plain), schema_fingerprint(&constrained));
     }
 
     #[test]

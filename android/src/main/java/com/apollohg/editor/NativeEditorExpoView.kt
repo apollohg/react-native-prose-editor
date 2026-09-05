@@ -1162,8 +1162,13 @@ class NativeEditorExpoView(
                     "key" to position.key,
                     "x" to position.xPx / density,
                     "y" to position.yPx / density,
+                    "height" to position.heightPx / density,
                 )
             },
+            "viewport" to mapOf(
+                "y" to richTextView.editorScrollView.top / density,
+                "height" to richTextView.editorScrollView.height / density,
+            ),
             "editorId" to eventEditorId(richTextView.editorId)
         )
         onAtomLayoutForTesting?.invoke(event) ?: onAtomLayout(event)

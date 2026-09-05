@@ -86,8 +86,15 @@ import {
     useFocusPreservingFrames,
     type RichTextEditorFocusPreservingRefs,
 } from './useFocusPreservingFrames';
+import { AtomHost, atomIsVisible, type AtomViewport } from './AtomHost';
+import { resolveAtomAttrsUpdate } from './atomUpdates';
 import { DefaultAtomChip } from './DefaultAtomChip';
-import { serializeEditorAtoms, type AtomComponent, type AtomNodeDefinition } from './atoms';
+import {
+    serializeEditorAtoms,
+    type AtomComponent,
+    type AtomNodeDefinition,
+    type AtomAttrsUpdate,
+} from './atoms';
 import {
     AtomUpdateAttrsError,
     DEFAULT_ATOM_CHIP_HEIGHT,
@@ -196,9 +203,11 @@ interface NativeAtomLayoutEvent {
     width: number;
     editorId: string;
     positions?: readonly NativeAtomPosition[];
+    viewport?: { y: number; height: number };
 }
 
 interface NativeAtomPosition {
+    height?: number;
     key: string;
     x: number;
     y: number;
@@ -753,7 +762,13 @@ export interface RichTextEditorProps {
     /** Optional addon configuration. */
     addons?: EditorAddons;
     /** Custom void-block node definitions mounted as React children. */
-    atoms?: readonly AtomNodeDefinition[];
+    atoms?: readonly AtomNodeDefinition<any>[];
+    /** Whether atom controls receive input, independently of editable. Defaults to true. */
+    atomsInteractive?: boolean;
+    /** Opt-in atom virtualization using the native scroll viewport. */
+    virtualizeAtoms?: boolean;
+    /** Overrides the visible range in native atom layout coordinates, in points. */
+    atomViewport?: AtomViewport;
     /** Remote awareness selections rendered as native overlays. */
     remoteSelections?: readonly RemoteSelectionDecoration[];
     /**
@@ -899,6 +914,9 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             theme,
             addons,
             atoms,
+            atomsInteractive = true,
+            virtualizeAtoms = false,
+            atomViewport,
             remoteSelections,
             allowImageResizing = true,
             onContentChange,
@@ -1165,6 +1183,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
         const [atomPositions, setAtomPositions] = useState<ReadonlyMap<string, NativeAtomPosition>>(
             new Map()
         );
+        const [nativeAtomViewport, setNativeAtomViewport] = useState<AtomViewport>();
         const warnedUnknownAtomTypesRef = useRef(new Set<string>());
         const atomSeedEditorIdRef = useRef<string | null>(null);
         const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
@@ -1583,6 +1602,9 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
         const editableRef = useRef(editable);
         editableRef.current = editable;
 
+        const atomOwnerRef = useRef(documentHandle);
+        atomOwnerRef.current = documentHandle;
+
         const updateAtomAttrs = useCallback(
             async (
                 atomKey: string,
@@ -1590,7 +1612,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                 expectedDocPos: number,
                 expectedDocumentVersion: string | null,
                 hasStableKey: boolean,
-                attrs: Record<string, unknown>
+                update: AtomAttrsUpdate
             ): Promise<void> => {
                 const baseDocumentRevision = latestRevisionRef.current;
                 if (documentHandle.isDestroyed || baseDocumentRevision == null) {
@@ -1613,6 +1635,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                         'The atom no longer exists in the document'
                     );
                 }
+                const attrs = resolveAtomAttrsUpdate(instance.attrs, update);
                 let outcome;
                 try {
                     outcome = bridge.applyCommand({
@@ -1658,6 +1681,89 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                 afterLocalEngineMutation();
             },
             [afterLocalEngineMutation, bridge, document, documentHandle, refreshAtomsFromUpdate]
+        );
+
+        const runAtomAction = useCallback(
+            async (
+                owner: NativeEditorDocumentHandle,
+                instance: AtomInstance,
+                documentVersion: string | null,
+                action: 'select' | 'delete' | 'before' | 'after'
+            ) => {
+                if (
+                    owner !== atomOwnerRef.current ||
+                    documentHandle.isDestroyed ||
+                    latestRevisionRef.current == null
+                )
+                    throw new AtomUpdateAttrsError('not-ready', 'The editor is not ready.');
+                if (action === 'delete' && !editableRef.current)
+                    throw new AtomUpdateAttrsError('not-applicable', 'The editor is not editable.');
+                const current = atomStateRef.current.instances.find(
+                    (candidate) =>
+                        candidate.key === instance.key && candidate.nodeType === instance.nodeType
+                );
+                if (
+                    !current ||
+                    (!instance.hasStableKey &&
+                        (documentVersion !== atomStateRef.current.documentVersion ||
+                            current.docPos !== instance.docPos))
+                )
+                    throw new AtomUpdateAttrsError('not-applicable', 'The atom no longer exists.');
+                try {
+                    const baseDocumentRevision = latestRevisionRef.current;
+                    const selection = bridge.setSelection({
+                        baseDocumentRevision,
+                        selection: {
+                            type: 'atom',
+                            docPos: current.docPos,
+                            edge: action === 'select' || action === 'delete' ? 'node' : action,
+                        },
+                    });
+                    if (selection.type !== 'transaction')
+                        throw new AtomUpdateAttrsError(
+                            'not-applicable',
+                            'The atom could not be selected.'
+                        );
+                    if (action === 'delete') {
+                        const outcome = bridge.applyCommand({
+                            baseDocumentRevision,
+                            command: { type: 'deleteBackward' },
+                        });
+                        if (outcome.type !== 'transaction')
+                            throw new AtomUpdateAttrsError(
+                                'not-applicable',
+                                'The atom could not be deleted.'
+                            );
+                        afterLocalEngineMutation();
+                    } else {
+                        pushEngineUpdateToView();
+                        document.refresh();
+                        if (action !== 'select') nativeViewRef.current?.focus?.();
+                    }
+                } catch (error) {
+                    if (error instanceof AtomUpdateAttrsError) throw error;
+                    if (isRevisionMismatchError(error)) {
+                        refreshAtomsFromUpdate(bridge.renderUpdate());
+                        document.refresh();
+                        throw new AtomUpdateAttrsError(
+                            'stale-revision',
+                            'The document changed before the atom action.'
+                        );
+                    }
+                    throw new AtomUpdateAttrsError(
+                        'engine-error',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                }
+            },
+            [
+                afterLocalEngineMutation,
+                bridge,
+                document,
+                documentHandle,
+                pushEngineUpdateToView,
+                refreshAtomsFromUpdate,
+            ]
         );
 
         const runEngineMutation = useCallback(
@@ -2023,6 +2129,19 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                 const width = event.nativeEvent.width;
                 if (!Number.isFinite(width) || width < 0) return;
                 setAtomContentWidth((current) => (current === width ? current : width));
+                const viewport = event.nativeEvent.viewport;
+                if (
+                    viewport &&
+                    Number.isFinite(viewport.y) &&
+                    Number.isFinite(viewport.height) &&
+                    viewport.height >= 0
+                ) {
+                    setNativeAtomViewport((previous) =>
+                        previous?.y === viewport.y && previous.height === viewport.height
+                            ? previous
+                            : viewport
+                    );
+                }
                 const positions = event.nativeEvent.positions;
                 if (!Array.isArray(positions)) return;
                 const next = new Map<string, NativeAtomPosition>();
@@ -2040,7 +2159,12 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                     if (current.size !== next.size) return next;
                     for (const [key, position] of next) {
                         const previous = current.get(key);
-                        if (previous?.x !== position.x || previous.y !== position.y) return next;
+                        if (
+                            previous?.x !== position.x ||
+                            previous.y !== position.y ||
+                            previous.height !== position.height
+                        )
+                            return next;
                     }
                     return current;
                 });
@@ -2514,22 +2638,34 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             }
         }, [atomComponents, atomState.instances]);
 
+        const runAtomActionRef = useRef(runAtomAction);
+        runAtomActionRef.current = runAtomAction;
+        const invokeAtomAction = useCallback(
+            (...args: Parameters<typeof runAtomAction>) => runAtomActionRef.current(...args),
+            []
+        );
         const updateAtomAttrsRef = useRef(updateAtomAttrs);
         updateAtomAttrsRef.current = updateAtomAttrs;
         const invokeAtomAttrsUpdate = useCallback(
             (
+                owner: NativeEditorDocumentHandle,
                 instance: AtomInstance,
                 documentVersion: string | null,
-                attrs: Record<string, unknown>
-            ) =>
-                updateAtomAttrsRef.current(
+                attrs: AtomAttrsUpdate
+            ) => {
+                if (owner !== atomOwnerRef.current)
+                    return Promise.reject(
+                        new AtomUpdateAttrsError('not-ready', 'The editor has rebound.')
+                    );
+                return updateAtomAttrsRef.current(
                     instance.key,
                     instance.nodeType,
                     instance.docPos,
                     documentVersion,
                     instance.hasStableKey,
                     attrs
-                ),
+                );
+            },
             []
         );
 
@@ -2548,28 +2684,88 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                                   collapsable={false}
                                   style={{
                                       position: 'absolute',
-                                      top: position?.y ?? 0,
-                                      left: position?.x ?? 0,
+                                      top: Platform.OS === 'ios' ? 0 : (position?.y ?? 0),
+                                      left: Platform.OS === 'ios' ? 0 : (position?.x ?? 0),
                                       width: atomContentWidth,
                                   }}>
-                                  <Component
-                                      attrs={instance.attrs}
-                                      selected={selectedKeys.has(instance.key)}
-                                      readOnly={!editable}
-                                      isViewer={false}
-                                      nodeType={instance.nodeType}
-                                      updateAttrs={(attrs) =>
-                                          invokeAtomAttrsUpdate(
-                                              instance,
-                                              atomState.documentVersion,
-                                              attrs
+                                  <AtomHost
+                                      component={Component}
+                                      width={atomContentWidth}
+                                      estimatedHeight={
+                                          (atoms ?? []).find(
+                                              (atom) => atom.name === instance.nodeType
+                                          )?.estimatedHeight ?? DEFAULT_ATOM_CHIP_HEIGHT
+                                      }
+                                      visible={
+                                          !position ||
+                                          atomIsVisible(
+                                              position.y,
+                                              position.height ??
+                                                  (atoms ?? []).find(
+                                                      (atom) => atom.name === instance.nodeType
+                                                  )?.estimatedHeight ??
+                                                  DEFAULT_ATOM_CHIP_HEIGHT,
+                                              atomViewport ??
+                                                  (virtualizeAtoms ? nativeAtomViewport : undefined)
                                           )
                                       }
+                                      atomProps={{
+                                          attrs: instance.attrs,
+                                          selected: selectedKeys.has(instance.key),
+                                          readOnly: !editable,
+                                          interactive: atomsInteractive,
+                                          isViewer: false,
+                                          nodeType: instance.nodeType,
+                                          updateAttrs: (attrs) =>
+                                              invokeAtomAttrsUpdate(
+                                                  documentHandle,
+                                                  instance,
+                                                  atomState.documentVersion,
+                                                  attrs
+                                              ),
+                                          editor: {
+                                              select: () =>
+                                                  invokeAtomAction(
+                                                      documentHandle,
+                                                      instance,
+                                                      atomState.documentVersion,
+                                                      'select'
+                                                  ),
+                                              delete: () =>
+                                                  invokeAtomAction(
+                                                      documentHandle,
+                                                      instance,
+                                                      atomState.documentVersion,
+                                                      'delete'
+                                                  ),
+                                              focusBefore: () =>
+                                                  invokeAtomAction(
+                                                      documentHandle,
+                                                      instance,
+                                                      atomState.documentVersion,
+                                                      'before'
+                                                  ),
+                                              focusAfter: () =>
+                                                  invokeAtomAction(
+                                                      documentHandle,
+                                                      instance,
+                                                      atomState.documentVersion,
+                                                      'after'
+                                                  ),
+                                          },
+                                      }}
                                   />
                               </View>
                           );
                       }),
             [
+                atoms,
+                atomViewport,
+                documentHandle,
+                invokeAtomAction,
+                virtualizeAtoms,
+                nativeAtomViewport,
+                atomsInteractive,
                 atomComponents,
                 atomContentWidth,
                 atomPositions,

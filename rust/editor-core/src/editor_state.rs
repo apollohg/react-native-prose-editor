@@ -1866,6 +1866,7 @@ mod tests {
                     AttrSpec {
                         default: None,
                         has_default: false,
+                        ..AttrSpec::default()
                     },
                 );
             }

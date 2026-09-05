@@ -92,7 +92,7 @@ impl PositionMap {
     }
 
     /// Get the effective doc_start for a block, accounting for pending deltas.
-    fn effective_doc_start(&self, block_idx: usize) -> u32 {
+    pub(crate) fn effective_doc_start(&self, block_idx: usize) -> u32 {
         let block = &self.blocks[block_idx];
         let (dd, _) = self.prefix_deltas.accumulated_delta(block_idx);
         (block.doc_start as i64 + dd as i64) as u32

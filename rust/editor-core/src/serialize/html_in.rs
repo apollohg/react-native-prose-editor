@@ -532,6 +532,23 @@ fn build_html_rules_node(
 }
 
 fn coerce_rule_attr_value(spec: &crate::schema::AttrSpec, raw: &str) -> serde_json::Value {
+    if let Some(kind) = spec.declared_type() {
+        if kind == "string" {
+            return serde_json::Value::String(raw.to_string());
+        }
+        return serde_json::from_str(raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
+    }
+    if let Some(values) = spec.constraints.get("enum").and_then(|v| v.as_array()) {
+        if values.iter().any(|value| value.as_str() == Some(raw)) {
+            return serde_json::Value::String(raw.to_string());
+        }
+        if let Ok(value) = serde_json::from_str(raw) {
+            if spec.validate_value(&value).is_ok() {
+                return value;
+            }
+        }
+    }
     match spec.default.as_ref() {
         Some(serde_json::Value::Number(_)) => raw
             .parse::<i64>()
@@ -958,4 +975,23 @@ fn make_paragraph(schema: &Schema, children: Vec<Node>) -> Node {
         .map(super::default_node_attrs)
         .unwrap_or_default();
     Node::element(para_name.to_string(), attrs, Fragment::from(children))
+}
+
+#[cfg(test)]
+mod atom_enum_tests {
+    #[test]
+    fn enum_only_attributes_recover_json_types() {
+        for (values, raw, expected) in [
+            (serde_json::json!([1, 2]), "1", serde_json::json!(1)),
+            (serde_json::json!([true, false]), "true", serde_json::json!(true)),
+            (serde_json::json!([{"n": 1}]), "{\"n\":1}", serde_json::json!({"n": 1})),
+            (serde_json::json!(["1", "2"]), "1", serde_json::json!("1")),
+        ] {
+            let spec = crate::schema::AttrSpec {
+                constraints: [("enum".to_owned(), values)].into_iter().collect(),
+                ..Default::default()
+            };
+            assert_eq!(super::coerce_rule_attr_value(&spec, raw), expected);
+        }
+    }
 }

@@ -642,9 +642,14 @@ class AtomMountingTest {
         val event = events.last()
         assertEquals(expectedWidth, event["width"] as Float)
         assertEquals(
-            listOf(mapOf("key" to "counterCard:0", "x" to expectedX, "y" to expectedY)),
+            listOf(mapOf("key" to "counterCard:0", "x" to expectedX, "y" to expectedY, "height" to span.reservedHeightPx / density)),
             event["positions"],
         )
+        assertEquals(mapOf("y" to 0f, "height" to editor.richTextView.editorScrollView.height / density), event["viewport"])
+        val previousCount = events.size
+        editor.richTextView.editorScrollView.scrollTo(0, 10)
+        editor.richTextView.emitAtomLayoutIfAvailable(force = true)
+        assertTrue(events.size > previousCount)
     }
 
     @Test
