@@ -3,13 +3,13 @@
     "version": "1.0.3",
     "description": "Native rich text editor with Rust core for React Native",
     "license": "Apache-2.0",
-    "homepage": "https://github.com/apollohg/react-native-prose-editor",
+    "homepage": "https://github.com/apollohg/react-native-rich-text-editor",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/apollohg/react-native-prose-editor.git"
+        "url": "git+https://github.com/apollohg/react-native-rich-text-editor.git"
     },
     "bugs": {
-        "url": "https://github.com/apollohg/react-native-prose-editor/issues"
+        "url": "https://github.com/apollohg/react-native-rich-text-editor/issues"
     },
     "main": "dist/index.js",
     "module": "dist/index.js",

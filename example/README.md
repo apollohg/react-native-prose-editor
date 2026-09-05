@@ -21,7 +21,7 @@ One screen: a title bar with a live word count, and the editor filling the rest 
 | Custom atoms      | The counter card is a React component inside the document; the insert menu's counter action adds another  |
 | Image resizing    | `allowImageResizing` is on, so a selected image shows native resize handles                                |
 
-**Not covered:** Yjs collaboration. `useYjsCollaboration` needs a running sync server, so it is out of scope here. See the [Collaboration Guide](https://github.com/apollohg/react-native-prose-editor/wiki/Collaboration).
+**Not covered:** Yjs collaboration. `useYjsCollaboration` needs a running sync server, so it is out of scope here. See the [Collaboration Guide](https://github.com/apollohg/react-native-rich-text-editor/wiki/Collaboration).
 
 ## Layout
 

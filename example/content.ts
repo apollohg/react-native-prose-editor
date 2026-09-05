@@ -13,7 +13,7 @@ export const INITIAL_CONTENT = [
     '<h1>Field notes</h1>',
     '<p>A native editor with a <strong>Rust core</strong>. Everything below is editable: ',
     'headings, <em>emphasis</em>, <u>underline</u>, <s>strikethrough</s>, and ',
-    '<a href="https://github.com/apollohg/react-native-prose-editor">links</a>.</p>',
+    '<a href="https://github.com/apollohg/react-native-rich-text-editor">links</a>.</p>',
     '<blockquote><p>Type @ anywhere to mention someone on the team.</p></blockquote>',
     '<h2>Today</h2>',
     '<ul><li><p>Review the toolbar above the keyboard</p></li>',
