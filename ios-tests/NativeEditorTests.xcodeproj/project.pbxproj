@@ -27,6 +27,12 @@
 		41D57FCA7CB45A181563B8DC /* libPods-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A73C3B3A56B96545251AA8A /* libPods-NativeEditorTests.a */; };
 		43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */; };
 		464AF0D70C477A92AE784052 /* RichTextEditorViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */; };
+		6E391A0A9B3A80C26EF14019 /* RichTextEditorViewTests+NativeMutationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1C62B5ECC1B9A6EDF52A75 /* RichTextEditorViewTests+NativeMutationTests.swift */; };
+		3E9AD7067FB6F90FEF4436C6 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A9EAAAD9B0AE0BD12F7176 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift */; };
+		6BEE10E5BDAEC3110DA75F79 /* RichTextEditorViewTests+ExternalCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CFC5367EC43E7456649FB62 /* RichTextEditorViewTests+ExternalCompositionTests.swift */; };
+		B6A44BA703B87E4D9C3AF335 /* RichTextEditorViewTests+LayoutRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 732E5EBF40F9EB2B798C8EC8 /* RichTextEditorViewTests+LayoutRenderingTests.swift */; };
+		6C0247C41F64CD98F5B7BB17 /* RichTextEditorViewTests+MentionsImagesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0CDDAA60A46C98575CBF62 /* RichTextEditorViewTests+MentionsImagesTests.swift */; };
+		84EAC08B58A0D275F7054BB0 /* EditorV2StagingViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E0FB789730788D37089B12 /* EditorV2StagingViewTests.swift */; };
 		4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F15AFE005F23CA6452674D /* PositionBridgeTests.swift */; };
 		512B8F095CBF6793BD82B241 /* PreparedProseAccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FCFAF19E668BD6BAF3FE81E /* PreparedProseAccessibilityTests.swift */; };
 		5642EBDE70DB95F3337A753E /* RenderBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */; };
@@ -43,8 +49,12 @@
 		A5CC2A434974FCEBEC188106 /* viewer-performance-corpus.json in Resources */ = {isa = PBXBuildFile; fileRef = EAAEA72D6B36B64387DAC8D3 /* viewer-performance-corpus.json */; };
 		A82FEB7C023E95364769B61A /* PreparedProseLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E81F40EDFFF4ED5A11F4DF0C /* PreparedProseLayoutTests.swift */; };
 		AC4EC346C4C73FCADFCEB1F4 /* PreparedProseLayoutCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCF83BC143D0A11E95F2C7A2 /* PreparedProseLayoutCache.swift */; };
+		B11CE551B11CE551B11CE551 /* NativeEditorViewRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11CE551A11CE551A11CE551 /* NativeEditorViewRegistry.swift */; };
+		B11CE700B11CE700B11CE700 /* NativeToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11CE700A11CE700A11CE700 /* NativeToolbar.swift */; };
 		B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */; };
 		B8B54E1CFD58906815926009 /* SharedNativeImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A255E0D6D0056A2815C3AF /* SharedNativeImagePipeline.swift */; };
+		C11ED701C11ED701C11ED701 /* EditorTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11ED700C11ED700C11ED700 /* EditorTextView.swift */; };
+		C11ED711C11ED711C11ED711 /* EditorInteractionOverlays.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11ED710C11ED710C11ED710 /* EditorInteractionOverlays.swift */; };
 		CD2F0516C03F1703053D7129 /* PreparedProseRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B87A96C703617DB8635AEF2 /* PreparedProseRenderingTests.swift */; };
 		CF81434F1BF8598ADBF2A46E /* prepared-prose-benchmark-config.json in Resources */ = {isa = PBXBuildFile; fileRef = C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */; };
 		CFD4E81EA2D422B4EF4A965E /* PreparedProseDrawingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83DF91687ACD8DF8B0E18736 /* PreparedProseDrawingView.swift */; };
@@ -53,6 +63,7 @@
 		DAB688E56423DF3A525C7750 /* PreparedProseLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A498FA7F1B3DFE437AD093 /* PreparedProseLayout.swift */; };
 		DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */; };
 		E0497F12FE357FCA9190C51B /* NativeCollaborationTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B991A14504C9E29076097E /* NativeCollaborationTransport.swift */; };
+		E11DE711E11DE711E11DE711 /* EditorNodeTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11DE710E11DE710E11DE710 /* EditorNodeTypes.swift */; };
 		ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */; };
 		FA494E1FD4D112BBA6BDBC7C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 542F8BBC5410DE5DFB15900A /* PrivacyInfo.xcprivacy */; };
 		FF166FE6F4CB4E81B0144C80 /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 8124EA2F2AA895E829E051F4 /* libPods-NativeEditorTestHost.a */; };
@@ -103,6 +114,8 @@
 		9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRevisionTests.swift; sourceTree = "<group>"; };
 		95E37E869FF564B0FCEFE911 /* Pods-NativeEditorTestHost.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.release.xcconfig"; sourceTree = "<group>"; };
 		9B53E618A4451AF063C952EB /* PREPPreparedProseViewerComponentView.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PREPPreparedProseViewerComponentView.mm; sourceTree = "<group>"; };
+		A11CE551A11CE551A11CE551 /* NativeEditorViewRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEditorViewRegistry.swift; sourceTree = "<group>"; };
+		A11CE700A11CE700A11CE700 /* NativeToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeToolbar.swift; sourceTree = "<group>"; };
 		A183A542FD912C410D3A2B03 /* PreparedProseMeasurementsManager.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PreparedProseMeasurementsManager.mm; sourceTree = "<group>"; };
 		A6225248E2F347AD95F31C25 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridgeTests.swift; sourceTree = "<group>"; };
@@ -110,9 +123,17 @@
 		AD2EDD1353EF86CAD0E419CB /* PreparedProseViewerShadowNode.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PreparedProseViewerShadowNode.cpp; sourceTree = "<group>"; };
 		B44533DC8D4FA27875F041AC /* ProseViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProseViewerView.swift; sourceTree = "<group>"; };
 		BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2Shadow.swift; sourceTree = "<group>"; };
+		C11ED700C11ED700C11ED700 /* EditorTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorTextView.swift; sourceTree = "<group>"; };
+		C11ED710C11ED710C11ED710 /* EditorInteractionOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorInteractionOverlays.swift; sourceTree = "<group>"; };
 		C3845D8503B9EB586E692477 /* prepared-prose-benchmark-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "prepared-prose-benchmark-config.json"; sourceTree = "<group>"; };
 		C4A498FA7F1B3DFE437AD093 /* PreparedProseLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayout.swift; sourceTree = "<group>"; };
 		C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorViewTests.swift; sourceTree = "<group>"; };
+		BC1C62B5ECC1B9A6EDF52A75 /* RichTextEditorViewTests+NativeMutationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+NativeMutationTests.swift"; sourceTree = "<group>"; };
+		E9A9EAAAD9B0AE0BD12F7176 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+UpdatesLifecycleTests.swift"; sourceTree = "<group>"; };
+		1CFC5367EC43E7456649FB62 /* RichTextEditorViewTests+ExternalCompositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+ExternalCompositionTests.swift"; sourceTree = "<group>"; };
+		732E5EBF40F9EB2B798C8EC8 /* RichTextEditorViewTests+LayoutRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+LayoutRenderingTests.swift"; sourceTree = "<group>"; };
+		6E0CDDAA60A46C98575CBF62 /* RichTextEditorViewTests+MentionsImagesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RichTextEditorViewTests+MentionsImagesTests.swift"; sourceTree = "<group>"; };
+		91E0FB789730788D37089B12 /* EditorV2StagingViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorV2StagingViewTests.swift; sourceTree = "<group>"; };
 		CA17728099475A1BA3392F9D /* EditorAddons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorAddons.swift; sourceTree = "<group>"; };
 		CCF83BC143D0A11E95F2C7A2 /* PreparedProseLayoutCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayoutCache.swift; sourceTree = "<group>"; };
 		D2081B4BC81317EC9224BD90 /* CoreTextProseLayoutEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTextProseLayoutEngine.swift; sourceTree = "<group>"; };
@@ -122,6 +143,7 @@
 		E6D474133975B772D0171A1A /* ViewerDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerDocument.swift; sourceTree = "<group>"; };
 		E81F40EDFFF4ED5A11F4DF0C /* PreparedProseLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayoutTests.swift; sourceTree = "<group>"; };
 		EAAEA72D6B36B64387DAC8D3 /* viewer-performance-corpus.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "viewer-performance-corpus.json"; sourceTree = "<group>"; };
+		E11DE710E11DE710E11DE710 /* EditorNodeTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorNodeTypes.swift; sourceTree = "<group>"; };
 		EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerFontEnvironment.swift; sourceTree = "<group>"; };
 		F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionBridge.swift; sourceTree = "<group>"; };
 		FED85E6F34BC6FB48B3EE3A5 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTestHost/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
@@ -161,7 +183,10 @@
 				A1B0488D87C3F2E91B9D51E8 /* Tests */,
 				3A87646ED458E075A9149BAB /* Viewer */,
 				CA17728099475A1BA3392F9D /* EditorAddons.swift */,
+				C11ED710C11ED710C11ED710 /* EditorInteractionOverlays.swift */,
 				22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */,
+				E11DE710E11DE710E11DE710 /* EditorNodeTypes.swift */,
+				C11ED700C11ED700C11ED700 /* EditorTextView.swift */,
 				2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */,
 				4493157DC02C94D7F7D40FEB /* EditorV2Adapter.swift */,
 				BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */,
@@ -170,7 +195,9 @@
 				D8B991A14504C9E29076097E /* NativeCollaborationTransport.swift */,
 				2261CB51C233C88B5737A00A /* NativeCollaborationTransportRegistry.swift */,
 				786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */,
+				A11CE551A11CE551A11CE551 /* NativeEditorViewRegistry.swift */,
 				8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */,
+				A11CE700A11CE700A11CE700 /* NativeToolbar.swift */,
 				3A50C4C90F9D98044CF98CF7 /* OrderedListMarkerFormatter.swift */,
 				F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */,
 				B44533DC8D4FA27875F041AC /* ProseViewerView.swift */,
@@ -288,6 +315,12 @@
 				9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */,
 				A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */,
 				C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */,
+				BC1C62B5ECC1B9A6EDF52A75 /* RichTextEditorViewTests+NativeMutationTests.swift */,
+				E9A9EAAAD9B0AE0BD12F7176 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift */,
+				1CFC5367EC43E7456649FB62 /* RichTextEditorViewTests+ExternalCompositionTests.swift */,
+				732E5EBF40F9EB2B798C8EC8 /* RichTextEditorViewTests+LayoutRenderingTests.swift */,
+				6E0CDDAA60A46C98575CBF62 /* RichTextEditorViewTests+MentionsImagesTests.swift */,
+				91E0FB789730788D37089B12 /* EditorV2StagingViewTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -589,7 +622,10 @@
 				0A70A1000000000000000001 /* AtomMountingTests.swift in Sources */,
 				89908516B0B1D833BAF39B24 /* CoreTextProseLayoutEngine.swift in Sources */,
 				41CB569BDACE6252AAA1E146 /* EditorAddons.swift in Sources */,
+				C11ED711C11ED711C11ED711 /* EditorInteractionOverlays.swift in Sources */,
 				D706191CC74381BEB84776D7 /* EditorLayoutManager.swift in Sources */,
+				E11DE711E11DE711E11DE711 /* EditorNodeTypes.swift in Sources */,
+				C11ED701C11ED701C11ED701 /* EditorTextView.swift in Sources */,
 				43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */,
 				1F1FFFFC3EFDB8DDED227B5F /* EditorV2Adapter.swift in Sources */,
 				9E7DACEBB0DD1AD90F33066C /* EditorV2AdapterTests.swift in Sources */,
@@ -600,6 +636,8 @@
 				E0497F12FE357FCA9190C51B /* NativeCollaborationTransport.swift in Sources */,
 				9E0E70548BFAF02E1EF711DE /* NativeCollaborationTransportRegistry.swift in Sources */,
 				B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */,
+				B11CE551B11CE551B11CE551 /* NativeEditorViewRegistry.swift in Sources */,
+				B11CE700B11CE700B11CE700 /* NativeToolbar.swift in Sources */,
 				408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */,
 				3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */,
 				109AE358027371C57610E495 /* OrderedListMarkerFormatter.swift in Sources */,
@@ -622,6 +660,12 @@
 				5642EBDE70DB95F3337A753E /* RenderBridgeTests.swift in Sources */,
 				63686847E2C46533E28401AF /* RichTextEditorView.swift in Sources */,
 				464AF0D70C477A92AE784052 /* RichTextEditorViewTests.swift in Sources */,
+				6E391A0A9B3A80C26EF14019 /* RichTextEditorViewTests+NativeMutationTests.swift in Sources */,
+				3E9AD7067FB6F90FEF4436C6 /* RichTextEditorViewTests+UpdatesLifecycleTests.swift in Sources */,
+				6BEE10E5BDAEC3110DA75F79 /* RichTextEditorViewTests+ExternalCompositionTests.swift in Sources */,
+				B6A44BA703B87E4D9C3AF335 /* RichTextEditorViewTests+LayoutRenderingTests.swift in Sources */,
+				6C0247C41F64CD98F5B7BB17 /* RichTextEditorViewTests+MentionsImagesTests.swift in Sources */,
+				84EAC08B58A0D275F7054BB0 /* EditorV2StagingViewTests.swift in Sources */,
 				B8B54E1CFD58906815926009 /* SharedNativeImagePipeline.swift in Sources */,
 				81A987FAE78E964982371CDE /* ViewerDocument.swift in Sources */,
 				DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */,
