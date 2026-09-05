@@ -2,7 +2,6 @@
 //!
 //! Each step produces a new `Document` (immutable tree transformation) and a
 //! `StepMap` recording how positions shifted.
-
 use std::collections::HashMap;
 use std::collections::HashSet;
 
