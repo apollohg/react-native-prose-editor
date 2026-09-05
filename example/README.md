@@ -81,6 +81,6 @@ npm run android
 
 ## Custom atoms in the viewer
 
-`components/ViewerCounterExample.tsx` renders the same counter component in `RichTextViewer`. Mount it inside a container with a finite width to try it independently of the editor screen. Its React state owns the attributes: `onUpdateAtomAttrs` applies requested changes, then supplies a new `contentJSON`. Pass `readOnly` to disable its controls.
+`components/ViewerCounterExample.tsx` renders the same counter component in `RichTextViewer`. Mount it inside a container with a finite width to try it independently of the editor screen. Its React state owns the attributes: `onUpdateAtomAttrs` applies requested changes, then supplies a new `contentJSON`. Pass `readOnly` to disable attribute changes; `atomsInteractive` independently controls input. The example uses a declared ID to preserve the card through controlled updates and functional updates for rapid counter actions.
 
 Atom components receive `isViewer` and `readOnly`. In an editor, `isViewer` is false and `readOnly` reflects `editable`. In a viewer, `isViewer` is true and `readOnly` defaults to true. Set `readOnly={false}` to allow interactions; components can handle their own callbacks or use `updateAttrs` with the viewer's `onUpdateAtomAttrs` handler. The viewer never stores changes itself.
