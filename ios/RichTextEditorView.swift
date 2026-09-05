@@ -7300,7 +7300,8 @@ final class AtomHostContainerView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard let hostedView else { return }
+        reportHeightIfNeeded()
+        guard let hostedView, lastReportedHeight != nil else { return }
         let height = hostedView.bounds.height
         let frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
         if hostedView.frame != frame {
@@ -7321,7 +7322,8 @@ final class AtomHostContainerView: UIView {
     private func reportHeightIfNeeded() {
         guard let height = hostedView?.bounds.height,
               height.isFinite,
-              height > 0,
+              height >= 0,
+              height > 0 || (hostedView?.bounds.width ?? 0) > 0,
               lastReportedHeight.map({ abs($0 - height) > 0.5 }) ?? true
         else { return }
         lastReportedHeight = height
@@ -7662,7 +7664,7 @@ final class RichTextEditorView: UIView {
     func setAtomHeight(key atomKey: String, height: CGFloat) {
         let previousMeasuredHeight = measuredAtomHeights[atomKey]
         guard height.isFinite,
-              height > 0,
+              height >= 0,
               measuredAtomHeights[atomKey].map({ abs($0 - height) > 0.5 }) ?? true
         else { return }
 

@@ -1769,6 +1769,55 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it.each([false, true])(
+        'blocks atom updates when disabled, including retained callbacks (initial editable=%s)',
+        async (initialEditable) => {
+            const { definition } = counterAtomDefinition();
+            const handle = createV2LocalHandle(V2_INITIAL_DOC);
+            installAtomRenderSource(() => ({ renderBlocks: atomBlock(), renderPatch: null }));
+            const { getByTestId, rerender } = render(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    atoms={[definition]}
+                    editable={initialEditable}
+                />
+            );
+            act(() => {
+                getByTestId('native-editor-view').props.onAtomLayout({
+                    nativeEvent: { editorId: handle.editorId, width: 200 },
+                });
+            });
+            const updateAttrs = getByTestId('counter-atom').props.atomProps.updateAttrs;
+            const applyCommand = jest.spyOn(handle.bridge, 'applyCommand');
+            rerender(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    atoms={[definition]}
+                    editable={false}
+                />
+            );
+
+            await act(async () => {
+                await expect(updateAttrs({ title: 'blocked' })).rejects.toMatchObject({
+                    name: 'AtomUpdateAttrsError',
+                    code: 'not-applicable',
+                });
+            });
+            expect(applyCommand).not.toHaveBeenCalled();
+
+            rerender(
+                <NativeRichTextEditor documentHandle={handle} atoms={[definition]} editable />
+            );
+            await act(async () => {
+                await expect(updateAttrs({ title: 'enabled' })).rejects.toMatchObject({
+                    code: 'not-applicable',
+                });
+            });
+            expect(applyCommand).toHaveBeenCalledTimes(1);
+            handle.destroy();
+        }
+    );
+
     it('maps atom updateAttrs outcomes and uses the current document revision', async () => {
         const { definition } = counterAtomDefinition();
         const handle = createV2LocalHandle(V2_INITIAL_DOC);

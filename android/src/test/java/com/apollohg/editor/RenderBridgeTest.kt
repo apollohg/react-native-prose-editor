@@ -475,6 +475,26 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `registered atoms override built in void rendering`() {
+        for (nodeType in listOf("image", "horizontalRule", "horizontal_rule")) {
+            val result = RenderBridge.buildSpannable(
+                """[{"type":"voidBlock","nodeType":"$nodeType","docPos":1,"atomId":"custom-1"}]""",
+                baseFontSize,
+                textColor,
+                atomConfiguration = AtomRenderConfiguration(
+                    registeredNodeTypes = setOf(nodeType),
+                    estimatedHeightsDp = mapOf(nodeType to 120f),
+                    measuredHeightsPx = emptyMap(),
+                )
+            )
+            val span = result.getSpans(0, result.length, AtomBlockSpan::class.java).single()
+            assertEquals("custom-1", span.atomKey)
+            assertEquals(nodeType, span.nodeType)
+            assertEquals(120, span.reservedHeightPx)
+        }
+    }
+
+    @Test
     @Config(qualifiers = "xhdpi")
     fun `atom estimate converts dp to pixels at display density`() {
         val density = org.robolectric.RuntimeEnvironment

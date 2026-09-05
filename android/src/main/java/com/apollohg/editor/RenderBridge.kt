@@ -1625,6 +1625,32 @@ object RenderBridge {
         hasStableAtomId: Boolean,
         isDirectRootChild: Boolean,
     ) {
+        if (docPos != null && atomConfiguration?.registeredNodeTypes?.contains(nodeType) == true) {
+            val start = builder.length
+            builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
+            val end = builder.length
+            builder.setSpan(
+                AtomBlockSpan(
+                    atomKey,
+                    nodeType,
+                    docPos,
+                    atomConfiguration.reservedHeightPx(atomKey, nodeType, density),
+                    hasStableAtomId,
+                    isDirectRootChild,
+                ),
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            builder.setSpan(
+                Annotation("nativeVoidNodeType", nodeType),
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            builder.setSpan(
+                Annotation("nativeDocPos", docPos.toUInt().toString()),
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            annotateTopLevelChild(builder, start, end, topLevelChildIndex)
+            return
+        }
         when (nodeType) {
             "horizontalRule", "horizontal_rule" -> {
                 val start = builder.length
@@ -1678,41 +1704,6 @@ object RenderBridge {
                 val start = builder.length
                 builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
                 val end = builder.length
-                if (
-                    docPos != null &&
-                    atomConfiguration?.registeredNodeTypes?.contains(nodeType) == true
-                ) {
-                    val reservedHeightPx = atomConfiguration.reservedHeightPx(
-                        atomKey,
-                        nodeType,
-                        density,
-                    )
-                    builder.setSpan(
-                        AtomBlockSpan(
-                            atomKey,
-                            nodeType,
-                            docPos,
-                            reservedHeightPx,
-                            hasStableAtomId,
-                            isDirectRootChild,
-                        ),
-                        start,
-                        end,
-                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
-                    builder.setSpan(
-                        Annotation("nativeVoidNodeType", nodeType),
-                        start,
-                        end,
-                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
-                    builder.setSpan(
-                        Annotation("nativeDocPos", docPos.toUInt().toString()),
-                        start,
-                        end,
-                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
-                }
                 annotateTopLevelChild(builder, start, end, topLevelChildIndex)
             }
         }

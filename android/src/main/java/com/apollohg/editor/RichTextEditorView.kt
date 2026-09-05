@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -106,6 +108,8 @@ class RichTextEditorView @JvmOverloads constructor(
     private var atomRenderConfiguration: AtomRenderConfiguration? = null
     private val atomHostViews = linkedMapOf<String, View>()
     private val atomLayoutListeners = mutableMapOf<View, View.OnLayoutChangeListener>()
+    private val atomMeasurementHandler = Handler(Looper.getMainLooper())
+    private val pendingAtomMeasurements = mutableMapOf<View, Runnable>()
     private val measuredAtomHeightsPx = mutableMapOf<String, Int>()
     private var lastAtomContentWidthPx = -1
     private var lastAtomLayoutPositions = emptyList<AtomLayoutPosition>()
@@ -234,6 +238,7 @@ class RichTextEditorView @JvmOverloads constructor(
     }
 
     internal fun mountAtomChild(child: View, atomKey: String) {
+        cancelAtomMeasurement(child)
         atomHostViews.entries.firstOrNull { it.value === child }?.let { existing ->
             if (existing.key != atomKey) {
                 atomHostViews.remove(existing.key)
@@ -243,24 +248,43 @@ class RichTextEditorView @JvmOverloads constructor(
         atomHostViews[atomKey]?.takeIf { it !== child }?.let(::detachAtomView)
         atomHostViews[atomKey] = child
         editorScrollView.invalidate()
-        val listener = View.OnLayoutChangeListener { view, _, top, _, bottom, _, oldTop, _, oldBottom ->
-            val height = renderedAtomHeightPx(view) ?: bottom - top
-            val oldHeight = oldBottom - oldTop
-            if (height > 0) {
-                constrainAtomHostBounds(view, height)
-                if (height != oldHeight) setAtomHeight(atomKey, height)
-                layoutAtomHostViews()
-            }
+        val listener = View.OnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+            scheduleAtomMeasurement(view, atomKey)
         }
         atomLayoutListeners.remove(child)?.let(child::removeOnLayoutChangeListener)
         atomLayoutListeners[child] = listener
         child.addOnLayoutChangeListener(listener)
         val initialHeight = renderedAtomHeightPx(child) ?: child.height
-        if (initialHeight > 0) {
+        if (initialHeight > 0 || (initialHeight == 0 && child.isLaidOut)) {
             constrainAtomHostBounds(child, initialHeight)
             setAtomHeight(atomKey, initialHeight)
         }
         layoutAtomHostViews()
+    }
+
+    private fun scheduleAtomMeasurement(child: View, atomKey: String) {
+        if (pendingAtomMeasurements.containsKey(child)) return
+        // Fabric lays out hosts before descendants in the same mounting batch.
+        val measurement = Runnable {
+            try {
+                if (atomHostViews[atomKey] === child) {
+                    val height = renderedAtomHeightPx(child) ?: child.height
+                    if (height >= 0) {
+                        constrainAtomHostBounds(child, height)
+                        setAtomHeight(atomKey, height)
+                        layoutAtomHostViews()
+                    }
+                }
+            } finally {
+                pendingAtomMeasurements.remove(child)
+            }
+        }
+        pendingAtomMeasurements[child] = measurement
+        atomMeasurementHandler.post(measurement)
+    }
+
+    private fun cancelAtomMeasurement(child: View) {
+        pendingAtomMeasurements.remove(child)?.let(atomMeasurementHandler::removeCallbacks)
     }
 
     private fun atomContentWidthPx(): Int? = (
@@ -272,18 +296,22 @@ class RichTextEditorView @JvmOverloads constructor(
     private fun renderedAtomHeightPx(host: View): Int? {
         val group = host as? ViewGroup ?: return null
         var bottom = 0
+        var hasLaidOutChild = false
         for (index in 0 until group.childCount) {
             val child = group.getChildAt(index)
-            if (child.visibility != View.GONE) bottom = maxOf(bottom, child.bottom)
+            if (child.visibility != View.GONE) {
+                bottom = maxOf(bottom, child.bottom)
+                hasLaidOutChild = hasLaidOutChild || child.isLaidOut
+            }
         }
-        return bottom.takeIf { it > 0 }
+        return bottom.takeIf { it > 0 || hasLaidOutChild }
     }
 
     private fun constrainAtomHostBounds(host: View, height: Int) {
         val width = atomContentWidthPx()
             ?: host.measuredWidth.takeIf { it > 0 }
             ?: host.width
-        if (width <= 0 || height <= 0) return
+        if (width <= 0 || height < 0) return
         if (host.measuredWidth != width || host.measuredHeight != height) {
             host.measure(
                 MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
@@ -322,12 +350,13 @@ class RichTextEditorView @JvmOverloads constructor(
     }
 
     private fun detachAtomView(child: View) {
+        cancelAtomMeasurement(child)
         atomLayoutListeners.remove(child)?.let(child::removeOnLayoutChangeListener)
         (child.parent as? ViewGroup)?.removeView(child)
     }
 
     private fun setAtomHeight(atomKey: String, heightPx: Int) {
-        if (heightPx <= 0 || measuredAtomHeightsPx[atomKey] == heightPx) return
+        if (heightPx < 0 || measuredAtomHeightsPx[atomKey] == heightPx) return
         measuredAtomHeightsPx[atomKey] = heightPx
         editorEditText.applyAtomHeight(
             atomKey,

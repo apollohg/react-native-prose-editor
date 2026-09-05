@@ -809,6 +809,21 @@ final class RenderBridge {
             attrs[RenderBridgeAttributes.topLevelChildIndex] = NSNumber(value: topLevelChildIndex)
         }
 
+        if atomConfiguration?.registeredNodeTypes.contains(nodeType) == true {
+            let attachment = AtomBlockAttachment(
+                atomKey: atomKey,
+                nodeType: nodeType,
+                docPos: docPos,
+                reservedHeight: atomConfiguration?.reservedHeight(
+                    atomKey: atomKey,
+                    nodeType: nodeType
+                ) ?? 0
+            )
+            let attrStr = NSMutableAttributedString(attachment: attachment)
+            attrStr.addAttributes(attrs, range: NSRange(location: 0, length: attrStr.length))
+            return attrStr
+        }
+
         switch nodeType {
         case "horizontalRule", "horizontal_rule":
             let attachment = HorizontalRuleAttachment()
@@ -842,20 +857,6 @@ final class RenderBridge {
             attrStr.addAttributes(attrs, range: range)
             return attrStr
         default:
-            if atomConfiguration?.registeredNodeTypes.contains(nodeType) == true {
-                let attachment = AtomBlockAttachment(
-                    atomKey: atomKey,
-                    nodeType: nodeType,
-                    docPos: docPos,
-                    reservedHeight: atomConfiguration?.reservedHeight(
-                        atomKey: atomKey,
-                        nodeType: nodeType
-                    ) ?? 0
-                )
-                let attrStr = NSMutableAttributedString(attachment: attachment)
-                attrStr.addAttributes(attrs, range: NSRange(location: 0, length: attrStr.length))
-                return attrStr
-            }
             // Unknown void block: render as object replacement character.
             return NSAttributedString(
                 string: LayoutConstants.objectReplacementCharacter,

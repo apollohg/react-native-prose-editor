@@ -1577,6 +1577,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             document.refresh();
         }, [document, pushEngineUpdateToView]);
 
+        const editableRef = useRef(editable);
+        editableRef.current = editable;
+
         const updateAtomAttrs = useCallback(
             async (
                 atomKey: string,
@@ -1589,6 +1592,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 const baseDocumentRevision = latestRevisionRef.current;
                 if (documentHandle.isDestroyed || baseDocumentRevision == null) {
                     throw new AtomUpdateAttrsError('not-ready', 'The editor is not ready');
+                }
+                if (!editableRef.current) {
+                    throw new AtomUpdateAttrsError('not-applicable', 'The editor is not editable');
                 }
                 const instance = atomStateRef.current.instances.find(
                     (candidate) => candidate.key === atomKey && candidate.nodeType === nodeType
@@ -1650,9 +1656,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             },
             [afterLocalEngineMutation, bridge, document, documentHandle, refreshAtomsFromUpdate]
         );
-
-        const editableRef = useRef(editable);
-        editableRef.current = editable;
 
         const runEngineMutation = useCallback(
             (invoke: (baseDocumentRevision: string) => unknown) => {

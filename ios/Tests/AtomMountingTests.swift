@@ -101,6 +101,42 @@ final class AtomMountingTests: XCTestCase {
         XCTAssertEqual(editor.atomLayoutInvalidationCountForTesting, invalidations)
     }
 
+    func testUnmeasuredChildKeepsEstimateUntilReactSuppliesBounds() throws {
+        let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let attachment = installAtom(key: "counter:1", height: 40, in: editor)
+        let child = UIView(frame: .zero)
+        editor.mountAtomChild(child, atomKey: "counter:1")
+        let container = try XCTUnwrap(editor.atomHostContainer(for: "counter:1"))
+        container.layoutIfNeeded()
+
+        XCTAssertNil(editor.measuredAtomHeight(for: "counter:1"))
+        XCTAssertEqual(attachment.reservedHeight, 40)
+
+        child.frame = CGRect(x: 0, y: 0, width: 280, height: 0)
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+
+        XCTAssertEqual(editor.measuredAtomHeight(for: "counter:1"), 0)
+        XCTAssertEqual(attachment.reservedHeight, 0)
+    }
+
+    func testChildCanCollapseToZeroAndExpandAgain() throws {
+        let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let attachment = installAtom(key: "counter:1", height: 40, in: editor)
+        let child = atomChild(key: "counter:1", height: 96)
+        editor.mountAtomChild(child, atomKey: "counter:1")
+        let container = try XCTUnwrap(editor.atomHostContainer(for: "counter:1"))
+
+        for height in [CGFloat(0), 72] {
+            child.frame.size.height = height
+            container.setNeedsLayout()
+            container.layoutIfNeeded()
+
+            XCTAssertEqual(editor.measuredAtomHeight(for: "counter:1"), height)
+            XCTAssertEqual(attachment.reservedHeight, height)
+        }
+    }
+
     func testChildMountedBeforeAttachmentSuppliesMeasuredHeightToLaterRender() throws {
         let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         XCTAssertTrue(editor.applyAtomRenderConfiguration(AtomRenderConfiguration(

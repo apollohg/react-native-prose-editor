@@ -46,6 +46,16 @@ export interface SerializedEditorAtoms {
     estimatedHeights: Record<string, number>;
 }
 
+function isAtomComponent(value: unknown): value is AtomComponent {
+    if (typeof value === 'function') return true;
+    if (value == null || typeof value !== 'object' || !('$$typeof' in value)) return false;
+    return (
+        value.$$typeof === Symbol.for('react.memo') ||
+        value.$$typeof === Symbol.for('react.forward_ref') ||
+        value.$$typeof === Symbol.for('react.lazy')
+    );
+}
+
 function isSafeTag(tag: string): boolean {
     return ATOM_HTML_IDENTIFIER.test(tag) && !ATOM_HTML_DENIED_TAGS.has(tag);
 }
@@ -144,7 +154,7 @@ export function defineAtomNode(config: AtomNodeConfig): AtomNodeDefinition {
     if (RESERVED_WIRE_NODE_TYPES.has(config.name)) {
         throw new Error(`atom name '${config.name}' is reserved`);
     }
-    if (typeof config.component !== 'function') {
+    if (!isAtomComponent(config.component)) {
         throw new Error(`atom '${config.name}' requires a component`);
     }
     if (

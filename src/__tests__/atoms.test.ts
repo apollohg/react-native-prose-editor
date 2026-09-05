@@ -1,3 +1,5 @@
+import { forwardRef, lazy, memo } from 'react';
+
 import {
     defineAtomNode,
     serializeEditorAtoms,
@@ -111,6 +113,23 @@ test('rejects a missing component', () => {
         /component/i
     );
 });
+
+test.each([
+    ['memo', memo(counterConfig.component)],
+    ['forwardRef', forwardRef(() => null)],
+    ['lazy', lazy(async () => ({ default: counterConfig.component }))],
+] as const)('accepts a %s atom component', (_, component) => {
+    expect(defineAtomNode({ ...counterConfig, component }).component).toBe(component);
+});
+
+test.each([{}, 'div', { type: counterConfig.component }])(
+    'rejects an invalid component %p',
+    (component) => {
+        expect(() =>
+            defineAtomNode({ ...counterConfig, component: component as AtomComponent })
+        ).toThrow(/component/i);
+    }
+);
 
 test('buildFragmentJson wraps one atom node', () => {
     const definition = defineAtomNode(counterConfig);

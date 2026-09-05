@@ -2156,6 +2156,30 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    func testRender_registeredAtomsOverrideBuiltInVoidRendering() throws {
+        for nodeType in ["image", "horizontalRule", "horizontal_rule"] {
+            let result = RenderBridge.renderElements(
+                fromJSON: """
+                [{"type":"voidBlock","nodeType":"\(nodeType)","docPos":1,"atomId":"custom-1"}]
+                """,
+                baseFont: baseFont,
+                textColor: textColor,
+                atomConfiguration: AtomRenderConfiguration(
+                    registeredNodeTypes: [nodeType],
+                    estimatedHeights: [nodeType: 120],
+                    measuredHeights: [:]
+                )
+            )
+            let attachment = try XCTUnwrap(
+                result.attribute(.attachment, at: 0, effectiveRange: nil) as? AtomBlockAttachment,
+                nodeType
+            )
+            XCTAssertEqual(attachment.atomKey, "custom-1")
+            XCTAssertEqual(attachment.nodeType, nodeType)
+            XCTAssertEqual(attachment.reservedHeight, 120)
+        }
+    }
+
     func testRender_atomKeysFollowIdentityContract() {
         let result = RenderBridge.renderElements(
             fromArray: [

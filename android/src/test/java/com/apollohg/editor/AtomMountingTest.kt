@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -26,6 +27,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -112,7 +114,7 @@ class AtomMountingTest {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val editor = nativeEditorView()
         editor.onAtomLayoutForTesting = {}
-        activity.setContentView(editor)
+        activity.setContentView(editor, ViewGroup.LayoutParams(320, 240))
         installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
         val drawAtomHosts = requireNotNull(editor.richTextView.onDrawAtomHosts)
         var drawingFromScrollView = false
@@ -130,7 +132,7 @@ class AtomMountingTest {
             init {
                 setWillNotDraw(false)
                 setTag(R.id.view_tag_native_id, "prose-atom:fourth")
-                layoutParams = FrameLayout.LayoutParams(280, ViewGroup.LayoutParams.WRAP_CONTENT)
+                layoutParams = FrameLayout.LayoutParams(280, 100)
             }
 
             override fun onDraw(canvas: Canvas) {
@@ -142,6 +144,7 @@ class AtomMountingTest {
         editor.addAtomChild(host, 0)
         layout(editor, 320, 240)
         host.layout(0, 0, 280, 100)
+        shadowOf(Looper.getMainLooper()).idle()
         editor.richTextView.layoutAtomHostViews()
         val initialAtomY = host.y.toInt()
         val requestedScrollY = (host.y.toInt() - 160).coerceAtLeast(1)
@@ -154,8 +157,14 @@ class AtomMountingTest {
         editor.draw(Canvas(bitmap))
 
         assertSame(editor, host.parent)
-        assertTrue(editor.richTextView.editorScrollView.scrollY > 0)
-        assertTrue(atomY in 0 until bitmap.height)
+        assertTrue(
+            "editor=${editor.width}x${editor.height}, viewport=${editor.richTextView.editorScrollView.height}",
+            editor.richTextView.editorScrollView.scrollY > 0,
+        )
+        assertTrue(
+            "atomY=$atomY, hostHeight=${host.height}, spanHeight=${atomSpans(editor.richTextView).last().reservedHeightPx}",
+            atomY in 0 until bitmap.height,
+        )
         assertEquals(
             initialAtomY - editor.richTextView.editorScrollView.scrollY,
             atomY,
@@ -214,11 +223,103 @@ class AtomMountingTest {
 
         view.mountAtomChild(host, "counterCard:0")
         host.layout(0, 0, 280, 1_000)
+        shadowOf(Looper.getMainLooper()).idle()
 
         assertEquals(132, host.height)
         assertEquals(132, view.measuredAtomHeightForTesting("counterCard:0"))
         assertEquals(132, atomSpans(view).single().reservedHeightPx)
         assertEquals(1, view.atomHeightRenderApplyCountForTesting())
+    }
+
+    @Test
+    fun `atom height follows Fabric parent first layout batches`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("counterCard:0"))
+        val card = View(view.context)
+        val host = ReactViewGroup(view.context).apply { addView(card) }
+        host.layout(0, 0, 280, 96)
+        card.layout(0, 0, 280, 96)
+        view.mountAtomChild(host, "counterCard:0")
+
+        for (height in listOf(72, 160, 0, 96)) {
+            host.layout(0, 0, 280, height)
+            card.layout(0, 0, 280, height)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(height, host.height)
+            assertEquals(height, view.measuredAtomHeightForTesting("counterCard:0"))
+            assertEquals(height, atomSpans(view).single().reservedHeightPx)
+        }
+    }
+
+    @Test
+    fun `unmount cancels a pending atom measurement`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("counterCard:0"))
+        val child = atomChild(view.context, "counterCard:0")
+        child.layout(0, 0, 280, 96)
+        view.mountAtomChild(child, "counterCard:0")
+        child.layout(0, 0, 280, 160)
+        view.unmountAtomChild(child)
+        val fallback = atomSpans(view).single().reservedHeightPx
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertNull(view.measuredAtomHeightForTesting("counterCard:0"))
+        assertEquals(fallback, atomSpans(view).single().reservedHeightPx)
+    }
+
+    @Test
+    fun `atom child can collapse to zero and expand again`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("counterCard:0"))
+        val child = atomChild(view.context, "counterCard:0")
+        child.layout(0, 0, 280, 96)
+        view.mountAtomChild(child, "counterCard:0")
+
+        for (height in listOf(0, 72)) {
+            child.layout(0, 0, 280, height)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(height, view.measuredAtomHeightForTesting("counterCard:0"))
+            assertEquals(height, atomSpans(view).single().reservedHeightPx)
+        }
+    }
+
+    @Test
+    fun `unmeasured atom keeps estimate until its first zero height layout`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("counterCard:0"))
+        val child = atomChild(view.context, "counterCard:0")
+        val estimate = atomSpans(view).single().reservedHeightPx
+        view.mountAtomChild(child, "counterCard:0")
+
+        assertNull(view.measuredAtomHeightForTesting("counterCard:0"))
+        assertEquals(estimate, atomSpans(view).single().reservedHeightPx)
+
+        child.layout(0, 0, 280, 0)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(0, view.measuredAtomHeightForTesting("counterCard:0"))
+        assertEquals(0, atomSpans(view).single().reservedHeightPx)
+    }
+
+    @Test
+    fun `collapsed rendered content clears an oversized React atom host`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("counterCard:0"))
+        val card = View(view.context)
+        val host = ReactViewGroup(view.context).apply { addView(card) }
+        host.layout(0, 0, 280, 500)
+        card.layout(0, 0, 280, 96)
+        view.mountAtomChild(host, "counterCard:0")
+
+        card.layout(0, 0, 280, 0)
+        host.layout(0, 0, 280, 500)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(0, host.height)
+        assertEquals(0, view.measuredAtomHeightForTesting("counterCard:0"))
+        assertEquals(0, atomSpans(view).single().reservedHeightPx)
     }
 
     @Test
@@ -291,7 +392,7 @@ class AtomMountingTest {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val editor = nativeEditorView()
         editor.onAtomLayoutForTesting = {}
-        activity.setContentView(editor)
+        activity.setContentView(editor, ViewGroup.LayoutParams(320, 240))
         installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
         var presses = 0
         val action = object : View(activity) {
@@ -330,7 +431,10 @@ class AtomMountingTest {
             MotionEvent.obtain(1, 4, MotionEvent.ACTION_UP, startX + 200f, startY - 120f, 0)
         )
 
-        assertTrue(editor.richTextView.editorScrollView.scrollY > scrollAfterVerticalMove)
+        assertTrue(
+            "editor=${editor.width}x${editor.height}, before=$scrollAfterVerticalMove, after=${editor.richTextView.editorScrollView.scrollY}",
+            editor.richTextView.editorScrollView.scrollY > scrollAfterVerticalMove,
+        )
         assertEquals(0, presses)
     }
 
@@ -339,7 +443,7 @@ class AtomMountingTest {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val editor = nativeEditorView()
         editor.onAtomLayoutForTesting = {}
-        activity.setContentView(editor)
+        activity.setContentView(editor, ViewGroup.LayoutParams(320, 240))
         installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
         var releases = 0
         val action = object : View(activity) {
@@ -386,7 +490,7 @@ class AtomMountingTest {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val editor = nativeEditorView()
         editor.onAtomLayoutForTesting = {}
-        activity.setContentView(editor)
+        activity.setContentView(editor, ViewGroup.LayoutParams(320, 240))
         installAtoms(editor.richTextView, listOf("counterCard:0"))
         var releases = 0
         val action = object : View(activity) {
@@ -474,6 +578,7 @@ class AtomMountingTest {
 
         child.layout(0, 0, 280, 164)
         child.layout(0, 0, 280, 164)
+        shadowOf(Looper.getMainLooper()).idle()
 
         assertSame(content, view.editorEditText.text)
         assertEquals(164, atomSpans(view).single().reservedHeightPx)
@@ -549,6 +654,7 @@ class AtomMountingTest {
         val child = atomChild(editor.context, "counterCard:0")
         editor.addAtomChild(child, 0)
         child.layout(0, 0, 280, 164)
+        shadowOf(Looper.getMainLooper()).idle()
         assertEquals(164, editor.richTextView.measuredAtomHeightForTesting("counterCard:0"))
 
         editor.removeAtomChild(child)
@@ -643,6 +749,7 @@ class AtomMountingTest {
             View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
         )
         view.layout(0, 0, width, height)
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
 }
