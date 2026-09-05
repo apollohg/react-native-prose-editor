@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@apollohg/react-native-prose-editor": "file:..",
+    "react-native-rich-text-editor": "file:..",
     "@expo/vector-icons": "^15.0.3",
     "expo": "^57.0.18",
     "expo-font": "~57.0.1",

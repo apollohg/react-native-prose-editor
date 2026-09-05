@@ -6,7 +6,7 @@ export default {
         slug: 'native-editor-example',
         version: rootPackage.version,
         plugins: [
-            '@apollohg/react-native-prose-editor',
+            'react-native-rich-text-editor',
             'expo-font',
             'expo-status-bar',
             [

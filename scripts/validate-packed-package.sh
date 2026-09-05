@@ -366,7 +366,7 @@ validate_ios_consumer() {
   local tarball_path="$2"
   local ios_consumer="$work_dir/ios-consumer"
   local ios_project="$ios_consumer/ios"
-  local packed_editor_dir="$ios_consumer/node_modules/@apollohg/react-native-prose-editor"
+  local packed_editor_dir="$ios_consumer/node_modules/react-native-rich-text-editor"
   local react_native_dir="$repo_root/example/node_modules/react-native"
   local expo_dir="$repo_root/example/node_modules/expo"
   local react_native_dependencies_archive
@@ -440,7 +440,7 @@ PBXPROJ
   "name": "packed-tarball-ios-consumer",
   "private": true,
   "dependencies": {
-    "@apollohg/react-native-prose-editor": "file:$tarball_path",
+    "react-native-rich-text-editor": "file:$tarball_path",
     "expo": "file:$expo_dir",
     "react": "file:$repo_root/example/node_modules/react",
     "react-native": "file:$react_native_dir"
@@ -457,8 +457,8 @@ JSON
   packed_editor_package_json="$(cd "$packed_editor_dir" && pwd -P)/package.json"
   resolved_package_json="$(
     cd "$ios_consumer"
-    node --no-warnings --print "require.resolve('@apollohg/react-native-prose-editor/package.json')"
-  )" || fail "iOS packed consumer cannot resolve @apollohg/react-native-prose-editor"
+    node --no-warnings --print "require.resolve('react-native-rich-text-editor/package.json')"
+  )" || fail "iOS packed consumer cannot resolve react-native-rich-text-editor"
   [[ "$resolved_package_json" == "$packed_editor_package_json" ]] || \
     fail "iOS packed consumer resolved editor package outside consumer node_modules: $resolved_package_json"
   resolved_package_dir="$(cd "$(dirname "$resolved_package_json")" && pwd -P)"
@@ -588,7 +588,7 @@ RUBY
   grep -Fq '@"PreparedProseViewer": NSClassFromString(@"PREPPreparedProseViewerComponentView")' \
     "$provider_source" || \
     fail "iOS packed consumer codegen is missing the PreparedProseViewer third-party provider entry"
-  grep -Fq '@apollohg/react-native-prose-editor' \
+  grep -Fq 'react-native-rich-text-editor' \
     "$provider_source" || \
     fail "iOS packed consumer provider entry is not attributed to the packed dependency"
   workspace_path="$ios_project/PackedConsumer.xcworkspace"

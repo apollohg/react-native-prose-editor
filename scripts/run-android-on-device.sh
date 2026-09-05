@@ -9,7 +9,7 @@ require_native_artifacts android
 
 project_dir="example/android"
 local_env_file="example/.android-device-test.env"
-task=":apollohg_react-native-prose-editor:connectedDebugAndroidTest"
+task=":react-native-rich-text-editor:connectedDebugAndroidTest"
 device_id="${ANDROID_DEVICE_ID:-${ANDROID_SERIAL:-}}"
 test_class=""
 extra_args=()

@@ -13,5 +13,5 @@ android {
 }
 
 dependencies {
-    api project(':apollohg_react-native-prose-editor')
+    api project(':react-native-rich-text-editor')
 }

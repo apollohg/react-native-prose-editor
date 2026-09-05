@@ -33,7 +33,7 @@ export function securityBehaviorCommands({ root, pinnedCargo }) {
             'android',
             './gradlew',
             [
-                ':apollohg_react-native-prose-editor:testDebugUnitTest',
+                ':react-native-rich-text-editor:testDebugUnitTest',
                 '--tests',
                 'com.apollohg.editor.RenderImageLoaderPolicyTest.shared whitespace base64 and trickle fixtures execute against Android boundary',
             ],

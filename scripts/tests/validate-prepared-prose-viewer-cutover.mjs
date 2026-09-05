@@ -117,6 +117,23 @@ assert.deepEqual(
 );
 assert.doesNotMatch(read('expo-module.config.json'), /NativeProseViewer/);
 const expoModuleConfig = JSON.parse(read('expo-module.config.json'));
+const { ExpoModuleConfig } = requireFromRoot('expo-modules-autolinking/build/ExpoModuleConfig');
+const { resolveModuleAsync } = requireFromRoot('expo-modules-autolinking/build/platforms/android/index');
+const packageName = JSON.parse(read('package.json')).name;
+const expoAndroidModule = await resolveModuleAsync(packageName, {
+    path: root,
+    config: new ExpoModuleConfig(expoModuleConfig),
+});
+assert.equal(expoAndroidModule.projects.length, 1);
+assert.equal(expoAndroidModule.projects[0].sourceDir, resolve(root, 'android/expo'));
+assert.ok(expoAndroidModule.projects[0].modules.some(
+    (module) => module.classifier === 'com.apollohg.editor.NativeEditorModule',
+));
+assert.notEqual(
+    expoAndroidModule.projects[0].name,
+    packageName,
+    'Expo and React Native must link the facade and native library as separate Gradle projects',
+);
 assert.deepEqual(
     {
         path: expoModuleConfig.android.path,
@@ -130,7 +147,7 @@ assert.deepEqual(
 );
 assert.match(
     read('android/expo/build.gradle'),
-    /api project\(':apollohg_react-native-prose-editor'\)/,
+    /api project\(':react-native-rich-text-editor'\)/,
     'the Expo facade must depend on the React Native Android project',
 );
 assert.ok(

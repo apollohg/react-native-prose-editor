@@ -1,4 +1,4 @@
-import type { EditorToolbarItem, MentionSuggestion } from '@apollohg/react-native-prose-editor';
+import type { EditorToolbarItem, MentionSuggestion } from 'react-native-rich-text-editor';
 
 export const APP_TITLE = 'React Native Editor';
 

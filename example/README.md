@@ -1,6 +1,6 @@
 # Example App
 
-A local Expo SDK 57 app showing `@apollohg/react-native-prose-editor` as a single, full-screen document editor with every editor feature switched on.
+A local Expo SDK 57 app showing `react-native-rich-text-editor` as a single, full-screen document editor with every editor feature switched on.
 
 The package requires Expo Modules, and Expo SDK 57 is the version tested in this repo.
 

@@ -20,7 +20,7 @@ prepare_react_native_project!
 target 'NativeEditorTestHost' do
   use_expo_modules!(
     projectRoot: File.join(__dir__, '..', 'example'),
-    exclude: ['@apollohg/react-native-prose-editor'],
+    exclude: ['react-native-rich-text-editor'],
   )
   react_native_path = '../example/node_modules/react-native'
 
@@ -37,7 +37,7 @@ target 'NativeEditorTestHost' do
       self,
       @current_target_definition,
       projectRoot: File.join(__dir__, '..', 'example'),
-      exclude: ['@apollohg/react-native-prose-editor'],
+      exclude: ['react-native-rich-text-editor'],
       testsOnly: true,
     )
   end

@@ -4,7 +4,7 @@ import type {
     EditorTextStyle,
     EditorTheme,
     EditorToolbarTheme,
-} from '@apollohg/react-native-prose-editor';
+} from 'react-native-rich-text-editor';
 
 /**
  * The one palette the app uses. Spruce is the ground the paper sheet sits on

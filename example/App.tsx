@@ -18,7 +18,7 @@ import {
     type LinkRequestContext,
     type MentionQueryChangeEvent,
     type NativeRichTextEditorRef,
-} from '@apollohg/react-native-prose-editor';
+} from 'react-native-rich-text-editor';
 
 import { counterCardAtom } from './components/CounterCard';
 import { LinkEditorModal } from './components/LinkEditorModal';

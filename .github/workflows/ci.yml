@@ -100,7 +100,7 @@ jobs:
         run: npm run lint:android
 
       - name: Assemble release AAR
-        run: ./gradlew :apollohg_react-native-prose-editor:assembleRelease
+        run: ./gradlew :react-native-rich-text-editor:assembleRelease
         working-directory: example/android
 
   android-api-24:

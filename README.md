@@ -1,6 +1,6 @@
-# React Native Prose Editor [![NPM version](https://img.shields.io/npm/v/@apollohg/react-native-prose-editor.svg?style=flat)](https://www.npmjs.com/package/@apollohg/react-native-prose-editor)
+# React Native Rich Text Editor [![NPM version](https://img.shields.io/npm/v/react-native-rich-text-editor.svg?style=flat)](https://www.npmjs.com/package/react-native-rich-text-editor)
 
-`@apollohg/react-native-prose-editor` is a native rich text editor for React Native. It combines a Rust document core with native iOS and Android editing, a React toolbar and theme API, a Fabric prose viewer, and Yjs collaboration.
+`react-native-rich-text-editor` is a native rich text editor for React Native. It combines a Rust document core with native iOS and Android editing, a React toolbar and theme API, a Fabric prose viewer, and Yjs collaboration.
 
 The package is under active development. Review the [changelog](./CHANGELOG.md) before upgrading between major versions.
 
@@ -29,7 +29,7 @@ Published peer ranges are Expo 52+, React Native 0.76+, React 18+, and `@expo/ve
 Install the package and its icon peer dependency:
 
 ```sh
-npm install @apollohg/react-native-prose-editor
+npm install react-native-rich-text-editor
 npx expo install @expo/vector-icons
 ```
 
@@ -38,7 +38,7 @@ Add the config plugin to an Expo app:
 ```ts
 export default {
     expo: {
-        plugins: ['@apollohg/react-native-prose-editor'],
+        plugins: ['react-native-rich-text-editor'],
     },
 };
 ```
@@ -58,6 +58,19 @@ android.packagingOptions.excludes=**/armeabi/libjnidispatch.so,**/mips/libjnidis
 
 See the [Installation Guide](https://github.com/apollohg/react-native-prose-editor/wiki/Installation) for bare React Native setup and native build details.
 
+### Migrating from the old package name
+
+Users of `@apollohg/react-native-prose-editor` can migrate to `react-native-rich-text-editor` with:
+
+```sh
+npm uninstall @apollohg/react-native-prose-editor
+npm install react-native-rich-text-editor
+```
+
+Update imports and the Expo config plugin entry to `react-native-rich-text-editor`, then regenerate and rebuild the native app as described above. The rename preserves the public API and native module names. Install only one package name in an app to avoid duplicate native modules.
+
+Existing releases under the old name remain available, so existing users can keep their current dependency and imports until they choose to migrate. Check the changelog for any version changes made alongside the migration.
+
 ## Editor usage
 
 Every editor binds to a `NativeEditorDocumentHandle`. Create the handle once, initialize its content there, and destroy it when its owner unmounts.
@@ -67,7 +80,7 @@ import React, { useEffect, useMemo } from 'react';
 import {
     createNativeEditorDocumentHandle,
     NativeRichTextEditor,
-} from '@apollohg/react-native-prose-editor';
+} from 'react-native-rich-text-editor';
 
 export function EditorScreen() {
     const documentHandle = useMemo(
@@ -115,7 +128,7 @@ import {
     withAtomsSchema,
     type AtomComponentProps,
     type NativeRichTextEditorRef,
-} from '@apollohg/react-native-prose-editor';
+} from 'react-native-rich-text-editor';
 
 function CounterCard({ attrs, selected, updateAttrs }: AtomComponentProps) {
     const title = String(attrs.title);
@@ -202,7 +215,7 @@ Atoms are block-level and editor-only in this first version. `NativeProseViewer`
 `NativeProseViewer` renders HTML or ProseMirror JSON without creating an editor session. Supply exactly one content source and ensure its host provides a finite width.
 
 ```tsx
-import { NativeProseViewer } from '@apollohg/react-native-prose-editor';
+import { NativeProseViewer } from 'react-native-rich-text-editor';
 
 <NativeProseViewer
     contentJSON={{
@@ -231,7 +244,7 @@ import {
     createNativeEditorDocumentHandle,
     NativeRichTextEditor,
     useYjsCollaboration,
-} from '@apollohg/react-native-prose-editor';
+} from 'react-native-rich-text-editor';
 
 export function CollaborativeEditor({ documentId }: { documentId: string }) {
     const documentHandle = useMemo(

@@ -3,7 +3,7 @@ import { AppRegistry, View } from 'react-native';
 import {
   NativeProseViewer,
   NativeRichTextEditor,
-} from '@apollohg/react-native-prose-editor';
+} from 'react-native-rich-text-editor';
 
 function App() {
   void NativeProseViewer;

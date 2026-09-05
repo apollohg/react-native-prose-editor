@@ -191,7 +191,7 @@ assert.match(androidReleaseJob, /timeout-minutes:\s*60/);
 assert.match(androidReleaseJob, /sdkmanager --install ['"]ndk;27\.1\.12297006['"]/);
 assert.match(androidReleaseJob, /npm run test:android/);
 assert.match(androidReleaseJob, /npm run lint:android/);
-assert.match(androidReleaseJob, /:apollohg_react-native-prose-editor:assembleRelease/);
+assert.match(androidReleaseJob, /:react-native-rich-text-editor:assembleRelease/);
 assert.match(androidReleaseJob, /npm run validate:package:android:rn076/);
 assert.match(androidReleaseJob, /reactivecircus\/android-emulator-runner@v2\.38\.0/);
 assert.match(androidReleaseJob, /api-level:\s*24/);

@@ -4,7 +4,7 @@ import {
     AtomUpdateAttrsError,
     defineAtomNode,
     type AtomComponentProps,
-} from '@apollohg/react-native-prose-editor';
+} from 'react-native-rich-text-editor';
 
 import { FONT_SIZE, LINE_HEIGHT, MIN_TOUCH_TARGET, PALETTE, RADIUS, SPACE } from '../theme';
 

@@ -89,7 +89,7 @@ if (!expo.android?.modules?.includes('com.apollohg.editor.NativeEditorModule')) 
   fail('RN 0.76 package Expo module entry is missing com.apollohg.editor.NativeEditorModule');
 }
 const expoFacade = readFileSync(join(root, 'android/expo/build.gradle'), 'utf8');
-if (!expoFacade.includes("api project(':apollohg_react-native-prose-editor')")) {
+if (!expoFacade.includes("api project(':react-native-rich-text-editor')")) {
   fail('RN 0.76 package Expo facade must depend on the React Native project');
 }
 
@@ -161,7 +161,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const manifestPath = process.argv[2];
 const tarballPath = process.argv[3];
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-manifest.dependencies['@apollohg/react-native-prose-editor'] = `file:${tarballPath}`;
+manifest.dependencies['react-native-rich-text-editor'] = `file:${tarballPath}`;
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 NODE
 
