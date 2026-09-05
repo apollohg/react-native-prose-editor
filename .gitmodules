@@ -1,3 +1,3 @@
 [submodule "react-native-prose-editor.wiki"]
-	path = react-native-prose-editor.wiki
-	url = git@github.com:apollohg/react-native-prose-editor.wiki.git
+	path = wiki
+	url = git@github.com:apollohg/react-native-rich-text-editor.wiki.git
