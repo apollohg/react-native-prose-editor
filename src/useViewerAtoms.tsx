@@ -3,9 +3,9 @@ import { View, type LayoutChangeEvent, type NativeSyntheticEvent } from 'react-n
 
 import { serializeEditorAtoms, type AtomNodeDefinition } from './atoms';
 import { AtomUpdateAttrsError } from './atomInstances';
-import type { NativeProseViewerErrorEvent } from './NativeProseViewer';
+import type { RichTextViewerErrorEvent } from './NativeProseViewer';
 
-export interface NativeProseViewerAtomAttrsUpdateEvent {
+export interface RichTextViewerAtomAttrsUpdateEvent {
     nodeType: string;
     /** Position in the content snapshot rendered by this viewer. */
     docPos: number;
@@ -37,7 +37,7 @@ interface Measurement {
 }
 
 type Measurements = Record<string, Measurement>;
-type UpdateHandler = (event: NativeProseViewerAtomAttrsUpdateEvent) => void | Promise<void>;
+type UpdateHandler = (event: RichTextViewerAtomAttrsUpdateEvent) => void | Promise<void>;
 let nextGeneration = 0;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,7 +89,7 @@ export function useViewerAtoms({
     themeJson?: string;
     readOnly: boolean;
     onUpdateAtomAttrs?: UpdateHandler;
-    onError?: (event: NativeProseViewerErrorEvent) => void;
+    onError?: (event: RichTextViewerErrorEvent) => void;
 }) {
     const [width, setWidth] = useState<number | null>(null);
     const serializedAtoms = serializeEditorAtoms(atoms);
@@ -355,3 +355,6 @@ export function useViewerAtoms({
     });
     return { enabled, themeJson: configuredThemeJson, onAtomLayout, onContainerLayout, children };
 }
+
+/** @deprecated Use RichTextViewerAtomAttrsUpdateEvent instead. */
+export type NativeProseViewerAtomAttrsUpdateEvent = RichTextViewerAtomAttrsUpdateEvent;

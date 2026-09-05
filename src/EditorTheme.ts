@@ -26,7 +26,7 @@ export interface EditorMentionNodeTheme {
     backgroundColor?: string;
     /** Weight of the mention label. */
     fontWeight?: EditorFontWeight;
-    /** Drawn by `NativeProseViewer`. The editor renders the node with text
+    /** Drawn by `RichTextViewer`. The editor renders the node with text
      *  spans and cannot stroke a border, so these are ignored there. */
     borderColor?: string;
     borderWidth?: number;
@@ -71,7 +71,7 @@ export interface EditorMentionSuggestionsTheme {
 /**
  * Mention styling. It is configured on the mentions addon
  * (`EditorAddons.mentions.theme` for the editor,
- * `NativeProseViewerAddons.mentions.theme` for the viewer) rather than on
+ * `RichTextViewerAddons.mentions.theme` for the viewer) rather than on
  * {@link EditorTheme}, and can be overridden per mention through
  * `MentionsAddonConfig.resolveTheme`.
  */
@@ -224,7 +224,7 @@ export interface EditorToolbarTheme {
      *  Ignored for `toolbarPlacement="keyboard"`. */
     marginTop?: number;
     /** Whether the JavaScript toolbar draws its top separator line. Defaults to
-     *  false through `NativeRichTextEditor`, true for a standalone `EditorToolbar`. */
+     *  false through `RichTextEditor`, true for a standalone `EditorToolbar`. */
     showTopBorder?: boolean;
     /** Gap between the keyboard and the toolbar, in layout units. Applies to
      *  `toolbarPlacement="keyboard"`; the platform default depends on `appearance`. */
@@ -261,7 +261,7 @@ export interface EditorContentInsets {
 }
 
 /**
- * Native content theme for `NativeRichTextEditor` and `NativeProseViewer`.
+ * Native content theme for `RichTextEditor` and `RichTextViewer`.
  *
  * Numeric values are layout units — density-independent pixels on Android,
  * points on iOS. Colors are strings, and the portable formats are `#RGB`,

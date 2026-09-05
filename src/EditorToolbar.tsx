@@ -630,7 +630,7 @@ export interface EditorToolbarProps {
     /** Whether to render the built-in top separator line. */
     showTopBorder?: boolean;
     /**
-     * Keep NativeRichTextEditor focused when this toolbar is rendered outside
+     * Keep RichTextEditor focused when this toolbar is rendered outside
      * the editor wrapper. Defaults to true.
      */
     preserveEditorFocus?: boolean;
@@ -715,7 +715,7 @@ function resolveMentionSuggestionDisplayLabel(
 }
 
 /**
- * A JavaScript formatting toolbar. `NativeRichTextEditor` renders one for you
+ * A JavaScript formatting toolbar. `RichTextEditor` renders one for you
  * when `showToolbar` is set — reach for this component directly only to place
  * the toolbar somewhere the editor cannot, in which case wire every handler
  * to the editor's ref and feed it `activeState` and `historyState` from the

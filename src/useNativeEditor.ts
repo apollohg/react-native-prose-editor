@@ -110,7 +110,7 @@ interface V2EngineView {
  * read or drive a document that is not currently mounted — a preview, a
  * background save, a test.
  *
- * `NativeRichTextEditor` uses this internally, so mounting an editor on the
+ * `RichTextEditor` uses this internally, so mounting an editor on the
  * same handle does not conflict with it.
  */
 export function useNativeEditorDocument(

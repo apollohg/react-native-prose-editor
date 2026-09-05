@@ -14,7 +14,7 @@ import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from 
 import type { DocumentJSON } from './NativeEditorBridge';
 import { withMentionsSchema } from './addons';
 import { withAtomsSchema, type AtomNodeDefinition } from './atoms';
-import { useViewerAtoms, type NativeProseViewerAtomAttrsUpdateEvent } from './useViewerAtoms';
+import { useViewerAtoms, type RichTextViewerAtomAttrsUpdateEvent } from './useViewerAtoms';
 import NativePreparedProseViewer from './specs/PreparedProseViewerNativeComponent';
 import {
     serializePreparedProseViewerConfiguration,
@@ -22,21 +22,24 @@ import {
 } from './ViewerConfiguration';
 import { defaultSchema, type SchemaDefinition } from './schemas';
 
-export type { NativeProseViewerAtomAttrsUpdateEvent } from './useViewerAtoms';
+export type {
+    RichTextViewerAtomAttrsUpdateEvent,
+    NativeProseViewerAtomAttrsUpdateEvent,
+} from './useViewerAtoms';
 
-interface NativeProseViewerLinkPressNativeEvent {
+interface RichTextViewerLinkPressNativeEvent {
     href: string;
     text: string;
 }
 
-interface NativeProseViewerMentionPressNativeEvent {
+interface RichTextViewerMentionPressNativeEvent {
     docPos: number;
     label: string;
     attrsJson: string;
 }
 
 /** A parse, layout, or rendering failure reported by the native viewer. */
-export interface NativeProseViewerErrorEvent {
+export interface RichTextViewerErrorEvent {
     /** Native subsystem that raised the failure, e.g. `'viewer'`. */
     domain: string;
     /** Stable failure code, e.g. `'INVALID_MENTION_ATTRIBUTES'`. */
@@ -47,7 +50,7 @@ export interface NativeProseViewerErrorEvent {
 }
 
 /** A tap on a mention node. Requires `addons.mentions.onPress`. */
-export interface NativeProseViewerMentionPressEvent {
+export interface RichTextViewerMentionPressEvent {
     /** Engine document position of the pressed mention node. */
     docPos: number;
     /** Rendered mention label. */
@@ -57,7 +60,7 @@ export interface NativeProseViewerMentionPressEvent {
 }
 
 /** A tap on link-marked text. Requires `enableLinkTaps` and `onPressLink`. */
-export interface NativeProseViewerLinkPressEvent {
+export interface RichTextViewerLinkPressEvent {
     /** The link mark's `href` attribute. */
     href: string;
     /** The text the link mark covers. */
@@ -65,7 +68,7 @@ export interface NativeProseViewerLinkPressEvent {
 }
 
 /** Mention rendering and press handling for the viewer. */
-export interface NativeProseViewerMentionsConfig {
+export interface RichTextViewerMentionsConfig {
     /** The trigger character this content was authored with. Recorded in the
      *  viewer configuration; what gets drawn comes from `prefix`. */
     trigger?: string;
@@ -75,16 +78,16 @@ export interface NativeProseViewerMentionsConfig {
     /** Mention styling. See {@link EditorMentionTheme}. */
     theme?: EditorMentionTheme;
     /** Called when a mention is pressed. Mentions are inert until this is set. */
-    onPress?: (event: NativeProseViewerMentionPressEvent) => void;
+    onPress?: (event: RichTextViewerMentionPressEvent) => void;
 }
 
 /** Optional viewer features, mirroring the editor's `EditorAddons`. */
-export interface NativeProseViewerAddons {
-    mentions?: NativeProseViewerMentionsConfig;
+export interface RichTextViewerAddons {
+    mentions?: RichTextViewerMentionsConfig;
 }
 
-/** Props shared by both content forms of {@link NativeProseViewerProps}. */
-export interface NativeProseViewerBaseProps extends ViewProps {
+/** Props shared by both content forms of {@link RichTextViewerProps}. */
+export interface RichTextViewerBaseProps extends ViewProps {
     /** Schema the content is parsed against. Defaults to {@link defaultSchema}; the mention node is always added. */
     schema?: SchemaDefinition;
     /** React renderers for custom block atoms; their node specs are added to the schema. */
@@ -92,7 +95,7 @@ export interface NativeProseViewerBaseProps extends ViewProps {
     /** Whether custom atoms are inert. Defaults to true; prose is always read-only. */
     readOnly?: boolean;
     /** Handles an atom update request. Persist it in the app and supply updated content. */
-    onUpdateAtomAttrs?: (event: NativeProseViewerAtomAttrsUpdateEvent) => void | Promise<void>;
+    onUpdateAtomAttrs?: (event: RichTextViewerAtomAttrsUpdateEvent) => void | Promise<void>;
     /** Native content theme. See {@link EditorTheme}. */
     theme?: EditorTheme;
     /** Whether `data:` image sources are admitted. Defaults to false. */
@@ -113,30 +116,30 @@ export interface NativeProseViewerBaseProps extends ViewProps {
      * Defaults to 0.
      */
     fontEnvironmentRevision?: number;
-    addons?: NativeProseViewerAddons;
+    addons?: RichTextViewerAddons;
     /** Called when link-marked text is tapped. */
-    onPressLink?: (event: NativeProseViewerLinkPressEvent) => void;
+    onPressLink?: (event: RichTextViewerLinkPressEvent) => void;
     /** Called when the viewer cannot parse, lay out, or render the content. */
-    onError?: (error: NativeProseViewerErrorEvent) => void;
+    onError?: (error: RichTextViewerErrorEvent) => void;
 }
 
-interface NativeProseViewerJsonProps extends NativeProseViewerBaseProps {
+interface RichTextViewerJsonProps extends RichTextViewerBaseProps {
     /** ProseMirror JSON document, or a JSON string holding one. */
     contentJSON: DocumentJSON | string;
     contentHTML?: never;
 }
 
-interface NativeProseViewerHtmlProps extends NativeProseViewerBaseProps {
+interface RichTextViewerHtmlProps extends RichTextViewerBaseProps {
     /** HTML document. Sanitize untrusted HTML before passing it here. */
     contentHTML: string;
     contentJSON?: never;
 }
 
 /**
- * Props for {@link NativeProseViewer}. Supply exactly one content source:
+ * Props for {@link RichTextViewer}. Supply exactly one content source:
  * `contentJSON` or `contentHTML`.
  */
-export type NativeProseViewerProps = NativeProseViewerJsonProps | NativeProseViewerHtmlProps;
+export type RichTextViewerProps = RichTextViewerJsonProps | RichTextViewerHtmlProps;
 
 const serializedJsonCache = new WeakMap<object, string>();
 
@@ -155,7 +158,7 @@ function resolveViewerConfiguration(
     schema: SchemaDefinition | undefined,
     allowBase64Images: boolean,
     resourceLimits: ResolvedEditorResourceLimits | undefined,
-    mentions: NativeProseViewerMentionsConfig | undefined,
+    mentions: RichTextViewerMentionsConfig | undefined,
     atoms: readonly AtomNodeDefinition[] | undefined
 ): PreparedProseViewerConfiguration {
     return {
@@ -184,14 +187,14 @@ function resolveViewerConfiguration(
  *
  * @example
  * ```tsx
- * <NativeProseViewer
+ * <RichTextViewer
  *     contentHTML='<p>Read-only content</p>'
  *     theme={{ text: { fontSize: 16 } }}
  *     onPressLink={({ href }) => openLink(href)}
  * />
  * ```
  */
-export function NativeProseViewer(props: NativeProseViewerProps) {
+export function RichTextViewer(props: RichTextViewerProps) {
     const {
         contentJSON,
         contentHTML,
@@ -267,13 +270,13 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
         onError,
     });
     const handlePressLink = useCallback(
-        (event: NativeSyntheticEvent<NativeProseViewerLinkPressNativeEvent>) => {
+        (event: NativeSyntheticEvent<RichTextViewerLinkPressNativeEvent>) => {
             onPressLink?.(event.nativeEvent);
         },
         [onPressLink]
     );
     const handlePressMention = useCallback(
-        (event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>) => {
+        (event: NativeSyntheticEvent<RichTextViewerMentionPressNativeEvent>) => {
             const { docPos, label, attrsJson } = event.nativeEvent;
             let attrs: unknown;
             try {
@@ -295,7 +298,7 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
         [mentions, onError]
     );
     const handleError = useCallback(
-        (event: NativeSyntheticEvent<NativeProseViewerErrorEvent>) => {
+        (event: NativeSyntheticEvent<RichTextViewerErrorEvent>) => {
             onError?.(event.nativeEvent);
         },
         [onError]
@@ -330,3 +333,27 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
         </View>
     );
 }
+
+/** @deprecated Use RichTextViewerErrorEvent instead. */
+export type NativeProseViewerErrorEvent = RichTextViewerErrorEvent;
+
+/** @deprecated Use RichTextViewerMentionPressEvent instead. */
+export type NativeProseViewerMentionPressEvent = RichTextViewerMentionPressEvent;
+
+/** @deprecated Use RichTextViewerLinkPressEvent instead. */
+export type NativeProseViewerLinkPressEvent = RichTextViewerLinkPressEvent;
+
+/** @deprecated Use RichTextViewerMentionsConfig instead. */
+export type NativeProseViewerMentionsConfig = RichTextViewerMentionsConfig;
+
+/** @deprecated Use RichTextViewerAddons instead. */
+export type NativeProseViewerAddons = RichTextViewerAddons;
+
+/** @deprecated Use RichTextViewerBaseProps instead. */
+export type NativeProseViewerBaseProps = RichTextViewerBaseProps;
+
+/** @deprecated Use RichTextViewerProps instead. */
+export type NativeProseViewerProps = RichTextViewerProps;
+
+/** @deprecated Use RichTextViewer instead. */
+export const NativeProseViewer = RichTextViewer;

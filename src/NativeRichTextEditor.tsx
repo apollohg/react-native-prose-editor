@@ -84,7 +84,7 @@ import {
 } from './schemas';
 import {
     useFocusPreservingFrames,
-    type NativeRichTextEditorFocusPreservingRefs,
+    type RichTextEditorFocusPreservingRefs,
 } from './useFocusPreservingFrames';
 import { DefaultAtomChip } from './DefaultAtomChip';
 import { serializeEditorAtoms, type AtomComponent, type AtomNodeDefinition } from './atoms';
@@ -102,6 +102,9 @@ export type {
     NativeRichTextEditorFocusPreservingElement,
     NativeRichTextEditorFocusPreservingRef,
     NativeRichTextEditorFocusPreservingRefs,
+    RichTextEditorFocusPreservingElement,
+    RichTextEditorFocusPreservingRef,
+    RichTextEditorFocusPreservingRefs,
 } from './useFocusPreservingFrames';
 
 interface NativeExternalTextCompositionEvent {
@@ -125,13 +128,13 @@ interface NativeEditorViewProps {
     placeholder?: string;
     editable: boolean;
     autoFocus: boolean;
-    autoCapitalize?: NativeRichTextEditorAutoCapitalize;
+    autoCapitalize?: RichTextEditorAutoCapitalize;
     autoCorrect?: boolean;
-    keyboardType?: NativeRichTextEditorKeyboardType;
+    keyboardType?: RichTextEditorKeyboardType;
     androidInputOptionsJson?: string;
     showToolbar: boolean;
-    toolbarPlacement: NativeRichTextEditorToolbarPlacement;
-    heightBehavior: NativeRichTextEditorHeightBehavior;
+    toolbarPlacement: RichTextEditorToolbarPlacement;
+    heightBehavior: RichTextEditorHeightBehavior;
     allowImageResizing: boolean;
     imageLoadingPolicyJson?: string;
     themeJson?: string;
@@ -414,8 +417,8 @@ function mapToolbarChildForNative(
     item: EditorToolbarGroupChildItem,
     activeState: ReadonlyActiveState,
     editable: boolean,
-    onRequestLink?: NativeRichTextEditorProps['onRequestLink'],
-    onRequestImage?: NativeRichTextEditorProps['onRequestImage']
+    onRequestLink?: RichTextEditorProps['onRequestLink'],
+    onRequestImage?: RichTextEditorProps['onRequestImage']
 ): EditorToolbarGroupChildItem {
     if (item.type === 'link') {
         return {
@@ -451,8 +454,8 @@ function mapToolbarItemsForNative(
     items: readonly EditorToolbarItem[],
     activeState: ReadonlyActiveState,
     editable: boolean,
-    onRequestLink?: NativeRichTextEditorProps['onRequestLink'],
-    onRequestImage?: NativeRichTextEditorProps['onRequestImage']
+    onRequestLink?: RichTextEditorProps['onRequestLink'],
+    onRequestImage?: RichTextEditorProps['onRequestImage']
 ): EditorToolbarItem[] {
     return items.map((item) => {
         if (item.type === 'group') {
@@ -506,7 +509,7 @@ function serializeToolbarFrames(
     return JSON.stringify(frames.length === 1 ? frames[0] : { frames });
 }
 
-function parseCaretRectJson(raw: string | null | undefined): NativeRichTextEditorCaretRect | null {
+function parseCaretRectJson(raw: string | null | undefined): RichTextEditorCaretRect | null {
     if (!raw) {
         return null;
     }
@@ -587,21 +590,21 @@ function useSerializedValue<T>(
  * How the editor handles content taller than its frame: `'fixed'` scrolls
  * internally, `'autoGrow'` grows the view to fit.
  */
-export type NativeRichTextEditorHeightBehavior = 'fixed' | 'autoGrow';
+export type RichTextEditorHeightBehavior = 'fixed' | 'autoGrow';
 /**
  * Where the toolbar lives: `'keyboard'` attaches the native toolbar to the
  * keyboard, `'inline'` renders the JavaScript `EditorToolbar` below the editor.
  */
-export type NativeRichTextEditorToolbarPlacement = 'keyboard' | 'inline';
+export type RichTextEditorToolbarPlacement = 'keyboard' | 'inline';
 /**
  * What an external `valueJSON` change does to undo history: `'replace'`
  * records one undoable step, `'reset'` clears history entirely.
  */
-export type NativeRichTextEditorValueJSONUpdateMode = 'replace' | 'reset';
+export type RichTextEditorValueJSONUpdateMode = 'replace' | 'reset';
 /** Native keyboard auto-capitalization behavior. */
-export type NativeRichTextEditorAutoCapitalize = 'none' | 'sentences' | 'words' | 'characters';
+export type RichTextEditorAutoCapitalize = 'none' | 'sentences' | 'words' | 'characters';
 /** Native keyboard layout. Values not supported by a platform fall back to its default. */
-export type NativeRichTextEditorKeyboardType =
+export type RichTextEditorKeyboardType =
     | 'default'
     | 'email-address'
     | 'numeric'
@@ -618,7 +621,7 @@ export type NativeRichTextEditorKeyboardType =
     | 'ascii-capable-number-pad';
 
 /** Android-specific options passed to the active input method. */
-export interface NativeRichTextEditorAndroidInputOptions {
+export interface RichTextEditorAndroidInputOptions {
     /** Private options interpreted by the selected Android IME. */
     privateImeOptions?: string;
 }
@@ -680,7 +683,7 @@ export interface ImageRequestContext {
  *   `selectionOnValueJSONReset` were removed with the legacy bridge and have
  *   no v2 equivalent.
  */
-export interface NativeRichTextEditorProps {
+export interface RichTextEditorProps {
     /** Accessible name announced for the native editable control. */
     accessibilityLabel?: string;
     /** Additional guidance announced for the native editable control. */
@@ -692,7 +695,7 @@ export interface NativeRichTextEditorProps {
     /** Optional stable revision hint for `valueJSON` to avoid reserializing equal docs on rerender. */
     valueJSONRevision?: string;
     /** Controls how external `valueJSON` changes are applied. Defaults to preserving undo history. */
-    valueJSONUpdateMode?: NativeRichTextEditorValueJSONUpdateMode;
+    valueJSONUpdateMode?: RichTextEditorValueJSONUpdateMode;
     /** Placeholder text shown when editor is empty. */
     placeholder?: string;
     /** Whether the editor is editable. Defaults to true. When false, every mutation ref method rejects with MUTATION_REJECTED; selection and controlled content still flow. */
@@ -700,19 +703,19 @@ export interface NativeRichTextEditorProps {
     /** Whether to auto-focus on mount. */
     autoFocus?: boolean;
     /** Controls native keyboard auto-capitalization. Defaults to sentences. */
-    autoCapitalize?: NativeRichTextEditorAutoCapitalize;
+    autoCapitalize?: RichTextEditorAutoCapitalize;
     /** Controls native keyboard autocorrection. Defaults to the platform-specific editor default. */
     autoCorrect?: boolean;
     /** Controls the native keyboard layout. Defaults to the platform default keyboard. */
-    keyboardType?: NativeRichTextEditorKeyboardType;
+    keyboardType?: RichTextEditorKeyboardType;
     /** Android-specific input-method options. Ignored on other platforms. */
-    androidInputOptions?: NativeRichTextEditorAndroidInputOptions;
+    androidInputOptions?: RichTextEditorAndroidInputOptions;
     /** Controls whether the editor scrolls internally or grows with content. */
-    heightBehavior?: NativeRichTextEditorHeightBehavior;
+    heightBehavior?: RichTextEditorHeightBehavior;
     /** Whether to show the formatting toolbar. Defaults to true. */
     showToolbar?: boolean;
     /** Whether the toolbar is attached to the keyboard natively or rendered inline in React. */
-    toolbarPlacement?: NativeRichTextEditorToolbarPlacement;
+    toolbarPlacement?: RichTextEditorToolbarPlacement;
     /** Displayed toolbar buttons, in order. Supports custom marks/nodes. */
     toolbarItems?: readonly EditorToolbarItem[];
     /** Called when a custom `action` toolbar item is pressed. */
@@ -740,7 +743,7 @@ export interface NativeRichTextEditorProps {
     /** Called when the editor loses focus. */
     onBlur?: () => void;
     /** External native views whose taps preserve this editor's focus, keyboard, and selection. */
-    focusPreservingRefs?: NativeRichTextEditorFocusPreservingRefs;
+    focusPreservingRefs?: RichTextEditorFocusPreservingRefs;
     /** Style applied to the native editor view. */
     style?: StyleProp<ViewStyle>;
     /** Style applied to the outer React container wrapping the editor and inline toolbar. */
@@ -775,7 +778,7 @@ export interface NativeRichTextEditorProps {
     onLocalCommit?: () => void;
 }
 
-export interface NativeRichTextEditorRef {
+export interface RichTextEditorRef {
     /** Programmatically focus the editor. */
     focus(): void;
     /** Programmatically blur the editor. */
@@ -827,7 +830,7 @@ export interface NativeRichTextEditorRef {
     /** Get the plain text content (no markup). */
     getTextContent(): string;
     /** Get the current caret rectangle in editor-local layout coordinates. */
-    getCaretRect(): Promise<NativeRichTextEditorCaretRect | null>;
+    getCaretRect(): Promise<RichTextEditorCaretRect | null>;
     /** Undo the last operation. */
     undo(): void;
     /** Redo the last undone operation. */
@@ -838,7 +841,7 @@ export interface NativeRichTextEditorRef {
     canRedo(): boolean;
 }
 
-export interface NativeRichTextEditorCaretRect {
+export interface RichTextEditorCaretRect {
     /** Left edge of the caret, relative to the editor root view. */
     x: number;
     /** Top edge of the caret, relative to the editor root view. */
@@ -865,8 +868,8 @@ export interface NativeRichTextEditorCaretRect {
  * after every JS-driven change. A room document awaiting the server renders
  * nothing (loading), never an unshared fallback paragraph.
  */
-export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRichTextEditorProps>(
-    function NativeRichTextEditor(
+export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
+    function RichTextEditor(
         {
             documentHandle,
             documentRevision,
@@ -1808,7 +1811,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
         useImperativeHandle(
             ref,
-            (): NativeRichTextEditorRef => ({
+            (): RichTextEditorRef => ({
                 focus() {
                     nativeViewRef.current?.focus?.();
                 },
@@ -1851,7 +1854,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 getContentJson: document.getContentJson,
                 getIsEmpty: document.getIsEmpty,
                 getTextContent: document.getTextContent,
-                async getCaretRect(): Promise<NativeRichTextEditorCaretRect | null> {
+                async getCaretRect(): Promise<RichTextEditorCaretRect | null> {
                     const nativeView = nativeViewRef.current;
                     if (!nativeView?.getCaretRect) return null;
                     const raw = await Promise.resolve(nativeView.getCaretRect());
@@ -2748,3 +2751,33 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
 });
+
+/** @deprecated Use RichTextEditorHeightBehavior instead. */
+export type NativeRichTextEditorHeightBehavior = RichTextEditorHeightBehavior;
+
+/** @deprecated Use RichTextEditorToolbarPlacement instead. */
+export type NativeRichTextEditorToolbarPlacement = RichTextEditorToolbarPlacement;
+
+/** @deprecated Use RichTextEditorValueJSONUpdateMode instead. */
+export type NativeRichTextEditorValueJSONUpdateMode = RichTextEditorValueJSONUpdateMode;
+
+/** @deprecated Use RichTextEditorAutoCapitalize instead. */
+export type NativeRichTextEditorAutoCapitalize = RichTextEditorAutoCapitalize;
+
+/** @deprecated Use RichTextEditorKeyboardType instead. */
+export type NativeRichTextEditorKeyboardType = RichTextEditorKeyboardType;
+
+/** @deprecated Use RichTextEditorAndroidInputOptions instead. */
+export type NativeRichTextEditorAndroidInputOptions = RichTextEditorAndroidInputOptions;
+
+/** @deprecated Use RichTextEditorProps instead. */
+export type NativeRichTextEditorProps = RichTextEditorProps;
+
+/** @deprecated Use RichTextEditorRef instead. */
+export type NativeRichTextEditorRef = RichTextEditorRef;
+
+/** @deprecated Use RichTextEditorCaretRect instead. */
+export type NativeRichTextEditorCaretRect = RichTextEditorCaretRect;
+
+/** @deprecated Use RichTextEditor instead. */
+export const NativeRichTextEditor = RichTextEditor;

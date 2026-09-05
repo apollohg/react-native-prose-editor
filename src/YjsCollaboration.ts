@@ -143,7 +143,7 @@ export interface UseYjsCollaborationResult {
     disconnect(): void;
     reconnect(): void;
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void;
-    /** Spread onto `NativeRichTextEditor` to bind the editor to this session. */
+    /** Spread onto `RichTextEditor` to bind the editor to this session. */
     editorBindings: YjsCollaborationEditorBindings;
 }
 
@@ -545,7 +545,7 @@ export function createYjsCollaborationController(
  *     localAwareness: { userId: 'user-1', name: 'Ada', color: '#0A84FF' },
  * });
  *
- * return <NativeRichTextEditor {...collaboration.editorBindings} />;
+ * return <RichTextEditor {...collaboration.editorBindings} />;
  * ```
  */
 export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCollaborationResult {

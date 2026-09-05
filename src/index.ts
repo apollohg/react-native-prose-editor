@@ -1,4 +1,20 @@
 export {
+    RichTextEditor,
+    type RichTextEditorProps,
+    type RichTextEditorRef,
+    type RichTextEditorCaretRect,
+    type RichTextEditorHeightBehavior,
+    type RichTextEditorToolbarPlacement,
+    type RichTextEditorValueJSONUpdateMode,
+    type RichTextEditorAutoCapitalize,
+    type RichTextEditorKeyboardType,
+    type RichTextEditorAndroidInputOptions,
+    type RichTextEditorFocusPreservingElement,
+    type RichTextEditorFocusPreservingRef,
+    type RichTextEditorFocusPreservingRefs,
+    type RemoteSelectionDecoration,
+    type LinkRequestContext,
+    type ImageRequestContext,
     NativeRichTextEditor,
     type NativeRichTextEditorProps,
     type NativeRichTextEditorRef,
@@ -12,9 +28,6 @@ export {
     type NativeRichTextEditorFocusPreservingElement,
     type NativeRichTextEditorFocusPreservingRef,
     type NativeRichTextEditorFocusPreservingRefs,
-    type RemoteSelectionDecoration,
-    type LinkRequestContext,
-    type ImageRequestContext,
 } from './NativeRichTextEditor';
 
 export type {
@@ -25,6 +38,15 @@ export type {
 } from './ExternalTextComposition';
 
 export {
+    RichTextViewer,
+    type RichTextViewerProps,
+    type RichTextViewerAddons,
+    type RichTextViewerBaseProps,
+    type RichTextViewerMentionsConfig,
+    type RichTextViewerLinkPressEvent,
+    type RichTextViewerMentionPressEvent,
+    type RichTextViewerErrorEvent,
+    type RichTextViewerAtomAttrsUpdateEvent,
     NativeProseViewer,
     type NativeProseViewerProps,
     type NativeProseViewerAddons,

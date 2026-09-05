@@ -2,8 +2,8 @@ import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
 
 /**
  * Bounds on the native image pipeline that fetches and decodes remote and
- * data-URL images. Set it on `NativeRichTextEditor.imageLoadingPolicy` or
- * `NativeProseViewer.imageLoadingPolicy`.
+ * data-URL images. Set it on `RichTextEditor.imageLoadingPolicy` or
+ * `RichTextViewer.imageLoadingPolicy`.
  *
  * Every field is optional; an omitted one uses
  * {@link DEFAULT_EDITOR_IMAGE_LOADING_POLICY}. Each value must be a positive

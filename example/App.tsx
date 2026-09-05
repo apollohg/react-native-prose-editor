@@ -7,7 +7,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import {
     createNativeEditorDocumentHandle,
     DEFAULT_EDITOR_IMAGE_LOADING_POLICY,
-    NativeRichTextEditor,
+    RichTextEditor,
     defaultSchema,
     withAtomsSchema,
     withImagesSchema,
@@ -17,7 +17,7 @@ import {
     type ImageRequestContext,
     type LinkRequestContext,
     type MentionQueryChangeEvent,
-    type NativeRichTextEditorRef,
+    type RichTextEditorRef,
 } from 'react-native-rich-text-editor';
 
 import { counterCardAtom } from './components/CounterCard';
@@ -64,7 +64,7 @@ export default function App() {
 function EditorScreen() {
     const insets = useSafeAreaInsets();
     const keyboardHeight = useKeyboardHeight();
-    const editorRef = useRef<NativeRichTextEditorRef>(null);
+    const editorRef = useRef<RichTextEditorRef>(null);
     const [wordCount, setWordCount] = useState(0);
     const [mentionQuery, setMentionQuery] = useState<string | null>(null);
     const [linkRequest, setLinkRequest] = useState<LinkRequestContext | null>(null);
@@ -161,7 +161,7 @@ function EditorScreen() {
             </View>
 
             <View style={styles.sheet}>
-                <NativeRichTextEditor
+                <RichTextEditor
                     ref={editorRef}
                     documentHandle={documentHandle}
                     atoms={editorAtoms}

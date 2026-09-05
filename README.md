@@ -13,14 +13,16 @@ See the [documentation](https://github.com/apollohg/react-native-rich-text-edito
 - Configurable schemas, marks, blockquotes, lists, links, images, and mentions
 - Custom atom nodes rendered with your React components
 - Native toolbar, theming, selection, undo, and redo
-- `NativeProseViewer`, an exact-size Fabric renderer for read-only content
+- `RichTextViewer`, an exact-size Fabric renderer for read-only content
 - Shared document handles for local editing and Yjs collaboration
+
+`NativeRichTextEditor` and `NativeProseViewer`, along with their associated types, remain available as deprecated aliases of `RichTextEditor` and `RichTextViewer`.
 
 ## Requirements
 
 The package uses custom native code and Expo Modules. Use a development build or a bare React Native app with Expo Modules configured; it does not run in Expo Go.
 
-Requires Expo 52+, React Native 0.76+, React 18+, and `@expo/vector-icons` 14+. `NativeProseViewer` requires the New Architecture. See the [Installation Guide](https://github.com/apollohg/react-native-rich-text-editor/wiki/Installation) for platform requirements.
+Requires Expo 52+, React Native 0.76+, React 18+, and `@expo/vector-icons` 14+. `RichTextViewer` requires the New Architecture. See the [Installation Guide](https://github.com/apollohg/react-native-rich-text-editor/wiki/Installation) for platform requirements.
 
 ## Installation
 
@@ -58,7 +60,7 @@ Every editor binds to a `NativeEditorDocumentHandle`. Create the handle once, in
 import React, { useEffect, useMemo } from 'react';
 import {
     createNativeEditorDocumentHandle,
-    NativeRichTextEditor,
+    RichTextEditor,
 } from 'react-native-rich-text-editor';
 
 export function EditorScreen() {
@@ -76,7 +78,7 @@ export function EditorScreen() {
     useEffect(() => () => documentHandle.destroy(), [documentHandle]);
 
     return (
-        <NativeRichTextEditor
+        <RichTextEditor
             documentHandle={documentHandle}
             placeholder='Start typing…'
             onContentChange={(html) => console.log(html)}
@@ -85,7 +87,7 @@ export function EditorScreen() {
 }
 ```
 
-See [Getting Started](https://github.com/apollohg/react-native-rich-text-editor/wiki/Getting-Started) and the [NativeRichTextEditor reference](https://github.com/apollohg/react-native-rich-text-editor/wiki/NativeRichTextEditor-Reference) for the complete API.
+See [Getting Started](https://github.com/apollohg/react-native-rich-text-editor/wiki/Getting-Started) and the [RichTextEditor reference](https://github.com/apollohg/react-native-rich-text-editor/wiki/RichTextEditor-Reference) for the complete API.
 
 ## Custom atom nodes
 
@@ -93,14 +95,14 @@ Render interactive cards, embeds, and other custom blocks with your own React co
 
 See [Custom Atom Nodes](https://github.com/apollohg/react-native-rich-text-editor/wiki/Custom-Atom-Nodes) for a complete example and API details.
 
-## Prose viewer
+## Rich text viewer
 
-`NativeProseViewer` displays HTML or ProseMirror JSON without creating an editor session. Place it in a container with a finite width:
+`RichTextViewer` displays HTML or ProseMirror JSON without creating an editor session. Place it in a container with a finite width:
 
 ```tsx
-import { NativeProseViewer } from 'react-native-rich-text-editor';
+import { RichTextViewer } from 'react-native-rich-text-editor';
 
-<NativeProseViewer contentHTML='<p>Read-only content</p>' />;
+<RichTextViewer contentHTML='<p>Read-only content</p>' />;
 ```
 
 See the [Viewer Guide](https://github.com/apollohg/react-native-rich-text-editor/wiki/Viewer) for styling, images, interactions, and custom atoms.
@@ -113,7 +115,7 @@ See the [Viewer Guide](https://github.com/apollohg/react-native-rich-text-editor
 import React, { useEffect, useMemo } from 'react';
 import {
     createNativeEditorDocumentHandle,
-    NativeRichTextEditor,
+    RichTextEditor,
     useYjsCollaboration,
 } from 'react-native-rich-text-editor';
 
@@ -146,7 +148,7 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
 
     useEffect(() => () => documentHandle.destroy(), [documentHandle]);
 
-    return <NativeRichTextEditor {...collaboration.editorBindings} />;
+    return <RichTextEditor {...collaboration.editorBindings} />;
 }
 ```
 
@@ -161,8 +163,8 @@ See the [example app](./example) to try the editor and viewer, and the [Developm
 - [Documentation index](https://github.com/apollohg/react-native-rich-text-editor/wiki)
 - [Installation](https://github.com/apollohg/react-native-rich-text-editor/wiki/Installation)
 - [Getting started](https://github.com/apollohg/react-native-rich-text-editor/wiki/Getting-Started)
-- [Editor API reference](https://github.com/apollohg/react-native-rich-text-editor/wiki/NativeRichTextEditor-Reference)
-- [Viewer API reference](https://github.com/apollohg/react-native-rich-text-editor/wiki/NativeProseViewer-Reference)
+- [Editor API reference](https://github.com/apollohg/react-native-rich-text-editor/wiki/RichTextEditor-Reference)
+- [Viewer API reference](https://github.com/apollohg/react-native-rich-text-editor/wiki/RichTextViewer-Reference)
 - [Custom atom nodes](https://github.com/apollohg/react-native-rich-text-editor/wiki/Custom-Atom-Nodes)
 - [Collaboration](https://github.com/apollohg/react-native-rich-text-editor/wiki/Collaboration)
 - [Toolbar setup](https://github.com/apollohg/react-native-rich-text-editor/wiki/Toolbar-Setup)

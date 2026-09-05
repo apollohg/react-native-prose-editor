@@ -1,13 +1,13 @@
 import React from 'react';
 import { AppRegistry, View } from 'react-native';
 import {
-  NativeProseViewer,
-  NativeRichTextEditor,
+  RichTextViewer,
+  RichTextEditor,
 } from 'react-native-rich-text-editor';
 
 function App() {
-  void NativeProseViewer;
-  void NativeRichTextEditor;
+  void RichTextViewer;
+  void RichTextEditor;
   return React.createElement(View);
 }
 

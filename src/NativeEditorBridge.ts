@@ -1880,7 +1880,7 @@ export interface NativeEditorV2CreateConfig {
     schema?: SchemaDefinition;
     /** Yjs fragment the document lives in. Defaults to `'prosemirror'`. */
     fragmentName?: string;
-    /** Engine-enforced editing policy. `NativeRichTextEditor.editable` is a separate, per-view interaction gate. */
+    /** Engine-enforced editing policy. `RichTextEditor.editable` is a separate, per-view interaction gate. */
     policy?: {
         /** Maximum document text length in Unicode scalars. A change that would exceed it is rejected. */
         maxLength?: number;

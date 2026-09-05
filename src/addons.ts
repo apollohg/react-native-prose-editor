@@ -73,10 +73,10 @@ export interface MentionSelectionAttrsEvent {
 export type MentionThemeResolveEvent = MentionSelectionAttrsEvent;
 
 /**
- * Mentions for `NativeRichTextEditor`. The schema belongs to the document
+ * Mentions for `RichTextEditor`. The schema belongs to the document
  * handle, so create the handle with {@link withMentionsSchema} applied to
  * your schema — this config alone does not add the `mention` node.
- * (`NativeProseViewer` adds it for you.)
+ * (`RichTextViewer` adds it for you.)
  *
  * The host owns the suggestion list: react to `onQueryChange` by filtering
  * your own data, then pass the result back through `suggestions`.
@@ -109,7 +109,7 @@ export interface MentionsAddonConfig {
     onSelect?: (event: MentionSelectEvent) => void;
 }
 
-/** Optional editor features, passed to `NativeRichTextEditor.addons`. */
+/** Optional editor features, passed to `RichTextEditor.addons`. */
 export interface EditorAddons {
     mentions?: MentionsAddonConfig;
 }

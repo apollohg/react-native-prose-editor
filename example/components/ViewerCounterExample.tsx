@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
-    NativeProseViewer,
-    type NativeProseViewerAtomAttrsUpdateEvent,
+    RichTextViewer,
+    type RichTextViewerAtomAttrsUpdateEvent,
 } from 'react-native-rich-text-editor';
 
 import { editorTheme } from '../theme';
@@ -15,12 +15,12 @@ export function ViewerCounterExample({ readOnly = false }: { readOnly?: boolean 
         count: 2,
     });
     const contentJSON = useMemo(() => counterCardAtom.buildFragmentJson(attrs), [attrs]);
-    const updateAttrs = useCallback(({ partial }: NativeProseViewerAtomAttrsUpdateEvent) => {
+    const updateAttrs = useCallback(({ partial }: RichTextViewerAtomAttrsUpdateEvent) => {
         setAttrs((current) => ({ ...current, ...partial }));
     }, []);
 
     return (
-        <NativeProseViewer
+        <RichTextViewer
             contentJSON={contentJSON}
             atoms={atoms}
             theme={editorTheme}

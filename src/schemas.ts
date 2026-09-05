@@ -118,7 +118,7 @@ export interface MarkSpec {
 /**
  * The node and mark types a document may contain. Fixed when the document
  * handle is created (`NativeEditorV2CreateConfig.schema`), or per render for
- * `NativeProseViewer`. Start from {@link defaultSchema},
+ * `RichTextViewer`. Start from {@link defaultSchema},
  * {@link prosemirrorSchema}, or {@link tiptapCompatibleSchema} rather than
  * assembling one from scratch.
  */
@@ -507,7 +507,7 @@ export function buildDocumentFragmentJson(
 
 /**
  * Build a document fragment holding one image node, ready for
- * `insertContentJson`. `NativeRichTextEditorRef.insertImage` does this for
+ * `insertContentJson`. `RichTextEditorRef.insertImage` does this for
  * you; use this when assembling a larger insertion by hand.
  */
 export function buildImageFragmentJson(

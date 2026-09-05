@@ -3,27 +3,27 @@ import { Keyboard } from 'react-native';
 
 import type { EditorToolbarFrame } from './EditorToolbar';
 
-export interface NativeRichTextEditorFocusPreservingElement {
+export interface RichTextEditorFocusPreservingElement {
     measureInWindow(callback: (x: number, y: number, width: number, height: number) => void): void;
 }
 
-export type NativeRichTextEditorFocusPreservingRef =
-    RefObject<NativeRichTextEditorFocusPreservingElement | null>;
+export type RichTextEditorFocusPreservingRef =
+    RefObject<RichTextEditorFocusPreservingElement | null>;
 
-export type NativeRichTextEditorFocusPreservingRefs =
-    | NativeRichTextEditorFocusPreservingRef
-    | readonly NativeRichTextEditorFocusPreservingRef[];
+export type RichTextEditorFocusPreservingRefs =
+    | RichTextEditorFocusPreservingRef
+    | readonly RichTextEditorFocusPreservingRef[];
 
 const EMPTY_FRAMES: readonly EditorToolbarFrame[] = [];
 
 interface MeasuredFocusPreservingFrame {
-    target: NativeRichTextEditorFocusPreservingElement;
+    target: RichTextEditorFocusPreservingElement;
     frame: EditorToolbarFrame;
 }
 
 function sameRefs(
-    left: readonly NativeRichTextEditorFocusPreservingRef[],
-    right: readonly NativeRichTextEditorFocusPreservingRef[]
+    left: readonly RichTextEditorFocusPreservingRef[],
+    right: readonly RichTextEditorFocusPreservingRef[]
 ): boolean {
     return left.length === right.length && left.every((ref, index) => ref === right[index]);
 }
@@ -59,19 +59,15 @@ function validFrame(
 }
 
 export function useFocusPreservingFrames(
-    refs: NativeRichTextEditorFocusPreservingRefs | undefined,
+    refs: RichTextEditorFocusPreservingRefs | undefined,
     enabled: boolean
 ): {
     frames: readonly EditorToolbarFrame[];
     refresh: () => void;
 } {
-    const normalizedRefs: readonly NativeRichTextEditorFocusPreservingRef[] =
-        refs == null
-            ? []
-            : Array.isArray(refs)
-              ? refs
-              : [refs as NativeRichTextEditorFocusPreservingRef];
-    const stableRefs = useRef<readonly NativeRichTextEditorFocusPreservingRef[]>(normalizedRefs);
+    const normalizedRefs: readonly RichTextEditorFocusPreservingRef[] =
+        refs == null ? [] : Array.isArray(refs) ? refs : [refs as RichTextEditorFocusPreservingRef];
+    const stableRefs = useRef<readonly RichTextEditorFocusPreservingRef[]>(normalizedRefs);
     if (!sameRefs(stableRefs.current, normalizedRefs)) {
         stableRefs.current = normalizedRefs;
     }
@@ -79,7 +75,7 @@ export function useFocusPreservingFrames(
 
     const generation = useRef(0);
     const framesByRef = useRef(
-        new Map<NativeRichTextEditorFocusPreservingRef, MeasuredFocusPreservingFrame>()
+        new Map<RichTextEditorFocusPreservingRef, MeasuredFocusPreservingFrame>()
     );
     const [frames, setFrames] = useState<readonly EditorToolbarFrame[]>(EMPTY_FRAMES);
 
@@ -164,3 +160,12 @@ export function useFocusPreservingFrames(
 
     return { frames, refresh };
 }
+
+/** @deprecated Use RichTextEditorFocusPreservingElement instead. */
+export type NativeRichTextEditorFocusPreservingElement = RichTextEditorFocusPreservingElement;
+
+/** @deprecated Use RichTextEditorFocusPreservingRef instead. */
+export type NativeRichTextEditorFocusPreservingRef = RichTextEditorFocusPreservingRef;
+
+/** @deprecated Use RichTextEditorFocusPreservingRefs instead. */
+export type NativeRichTextEditorFocusPreservingRefs = RichTextEditorFocusPreservingRefs;

@@ -3,7 +3,7 @@ import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
 /**
  * Bounds on the documents, schemas, and collaboration payloads the Rust core
  * will admit. Set them on `NativeEditorV2CreateConfig.limits.resource` when
- * creating a document handle, or on `NativeProseViewer.resourceLimits`.
+ * creating a document handle, or on `RichTextViewer.resourceLimits`.
  *
  * Every field is optional; an omitted one uses
  * {@link DEFAULT_EDITOR_RESOURCE_LIMITS}. Each value must be a positive
