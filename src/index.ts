@@ -33,6 +33,7 @@ export {
     type NativeProseViewerLinkPressEvent,
     type NativeProseViewerMentionPressEvent,
     type NativeProseViewerErrorEvent,
+    type NativeProseViewerAtomAttrsUpdateEvent,
 } from './NativeProseViewer';
 
 export {

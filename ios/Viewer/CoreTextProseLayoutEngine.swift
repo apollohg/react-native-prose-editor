@@ -79,9 +79,45 @@ struct PreparedTextPaint {
     let spacingAfter: CGFloat
 }
 
+struct PreparedViewerAtoms {
+    let generation: String
+    let revision: String
+    let nodeTypes: Set<String>
+    let estimatedHeights: [String: Double]
+    let measurements: [String: [String: Double]]
+    let retainedBytes: Int
+
+    static func resolve(_ themeJSON: String?) -> PreparedViewerAtoms? {
+        guard let data = themeJSON?.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = root["viewerAtoms"] as? [String: Any]
+        else { return nil }
+        return PreparedViewerAtoms(
+            generation: value["generation"] as? String ?? "",
+            revision: value["revision"] as? String ?? "",
+            nodeTypes: Set(value["nodeTypes"] as? [String] ?? []),
+            estimatedHeights: value["estimatedHeights"] as? [String: Double] ?? [:],
+            measurements: value["measurements"] as? [String: [String: Double]] ?? [:],
+            retainedBytes: data.count * 2
+        )
+    }
+
+    func height(nodeType: String, docPos: UInt32, width: CGFloat) -> CGFloat {
+        if let measurement = measurements[String(docPos)],
+           let measuredWidth = measurement["width"], measuredWidth.isFinite,
+           abs(measuredWidth - Double(width)) < 0.01,
+           let height = measurement["height"], height.isFinite, height >= 0 {
+            return CGFloat(height)
+        }
+        let estimate = estimatedHeights[nodeType] ?? 32
+        return estimate.isFinite && estimate >= 0 ? CGFloat(estimate) : 32
+    }
+}
+
 /// Theme parsing is deliberately outside the drawing path. A registry stores
 /// this value once per generation and every width-specific artifact reuses it.
 struct PreparedProseTheme {
+    let viewerAtoms: PreparedViewerAtoms?
     let fontScale: CGFloat
     let text: PreparedTextPaint
     let paragraph: PreparedTextPaint
@@ -170,6 +206,7 @@ struct PreparedProseTheme {
         }
         let listItemSpacing = theme.list?.itemSpacing ?? 4
         return PreparedProseTheme(
+            viewerAtoms: PreparedViewerAtoms.resolve(themeJSON),
             fontScale: resolvedScale,
             text: text,
             paragraph: paragraph,
@@ -216,7 +253,7 @@ struct PreparedProseTheme {
     /// UIFont/UIColor bridge objects and the resolved heading dictionary are
     /// retained by each cached generation theme. Keep the LRU's accounting
     /// deliberately conservative; paint values themselves are immutable.
-    var estimatedRetainedBytes: Int { 3_072 + headings.count * 384 }
+    var estimatedRetainedBytes: Int { 3_072 + headings.count * 384 + (viewerAtoms?.retainedBytes ?? 0) }
 }
 
 private struct PreparedAtomAppearance {
@@ -443,6 +480,32 @@ final class CoreTextProseLayoutEngine {
                 return spacing
             }
             itemSpacing = boundarySpacing
+        }
+        if block.isBlockAtom, let atoms = theme.viewerAtoms,
+           atoms.nodeTypes.contains(block.nodeType),
+           case let .atom(nodeType, docPos, attrsJSON, _)? = block.inlines.first {
+            let slotWidth = max(1, contentWidth - listInset - quoteInset)
+            let height = atoms.height(nodeType: nodeType, docPos: docPos, width: slotWidth)
+            let bounds = CGRect(x: textX, y: cursorY, width: slotWidth, height: height)
+            var fragments: [PreparedProseFragment] = []
+            if block.inBlockquote {
+                fragments.append(.init(kind: .border, bounds: CGRect(x: contentX, y: cursorY,
+                    width: theme.quoteBorderWidth, height: height), color: theme.quoteBorderColor.cgColor,
+                    strokeWidth: theme.quoteBorderWidth))
+            }
+            if let marker {
+                let markerX = textX - markerGutter
+                let markerTop = cursorY + max(0, (height - marker.ascent - marker.descent) / 2)
+                let markerBounds = CGRect(x: markerX, y: markerTop, width: marker.width,
+                                          height: marker.ascent + marker.descent)
+                fragments.append(.init(kind: .marker, line: marker.line,
+                    origin: CGPoint(x: markerX, y: markerTop + marker.ascent), bounds: markerBounds,
+                    color: theme.listMarkerColor.cgColor, label: marker.label, checked: marker.checked))
+            }
+            let blockBounds = fragments.reduce(bounds) { $0.union($1.bounds) }
+            let prepared = PreparedProseBlock(fragments: fragments, bounds: blockBounds,
+                atomSlot: PreparedProseAtomSlot(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJSON, bounds: bounds))
+            return (prepared, [], [], nil, blockBounds.maxY + itemSpacing, prepared.estimatedRetainedBytes)
         }
         if block.nodeType == "image", let image = ViewerImageAttachment.sourceAndDeclaredSize(in: block) {
             let imageWidth = max(1, contentWidth - listInset - quoteInset)

@@ -471,6 +471,28 @@ int64_t ComponentTagFromState(
   [self releaseFabricOwnershipTerminatingLease:YES];
 }
 
+- (void)emitAtomLayout
+{
+  if (!_viewerProps || !_eventEmitter) return;
+  NSString *themeJSON = OptionalStringFromStdString(_viewerProps->themeJson);
+  NSData *data = [themeJSON dataUsingEncoding:NSUTF8StringEncoding];
+  if (!data) return;
+  id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (![root isKindOfClass:[NSDictionary class]]) return;
+  id atoms = root[@"viewerAtoms"];
+  if (![atoms isKindOfClass:[NSDictionary class]]) return;
+  NSString *generation = atoms[@"generation"];
+  NSString *revision = atoms[@"revision"];
+  if (![generation isKindOfClass:[NSString class]] || ![revision isKindOfClass:[NSString class]]) return;
+  const auto emitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
+  emitter->onAtomLayout({
+      .generation = std::string(generation.UTF8String),
+      .revision = std::string(revision.UTF8String),
+      .layoutWidth = _drawingView.bounds.size.width,
+      .atomsJson = std::string([_drawingView atomLayoutsJSONWithOrigin:_drawingView.frame.origin].UTF8String),
+  });
+}
+
 - (void)installMeasuredArtifactIfAttached
 {
   // This is a deliberate lifecycle test seam: updateProps, updateState,
@@ -539,6 +561,7 @@ int64_t ComponentTagFromState(
       [_ownedGeneration isEqualToString:generation] &&
       _ownedLeaseHandle == leaseHandle &&
       [_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
+    [self emitAtomLayout];
     return;
   }
   if (_hasOwnedSurface &&
@@ -621,6 +644,7 @@ int64_t ComponentTagFromState(
                                   policyJSON:OptionalStringFromStdString(props.imagePolicyJson)];
   [_drawingView updateConfiguredImagesForVisibleWindow];
   _installedMeasurementIdentity = measurementIdentityString;
+  [self emitAtomLayout];
   if (!_drawingView.errorCode) {
     return;
   }

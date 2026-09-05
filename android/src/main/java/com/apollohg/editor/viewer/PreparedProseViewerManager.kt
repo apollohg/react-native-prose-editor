@@ -292,6 +292,15 @@ internal class PreparedProseViewerManager :
         }
         state.installMountedReplacement(view, ticket)
         state.beginImages(view, ticket.artifact, currentRequest)
+        ViewerAtomConfiguration.parse(currentRequest.configuration.themeJson)?.let { atoms ->
+            val density = view.resources.displayMetrics.density
+            dispatchViewerEvent(view, "topAtomLayout", Arguments.createMap().apply {
+                putString("generation", atoms.generation)
+                putString("revision", atoms.revision)
+                putDouble("layoutWidth", ticket.artifact.widthPx.toDouble() / density)
+                putString("atomsJson", ticket.artifact.atomsJson(density, ticket.contentOriginXPx, ticket.contentOriginYPx))
+            })
+        }
         ticket.artifact.error?.let { dispatchError(view, currentRequest, it) }
     }
 

@@ -191,17 +191,28 @@ final class PreparedProseFragment {
 
 /// A vertical-culling unit, sorted by its top edge. It owns every paint
 /// operation needed for one semantic block so draw(_:) never shapes text.
+struct PreparedProseAtomSlot {
+    let nodeType: String
+    let docPos: UInt32
+    let attrsJSON: String
+    let bounds: CGRect
+
+    var estimatedRetainedBytes: Int { 128 + nodeType.utf8.count * 2 + attrsJSON.utf8.count * 2 }
+}
+
 final class PreparedProseBlock {
+    let atomSlot: PreparedProseAtomSlot?
     let fragments: [PreparedProseFragment]
     let bounds: CGRect
 
-    init(fragments: [PreparedProseFragment], bounds: CGRect) {
+    init(fragments: [PreparedProseFragment], bounds: CGRect, atomSlot: PreparedProseAtomSlot? = nil) {
+        self.atomSlot = atomSlot
         self.fragments = fragments
         self.bounds = bounds
     }
 
     var estimatedRetainedBytes: Int {
-        160 + fragments.reduce(0) { $0 + $1.estimatedRetainedBytes }
+        160 + fragments.reduce(0) { $0 + $1.estimatedRetainedBytes } + (atomSlot?.estimatedRetainedBytes ?? 0)
     }
 
     /// Compatibility initializer retained for test seams.

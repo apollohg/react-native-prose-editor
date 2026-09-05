@@ -2552,6 +2552,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                                   <Component
                                       attrs={instance.attrs}
                                       selected={selectedKeys.has(instance.key)}
+                                      readOnly={!editable}
+                                      isViewer={false}
                                       nodeType={instance.nodeType}
                                       updateAttrs={(attrs) =>
                                           invokeAtomAttrsUpdate(
@@ -2569,6 +2571,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 atomContentWidth,
                 atomPositions,
                 atomState.instances,
+                editable,
                 invokeAtomAttrsUpdate,
                 selectedKeys,
             ]

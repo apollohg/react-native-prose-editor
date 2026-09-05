@@ -58,6 +58,7 @@ internal data class ViewerBlock(
     val listItemAncestors: List<ViewerListItemAncestor> = emptyList(),
     val outermostListItemIdentity: Int? = null,
     val outermostListItemIsLast: Boolean = false,
+    val isBlockAtom: Boolean = false,
 )
 
 /** Semantic positions live only in [ViewerInline.Atom], never in Android drawing spans. */
@@ -145,7 +146,7 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
             val context = builder.listItemContext ?: return@mapNotNull null
             ViewerListItemAncestor(identity, context, builder.depth, false, false)
         }
-        fun appendLeaf(nodeType: String, depth: Int, inlines: List<ViewerInline>, ancestors: List<Builder>) {
+        fun appendLeaf(nodeType: String, depth: Int, inlines: List<ViewerInline>, ancestors: List<Builder>, isBlockAtom: Boolean = false) {
             val itemAncestors = listItemAncestors(ancestors)
             rendered += ViewerBlock(
                 nodeType = nodeType,
@@ -154,6 +155,7 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                 listContext = nearestListContext(ancestors),
                 listItemBoundary = null,
                 inlines = inlines,
+                isBlockAtom = isBlockAtom,
                 listItemAncestors = itemAncestors,
                 outermostListItemIdentity = itemAncestors.firstOrNull()?.identity,
                 outermostListItemIsLast = itemAncestors.firstOrNull()?.context?.isLast == true,
@@ -189,6 +191,7 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                     stack.lastOrNull()?.depth ?: 0,
                     listOf(ViewerInline.Atom(element.nodeType, u32(element.docPos), element.attrsJson, element.label)),
                     stack,
+                    isBlockAtom = true,
                 )
                 FfiViewerElement.BlockEnd -> {
                     val builder = stack.removeLastOrNull() ?: return@forEach

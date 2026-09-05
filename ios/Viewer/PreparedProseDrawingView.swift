@@ -159,6 +159,18 @@ public final class PreparedProseDrawingView: UIView {
     @objc public var errorDomain: String? { layout?.error?.domain }
     @objc public var errorCode: String? { layout?.error?.code }
     @objc public var errorMessage: String? { layout?.error?.message }
+
+    @objc public func atomLayoutsJSON(origin: CGPoint) -> String {
+        let atoms: [[String: Any]] = layout?.blocks.compactMap { block in
+            guard let atom = block.atomSlot else { return nil }
+            return ["nodeType": atom.nodeType, "docPos": atom.docPos, "attrsJson": atom.attrsJSON,
+                    "x": atom.bounds.minX + origin.x, "y": atom.bounds.minY + origin.y,
+                    "width": atom.bounds.width, "height": atom.bounds.height]
+        } ?? []
+        guard let data = try? JSONSerialization.data(withJSONObject: atoms) else { return "[]" }
+        return String(data: data, encoding: .utf8) ?? "[]"
+    }
+
     /// The owner chooses its delivery channel (UIKit delegate or Fabric event).
     var onActivateInteraction: ((PreparedProseInteraction) -> Bool)?
     var onVisibleRectChange: ((CGRect?) -> Void)?

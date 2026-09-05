@@ -243,6 +243,7 @@ enum ViewerInline: Hashable {
 /// A renderable leaf block. Container nodes are represented by the inherited
 /// context instead of being re-laid out as synthetic paragraphs.
 struct ViewerBlock: Hashable {
+    let isBlockAtom: Bool
     let nodeType: String
     let depth: UInt16
     let inBlockquote: Bool
@@ -262,8 +263,10 @@ struct ViewerBlock: Hashable {
         listItemAncestors: [ViewerListItemAncestor] = [],
         outermostListItemIdentity: Int? = nil,
         outermostListItemIsLast: Bool = false,
-        inlines: [ViewerInline]
+        inlines: [ViewerInline],
+        isBlockAtom: Bool = false
     ) {
+        self.isBlockAtom = isBlockAtom
         self.nodeType = nodeType
         self.depth = depth
         self.inBlockquote = inBlockquote
@@ -285,7 +288,8 @@ struct ViewerBlock: Hashable {
             listItemAncestors: listItemAncestors,
             outermostListItemIdentity: outermostListItemIdentity,
             outermostListItemIsLast: outermostListItemIsLast,
-            inlines: inlines
+            inlines: inlines,
+            isBlockAtom: isBlockAtom
         )
     }
 }
@@ -417,7 +421,8 @@ struct ViewerDocument {
                         listItemAncestors: listItemAncestors,
                         outermostListItemIdentity: outermostListItem?.listItemIdentity,
                         outermostListItemIsLast: outermostListItem?.listContext?.isLast ?? false,
-                        inlines: [.atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJson, label: label)]
+                        inlines: [.atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJson, label: label)],
+                        isBlockAtom: true
                     )
                 )
                 if let listItemIdentity {

@@ -114,6 +114,7 @@ internal data class PreparedProseLayout(
     val imageAttachments: List<ViewerImageAttachment> = emptyList(),
     val retainedBytes: Long,
     val error: ProseViewerError? = null,
+    val viewerAtoms: List<PreparedViewerAtom> = emptyList(),
 ) {
     val fragmentKinds: Set<PreparedProseFragmentKind> get() = blocks.flatMapTo(linkedSetOf()) { block -> block.fragments.map { it.kind } }
 

@@ -1486,6 +1486,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             top: 34,
         });
         expect(atom.props.atomProps.selected).toBe(false);
+        expect(atom.props.atomProps.isViewer).toBe(false);
+        expect(atom.props.atomProps.readOnly).toBe(false);
 
         act(() => {
             nativeView.props.onSelectionChange({

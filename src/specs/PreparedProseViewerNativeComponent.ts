@@ -21,6 +21,12 @@ export interface NativeProps extends ViewProps {
     // React Native numbers are IEEE-754 doubles, which exactly represent every
     // UInt32 document position. Int32 would corrupt positions above 2^31 - 1.
     onPressMention?: DirectEventHandler<{ docPos: Double; label: string; attrsJson: string }>;
+    onAtomLayout?: DirectEventHandler<{
+        generation: string;
+        revision: string;
+        layoutWidth: Double;
+        atomsJson: string;
+    }>;
     onError?: DirectEventHandler<{
         domain: string;
         code: string;

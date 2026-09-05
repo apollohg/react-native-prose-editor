@@ -4,6 +4,115 @@ import UIKit
 import XCTest
 
 final class PreparedProseLayoutTests: XCTestCase {
+    func testRegisteredBlockAtomReservesMeasuredWidthAndZeroHeight() {
+        let block = ViewerBlock(nodeType: "card", depth: 0, inBlockquote: false,
+                                listContext: nil, listItemBoundary: nil,
+                                inlines: [.atom(nodeType: "card", docPos: 3, attrsJSON: "{}", label: "Card")], isBlockAtom: true)
+        let document = ViewerDocument(semanticKey: String(repeating: "a", count: 64),
+                                      blocks: [block], isEmpty: false, retainedBytes: 128,
+                                      trailingEmptyTextBlockCount: 0)
+        let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+        func measure(_ measuredWidth: Int) -> PreparedProseLayout {
+            let theme = """
+            {"viewerAtoms":{"generation":"g","revision":"r","nodeTypes":["card"],"estimatedHeights":{"card":70},"measurements":{"3":{"width":\(measuredWidth),"height":0}}}}
+            """
+            return registry.measure(request: ProseViewerRequest(source: .json("{}"),
+                configuration: ProseViewerConfiguration(configJSON: "{}", themeJSON: theme)),
+                widthPoints: 160, scale: 2)
+        }
+        XCTAssertEqual(measure(160).size.height, 0)
+        XCTAssertEqual(measure(120).size.height, 70)
+        XCTAssertTrue(measure(160).accessibilityNodes.isEmpty)
+        let layout = measure(160)
+        XCTAssertEqual(layout.blocks.first?.atomSlot?.bounds.width, 160)
+        XCTAssertEqual(layout.blocks.first?.atomSlot?.docPos, 3)
+        XCTAssertTrue(layout.blocks.first?.fragments.isEmpty == true)
+        let drawing = PreparedProseDrawingView(frame: .zero)
+        drawing.install(layout: layout)
+        let data = drawing.atomLayoutsJSON(origin: CGPoint(x: 5, y: 9)).data(using: .utf8)!
+        let atoms = try! JSONSerialization.jsonObject(with: data) as! [[String: Any]]
+        XCTAssertEqual(atoms.first?["x"] as? Double, 5)
+        XCTAssertEqual(atoms.first?["y"] as? Double, 9)
+    }
+
+    func testShortListedViewerAtomsIncludeMarkerBoundsAndFollowingSpacing() throws {
+        let atom = ViewerBlock(nodeType: "card", depth: 0, inBlockquote: false,
+            listContext: ViewerListContext(ordered: false, index: 0, kind: nil, checked: false, isLast: true),
+            listItemBoundary: nil,
+            inlines: [.atom(nodeType: "card", docPos: 3, attrsJSON: "{}", label: "Card")], isBlockAtom: true)
+        let paragraph = ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false,
+            listContext: nil, listItemBoundary: nil, inlines: [.text(text: "After", marks: [])])
+        for height in [0, 1] {
+            for followingParagraph in [false, true] {
+                let document = ViewerDocument(semanticKey: String(repeating: "a", count: 64),
+                    blocks: followingParagraph ? [atom, paragraph] : [atom], isEmpty: false,
+                    retainedBytes: 128, trailingEmptyTextBlockCount: 0)
+                let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+                let theme = """
+                {"viewerAtoms":{"nodeTypes":["card"],"estimatedHeights":{"card":\(height)}}}
+                """
+                let layout = registry.measure(request: ProseViewerRequest(source: .json("{}"),
+                    configuration: ProseViewerConfiguration(configJSON: "{}", themeJSON: theme)),
+                    widthPoints: 200, scale: 2)
+                let block = try XCTUnwrap(layout.blocks.first)
+                let marker = try XCTUnwrap(block.fragments.first { $0.kind == .marker })
+                XCTAssertEqual(block.atomSlot?.bounds.height, CGFloat(height))
+                XCTAssertGreaterThan(marker.bounds.height, CGFloat(height))
+                XCTAssertTrue(block.bounds.contains(marker.bounds))
+                XCTAssertGreaterThanOrEqual(layout.size.height, marker.bounds.maxY)
+                if followingParagraph {
+                    XCTAssertGreaterThanOrEqual(layout.blocks[1].bounds.minY, marker.bounds.maxY)
+                }
+            }
+        }
+    }
+
+    func testViewerAtomDefaultsAndExactMeasurementWidth() {
+        let atoms = PreparedViewerAtoms.resolve("""
+        {"viewerAtoms":{"nodeTypes":["card"],"measurements":{"3":{"width":160.1,"height":90}}}}
+        """)!
+        XCTAssertEqual(atoms.height(nodeType: "card", docPos: 3, width: 160), 32)
+        XCTAssertEqual(atoms.height(nodeType: "card", docPos: 3, width: 160.1), 90)
+    }
+
+    func testViewerAtomDecorationsFallbackAndDownstreamGeometry() {
+        func block(_ nodeType: String, atom: Bool, quote: Bool = false,
+                   list: ViewerListContext? = nil) -> ViewerBlock {
+            ViewerBlock(nodeType: nodeType, depth: 0, inBlockquote: quote,
+                        listContext: list, listItemBoundary: nil,
+                        inlines: [.atom(nodeType: "card", docPos: 3, attrsJSON: "{}", label: "Card")],
+                        isBlockAtom: atom)
+        }
+        func measure(_ first: ViewerBlock, registered: Bool = true) -> PreparedProseLayout {
+            let paragraph = ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false,
+                listContext: nil, listItemBoundary: nil, inlines: [.text(text: "After", marks: [])])
+            let document = ViewerDocument(semanticKey: String(repeating: "a", count: 64),
+                blocks: [first, paragraph], isEmpty: false, retainedBytes: 128, trailingEmptyTextBlockCount: 0)
+            let registry = PreparedProseLayoutRegistry(compile: { _ in document })
+            let theme = """
+            {"viewerAtoms":{"nodeTypes":["\(registered ? "card" : "other")"],"estimatedHeights":{"card":80}}}
+            """
+            return registry.measure(request: ProseViewerRequest(source: .json("{}"),
+                configuration: ProseViewerConfiguration(configJSON: "{}", themeJSON: theme)),
+                widthPoints: 200, scale: 2)
+        }
+        let plain = measure(block("card", atom: true))
+        XCTAssertEqual(plain.blocks[0].atomSlot?.bounds.height, 80)
+        XCTAssertGreaterThanOrEqual(plain.blocks[1].bounds.minY, 80)
+        let decorated = measure(block("card", atom: true, quote: true,
+            list: ViewerListContext(ordered: false, index: 0, kind: nil, checked: false, isLast: true)))
+        XCTAssertTrue(decorated.blocks[0].fragments.contains { $0.kind == .marker })
+        XCTAssertTrue(decorated.blocks[0].fragments.contains { $0.kind == .border })
+        XCTAssertLessThan(decorated.blocks[0].atomSlot!.bounds.width, 200)
+        XCTAssertGreaterThan(decorated.blocks[0].atomSlot!.bounds.minX, 0)
+        let inline = measure(block("paragraph", atom: false))
+        XCTAssertNil(inline.blocks[0].atomSlot)
+        XCTAssertTrue(inline.blocks[0].fragments.contains { $0.kind == .atom })
+        let fallback = measure(block("card", atom: true), registered: false)
+        XCTAssertNil(fallback.blocks[0].atomSlot)
+        XCTAssertTrue(fallback.blocks[0].fragments.contains { $0.kind == .atom })
+    }
+
     func testCollapseTrailingEmptyParagraphs() {
         let blocks = ["first", "", "second", "", ""].map { text in
             ViewerBlock(

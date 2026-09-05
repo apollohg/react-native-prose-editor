@@ -19,6 +19,8 @@ import type {
 export interface AtomComponentProps {
     attrs: Readonly<Record<string, unknown>>;
     selected: boolean;
+    readOnly: boolean;
+    isViewer: boolean;
     nodeType: string;
     updateAttrs: (partial: Record<string, unknown>) => Promise<void>;
 }

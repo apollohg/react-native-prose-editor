@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import type { NativeSyntheticEvent, ViewProps } from 'react-native';
+import { View, type NativeSyntheticEvent, type ViewProps } from 'react-native';
 
 import {
     serializeEditorImageLoadingPolicy,
@@ -13,12 +13,16 @@ import {
 import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
 import type { DocumentJSON } from './NativeEditorBridge';
 import { withMentionsSchema } from './addons';
+import { withAtomsSchema, type AtomNodeDefinition } from './atoms';
+import { useViewerAtoms, type NativeProseViewerAtomAttrsUpdateEvent } from './useViewerAtoms';
 import NativePreparedProseViewer from './specs/PreparedProseViewerNativeComponent';
 import {
     serializePreparedProseViewerConfiguration,
     type PreparedProseViewerConfiguration,
 } from './ViewerConfiguration';
 import { defaultSchema, type SchemaDefinition } from './schemas';
+
+export type { NativeProseViewerAtomAttrsUpdateEvent } from './useViewerAtoms';
 
 interface NativeProseViewerLinkPressNativeEvent {
     href: string;
@@ -83,6 +87,12 @@ export interface NativeProseViewerAddons {
 export interface NativeProseViewerBaseProps extends ViewProps {
     /** Schema the content is parsed against. Defaults to {@link defaultSchema}; the mention node is always added. */
     schema?: SchemaDefinition;
+    /** React renderers for custom block atoms; their node specs are added to the schema. */
+    atoms?: readonly AtomNodeDefinition[];
+    /** Whether custom atoms are inert. Defaults to true; prose is always read-only. */
+    readOnly?: boolean;
+    /** Handles an atom update request. Persist it in the app and supply updated content. */
+    onUpdateAtomAttrs?: (event: NativeProseViewerAtomAttrsUpdateEvent) => void | Promise<void>;
     /** Native content theme. See {@link EditorTheme}. */
     theme?: EditorTheme;
     /** Whether `data:` image sources are admitted. Defaults to false. */
@@ -145,11 +155,12 @@ function resolveViewerConfiguration(
     schema: SchemaDefinition | undefined,
     allowBase64Images: boolean,
     resourceLimits: ResolvedEditorResourceLimits | undefined,
-    mentions: NativeProseViewerMentionsConfig | undefined
+    mentions: NativeProseViewerMentionsConfig | undefined,
+    atoms: readonly AtomNodeDefinition[] | undefined
 ): PreparedProseViewerConfiguration {
     return {
         initialization: { type: 'localEmpty' },
-        schema: withMentionsSchema(schema ?? defaultSchema),
+        schema: withAtomsSchema(withMentionsSchema(schema ?? defaultSchema), atoms ?? []),
         ...(allowBase64Images ? { policy: { allowBase64Images: true } } : {}),
         ...(resourceLimits ? { limits: { resource: resourceLimits } } : {}),
         ...(mentions?.trigger || mentions?.prefix
@@ -185,6 +196,9 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
         contentJSON,
         contentHTML,
         schema,
+        atoms,
+        readOnly = true,
+        onUpdateAtomAttrs,
         theme,
         allowBase64Images = false,
         imageLoadingPolicy,
@@ -210,10 +224,11 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
                     schema,
                     allowBase64Images,
                     resolvedResourceLimits,
-                    mentions
+                    mentions,
+                    atoms
                 )
             ),
-        [allowBase64Images, mentions, resolvedResourceLimits, schema]
+        [allowBase64Images, mentions, resolvedResourceLimits, schema, atoms]
     );
     const themeJson = useMemo(
         () => serializeEditorTheme(theme, mentions?.theme),
@@ -230,6 +245,27 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
         }
         return typeof contentJSON === 'string' ? contentJSON : stringifyCachedJson(contentJSON);
     }, [contentHTML, contentJSON]);
+    const atomIdentity = useMemo(
+        () => ({}),
+        [
+            sourceKind,
+            source,
+            configJson,
+            themeJson,
+            imagePolicyJson,
+            renderImages,
+            collapseTrailingEmptyParagraphs,
+            fontEnvironmentRevision,
+        ]
+    );
+    const viewerAtoms = useViewerAtoms({
+        atoms,
+        identity: atomIdentity,
+        themeJson,
+        readOnly,
+        onUpdateAtomAttrs,
+        onError,
+    });
     const handlePressLink = useCallback(
         (event: NativeSyntheticEvent<NativeProseViewerLinkPressNativeEvent>) => {
             onPressLink?.(event.nativeEvent);
@@ -265,13 +301,14 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
         [onError]
     );
 
-    return (
+    const nativeViewer = (
         <NativePreparedProseViewer
-            {...viewProps}
+            {...(viewerAtoms.enabled ? { style: { alignSelf: 'stretch' as const } } : viewProps)}
             sourceKind={sourceKind}
             source={source}
             configJson={configJson}
-            themeJson={themeJson}
+            themeJson={viewerAtoms.themeJson}
+            onAtomLayout={viewerAtoms.enabled ? viewerAtoms.onAtomLayout : undefined}
             imagePolicyJson={imagePolicyJson}
             imagesEnabled={renderImages}
             collapsesWhenEmpty={collapseTrailingEmptyParagraphs}
@@ -282,5 +319,14 @@ export function NativeProseViewer(props: NativeProseViewerProps) {
             onPressMention={mentions?.onPress ? handlePressMention : undefined}
             onError={onError ? handleError : undefined}
         />
+    );
+    if (!viewerAtoms.enabled) return nativeViewer;
+    return (
+        <View {...viewProps}>
+            <View style={{ alignSelf: 'stretch' }} onLayout={viewerAtoms.onContainerLayout}>
+                {nativeViewer}
+                {viewerAtoms.children}
+            </View>
+        </View>
     );
 }

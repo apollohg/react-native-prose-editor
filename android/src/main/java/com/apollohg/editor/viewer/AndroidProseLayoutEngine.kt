@@ -523,6 +523,7 @@ internal data class PreparedProseTheme(
     val mention: EditorMentionTheme?,
     val atomPaddingHorizontalPx: Int,
     val atomPaddingVerticalPx: Int,
+    val viewerAtoms: ViewerAtomConfiguration? = null,
 ) {
     companion object {
         fun resolve(
@@ -577,6 +578,7 @@ internal data class PreparedProseTheme(
                 theme.codeBlock?.backgroundColor ?: 0xFFF2F2F7.toInt(), (theme.codeBlock?.borderRadius ?: 8f) * density, px(theme.codeBlock?.paddingHorizontal ?: 12f, 12f), px(theme.codeBlock?.paddingVertical ?: 8f, 8f),
                 theme.horizontalRule?.color ?: 0xFFC7C7CC.toInt(), max(1, px(theme.horizontalRule?.thickness ?: 1f, 1f)), px(theme.horizontalRule?.verticalMargin ?: 12f, 12f),
                 theme.links, theme.mentions, px(6f, 6f), px(4f, 4f),
+                ViewerAtomConfiguration.parse(themeJson),
             )
         }
     }
@@ -588,7 +590,7 @@ internal data class PreparedProseTheme(
         else -> paragraph
     }
 
-    val retainedBytes: Long get() = 3_072L + headings.size * 384L
+    val retainedBytes: Long get() = 3_072L + headings.size * 384L + (viewerAtoms?.retainedBytes ?: 0)
 }
 
 private data class PreparedAtomAppearance(val paint: PreparedTextPaint, val background: Int, val borderColor: Int?, val borderWidth: Float, val radius: Float, val paddingHorizontal: Int, val paddingVertical: Int)
@@ -722,6 +724,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         var retained = document.retainedBytes + theme.retainedBytes
         val interactions = mutableListOf<PreparedProseInteraction>()
         val imageAttachments = mutableListOf<ViewerImageAttachment>()
+        val viewerAtoms = mutableListOf<PreparedViewerAtom>()
         val markers = mutableMapOf<Int, PreparedMarker>()
         visibleBlocks.forEach { block ->
             listItemAncestors(block).forEachIndexed { nestingDepth, ancestor ->
@@ -757,6 +760,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             retained += prepared.block.retainedBytes + prepared.extraBytes
             interactions += prepared.interactions
             prepared.attachment?.let(imageAttachments::add)
+            prepared.viewerAtom?.let { viewerAtoms += it; retained += it.retainedBytes }
             prepared.block
         }
         val height = max(0, (blocks.maxOfOrNull { it.bounds.bottom } ?: cursorY) + theme.insetBottomPx)
@@ -772,10 +776,10 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         retained += interactions.sumOf { it.retainedBytes } + nodes.sumOf { it.retainedBytes }
         // Mounted image-publication sidecars are runtime surface ownership,
         // not immutable artifact/cache ownership; account them at the host.
-        return PreparedProseLayout(key, widthPx, height, blocks, interactions, nodes, imageAttachments, retained)
+        return PreparedProseLayout(key, widthPx, height, blocks, interactions, nodes, imageAttachments, retained, viewerAtoms = viewerAtoms)
     }
 
-    private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val attachment: ViewerImageAttachment? = null, val nextY: Int, val extraBytes: Long)
+    private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val attachment: ViewerImageAttachment? = null, val nextY: Int, val extraBytes: Long, val viewerAtom: PreparedViewerAtom? = null)
 
     private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int, disappearingListItemIdentities: Set<Int>, warningSemanticGeneration: String): BlockResult {
         val paint = theme.paintFor(block)
@@ -802,6 +806,30 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 }
             }
         }
+        fun markerAnchor(ancestor: ViewerListItemAncestor): Int {
+            var inset = baseListInset
+            ancestorMarkers.forEach { (candidate, _) ->
+                inset += theme.listIndentPx + (ancestorGutters[candidate.identity] ?: 0)
+                if (candidate.identity == ancestor.identity) return theme.insetLeftPx + quoteInset + inset
+            }
+            return textX - codeInset
+        }
+        val customAtom = (block.inlines.singleOrNull() as? ViewerInline.Atom)?.takeIf {
+            block.isBlockAtom && theme.viewerAtoms?.nodeTypes?.contains(it.nodeType) == true
+        }
+        if (customAtom != null) {
+            val atomWidth = max(1, contentWidth - listInset - quoteInset - codeInset * 2)
+            val atomHeight = requireNotNull(theme.viewerAtoms).heightPx(customAtom, atomWidth, theme.density)
+            val bounds = Rect(textX, cursorY, textX + atomWidth, cursorY + atomHeight)
+            val fragments = mutableListOf<PreparedProseFragment>()
+            if (block.inBlockquote) fragments += PreparedProseFragment(PreparedProseFragmentKind.BORDER, Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + theme.quoteBorderWidthPx, bounds.bottom), color = theme.quoteBorderColor)
+            firstMarkers.forEach { (ancestor, marker) ->
+                fragments += markerFragment(marker, markerAnchor(ancestor), cursorY, bounds.bottom, ancestorGutters.getValue(ancestor.identity), theme.listMarkerColor)
+            }
+            return finishBlock(fragments, emptyList(), Rect(theme.insetLeftPx, cursorY, theme.insetLeftPx + contentWidth, bounds.bottom), bounds.bottom, itemSpacing).copy(
+                viewerAtom = PreparedViewerAtom(customAtom.nodeType, customAtom.docPos, customAtom.attrsJson, bounds),
+            )
+        }
         if (block.nodeType == "image") {
             val source = ViewerImageAttachment.sourceAndDeclaredSize(block)
             if (source != null) {
@@ -812,14 +840,6 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 val attachment = ViewerImageAttachment(source.first, source.second, bounds, source.third, attachmentOrdinal)
                 return BlockResult(PreparedProseBlock(listOf(PreparedProseFragment(PreparedProseFragmentKind.IMAGE, bounds, color = 0xFFF2F2F7.toInt())), bounds), emptyList(), attachment, bounds.bottom + itemSpacing, 192)
             }
-        }
-        fun markerAnchor(ancestor: ViewerListItemAncestor): Int {
-            var inset = baseListInset
-            ancestorMarkers.forEach { (candidate, _) ->
-                inset += theme.listIndentPx + (ancestorGutters[candidate.identity] ?: 0)
-                if (candidate.identity == ancestor.identity) return theme.insetLeftPx + quoteInset + inset
-            }
-            return textX - codeInset
         }
         if (block.nodeType == "horizontalRule" || block.nodeType == "horizontal_rule") {
             val ruleTop = cursorY + theme.ruleMarginPx
