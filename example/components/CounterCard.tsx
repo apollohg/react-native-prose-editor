@@ -12,7 +12,7 @@ const COUNTER_CARD_HEIGHT = 96;
 const DEFAULT_TITLE = 'Untitled counter';
 
 /** A block-level React component living inside the document as an atom. */
-function CounterCard({ attrs, selected, updateAttrs }: AtomComponentProps) {
+function CounterCard({ attrs, selected, readOnly, isViewer, updateAttrs }: AtomComponentProps) {
     const [updateError, setUpdateError] = useState<string | null>(null);
     const title = typeof attrs.title === 'string' ? attrs.title : DEFAULT_TITLE;
     const parsedCount = Number(attrs.count);
@@ -44,10 +44,19 @@ function CounterCard({ attrs, selected, updateAttrs }: AtomComponentProps) {
                 <Text numberOfLines={1} style={styles.title}>
                     {title}
                 </Text>
-                <Text style={styles.hint}>{updateError ?? 'Custom block'}</Text>
+                <Text style={styles.hint}>
+                    {updateError ??
+                        (readOnly
+                            ? 'Read-only counter'
+                            : isViewer
+                              ? 'Viewer counter'
+                              : 'Custom block')}
+                </Text>
             </View>
             <View style={styles.stepper}>
                 <Pressable
+                    disabled={readOnly}
+                    accessibilityState={{ disabled: readOnly }}
                     accessibilityRole='button'
                     accessibilityLabel='Subtract one'
                     hitSlop={SPACE.xs}
@@ -57,6 +66,8 @@ function CounterCard({ attrs, selected, updateAttrs }: AtomComponentProps) {
                 </Pressable>
                 <Text style={styles.count}>{count}</Text>
                 <Pressable
+                    disabled={readOnly}
+                    accessibilityState={{ disabled: readOnly }}
                     accessibilityRole='button'
                     accessibilityLabel='Add one'
                     hitSlop={SPACE.xs}

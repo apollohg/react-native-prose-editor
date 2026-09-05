@@ -77,3 +77,10 @@ npm run android
 - If you change native code or Rust bindings, rebuild the app after updating the package binaries.
 - If the native build fails after pulling new changes, try running prebuild again.
 - The editor uses `heightBehavior="fixed"` and scrolls internally. On iOS the sheet keeps its full height and the keyboard height is added to the editor's bottom content inset, so content scrolls behind the keyboard; on Android the activity's resize behavior shrinks the window instead.
+
+
+## Custom atoms in the viewer
+
+`components/ViewerCounterExample.tsx` renders the same counter component in `NativeProseViewer`. Mount it inside a container with a finite width to try it independently of the editor screen. Its React state owns the attributes: `onUpdateAtomAttrs` applies requested changes, then supplies a new `contentJSON`. Pass `readOnly` to disable its controls.
+
+Atom components receive `isViewer` and `readOnly`. In an editor, `isViewer` is false and `readOnly` reflects `editable`. In a viewer, `isViewer` is true and `readOnly` defaults to true. Set `readOnly={false}` to allow interactions; components can handle their own callbacks or use `updateAttrs` with the viewer's `onUpdateAtomAttrs` handler. The viewer never stores changes itself.
