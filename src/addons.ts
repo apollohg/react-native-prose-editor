@@ -1,4 +1,12 @@
+import { normalizeEditorAddons, type NormalizedEditorAddons } from './EditorAddonNormalization';
+import type { EditorAddons, CodeHighlightingAddonOptions } from './EditorAddon';
+export { normalizeEditorAddons } from './EditorAddonNormalization';
+export { createMentionsAddon, type EditorAddons } from './EditorAddon';
 import type { EditorMentionTheme } from './EditorTheme';
+import {
+    normalizeEditorMentionTheme,
+    type SerializedEditorMentionTheme,
+} from './EditorMentionThemeNormalization';
 import type { DocumentJSON, ReadonlyActiveState } from './NativeEditorBridge';
 import {
     buildDocumentFragmentJson,
@@ -109,11 +117,6 @@ export interface MentionsAddonConfig {
     onSelect?: (event: MentionSelectEvent) => void;
 }
 
-/** Optional editor features, passed to `RichTextEditor.addons`. */
-export interface EditorAddons {
-    mentions?: MentionsAddonConfig;
-}
-
 export interface SerializedMentionSuggestion {
     key: string;
     title: string;
@@ -124,7 +127,7 @@ export interface SerializedMentionSuggestion {
 
 export interface SerializedMentionsAddonConfig {
     trigger: string;
-    theme?: EditorMentionTheme;
+    theme?: SerializedEditorMentionTheme;
     resolveSelectionAttrs?: boolean;
     resolveTheme?: boolean;
     suggestions: SerializedMentionSuggestion[];
@@ -132,6 +135,7 @@ export interface SerializedMentionsAddonConfig {
 
 export interface SerializedEditorAddons {
     mentions?: SerializedMentionsAddonConfig;
+    codeHighlighting?: CodeHighlightingAddonOptions;
 }
 
 /**
@@ -225,9 +229,11 @@ export function withMentionsSchema(schema: SchemaDefinition): SchemaDefinition {
     };
 }
 
-export function normalizeEditorAddons(addons?: EditorAddons): SerializedEditorAddons | undefined {
+export function normalizeNativeEditorAddons(
+    addons?: NormalizedEditorAddons
+): SerializedEditorAddons | undefined {
     if (!addons?.mentions) {
-        return undefined;
+        return addons?.codeHighlighting ? { codeHighlighting: addons.codeHighlighting } : undefined;
     }
 
     const trigger = addons.mentions.trigger?.trim() || DEFAULT_MENTION_TRIGGER;
@@ -251,23 +257,26 @@ export function normalizeEditorAddons(addons?: EditorAddons): SerializedEditorAd
     return {
         mentions: {
             trigger,
-            theme: addons.mentions.theme,
+            theme: normalizeEditorMentionTheme(addons.mentions.theme),
             ...(typeof addons.mentions.resolveSelectionAttrs === 'function'
                 ? { resolveSelectionAttrs: true }
                 : {}),
             ...(typeof addons.mentions.resolveTheme === 'function' ? { resolveTheme: true } : {}),
             suggestions,
         },
+        ...(addons.codeHighlighting ? { codeHighlighting: addons.codeHighlighting } : {}),
     };
 }
 
 export function serializeEditorAddons(addons?: EditorAddons): string | undefined {
-    const normalized = normalizeEditorAddons(addons);
-    if (!normalized?.mentions) {
-        return undefined;
-    }
+    return serializeNormalizedEditorAddons(normalizeEditorAddons(addons));
+}
 
-    return JSON.stringify(normalized);
+export function serializeNormalizedEditorAddons(
+    addons?: NormalizedEditorAddons
+): string | undefined {
+    const normalized = normalizeNativeEditorAddons(addons);
+    return normalized ? JSON.stringify(normalized) : undefined;
 }
 
 /** Options for {@link buildMentionFragmentJson}. */

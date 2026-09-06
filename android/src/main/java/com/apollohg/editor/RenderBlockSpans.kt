@@ -137,6 +137,11 @@ class CodeBlockSpan(
     private val paddingHorizontalPx: Int,
     private val paddingVerticalPx: Int
 ) : LeadingMarginSpan, LineBackgroundSpan {
+    internal val documentBox: EditorBoxStyle get() = EditorBoxStyle(
+        backgroundColor = backgroundColor,
+        padding = EditorEdges(paddingVerticalPx.toFloat(), paddingHorizontalPx.toFloat(), paddingVerticalPx.toFloat(), paddingHorizontalPx.toFloat()),
+        corners = EditorCorners(cornerRadiusPx, cornerRadiusPx, cornerRadiusPx, cornerRadiusPx),
+    )
     override fun getLeadingMargin(first: Boolean): Int = paddingHorizontalPx
 
     override fun drawLeadingMargin(
@@ -207,7 +212,8 @@ class CodeBlockSpan(
 class HorizontalRuleSpan(
     private val lineColor: Int,
     private val lineHeight: Float = LayoutConstants.HORIZONTAL_RULE_HEIGHT,
-    private val verticalPadding: Float = LayoutConstants.HORIZONTAL_RULE_VERTICAL_PADDING
+    private val verticalPadding: Float = LayoutConstants.HORIZONTAL_RULE_VERTICAL_PADDING,
+    private val boxInset: EditorEdges = EditorEdges()
 ) : ReplacementSpan(), LeadingMarginSpan {
 
     override fun getLeadingMargin(first: Boolean): Int = 0
@@ -252,8 +258,10 @@ class HorizontalRuleSpan(
         paint.color = lineColor
         paint.style = Paint.Style.FILL
 
-        val lineY = (top + bottom) / 2f
-        val lineWidth = layout?.width?.toFloat() ?: canvas.width.toFloat()
+        val owned = text is Spanned && text.getSpans(start, end, EditorOwnedBlockGeometrySpan::class.java).isNotEmpty()
+        val inset = if (owned) EditorEdges() else boxInset
+        val lineY = (top + inset.top + bottom - inset.bottom) / 2f
+        val lineWidth = (layout?.width?.toFloat() ?: canvas.width.toFloat()) - inset.right
         canvas.drawRect(
             x.toFloat(),
             lineY - lineHeight / 2f,

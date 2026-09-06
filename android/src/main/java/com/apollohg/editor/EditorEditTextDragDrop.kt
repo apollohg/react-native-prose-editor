@@ -24,15 +24,7 @@ internal fun EditorEditText.localTextDragFor(event: DragEvent): LocalTextDrag? {
     )
 }
 
-internal fun EditorEditText.isDragFromThisEditor(localState: Any?): Boolean {
-    if (localState === this) return true
-    if (localState?.javaClass?.name != "android.widget.TextView\$DragLocalState") return false
-    return runCatching {
-        val field = localState.javaClass.getDeclaredField("sourceTextView")
-        field.isAccessible = true
-        field.get(localState) === this
-    }.getOrDefault(false)
-}
+internal fun EditorEditText.isDragFromThisEditor(localState: Any?): Boolean = localState === this
 
 internal fun EditorEditText.containsInterBlockBoundary(start: Int, end: Int): Boolean {
     val content = text as? Spanned ?: return false

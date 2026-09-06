@@ -499,3 +499,220 @@ extension RenderBridgeTests {
     }
 
 }
+
+extension RenderBridgeTests {
+    func testVersionedStylesInheritParagraphLineHeightAndReserveBoxSpace() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"text":{"lineHeight":30,"color":"#123456ff"},"paragraph":{"paddingLeft":12,"paddingRight":7,"borderLeftWidth":4,"borderRightWidth":2,"marginTop":5,"marginBottom":9}}}
+        """))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "textRun", "text": "Styled", "marks": []], ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        let style = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(style.minimumLineHeight, 30)
+        XCTAssertEqual(style.headIndent, 16)
+        XCTAssertEqual(style.tailIndent, -9)
+        XCTAssertEqual(style.paragraphSpacingBefore, 5)
+        XCTAssertEqual(style.paragraphSpacing, 9)
+        XCTAssertEqual(theme.effectiveTextStyle(for: "paragraph").color, EditorTheme.color(from: "#123456ff"))
+    }
+
+    func testVersionedInlineStylesApplyFixedOrderAndExplicitDecorationReset() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"bold":{"color":"#ff0000ff"},"link":{"fontWeight":"400","textDecorationLine":"none"},"strike":{"textDecorationLine":"underline line-through","letterSpacing":2}}}
+        """))
+        let attrs = RenderBridge.attributesForMarks(["strike", "link", "bold"], baseFont: baseFont, textColor: textColor, theme: theme)
+        XCTAssertFalse(try XCTUnwrap(attrs[.font] as? UIFont).fontDescriptor.symbolicTraits.contains(.traitBold))
+        XCTAssertEqual(attrs[.kern] as? CGFloat, 2)
+        XCTAssertEqual(attrs[.underlineStyle] as? Int, NSUnderlineStyle.single.rawValue)
+        XCTAssertEqual(attrs[.strikethroughStyle] as? Int, NSUnderlineStyle.single.rawValue)
+    }
+
+    func testVersionedThemeRejectsUnknownVersionAndInvalidStylesShape() {
+        XCTAssertNil(EditorTheme.from(json: "{\"version\":true,\"styles\":{}}"))
+        XCTAssertNil(EditorTheme.from(json: "{\"version\":1.5,\"styles\":{}}"))
+        XCTAssertNil(EditorTheme.from(json: "{\"version\":2,\"styles\":{}}"))
+        XCTAssertNil(EditorTheme.from(json: "{\"version\":1,\"styles\":[]}"))
+    }
+}
+
+extension RenderBridgeTests {
+    func testStyleBoxResolvesAsymmetricBordersCornersAndImageFit() {
+        let box = EditorStyleBox(["borderTopWidth": 2, "borderLeftWidth": 4, "borderRightWidth": 0,
+                                  "borderBottomWidth": 3, "paddingLeft": 6, "borderTopLeftRadius": 20,
+                                  "borderTopRightRadius": 0, "resizeMode": "contain"])
+        XCTAssertEqual(box.inset.left, 10)
+        XCTAssertEqual(box.inset.right, 0)
+        XCTAssertEqual(box.radii, [20, 0, 0, 0])
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        XCTAssertFalse(box.path(in: bounds).contains(CGPoint(x: 1, y: 1)))
+        XCTAssertTrue(box.path(in: bounds).contains(CGPoint(x: 99, y: 1)))
+        XCTAssertEqual(box.imageRect(CGSize(width: 180, height: 90), in: bounds), CGRect(x: 10, y: 27, width: 90, height: 45))
+    }
+
+    func testStyledEmptyBlockRetainsCaretAndDecorationIdentity() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"paragraph":{"backgroundColor":"#ff0000ff","paddingTop":10,"paddingBottom":12}}}
+        """))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0], ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        XCTAssertGreaterThan(rendered.length, 0)
+        XCTAssertNotNil(rendered.attribute(editorStyleBoxesAttribute, at: 0, effectiveRange: nil))
+        XCTAssertEqual(rendered.attribute(RenderBridgeAttributes.syntheticPlaceholder, at: 0, effectiveRange: nil) as? Bool, true)
+    }
+}
+
+extension RenderBridgeTests {
+    func testStyledWrappedParagraphKeepsTextKitCaretInsideAllocatedBox() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"paragraph":{"paddingTop":11,"paddingBottom":13,"paddingLeft":7,"borderTopWidth":2,"borderLeftWidth":4,"marginTop":17,"marginBottom":19}}}
+        """))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "textRun", "text": String(repeating: "wrapped text ", count: 8), "marks": []],
+            ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        let storage = NSTextStorage(attributedString: rendered)
+        let manager = EditorLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 160, height: 10_000))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        let first = manager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: nil)
+        XCTAssertEqual(first.minX, 11)
+        XCTAssertEqual(first.minY, 30)
+        var count = 0
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, used, _, _, _ in
+            XCTAssertEqual(used.minX, 11)
+            count += 1
+        }
+        XCTAssertGreaterThan(count, 1)
+    }
+}
+
+extension RenderBridgeTests {
+    func testInlineLineHeightExpandsOnlyItsTextKitLine() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"bold":{"lineHeight":60},"paragraph":{"marginBottom":0}}}
+        """))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "textRun", "text": "Tall", "marks": ["bold"]], ["type": "blockEnd"],
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "textRun", "text": "Short", "marks": []], ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        let storage = NSTextStorage(attributedString: rendered)
+        let manager = EditorLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 200, height: 500))
+        manager.addTextContainer(container); storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        XCTAssertEqual(manager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: nil).height, 60)
+        XCTAssertLessThan(manager.lineFragmentUsedRect(forGlyphAt: manager.numberOfGlyphs - 1, effectiveRange: nil).height, 60)
+    }
+}
+
+extension RenderBridgeTests {
+    func testAtomicAdmissionAcceptsCoreLanguageAndRejectsMalformedLanguage() throws {
+        let config = #"{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock","attrs":{"language":{"default":null}}},{"name":"text","group":"inline","role":"text"}],"marks":[]},"initialization":{"type":"localEmpty"}}"#
+        let editorId = makeV2Editor(configJson: config)
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setJson(id: editorId, json: #"{"type":"doc","content":[{"type":"codeBlock","attrs":{"language":"rust"},"content":[{"type":"text","text":"let value = 1;"}]}]}"#)
+        let raw = try XCTUnwrap(editorV2RenderUpdate(editorId: String(editorId), mirrorScalarAnchor: nil, mirrorScalarHead: nil).value)
+        XCTAssertNotNil(EditorV2Adapter.parseAtomicRenderSnapshot(raw))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+        var blocks = try XCTUnwrap(object["renderBlocks"] as? [[[String: Any]]])
+        for language: Any in [42, true, ["bad"]] {
+            blocks[0][0]["language"] = language
+            object["renderBlocks"] = blocks
+            XCTAssertNil(EditorV2Adapter.parseAtomicRenderSnapshot(String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)))
+        }
+    }
+
+    func testAtomicAdmissionValidatesRichMentionStyleWithoutOpeningUnknownKeys() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let raw = try XCTUnwrap(editorV2RenderUpdate(editorId: String(editorId), mirrorScalarAnchor: nil, mirrorScalarHead: nil).value)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+        func snapshot(style: Any) throws -> String {
+            object["renderBlocks"] = [[
+                ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+                ["type": "opaqueInlineAtom", "nodeType": "mention", "label": "Jay", "docPos": 1,
+                 "mentionTheme": ["node": ["style": style]]],
+                ["type": "blockEnd"]
+            ]]
+            return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        }
+        XCTAssertNotNil(EditorV2Adapter.parseAtomicRenderSnapshot(try snapshot(style: ["fontSize": 20, "color": "#123456ff", "borderLeftWidth": 3, "borderTopRightRadius": 8])))
+        for style: Any in [[], ["unknown": 1], ["fontSize": -1], ["borderLeftWidth": true], ["color": "bad-color"], ["fontStyle": "oblique"]] {
+            XCTAssertNil(EditorV2Adapter.parseAtomicRenderSnapshot(try snapshot(style: style)))
+        }
+    }
+}
+
+extension RenderBridgeTests {
+    func testRichMentionReservesChipGeometryWithoutChangingTextOffsets() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: #"{"version":1,"styles":{"mention":{"fontSize":20,"borderLeftWidth":7,"borderRightWidth":9,"borderTopWidth":3,"borderBottomWidth":5}}}"#))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "opaqueInlineAtom", "nodeType": "mention", "label": "Jay Den", "docPos": 1],
+            ["type": "textRun", "text": "!", "marks": []], ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        XCTAssertEqual(rendered.string, "Jay Den!")
+        let storage = NSTextStorage(attributedString: rendered)
+        let manager = EditorLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 300, height: 500))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        let font = try XCTUnwrap(rendered.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        let labelSize = ("Jay Den" as NSString).size(withAttributes: [.font: font])
+        let following = manager.location(forGlyphAt: manager.glyphIndexForCharacter(at: 7))
+        XCTAssertEqual(following.x, ceil(labelSize.width) + 12 + 7 + 9, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(manager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: nil).height, ceil(labelSize.height) + 8 + 3 + 5)
+        XCTAssertEqual(storage.string, "Jay Den!")
+    }
+}
+
+extension RenderBridgeTests {
+    func testCodeBlockVerticalInsetsApplyOnlyAtOuterBoundaries() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: #"{"version":1,"styles":{"codeBlock":{"paddingTop":12,"paddingBottom":12,"marginTop":12,"marginBottom":12}}}"#))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "codeBlock", "depth": 0],
+            ["type": "textRun", "text": "first\nsecond\nthird", "marks": []], ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        let middle = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: 6, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(middle.paragraphSpacingBefore, 0)
+        XCTAssertEqual(middle.paragraphSpacing, 0)
+        let storage = NSTextStorage(attributedString: rendered)
+        let manager = EditorLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 300, height: 500))
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        var lines: [CGRect] = []
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, used, _, _, _ in lines.append(used) }
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[1].minY - lines[0].minY, lines[0].height, accuracy: 1)
+        XCTAssertEqual(lines[2].minY - lines[1].minY, lines[1].height, accuracy: 1)
+    }
+
+    func testQuoteDecorationExcludesPreviousParagraphSeparator() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: ##"{"version":1,"styles":{"blockquote":{"borderLeftWidth":3,"borderLeftColor":"#123456ff","paddingTop":8}}}"##))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "textRun", "text": "Before", "marks": []], ["type": "blockEnd"],
+            ["type": "blockStart", "nodeType": "blockquote", "depth": 0],
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 1],
+            ["type": "textRun", "text": "Quote", "marks": []], ["type": "blockEnd"], ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        XCTAssertEqual(rendered.string, "Before\nQuote")
+        let previousBoxes = rendered.attribute(editorStyleBoxesAttribute, at: 6, effectiveRange: nil) as? [EditorRenderedBox] ?? []
+        XCTAssertFalse(previousBoxes.contains { $0.box.color("borderLeftColor") == EditorTheme.color(from: "#123456ff") })
+        let quoteBoxes = rendered.attribute(editorStyleBoxesAttribute, at: 7, effectiveRange: nil) as? [EditorRenderedBox] ?? []
+        XCTAssertTrue(quoteBoxes.contains { $0.box.color("borderLeftColor") == EditorTheme.color(from: "#123456ff") })
+    }
+}

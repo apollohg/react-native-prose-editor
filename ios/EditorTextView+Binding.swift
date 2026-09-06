@@ -49,6 +49,8 @@ extension EditorTextView {
 
     /// Unbind from the current editor instance.
     func unbindEditor() {
+        codeHighlightingSession.cancel()
+        restoreCodeHighlighting()
         discardTransientNativeInputForEditorRebind()
         EditorV2Registry.adapter(forLegacyId: editorId)?
             .releaseNativeBindingOwner(token: nativeBindingToken)

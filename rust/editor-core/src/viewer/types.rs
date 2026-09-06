@@ -43,6 +43,7 @@ pub enum FfiViewerElement {
     },
     BlockStart {
         node_type: String,
+        language: Option<String>,
         depth: u16,
         list_context_json: Option<String>,
     },

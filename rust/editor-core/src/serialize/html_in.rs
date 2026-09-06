@@ -983,8 +983,16 @@ mod atom_enum_tests {
     fn enum_only_attributes_recover_json_types() {
         for (values, raw, expected) in [
             (serde_json::json!([1, 2]), "1", serde_json::json!(1)),
-            (serde_json::json!([true, false]), "true", serde_json::json!(true)),
-            (serde_json::json!([{"n": 1}]), "{\"n\":1}", serde_json::json!({"n": 1})),
+            (
+                serde_json::json!([true, false]),
+                "true",
+                serde_json::json!(true),
+            ),
+            (
+                serde_json::json!([{"n": 1}]),
+                "{\"n\":1}",
+                serde_json::json!({"n": 1}),
+            ),
             (serde_json::json!(["1", "2"]), "1", serde_json::json!("1")),
         ] {
             let spec = crate::schema::AttrSpec {

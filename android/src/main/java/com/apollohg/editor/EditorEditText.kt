@@ -16,7 +16,6 @@ import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import androidx.appcompat.widget.AppCompatEditText
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 
 /**
@@ -28,7 +27,7 @@ class EditorEditText @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = android.R.attr.editTextStyle
-) : AppCompatEditText(context, attrs, defStyleAttr) {
+) : EditorTextSurface(context, attrs, defStyleAttr) {
 
     internal data class AuthoritativeInputSnapshot(
         val renderedText: CharSequence,
@@ -164,6 +163,10 @@ class EditorEditText @JvmOverloads constructor(
     internal var baseBackgroundColor: Int = android.graphics.Color.WHITE
 
     /** Optional render theme supplied by React. */
+    internal val codeHighlightingSession = CodeHighlightingSession()
+    internal var codeHighlightingConfiguration: NativeCodeHighlightingConfig? = null
+    internal var reuseImagesDuringThemeUpdate = false
+    internal var standaloneRenderJSON: String? = null
     var theme: EditorTheme? = null
         internal set
 
@@ -275,7 +278,6 @@ class EditorEditText @JvmOverloads constructor(
     internal var onSetSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onDeleteAndSplitScalarInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onInsertContentHtmlInRustForTesting: ((String) -> Unit)? = null
-    internal var onInsertContentJsonAtSelectionScalarForTesting: ((Int, Int, String) -> Unit)? = null
     internal var onResizeImageAtDocPosForTesting: ((Int, Int, Int) -> Unit)? = null
     internal var onMoveSelectionScalarForTesting: ((Int, Int, Int) -> Unit)? = null
     internal var onBeforeRenderRefresh: (() -> Unit)? = null
@@ -352,6 +354,10 @@ class EditorEditText @JvmOverloads constructor(
      * Create a custom [EditorInputConnection] that intercepts all input
      * from the soft keyboard.
      */
+    override fun onSurfaceInputStateChanged() {
+        activeInputConnection?.publishInputStateIfNeeded()
+    }
+
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val baseConnection = super.onCreateInputConnection(outAttrs) ?: return null
         return configureInputConnection(baseConnection, outAttrs)
@@ -379,16 +385,24 @@ class EditorEditText @JvmOverloads constructor(
 
     override fun onDraw(canvas: android.graphics.Canvas) {
         updateAtomBoundaryCursorVisibility()
+        drawStyleSheetBoxes(canvas)
         super.onDraw(canvas)
-        clipLegacyNativeCursorTail(canvas)
+        layout?.let {
+            val saved = canvas.save()
+            canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
+            EditorTextDecorationDrawing.draw(canvas, it)
+            canvas.restoreToCount(saved)
+        }
 
         val placeholderLayout =
             buildPlaceholderLayout(width - compoundPaddingLeft - compoundPaddingRight) ?: return
 
         val previousColor = paint.color
         val saveCount = canvas.save()
-        canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
+        val placeholderInsets = placeholderContentInsets(width - compoundPaddingLeft - compoundPaddingRight)
+        canvas.translate(compoundPaddingLeft + placeholderInsets.left, extendedPaddingTop + placeholderInsets.top)
         placeholderLayout.draw(canvas)
+        EditorTextDecorationDrawing.draw(canvas, placeholderLayout)
         canvas.restoreToCount(saveCount)
         paint.color = previousColor
     }
@@ -422,7 +436,7 @@ class EditorEditText @JvmOverloads constructor(
         if (handleImageTap(event)) {
             return true
         }
-        if (heightBehavior == EditorHeightBehavior.FIXED) {
+        if (heightBehavior == EditorHeightBehavior.FIXED && !interaction.hasScrollContainer()) {
             val canScroll = canScrollVertically(-1) || canScrollVertically(1)
             if (canScroll) {
                 when (event.actionMasked) {
@@ -954,6 +968,7 @@ class EditorEditText @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        refreshCodeHighlighting()
         if (restartImageLoadsOnAttach) {
             restartImageLoadsOnAttach = false
             rebuildLatestRenderForImages()
@@ -961,6 +976,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        codeHighlightingSession.cancel()
         restartImageLoadsOnAttach = hasRenderedImageSpans()
         cancelPendingImageLoads()
         (text as? Spanned)?.getSpans(0, length(), BlockImageSpan::class.java)

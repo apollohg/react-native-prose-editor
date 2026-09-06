@@ -161,7 +161,7 @@ internal fun RenderBridge.annotateTopLevelChild(
         Annotation(NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION, topLevelChildIndex.toString()),
         start,
         end,
-        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        Spanned.SPAN_INCLUSIVE_EXCLUSIVE
     )
 }
 

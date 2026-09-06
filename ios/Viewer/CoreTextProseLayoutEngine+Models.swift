@@ -65,6 +65,7 @@ struct PreparedTextPaint {
     let color: UIColor
     let lineHeight: CGFloat?
     let spacingAfter: CGFloat
+    var textValues: [String: Any] = [:]
 }
 
 struct PreparedViewerAtoms {
@@ -105,6 +106,8 @@ struct PreparedViewerAtoms {
 /// Theme parsing is deliberately outside the drawing path. A registry stores
 /// this value once per generation and every width-specific artifact reuses it.
 struct PreparedProseTheme {
+    var codeHighlighting: NativeCodeHighlightConfiguration? = nil
+    let styleSheet: EditorStyleSheet?
     let viewerAtoms: PreparedViewerAtoms?
     let fontScale: CGFloat
     let text: PreparedTextPaint
@@ -194,6 +197,7 @@ struct PreparedProseTheme {
         }
         let listItemSpacing = theme.list?.itemSpacing ?? 4
         return PreparedProseTheme(
+            styleSheet: theme.styleSheet,
             viewerAtoms: PreparedViewerAtoms.resolve(themeJSON),
             fontScale: resolvedScale,
             text: text,
@@ -232,6 +236,17 @@ struct PreparedProseTheme {
     }
 
     func paint(for block: ViewerBlock) -> PreparedTextPaint {
+        if let styleSheet {
+            let ancestors = block.styleAncestors.map(\.nodeType)
+            let style = styleSheet.textStyle(block.nodeType, ancestors: ancestors)
+            return PreparedTextPaint(
+                font: ViewerFontEnvironment.shared.resolveFont(style: style, fallback: text.font, fontScale: fontScale, semanticGeneration: "editor-stylesheet"),
+                color: style.color ?? text.color,
+                lineHeight: style.lineHeight.map { $0 * fontScale },
+                spacingAfter: 0,
+                textValues: styleSheet.textValues(block.nodeType, ancestors: ancestors)
+            )
+        }
         if block.nodeType == "codeBlock" { return code }
         if let heading = headings[block.nodeType] { return heading }
         if block.inBlockquote { return blockquote }
@@ -245,6 +260,7 @@ struct PreparedProseTheme {
 }
 
 struct PreparedAtomAppearance {
+    var styleBox: EditorStyleBox? = nil
     let attributes: [NSAttributedString.Key: Any]
     let background: UIColor
     let borderColor: UIColor?

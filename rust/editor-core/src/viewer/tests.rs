@@ -217,6 +217,22 @@ fn equivalent_requests_produce_a_stable_semantic_key() {
 }
 
 #[test]
+fn code_language_changes_the_viewer_semantic_key() {
+    let code = |language: &str| {
+        compile_json(serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock", "attrs": {"language": language},
+                "content": [{"type": "text", "text": "value = 1"}]
+            }]
+        }))
+        .value
+        .expect("code compiles")
+    };
+    assert_ne!(code("rust").semantic_key(), code("python").semantic_key());
+}
+
+#[test]
 fn starter_kit_code_content_compiles_with_the_builtin_schema() {
     let inline = compile_json(serde_json::json!({
         "type": "doc",

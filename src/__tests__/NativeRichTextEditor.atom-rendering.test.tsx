@@ -90,12 +90,27 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             });
             const atom = getByTestId('counter-atom');
             const atomHost = UNSAFE_getByProps({ nativeID: 'prose-atom:client-1:9' });
+            expect(getByTestId('atom-host').props.nativeID).toBe('prose-atom-content:client-1:9');
             expect(StyleSheet.flatten(atomHost.props.style)).toMatchObject({
                 width: 280,
-                left: platform === 'ios' ? 0 : 12,
-                top: platform === 'ios' ? 0 : 34,
+                left: 0,
+                top: 0,
             });
             expect(atom.props.atomProps.selected).toBe(false);
+            act(() => {
+                nativeView.props.onAtomLayout({
+                    nativeEvent: {
+                        editorId: handle.editorId,
+                        width: 280,
+                        positions: [{ key: 'client-1:9', x: 24, y: 34, width: 240 }],
+                    },
+                });
+            });
+            expect(StyleSheet.flatten(atomHost.props.style)).toMatchObject({
+                width: 240,
+                left: 0,
+                top: 0,
+            });
             expect(atom.props.atomProps.isViewer).toBe(false);
             expect(atom.props.atomProps.readOnly).toBe(false);
 

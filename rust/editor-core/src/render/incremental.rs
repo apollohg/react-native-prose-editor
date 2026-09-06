@@ -670,6 +670,11 @@ fn generate_block_inner(
             };
             elements.push(RenderElement::BlockStart {
                 node_type: node.node_type().to_string(),
+                language: node
+                    .attrs()
+                    .get("language")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 depth,
                 list_context,
             });
@@ -684,6 +689,11 @@ fn generate_block_inner(
         Some(NodeRole::TextBlock) => {
             elements.push(RenderElement::BlockStart {
                 node_type: node.node_type().to_string(),
+                language: node
+                    .attrs()
+                    .get("language")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 depth,
                 list_context: None,
             });
@@ -713,6 +723,11 @@ fn generate_block_inner(
         Some(NodeRole::Block) => {
             elements.push(RenderElement::BlockStart {
                 node_type: node.node_type().to_string(),
+                language: node
+                    .attrs()
+                    .get("language")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 depth,
                 list_context: None,
             });

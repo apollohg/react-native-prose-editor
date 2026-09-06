@@ -139,6 +139,7 @@ enum PreparedProseFragmentKind: String, Hashable {
 /// A fully prepared paint operation. Core Text lines, colours, metrics, and
 /// rectangles are all frozen before this reaches the drawing view.
 final class PreparedProseFragment {
+    let styleBox: EditorStyleBox?
     let kind: PreparedProseFragmentKind
     let line: CTLine?
     /// Core Text baseline measured down from the artifact's top edge.
@@ -163,8 +164,10 @@ final class PreparedProseFragment {
         strokeWidth: CGFloat = 0,
         padding: UIEdgeInsets = .zero,
         label: String? = nil,
-        checked: Bool = false
+        checked: Bool = false,
+        styleBox: EditorStyleBox? = nil
     ) {
+        self.styleBox = styleBox
         self.kind = kind
         self.line = line
         self.origin = origin
@@ -267,6 +270,9 @@ struct PreparedProseAccessibilityNode: Hashable {
 }
 
 public final class PreparedProseLayout: NSObject {
+    let highlightingRequest: PreparedViewerHighlightingRequest?
+    let highlightingResolved: Bool
+    let decorations: [PreparedProseFragment]
     let key: ProseLayoutKey
     let size: CGSize
     let blocks: [PreparedProseBlock]
@@ -284,8 +290,14 @@ public final class PreparedProseLayout: NSObject {
         accessibilityNodes: [PreparedProseAccessibilityNode] = [],
         imageAttachments: [ViewerImageAttachment] = [],
         retainedBytes: Int,
-        error: ProseViewerError? = nil
+        error: ProseViewerError? = nil,
+        decorations: [PreparedProseFragment] = [],
+        highlightingRequest: PreparedViewerHighlightingRequest? = nil,
+        highlightingResolved: Bool = false
     ) {
+        self.highlightingRequest = highlightingRequest
+        self.highlightingResolved = highlightingResolved
+        self.decorations = decorations
         self.key = key
         self.size = size
         self.blocks = blocks

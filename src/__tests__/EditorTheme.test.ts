@@ -1,120 +1,115 @@
 import { serializeEditorTheme } from '../EditorTheme';
 
-describe('EditorTheme', () => {
-    it('serializes per-level heading theme overrides', () => {
-        const json = serializeEditorTheme({
-            text: { color: '#112233', fontSize: 16 },
-            headings: {
-                h1: { fontSize: 32, fontWeight: '700', spacingAfter: 14 },
-                h3: { color: '#445566', lineHeight: 28 },
-                h5: undefined,
-            },
-        });
-
-        expect(json).toBeTruthy();
-        expect(JSON.parse(json!)).toEqual({
-            text: { color: '#112233', fontSize: 16 },
-            headings: {
-                h1: { fontSize: 32, fontWeight: '700', spacingAfter: 14 },
-                h3: { color: '#445566', lineHeight: 28 },
-            },
-        });
-    });
-
-    it('serializes hyperlink theme overrides', () => {
-        const json = serializeEditorTheme({
-            links: {
-                color: '#445566',
-                backgroundColor: '#eef6ff',
-                fontWeight: '700',
-                fontStyle: 'italic',
-                underline: false,
-            },
-        });
-
-        expect(json).toBeTruthy();
-        expect(JSON.parse(json!)).toEqual({
-            links: {
-                color: '#445566',
-                backgroundColor: '#eef6ff',
-                fontWeight: '700',
-                fontStyle: 'italic',
-                underline: false,
+describe('EditorTheme serialization', () => {
+    it('serializes flat per-level heading styles', () => {
+        expect(
+            JSON.parse(
+                serializeEditorTheme({
+                    text: { color: '#112233', fontSize: 16 },
+                    h1: { fontSize: 32, fontWeight: '700', marginBottom: 14 },
+                    h3: { color: '#445566', lineHeight: 28 },
+                    h5: undefined,
+                })!
+            )
+        ).toEqual({
+            version: 1,
+            styles: {
+                text: { color: '#112233ff', fontSize: 16 },
+                h1: { fontSize: 32, fontWeight: '700', marginBottom: 14 },
+                h3: { color: '#445566ff', lineHeight: 28 },
             },
         });
     });
 
-    it('carries the addon mention theme into the native theme payload', () => {
-        const json = serializeEditorTheme(
-            { links: { color: '#445566' } },
-            { textColor: '#112233', backgroundColor: '#DDEEFF', borderRadius: undefined }
-        );
-
-        expect(json).toBeTruthy();
-        expect(JSON.parse(json!)).toEqual({
-            links: { color: '#445566' },
-            mentions: { textColor: '#112233', backgroundColor: '#DDEEFF' },
-        });
-    });
-
-    it('serializes the addon mention theme when no editor theme is supplied', () => {
-        const json = serializeEditorTheme(undefined, { textColor: '#112233' });
-
-        expect(json).toBeTruthy();
-        expect(JSON.parse(json!)).toEqual({ mentions: { textColor: '#112233' } });
-    });
-
-    it('omits mentions when the addon supplies no mention theme', () => {
-        const json = serializeEditorTheme({ links: { color: '#445566' } });
-
-        expect(JSON.parse(json!)).toEqual({ links: { color: '#445566' } });
-    });
-
-    it('serializes list layout spacing', () => {
-        const json = serializeEditorTheme({
-            list: { indent: 28, markerGap: 12, spacingAfter: 20, markerScale: undefined },
-        });
-
-        expect(json).toBeTruthy();
-        expect(JSON.parse(json!)).toEqual({
-            list: { indent: 28, markerGap: 12, spacingAfter: 20 },
-        });
-    });
-
-    it('serializes ordered-list marker schemes and suffix', () => {
-        const json = serializeEditorTheme({
-            list: {
-                orderedMarker: {
-                    schemes: ['decimal', 'lowerAlpha', 'lowerRoman'],
-                    suffix: ')',
-                },
-            },
-        });
-
-        expect(JSON.parse(json!)).toEqual({
-            list: {
-                orderedMarker: {
-                    schemes: ['decimal', 'lowerAlpha', 'lowerRoman'],
-                    suffix: ')',
+    it('serializes link decoration resets', () => {
+        expect(
+            JSON.parse(
+                serializeEditorTheme({
+                    link: {
+                        color: '#445566',
+                        backgroundColor: '#eef6ff',
+                        textDecorationLine: 'none',
+                    },
+                })!
+            )
+        ).toEqual({
+            version: 1,
+            styles: {
+                link: {
+                    color: '#445566ff',
+                    backgroundColor: '#eef6ffff',
+                    textDecorationLine: 'none',
                 },
             },
         });
     });
 
-    it('serializes toolbar height overrides', () => {
-        const json = serializeEditorTheme({
-            toolbar: {
-                appearance: 'native',
-                height: 44,
-            },
+    it('carries the addon mention wire theme alongside element styles', () => {
+        expect(
+            JSON.parse(
+                serializeEditorTheme(
+                    { link: { color: '#445566' } },
+                    { node: { textColor: '#112233', borderRadius: undefined } }
+                )!
+            )
+        ).toEqual({
+            version: 1,
+            styles: { link: { color: '#445566ff' } },
+            mentions: { node: { style: { color: '#112233ff' } } },
         });
+    });
 
-        expect(json).toBeTruthy();
-        expect(JSON.parse(json!)).toEqual({
-            toolbar: {
-                appearance: 'native',
-                height: 44,
-            },
+    it('serializes mention-only themes', () => {
+        expect(
+            JSON.parse(serializeEditorTheme(undefined, { node: { textColor: '#112233' } })!)
+        ).toEqual({ version: 1, mentions: { node: { style: { color: '#112233ff' } } } });
+    });
+
+    it('omits missing mention themes', () => {
+        expect(JSON.parse(serializeEditorTheme({ text: { fontSize: 16 } })!)).toEqual({
+            version: 1,
+            styles: { text: { fontSize: 16 } },
         });
+    });
+
+    it('retains toolbar configuration separately from content styles', () => {
+        expect(
+            JSON.parse(serializeEditorTheme({ toolbar: { appearance: 'native', height: 44 } })!)
+        ).toEqual({ version: 1, toolbar: { appearance: 'native', height: 44 } });
+    });
+});
+
+it('normalizes rich mention overrides using the same style rules', () => {
+    const result = JSON.parse(
+        serializeEditorTheme(undefined, {
+            node: {
+                color: 'red',
+                fontSize: 18,
+                borderWidth: 2,
+                borderLeftWidth: 5,
+                borderTopRightRadius: 9,
+            },
+        })!
+    );
+    expect(result.mentions.node.style).toEqual({
+        color: '#ff0000ff',
+        fontSize: 18,
+        borderTopWidth: 2,
+        borderRightWidth: 2,
+        borderBottomWidth: 2,
+        borderLeftWidth: 5,
+        borderTopRightRadius: 9,
+    });
+});
+
+it('normalizes legacy mention color aliases consistently', () => {
+    const result = JSON.parse(
+        serializeEditorTheme(undefined, {
+            node: { textColor: 'rebeccapurple', backgroundColor: 'red' },
+        })!
+    );
+    expect(result.mentions.node.style).toMatchObject({
+        color: '#663399ff',
+        backgroundColor: '#ff0000ff',
     });
 });

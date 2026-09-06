@@ -1,0 +1,6 @@
+rust/target/
+android/build/
+android/src/main/jniLibs/
+ios/NativeEditorHighlighting.xcframework/
+dist/
+*.tgz

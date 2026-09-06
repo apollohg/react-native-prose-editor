@@ -1,7 +1,8 @@
+import { createMentionsAddon } from '../EditorAddon';
 import {
     MENTION_NODE_NAME,
     buildMentionFragmentJson,
-    normalizeEditorAddons,
+    normalizeNativeEditorAddons,
     serializeEditorAddons,
     withMentionsSchema,
 } from '../addons';
@@ -33,7 +34,7 @@ describe('mentions addon helpers', () => {
     });
 
     it('normalizes mention suggestions with default trigger, label, and attrs', () => {
-        const normalized = normalizeEditorAddons({
+        const normalized = normalizeNativeEditorAddons({
             mentions: {
                 suggestions: [
                     {
@@ -68,8 +69,8 @@ describe('mentions addon helpers', () => {
     });
 
     it('serializes mention addon config for native consumption', () => {
-        const serialized = serializeEditorAddons({
-            mentions: {
+        const serialized = serializeEditorAddons([
+            createMentionsAddon({
                 trigger: '@',
                 theme: {
                     node: { textColor: '#112233' },
@@ -83,15 +84,15 @@ describe('mentions addon helpers', () => {
                         attrs: { id: 'u1' },
                     },
                 ],
-            },
-        });
+            }),
+        ]);
 
         expect(serialized).toBe(
             JSON.stringify({
                 mentions: {
                     trigger: '@',
                     theme: {
-                        node: { textColor: '#112233' },
+                        node: { style: { color: '#112233ff' } },
                         suggestions: { backgroundColor: '#ffffff' },
                     },
                     suggestions: [
@@ -112,12 +113,12 @@ describe('mentions addon helpers', () => {
     });
 
     it('marks mention configs that require JS-side selection attr resolution', () => {
-        const serialized = serializeEditorAddons({
-            mentions: {
+        const serialized = serializeEditorAddons([
+            createMentionsAddon({
                 suggestions: [{ key: 'u1', title: 'Alice' }],
                 resolveSelectionAttrs: () => ({ source: 'js' }),
-            },
-        });
+            }),
+        ]);
 
         expect(serialized).toBe(
             JSON.stringify({
@@ -141,12 +142,12 @@ describe('mentions addon helpers', () => {
     });
 
     it('marks mention configs that require JS-side theme resolution', () => {
-        const serialized = serializeEditorAddons({
-            mentions: {
+        const serialized = serializeEditorAddons([
+            createMentionsAddon({
                 suggestions: [{ key: 'u1', title: 'Alice' }],
                 resolveTheme: () => ({ textColor: '#445566' }),
-            },
-        });
+            }),
+        ]);
 
         expect(serialized).toBe(
             JSON.stringify({

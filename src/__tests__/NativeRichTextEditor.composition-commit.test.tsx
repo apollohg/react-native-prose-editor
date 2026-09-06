@@ -238,7 +238,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 placeholder='Write something…'
                 accessibilityLabel='Body'
                 accessibilityHint='Message body editor'
-                theme={{ paragraph: { textSize: 17 } }}
+                theme={{ paragraph: { fontSize: 17 } }}
             />
         );
         const view = getByTestId('native-editor-view');
@@ -246,7 +246,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(view.props.accessibilityLabel).toBe('Body');
         expect(view.props.accessibilityHint).toBe('Message body editor');
         expect(JSON.parse(view.props.themeJson as string)).toEqual({
-            paragraph: { textSize: 17 },
+            version: 1,
+            styles: { paragraph: { fontSize: 17 } },
         });
         handle.destroy();
     });

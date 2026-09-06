@@ -43,6 +43,12 @@ const COUNTER_NODE: NodeSpec = {
 };
 
 describe('defineSchema', () => {
+    it('declares optional language metadata for code blocks in both presets', () => {
+        for (const schema of [prosemirrorSchema, tiptapCompatibleSchema]) {
+            expect(schema.nodes.find(node => node.name === 'codeBlock')?.attrs?.language)
+                .toEqual({ default: null });
+        }
+    });
     it('includes declarative HTML rules in compiled node specs', () => {
         const schema = defineSchema({
             nodes: {

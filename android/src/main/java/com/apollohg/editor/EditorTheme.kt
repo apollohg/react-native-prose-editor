@@ -11,7 +11,13 @@ data class EditorTextStyle(
     val fontStyle: String? = null,
     val color: Int? = null,
     val lineHeight: Float? = null,
-    val spacingAfter: Float? = null
+    val spacingAfter: Float? = null,
+    val letterSpacing: Float? = null,
+    val textAlign: String? = null,
+    val backgroundColor: Int? = null,
+    val textDecorationLine: String? = null,
+    val textDecorationColor: Int? = null,
+    val textDecorationStyle: String? = null
 ) {
     companion object {
         fun fromJson(json: JSONObject?): EditorTextStyle? {
@@ -23,7 +29,13 @@ data class EditorTextStyle(
                 fontStyle = json.optNullableString("fontStyle"),
                 color = parseColor(json.optNullableString("color")),
                 lineHeight = json.optNullableFloat("lineHeight"),
-                spacingAfter = json.optNullableFloat("spacingAfter")
+                spacingAfter = json.optNullableFloat("spacingAfter"),
+                letterSpacing = json.optNullableFloat("letterSpacing"),
+                textAlign = json.optNullableString("textAlign"),
+                backgroundColor = parseColor(json.optNullableString("backgroundColor")),
+                textDecorationLine = json.optNullableString("textDecorationLine"),
+                textDecorationColor = parseColor(json.optNullableString("textDecorationColor")),
+                textDecorationStyle = json.optNullableString("textDecorationStyle")
             )
         }
     }
@@ -37,7 +49,13 @@ data class EditorTextStyle(
             fontStyle = other.fontStyle ?: fontStyle,
             color = other.color ?: color,
             lineHeight = other.lineHeight ?: lineHeight,
-            spacingAfter = other.spacingAfter ?: spacingAfter
+            spacingAfter = other.spacingAfter ?: spacingAfter,
+            letterSpacing = other.letterSpacing ?: letterSpacing,
+            textAlign = other.textAlign ?: textAlign,
+            backgroundColor = other.backgroundColor ?: backgroundColor,
+            textDecorationLine = mergeDecoration(textDecorationLine, other.textDecorationLine),
+            textDecorationColor = other.textDecorationColor ?: textDecorationColor,
+            textDecorationStyle = other.textDecorationStyle ?: textDecorationStyle
         )
     }
 
@@ -181,7 +199,8 @@ data class EditorMentionNodeTheme(
     val borderColor: Int? = null,
     val borderWidth: Float? = null,
     val borderRadius: Float? = null,
-    val fontWeight: String? = null
+    val fontWeight: String? = null,
+    val style: EditorElementStyle? = null
 ) {
     fun mergedWith(other: EditorMentionNodeTheme?): EditorMentionNodeTheme {
         other ?: return this
@@ -191,7 +210,8 @@ data class EditorMentionNodeTheme(
             borderColor = other.borderColor ?: borderColor,
             borderWidth = other.borderWidth ?: borderWidth,
             borderRadius = other.borderRadius ?: borderRadius,
-            fontWeight = other.fontWeight ?: fontWeight
+            fontWeight = other.fontWeight ?: fontWeight,
+            style = style?.mergedWith(other.style) ?: other.style
         )
     }
 
@@ -204,7 +224,8 @@ data class EditorMentionNodeTheme(
                 borderColor = parseColor(json.optNullableString("borderColor")),
                 borderWidth = json.optNullableFloat("borderWidth"),
                 borderRadius = json.optNullableFloat("borderRadius"),
-                fontWeight = json.optNullableString("fontWeight")
+                fontWeight = json.optNullableString("fontWeight"),
+                style = json.optJSONObject("style")?.let { EditorStyleSheet.decodeElement(it) }
             )
         }
     }
@@ -455,7 +476,8 @@ data class EditorTheme(
     val placeholderColor: Int? = null,
     val backgroundColor: Int? = null,
     val borderRadius: Float? = null,
-    val contentInsets: EditorContentInsets? = null
+    val contentInsets: EditorContentInsets? = null,
+    val styleSheet: EditorStyleSheet? = null
 ) {
     companion object {
         fun fromJson(json: String?): EditorTheme? {
@@ -465,6 +487,8 @@ data class EditorTheme(
             } catch (_: Exception) {
                 return null
             }
+
+            if (root.has("version")) return EditorStyleSheet.decodeTheme(root)
 
             val headings = mutableMapOf<String, EditorTextStyle>()
             for (level in listOf("h1", "h2", "h3", "h4", "h5", "h6")) {
@@ -494,6 +518,7 @@ data class EditorTheme(
     }
 
     fun effectiveTextStyle(nodeType: String, inBlockquote: Boolean = false): EditorTextStyle {
+        styleSheet?.let { return it.resolveText(nodeType, if (inBlockquote) listOf("blockquote") else emptyList()) }
         var style = text ?: EditorTextStyle()
         style = style.mergedWith(if (inBlockquote) blockquote?.text else null)
         if (nodeType == "paragraph") {
@@ -510,7 +535,7 @@ data class EditorTheme(
     }
 }
 
-private fun parseColor(raw: String?): Int? {
+internal fun parseColor(raw: String?): Int? {
     val value = raw?.trim()?.lowercase() ?: return null
     if (value.isEmpty()) return null
 
@@ -587,12 +612,12 @@ private fun parseCssHexColor(value: String): Int? {
     }
 }
 
-private fun JSONObject.optNullableString(key: String): String? {
+internal fun JSONObject.optNullableString(key: String): String? {
     if (!has(key) || isNull(key)) return null
     return optString(key).takeUnless { it == "null" }
 }
 
-private fun JSONObject.optNullableFloat(key: String): Float? {
+internal fun JSONObject.optNullableFloat(key: String): Float? {
     if (!has(key) || isNull(key)) return null
     return optDouble(key).takeIf { !it.isNaN() }?.toFloat()
 }

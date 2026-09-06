@@ -11,6 +11,11 @@ import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.CorrectionInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
+import android.view.inputmethod.ExtractedText
+import android.view.inputmethod.ExtractedTextRequest
+import android.view.inputmethod.SurroundingText
+import android.view.inputmethod.TextAttribute
+import android.view.inputmethod.TextSnapshot
 
 /**
  * Custom [InputConnectionWrapper] that intercepts all text input from the soft keyboard
@@ -91,6 +96,69 @@ class EditorInputConnection(
 
             return utf16Length
         }
+    }
+
+    internal var closedForInput = false
+    internal var extractedTextRequest: ExtractedTextRequest? = null
+    internal var lastPublishedExtractedText: ExtractedText? = null
+    internal var lastPublishedSelection: List<Int>? = null
+
+    override fun commitText(text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?): Boolean =
+        commitText(text, newCursorPosition)
+
+    override fun setComposingText(text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?): Boolean =
+        setComposingText(text, newCursorPosition)
+
+    override fun setComposingRegion(start: Int, end: Int, textAttribute: TextAttribute?): Boolean =
+        setComposingRegion(start, end)
+
+    override fun replaceText(start: Int, end: Int, text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?): Boolean {
+        if (!isCurrentInputSessionFor("replaceText") || !editorView.isEditable) return true
+        if (start < 0 || end < 0) return false
+        val requestedText = currentMapper()?.visibleText?.toString() ?: return false
+        if (!editorView.prepareForExternalEditorUpdate()) return true
+        if (!isCurrentInputSession() || currentMapper()?.visibleText?.toString() != requestedText) return true
+        val range = rawRangeForIme(start.coerceAtMost(requestedText.length), end.coerceAtMost(requestedText.length)) ?: return false
+        val raw = editorView.editableText.toString()
+        val normalized = if (range.first == range.second) {
+            PositionBridge.snapToScalarBoundary(range.first, raw, biasForward = true).let { it to it }
+        } else PositionBridge.snapRangeToScalarBoundaries(range.first, range.second, raw)
+        pendingDuplicateCorrectionCommit = null
+        pendingCompositionCorrectionCommit = null
+        editorView.runWithTransientInputMutationGuard { super.setSelection(normalized.first, normalized.second) }
+        commitTextToEditor(text.toString(), newCursorPosition)
+        return true
+    }
+
+    override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? =
+        extractedTextForIme(request, flags)
+
+    override fun getSurroundingText(beforeLength: Int, afterLength: Int, flags: Int): SurroundingText? =
+        surroundingTextForIme(beforeLength, afterLength, flags)
+
+    override fun takeSnapshot(): TextSnapshot? = snapshotForIme()
+
+    override fun beginBatchEdit(): Boolean = isCurrentInputSession() && super.beginBatchEdit()
+
+    override fun performContextMenuAction(id: Int): Boolean =
+        isCurrentInputSession() && super.performContextMenuAction(id)
+
+    override fun performEditorAction(actionCode: Int): Boolean =
+        isCurrentInputSession() && editorView.isEditable && super.performEditorAction(actionCode)
+
+    override fun requestCursorUpdates(cursorUpdateMode: Int): Boolean =
+        isCurrentInputSession() && super.requestCursorUpdates(cursorUpdateMode)
+
+    override fun requestCursorUpdates(cursorUpdateMode: Int, cursorUpdateFilter: Int): Boolean =
+        isCurrentInputSession() && super.requestCursorUpdates(cursorUpdateMode, cursorUpdateFilter)
+
+    override fun closeConnection() {
+        if (closedForInput) return
+        if (isCurrentInputSession()) finishComposingText()
+        closedForInput = true
+        extractedTextRequest = null
+        lastPublishedExtractedText = null
+        super.closeConnection()
     }
 
     internal var pendingDuplicateCorrectionCommit: PendingDuplicateCorrectionCommit? = null

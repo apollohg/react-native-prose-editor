@@ -39,6 +39,7 @@ internal fun EditorEditText.applyRenderedSpannable(
     val previousScrollX = scrollX
     val previousScrollY = scrollY
     val hadCompositionTracking = hasCompositionTrackingForEditor()
+    val styleOnly = reuseImagesDuringThemeUpdate && replaceRange == null && text?.toString() == spannable.toString()
     var shouldRestartInput = false
     val mode = if (replaceRange != null) "replace" else "setText"
     val precedingParagraphSpans = replaceRange
@@ -63,17 +64,31 @@ internal fun EditorEditText.applyRenderedSpannable(
             emptyList()
         }
     }.orEmpty()
-    replacedImageSpans.forEach(BlockImageSpan::close)
+    val retainedImages = (spannable as? Spanned)?.getSpans(0, spannable.length, BlockImageSpan::class.java)?.toSet().orEmpty()
+    replacedImageSpans.filter { it !in retainedImages }.forEach(BlockImageSpan::close)
     isApplyingRustState = true
     beginBatchEdit()
     try {
-        if (replaceRange != null) {
+        if (styleOnly && spannable is Spanned) {
+            editableText.getSpans(0, editableText.length, Any::class.java).filter {
+                editableText.getSpanFlags(it) and Spanned.SPAN_COMPOSING == 0 &&
+                    (it is android.text.style.CharacterStyle || it is android.text.style.ParagraphStyle || it is Annotation || it is CodeBlockMetadataSpan)
+            }.forEach(editableText::removeSpan)
+            spannable.getSpans(0, spannable.length, Any::class.java).forEach {
+                editableText.setSpan(it, spannable.getSpanStart(it), spannable.getSpanEnd(it), spannable.getSpanFlags(it))
+            }
+        } else if (replaceRange != null) {
             if (replacedTopLevelStartIndex != null) {
                 removeParagraphSpansOwnedByTopLevelRange(
                     replacedTopLevelStartIndex,
                     replacedTopLevelDeleteCount
                 )
             }
+            editableText.getSpans(replaceRange.start, replaceRange.endExclusive, Annotation::class.java)
+                .filter { it.key == RenderBridge.NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION &&
+                    editableText.getSpanStart(it) >= replaceRange.start &&
+                    editableText.getSpanEnd(it) <= replaceRange.endExclusive }
+                .forEach(editableText::removeSpan)
             editableText.replace(replaceRange.start, replaceRange.endExclusive, spannable)
             precedingParagraphSpans.forEach { snapshot ->
                 editableText.setSpan(
@@ -99,7 +114,9 @@ internal fun EditorEditText.applyRenderedSpannable(
         lastAuthorizedRenderedText = text?.let { SpannableStringBuilder(it) }
         lastAuthorizedTextRevision += 1L
         clearNativeTextMutationAdoptionSuppression()
-        if (hadCompositionTracking && preserveInputConnectionForExternalUpdate) {
+        if (styleOnly) {
+            // Existing composing spans remain attached to the same Editable.
+        } else if (hadCompositionTracking && preserveInputConnectionForExternalUpdate) {
             clearInputStateForExternalReplacementPreservingConnection()
             shouldRestartInput = true
         } else if (hadCompositionTracking) {
@@ -116,10 +133,11 @@ internal fun EditorEditText.applyRenderedSpannable(
     }
     recordImeTraceForTesting(
         "applyRenderedSpannable",
-        "mode=$mode usedPatch=$usedPatch incomingLength=${spannable.length} replace=${replaceRange?.start}..${replaceRange?.endExclusive} hadComposition=$hadCompositionTracking restartInput=$shouldRestartInput applyUs=${nanosToMicros(System.nanoTime() - startedAt)} scroll=$previousScrollX,$previousScrollY->$scrollX,$scrollY layout=${layout != null}"
+        "mode=$mode usedPatch=$usedPatch incomingLength=${spannable.length} replace=${replaceRange?.start}..${replaceRange?.endExclusive} hadComposition=$hadCompositionTracking restartInput=$shouldRestartInput applyUs=${nanosToMicros(System.nanoTime() - startedAt)} scroll=$previousScrollX,$previousScrollY->$scrollX,$scrollY laidOut=$isLaidOut"
     )
     invalidateRenderedContent()
     restartInputAfterCompositionInvalidationIfNeeded(shouldRestartInput)
+    refreshCodeHighlighting()
 }
 
 internal fun EditorEditText.paragraphSpansEndingAt(offset: Int): List<ParagraphSpanSnapshot> =
@@ -143,7 +161,8 @@ internal fun EditorEditText.paragraphSpansStartingAt(offset: Int): List<Paragrap
         .getSpans(0, editableText.length, Any::class.java)
         .filter { span ->
             editableText.getSpanStart(span) == offset &&
-                editableText.getSpanFlags(span) and Spanned.SPAN_PARAGRAPH == Spanned.SPAN_PARAGRAPH
+                (editableText.getSpanFlags(span) and Spanned.SPAN_PARAGRAPH == Spanned.SPAN_PARAGRAPH ||
+                    span is Annotation && span.key == RenderBridge.NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION)
         }
         .map { span ->
             ParagraphSpanSnapshot(
@@ -186,6 +205,7 @@ internal fun EditorEditText.removeParagraphSpansOwnedByTopLevelRange(startIndex:
             ownerIndex != null && ownerIndex >= startIndex && ownerIndex < endIndex
         }
         .forEach(editableText::removeSpan)
+
 }
 
 internal fun EditorEditText.invalidateRenderedContent() {
@@ -219,6 +239,7 @@ internal fun EditorEditText.authorizeVisibleTextForMatchedOptimisticRender(spann
      * @param renderJSON The JSON array string of render elements.
      */
 internal fun EditorEditText.applyRenderJSONImpl(renderJSON: String) {
+    standaloneRenderJSON = renderJSON
     cancelPendingImageLoads()
     restartImageLoadsOnAttach = false
     val startedAt = System.nanoTime()

@@ -247,6 +247,7 @@ extension EditorTextView {
         }
         let cacheInvalidationNanos = DispatchTime.now().uptimeNanoseconds - cacheInvalidationStartedAt
         isApplyingRustState = false
+        scheduleCodeHighlighting()
         return ApplyRenderTrace(
             totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
             replaceUtf16Length: replaceUtf16Length,

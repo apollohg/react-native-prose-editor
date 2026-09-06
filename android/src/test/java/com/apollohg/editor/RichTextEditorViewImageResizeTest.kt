@@ -316,7 +316,14 @@ internal class RichTextEditorViewImageResizeTest : RichTextEditorViewTestFixture
     @Test
     fun `image resize handles exclude system edge gestures while visible`() {
         val fixture = imageResizeGestureFixture(imageRenderJson())
-        val overlay = fixture.view.editorViewport.getChildAt(2) as ImageResizeOverlayView
+        fun descendants(group: ViewGroup): Sequence<View> = sequence {
+            for (index in 0 until group.childCount) {
+                val child = group.getChildAt(index)
+                yield(child)
+                if (child is ViewGroup) yieldAll(descendants(child))
+            }
+        }
+        val overlay = descendants(fixture.view.editorViewport).filterIsInstance<ImageResizeOverlayView>().single()
         val rect = requireNotNull(fixture.view.imageResizeOverlayRectForTesting())
 
         val exclusions = overlay.systemGestureExclusionRects

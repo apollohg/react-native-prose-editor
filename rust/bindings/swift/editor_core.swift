@@ -1465,7 +1465,7 @@ public enum FfiViewerElement {
     )
     case blockAtom(nodeType: String, docPos: UInt32, attrsJson: String, label: String
     )
-    case blockStart(nodeType: String, depth: UInt16, listContextJson: String?
+    case blockStart(nodeType: String, language: String?, depth: UInt16, listContextJson: String?
     )
     case blockEnd
 }
@@ -1494,7 +1494,7 @@ public struct FfiConverterTypeFfiViewerElement: FfiConverterRustBuffer {
         case 3: return .blockAtom(nodeType: try FfiConverterString.read(from: &buf), docPos: try FfiConverterUInt32.read(from: &buf), attrsJson: try FfiConverterString.read(from: &buf), label: try FfiConverterString.read(from: &buf)
         )
 
-        case 4: return .blockStart(nodeType: try FfiConverterString.read(from: &buf), depth: try FfiConverterUInt16.read(from: &buf), listContextJson: try FfiConverterOptionString.read(from: &buf)
+        case 4: return .blockStart(nodeType: try FfiConverterString.read(from: &buf), language: try FfiConverterOptionString.read(from: &buf), depth: try FfiConverterUInt16.read(from: &buf), listContextJson: try FfiConverterOptionString.read(from: &buf)
         )
 
         case 5: return .blockEnd
@@ -1529,9 +1529,10 @@ public struct FfiConverterTypeFfiViewerElement: FfiConverterRustBuffer {
             FfiConverterString.write(label, into: &buf)
 
 
-        case let .blockStart(nodeType,depth,listContextJson):
+        case let .blockStart(nodeType,language,depth,listContextJson):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(nodeType, into: &buf)
+            FfiConverterOptionString.write(language, into: &buf)
             FfiConverterUInt16.write(depth, into: &buf)
             FfiConverterOptionString.write(listContextJson, into: &buf)
 

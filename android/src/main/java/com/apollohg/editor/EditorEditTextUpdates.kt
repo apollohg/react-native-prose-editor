@@ -120,7 +120,6 @@ internal fun EditorEditText.applyUpdateJSONImpl(
         buildRenderNanos = patchTrace?.buildRenderNanos ?: 0L
         applyRenderNanos = patchTrace?.applyRenderNanos ?: 0L
     } else {
-        cancelPendingImageLoads()
         val buildStartedAt = System.nanoTime()
         val fullSpannable = if (resolvedRenderBlocks != null) {
             RenderBridge.buildSpannableFromBlocks(

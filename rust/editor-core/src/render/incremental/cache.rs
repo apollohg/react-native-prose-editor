@@ -206,9 +206,10 @@ impl CachedRenderBlocks {
                     .checked_add(json_map_bytes(attrs)?),
                 RenderElement::BlockStart {
                     node_type,
+                    language,
                     list_context,
                     ..
-                } => node_type.capacity().checked_add(
+                } => node_type.capacity().checked_add(language.as_ref().map_or(0, String::capacity))?.checked_add(
                     list_context
                         .as_ref()
                         .and_then(|context| context.kind.as_ref())

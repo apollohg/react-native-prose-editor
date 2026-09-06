@@ -6,7 +6,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.util.Log
 import android.text.style.ReplacementSpan
-import android.widget.TextView
+import android.view.View
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -50,15 +50,20 @@ internal class AtomBlockSpan(
 
 internal class BlockImageSpan(
     private val source: String,
-    hostView: TextView?,
+    hostView: View?,
     private val density: Float,
     private val preferredWidthDp: Float?,
-    private val preferredHeightDp: Float?
+    private val preferredHeightDp: Float?,
+    internal var imageStyle: EditorElementStyle? = null
 ) : ReplacementSpan() {
+    internal var ancestorWidthInset: Float = 0f
     private val hostRef = WeakReference(hostView)
     private val policy = (hostView as? EditorEditText)?.imageLoadingPolicy
         ?: ImageLoadingPolicy.DEFAULT
     private val generation = (hostView as? EditorEditText)?.currentImageLoadGeneration()
+    private val boundEditorId = (hostView as? EditorEditText)?.editorId
+    private val boundDriver = WeakReference((hostView as? EditorEditText)?.v2Driver)
+    private val hadBoundDriver = boundDriver.get() != null
     private val ownerId = (hostView as? EditorEditText)?.decodedBitmapOwnerId
         ?: DecodedBitmapBudget.nextOwnerId()
     private val preparedSource = NativeImagePipeline.prepare(source, policy)
@@ -80,7 +85,7 @@ internal class BlockImageSpan(
                 if (
                     retired.get() ||
                     currentHost is EditorEditText &&
-                    generation != currentHost.currentImageLoadGeneration()
+                    !canReuseFor(currentHost)
                 ) {
                     loaded?.close()
                     return@load
@@ -102,7 +107,7 @@ internal class BlockImageSpan(
                 currentHost?.post {
                     if (
                         currentHost is EditorEditText &&
-                        generation != currentHost.currentImageLoadGeneration()
+                        !canReuseFor(currentHost)
                     ) {
                         close()
                         return@post
@@ -123,13 +128,22 @@ internal class BlockImageSpan(
         }
     }
 
-    internal fun reloadedFor(hostView: TextView): BlockImageSpan = BlockImageSpan(
+    internal fun matches(source: String, width: Float?, height: Float?): Boolean = !retired.get() && this.source == source && preferredWidthDp == width && preferredHeightDp == height
+
+    internal fun canReuseFor(host: EditorEditText): Boolean {
+        val sameDriver = if (hadBoundDriver) boundDriver.get()?.let { it === host.v2Driver } == true else host.v2Driver == null
+        return !retired.get() && hostRef.get() === host && sameDriver && boundEditorId == host.editorId &&
+            generation == host.currentImageLoadGeneration() && policy == host.imageLoadingPolicy
+    }
+
+    internal fun reloadedFor(hostView: View): BlockImageSpan = BlockImageSpan(
         source = source,
         hostView = hostView,
         density = density,
         preferredWidthDp = preferredWidthDp,
-        preferredHeightDp = preferredHeightDp
-    )
+        preferredHeightDp = preferredHeightDp,
+        imageStyle = imageStyle
+    ).also { it.ancestorWidthInset = ancestorWidthInset }
 
     internal fun close() {
         if (!retired.compareAndSet(false, true)) return
@@ -145,13 +159,14 @@ internal class BlockImageSpan(
         fm: Paint.FontMetricsInt?
     ): Int {
         val (widthPx, heightPx) = currentSizePx()
+        val inset = imageStyle?.box?.outerInset?.scaled(density) ?: EditorEdges()
         if (fm != null) {
-            fm.ascent = -heightPx
+            fm.ascent = -heightPx - (inset.top + inset.bottom).toInt()
             fm.descent = 0
             fm.top = fm.ascent
             fm.bottom = 0
         }
-        return widthPx
+        return widthPx + (inset.left + inset.right).toInt()
     }
 
     override fun draw(
@@ -165,20 +180,21 @@ internal class BlockImageSpan(
         bottom: Int,
         paint: Paint
     ) {
-        val (widthPx, heightPx) = currentSizePx()
-        val rect = RectF(
-            x,
-            (y - heightPx).toFloat(),
-            x + widthPx,
-            y.toFloat()
-        )
+        val rect = boxRect(x, y.toFloat())
         val host = hostRef.get()
-        lastDrawRect = RectF(rect).apply {
+        val documentRect = ((host as? EditorTextSurface)?.layout as? EditorDocumentLayout)?.imageBounds(this)
+        lastDrawRect = RectF(documentRect ?: rect).apply {
             if (host != null) {
-                offset(host.compoundPaddingLeft.toFloat(), host.extendedPaddingTop.toFloat())
+                offset((host as? android.widget.TextView)?.compoundPaddingLeft?.toFloat() ?: host.paddingLeft.toFloat(), (host as? android.widget.TextView)?.extendedPaddingTop?.toFloat() ?: host.paddingTop.toFloat())
             }
         }
         val loadedBitmap = bitmapLease.get()?.bitmap
+        imageStyle?.let {
+            val box = it.box.scaled(density)
+            EditorBoxDrawing.draw(canvas, rect, box)
+            if (loadedBitmap != null) EditorBoxDrawing.drawImage(canvas, loadedBitmap, rect, box, it.resizeMode)
+            return
+        }
         if (loadedBitmap != null) {
             canvas.drawBitmap(loadedBitmap, null, rect, null)
             return
@@ -194,6 +210,17 @@ internal class BlockImageSpan(
         canvas.drawCircle(rect.centerX(), rect.centerY(), iconRadius, paint)
         paint.color = previousColor
         paint.style = previousStyle
+    }
+
+    internal fun boxRect(x: Float, baseline: Float): RectF {
+        val (widthPx, heightPx) = currentSizePx()
+        val box = imageStyle?.box?.scaled(density) ?: EditorBoxStyle()
+        return RectF(
+            x + box.margin.left,
+            baseline - heightPx - box.inset.top - box.inset.bottom - box.margin.bottom,
+            x + box.margin.left + widthPx + box.inset.left + box.inset.right,
+            baseline - box.margin.bottom,
+        )
     }
 
     internal fun currentSizePx(): Pair<Int, Int> {
@@ -248,9 +275,10 @@ internal class BlockImageSpan(
     private fun resolvedMaxWidth(): Float {
         val host = hostRef.get()
         val hostWidth = host?.let {
-            maxOf(it.width, it.measuredWidth) - it.totalPaddingLeft - it.totalPaddingRight
+            maxOf(it.width, it.measuredWidth) - ((it as? android.widget.TextView)?.totalPaddingLeft ?: it.paddingLeft) - ((it as? android.widget.TextView)?.totalPaddingRight ?: it.paddingRight)
         } ?: 0
-        val candidate = if (hostWidth > 0) hostWidth.toDouble() else 240.0 * density.toDouble()
+        val inset = imageStyle?.box?.outerInset?.scaled(density) ?: EditorEdges()
+        val candidate = (if (hostWidth > 0) hostWidth.toDouble() else 240.0 * density.toDouble()) - inset.left - inset.right - ancestorWidthInset
         return candidate
             .takeIf { it.isFinite() && it > 0.0 }
             ?.coerceAtMost(policy.maxDecodeDimensionPx.toDouble())

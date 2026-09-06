@@ -680,14 +680,17 @@ internal class PreparedProseLayoutRegistry(
             fontScale,
             request.semanticGenerationIdentity,
         )
-        themes[key] = resolved
+        val highlighting = com.apollohg.editor.NativeCodeHighlightingConfig.fromJson(org.json.JSONObject(request.configuration.configJson).optJSONObject("codeHighlighting"))
+        highlighting?.let { com.apollohg.editor.CodeHighlightingRegistry.provider(it.provider) }
+        val configured = resolved.copy(codeHighlighting = highlighting)
+        themes[key] = configured
         themeRetainedBytes += resolved.retainedBytes
         while ((themeRetainedBytes > themeByteBudget || themes.size > themeEntryBudget) && themes.isNotEmpty()) {
             val oldest = themes.entries.first()
             themes.remove(oldest.key)
             themeRetainedBytes -= oldest.value.retainedBytes
         }
-        resolved
+        configured
     }
 
 

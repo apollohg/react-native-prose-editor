@@ -245,7 +245,7 @@ internal class EditorInputConnectionDeletionTest : EditorInputConnectionTestFixt
                 shadowOf(Looper.getMainLooper()).idle()
 
                 assertEquals(
-                    "seed=$seed step=$step offset=$offset",
+                    "seed=$seed step=$step offset=$offset\n" + harness.editText.imeTraceSnapshotForTesting().joinToString("\n"),
                     harness.expectedText(),
                     harness.editText.text.toString()
                 )

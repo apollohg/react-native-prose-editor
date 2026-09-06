@@ -48,34 +48,107 @@ pub(crate) fn plan_insert_text(
     }))
 }
 
+#[derive(Debug)]
+pub(crate) enum TextReplacementPlanError {
+    OperationLimit { limit: usize, actual: usize },
+    Planning,
+}
+
 pub(crate) fn plan_replace_selection_text(
     document: &Document,
     schema: &Schema,
     selection: &Selection,
     stored_marks: Option<&[crate::model::Mark]>,
     text: &str,
-) -> Option<SemanticCommandPlan> {
+    limits: &ResourceLimits,
+    max_operations: usize,
+) -> Result<Option<SemanticCommandPlan>, TextReplacementPlanError> {
     let Selection::Text { anchor, head } = selection else {
-        return None;
+        return Ok(None);
     };
     let from = (*anchor).min(*head);
     let to = (*anchor).max(*head);
-    let mut operations = Vec::with_capacity(2);
+    let is_code = document.resolve(from).ok().is_some_and(|resolved| {
+        Some(resolved.parent(document).node_type()) == super::code_block_node_name(schema)
+    });
+    let normalized;
+    let text = if !is_code && text.contains('\r') {
+        normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        normalized.as_str()
+    } else {
+        text
+    };
+    let multiline = !is_code && text.contains('\n');
+    let count = usize::from(from < to)
+        + if multiline {
+            text.split('\n').filter(|part| !part.is_empty()).count()
+                + text.bytes().filter(|byte| *byte == b'\n').count()
+        } else {
+            usize::from(!text.is_empty())
+        };
+    let limit = max_operations;
+    if count > limit {
+        return Err(TextReplacementPlanError::OperationLimit {
+            limit,
+            actual: count,
+        });
+    }
+    let marks = insertion_marks(document, schema, from, stored_marks, from == to);
+    let mut operations = Vec::with_capacity(count);
     if from < to {
         operations.push(SemanticOperation::DeleteRange { from, to });
     }
-    if !text.is_empty() {
-        operations.push(SemanticOperation::InsertText {
-            pos: from,
-            text: text.to_string(),
-            marks: insertion_marks(document, schema, from, stored_marks, from == to),
-        });
+    if !multiline {
+        if !text.is_empty() {
+            operations.push(SemanticOperation::InsertText {
+                pos: from,
+                text: text.to_string(),
+                marks,
+            });
+        }
+        return Ok((!operations.is_empty()).then_some(SemanticCommandPlan {
+            operations,
+            selection_after: None,
+            history: SemanticCommandHistory::InputBoundary,
+        }));
     }
-    (!operations.is_empty()).then_some(SemanticCommandPlan {
+    let mut preview = apply_operations(document, schema, &operations)
+        .map_err(|()| TextReplacementPlanError::Planning)?;
+    let mut cursor = from;
+    for (index, part) in text.split('\n').enumerate() {
+        if index > 0 {
+            let split = super::preferred_split_operation(&preview, schema, cursor, limits)
+                .map_err(|()| TextReplacementPlanError::Planning)?
+                .ok_or(TextReplacementPlanError::Planning)?;
+            preview = apply_operations(&preview, schema, std::slice::from_ref(&split))
+                .map_err(|()| TextReplacementPlanError::Planning)?;
+            operations.push(split);
+            cursor = cursor
+                .checked_add(2)
+                .ok_or(TextReplacementPlanError::Planning)?;
+        }
+        if !part.is_empty() {
+            let insert = SemanticOperation::InsertText {
+                pos: cursor,
+                text: part.to_string(),
+                marks: marks.clone(),
+            };
+            preview = apply_operations(&preview, schema, std::slice::from_ref(&insert))
+                .map_err(|()| TextReplacementPlanError::Planning)?;
+            operations.push(insert);
+            cursor = cursor
+                .checked_add(
+                    u32::try_from(part.chars().count())
+                        .map_err(|_| TextReplacementPlanError::Planning)?,
+                )
+                .ok_or(TextReplacementPlanError::Planning)?;
+        }
+    }
+    Ok(Some(SemanticCommandPlan {
         operations,
-        selection_after: None,
+        selection_after: Some(Selection::cursor(cursor)),
         history: SemanticCommandHistory::InputBoundary,
-    })
+    }))
 }
 
 fn default_text_block_with_content(schema: &Schema, content: Fragment) -> Option<Node> {

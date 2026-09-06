@@ -17,7 +17,7 @@ import { type AtomComponent } from './atoms';
 import { normalizeDocumentJson } from './schemas';
 import { ExternalTextCompositionManager } from './ExternalTextComposition';
 import { useNativeEditorDocument } from './useNativeEditor';
-import { type MentionQueryChangeEvent } from './addons';
+import { normalizeEditorAddons, type MentionQueryChangeEvent } from './addons';
 import { type AtomViewport } from './AtomHost';
 import { useFocusPreservingFrames } from './useFocusPreservingFrames';
 import { type RichTextEditorProps, type RichTextEditorRef } from './RichTextEditorTypes';
@@ -65,7 +65,7 @@ export function useRichTextEditorState(
         style,
         containerStyle,
         theme,
-        addons,
+        addons: addonDescriptors,
         atoms,
         atomsInteractive = true,
         virtualizeAtoms = false,
@@ -84,6 +84,7 @@ export function useRichTextEditorState(
     }: RichTextEditorProps,
     ref: React.ForwardedRef<RichTextEditorRef>
 ) {
+    const addons = useMemo(() => normalizeEditorAddons(addonDescriptors), [addonDescriptors]);
     _assertNativeEditorDocumentHandle(documentHandle);
 
     const documentDescriptor = _getNativeEditorDocumentHandleDescriptor(documentHandle);

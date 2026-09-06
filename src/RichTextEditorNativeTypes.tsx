@@ -103,6 +103,7 @@ export interface NativeAtomLayoutEvent {
 
 export interface NativeAtomPosition {
     height?: number;
+    width?: number;
     key: string;
     x: number;
     y: number;

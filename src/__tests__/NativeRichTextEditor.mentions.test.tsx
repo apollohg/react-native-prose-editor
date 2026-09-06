@@ -1,3 +1,4 @@
+import { createMentionsAddon } from '../EditorAddon';
 import './helpers/NativeRichTextEditorFixture';
 import { mockNativeModule } from './helpers/NativeRichTextEditorFixture';
 
@@ -11,6 +12,81 @@ import { withMentionsSchema } from '../addons';
 import { tiptapCompatibleSchema } from '../schemas';
 
 describe('NativeRichTextEditor (v2 document mode)', () => {
+    it('updates descriptors without losing the query and clears state when removed', () => {
+        const handle = createNativeEditorDocumentHandle({
+            schema: withMentionsSchema(tiptapCompatibleSchema),
+            initialization: { type: 'localEmpty' },
+        });
+        const firstCallback = jest.fn();
+        const nextCallback = jest.fn();
+        const initial = createMentionsAddon({
+            suggestions: [{ key: 'alice', title: 'Alice' }],
+            onQueryChange: firstCallback,
+        });
+        const updated = createMentionsAddon({
+            suggestions: [{ key: 'bob', title: 'Bob' }],
+            onQueryChange: nextCallback,
+        });
+        const editor = (addons: import('../EditorAddon').EditorAddons) => (
+            <NativeRichTextEditor
+                documentHandle={handle}
+                toolbarPlacement='inline'
+                addons={addons}
+            />
+        );
+        const highlighting = {
+            id: 'code-highlighting',
+            version: 1,
+            capability: 'code-highlighting',
+            options: { provider: 'syntect', theme: 'base16-ocean.dark' },
+        } as const;
+        const { getByTestId, queryByTestId, rerender, unmount } = render(
+            editor([initial, highlighting])
+        );
+        expect(
+            JSON.parse(getByTestId('native-editor-view').props.addonsJson).codeHighlighting
+        ).toEqual(highlighting.options);
+        act(() =>
+            getByTestId('native-editor-view').props.onFocusChange({
+                nativeEvent: { isFocused: true, editorId: handle.editorId },
+            })
+        );
+        const emit = () =>
+            act(() =>
+                getByTestId('native-editor-view').props.onAddonEvent({
+                    nativeEvent: {
+                        editorId: handle.editorId,
+                        eventJson: JSON.stringify({
+                            type: 'mentionsQueryChange',
+                            query: 'a',
+                            trigger: '@',
+                            range: { anchor: 0, head: 0 },
+                            isActive: true,
+                        }),
+                    },
+                })
+            );
+        emit();
+        expect(getByTestId('editor-toolbar-mention-suggestion-alice')).toBeTruthy();
+        const selectionCalls = mockNativeModule.editorV2SetSelection.mock.calls.length;
+        rerender(editor([updated]));
+        expect(getByTestId('editor-toolbar-mention-suggestion-bob')).toBeTruthy();
+        expect(queryByTestId('editor-toolbar-mention-suggestion-alice')).toBeNull();
+        expect(mockNativeModule.editorV2SetSelection.mock.calls).toHaveLength(selectionCalls);
+        emit();
+        expect(firstCallback).toHaveBeenCalledTimes(1);
+        expect(nextCallback).toHaveBeenCalledTimes(1);
+        rerender(editor([]));
+        expect(getByTestId('native-editor-view').props.addonsJson).toBeUndefined();
+        expect(queryByTestId('editor-toolbar-mention-suggestions')).toBeNull();
+        emit();
+        expect(nextCallback).toHaveBeenCalledTimes(1);
+        rerender(editor([updated]));
+        expect(queryByTestId('editor-toolbar-mention-suggestions')).toBeNull();
+        unmount();
+        handle.destroy();
+    });
+
     it('resolves mention styling with active mark attrs and inserts the resolved mention', () => {
         const handle = createNativeEditorDocumentHandle({
             schema: withMentionsSchema(tiptapCompatibleSchema),
@@ -44,8 +120,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const { getByTestId } = render(
             <NativeRichTextEditor
                 documentHandle={handle}
-                addons={{
-                    mentions: {
+                addons={[
+                    createMentionsAddon({
                         suggestions: [
                             {
                                 key: 'alice',
@@ -56,8 +132,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                         resolveSelectionAttrs,
                         resolveTheme,
                         onSelect,
-                    },
-                }}
+                    }),
+                ]}
             />
         );
         const documentVersion = handle.bridge.getState().documentRevision;
@@ -127,7 +203,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                             label: 'Alice',
                             mentionSuggestionChar: '@',
                             kind: 'user',
-                            mentionTheme: { node: { textColor: '#445566' } },
+                            mentionTheme: { node: { style: { color: '#445566ff' } } },
                         },
                     },
                     { type: 'text', text: ' ' },
@@ -139,7 +215,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 attrs: expect.objectContaining({
                     id: 'user-alice',
                     kind: 'user',
-                    mentionTheme: { node: { textColor: '#445566' } },
+                    mentionTheme: { node: { style: { color: '#445566ff' } } },
                 }),
             })
         );
@@ -162,14 +238,14 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             <NativeRichTextEditor
                 documentHandle={handle}
                 toolbarPlacement='inline'
-                addons={{
-                    mentions: {
+                addons={[
+                    createMentionsAddon({
                         suggestions: [
                             { key: 'alice', title: 'Alice', attrs: { id: 'user-alice' } },
                         ],
                         onSelect,
-                    },
-                }}
+                    }),
+                ]}
             />
         );
         const view = getByTestId('native-editor-view');
@@ -282,15 +358,15 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             <NativeRichTextEditor
                 documentHandle={handle}
                 toolbarPlacement='inline'
-                addons={{
-                    mentions: {
+                addons={[
+                    createMentionsAddon({
                         suggestions: [
                             { key: 'alice', title: 'Alice', attrs: { id: 'user-alice' } },
                         ],
                         // The pre-1.0 flat shape, no longer part of EditorMentionTheme.
                         resolveTheme: () => ({ textColor: '#CC0000' }) as never,
-                    },
-                }}
+                    }),
+                ]}
             />
         );
         const view = getByTestId('native-editor-view');
@@ -363,14 +439,14 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             <NativeRichTextEditor
                 documentHandle={handle}
                 toolbarPlacement='inline'
-                addons={{
-                    mentions: {
+                addons={[
+                    createMentionsAddon({
                         suggestions: [
                             { key: 'alice', title: 'Alice', attrs: { id: 'user-alice' } },
                         ],
                         onSelect,
-                    },
-                }}
+                    }),
+                ]}
             />
         );
         const view = getByTestId('native-editor-view');
@@ -448,8 +524,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             <NativeRichTextEditor
                 documentHandle={handle}
                 toolbarPlacement='inline'
-                addons={{
-                    mentions: {
+                addons={[
+                    createMentionsAddon({
                         suggestions: [
                             { key: 'channel', title: 'General' },
                             { key: 'alice', title: 'Alice' },
@@ -477,8 +553,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                                           },
                                       },
                                   },
-                    },
-                }}
+                    }),
+                ]}
             />
         );
         const view = getByTestId('native-editor-view');

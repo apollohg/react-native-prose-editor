@@ -625,6 +625,7 @@ fn serialize_render_elements(
             }
             crate::render::RenderElement::BlockStart {
                 node_type,
+                language,
                 depth,
                 list_context,
             } => {
@@ -633,6 +634,9 @@ fn serialize_render_elements(
                     "nodeType": node_type,
                     "depth": depth,
                 });
+                if let Some(language) = language {
+                    obj["language"] = serde_json::Value::String(language.clone());
+                }
                 if let Some(ctx) = list_context {
                     obj["listContext"] = serde_json::json!({
                         "ordered": ctx.ordered,

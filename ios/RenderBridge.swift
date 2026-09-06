@@ -233,6 +233,11 @@ final class RenderBridge {
                     textColor: blockColor,
                     theme: theme
                 )
+                if let sheet = theme?.styleSheet {
+                    var base = defaultAttributes(baseFont: blockFont, textColor: blockColor)
+                    EditorStyleSheet.applyText(sheet.textValues(blockStack.last?.nodeType ?? "paragraph", ancestors: blockStack.dropLast().map(\.nodeType)), to: &base)
+                    baseAttrs = sheet.inlineAttributes(marks, base: base)
+                }
                 if isCodeBlock {
                     // blockFont already carries theme.codeBlock.text. Keep an
                     // explicit code-block family for ordinary marked text;
@@ -334,7 +339,20 @@ final class RenderBridge {
                     atomKey: atomKey,
                     atomConfiguration: atomConfiguration
                 )
-                result.append(attrStr)
+                if let sheet = theme?.styleSheet {
+                    let styled = NSMutableAttributedString(attributedString: attrStr)
+                    styled.addAttribute(editorStyledContentAttribute, value: true, range: NSRange(location: 0, length: styled.length))
+                    let context = BlockContext(nodeType: nodeType, depth: blockStack.last?.depth ?? 0, listContext: nil)
+                    let style = paragraphStyleForBlock(context, blockStack: blockStack + [context], theme: theme, baseFont: baseFont)
+                    let inset = sheet.box(nodeType).inset
+                    style.headIndent -= inset.left
+                    style.firstLineHeadIndent -= inset.left
+                    style.tailIndent += inset.right
+                    style.paragraphSpacingBefore = sheet.box(nodeType).margin.top
+                    style.paragraphSpacing = sheet.box(nodeType).margin.bottom
+                    styled.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: styled.length))
+                    result.append(styled)
+                } else { result.append(attrStr) }
                 pendingTrailingParagraphSpacing = theme?.effectiveTextStyle(
                     for: nodeType
                 ).spacingAfter
@@ -404,12 +422,13 @@ final class RenderBridge {
                 let listContext = element["listContext"] as? [String: Any]
                 let isListItemContainer = isListItemNodeType(nodeType) && listContext != nil
                 let isTransparentLayoutContainer = isTransparentContainer(nodeType)
-                let ctx = BlockContext(
+                var ctx = BlockContext(
                     nodeType: nodeType,
                     depth: depth,
                     listContext: listContext,
                     topLevelChildIndex: topLevelChildIndex,
-                    markerPending: isListItemContainer
+                    markerPending: isListItemContainer,
+                    language: element["language"] as? String
                 )
                 let nestedListItemContainer =
                     isListItemContainer && (theme?.list?.itemSpacing != nil)
@@ -464,6 +483,13 @@ final class RenderBridge {
                     )
                 }
 
+                if theme?.styleSheet != nil, isListItemContainer,
+                   (listContext?["isFirst"] as? Bool) == true || (listContext?["index"] as? NSNumber)?.intValue == 1 {
+                    let listName = (listContext?["kind"] as? String) == "task" ? "taskList" : ((listContext?["ordered"] as? Bool) == true ? "orderedList" : "bulletList")
+                    blockStack.append(BlockContext(nodeType: listName, depth: depth, listContext: nil, styleStart: result.length))
+                }
+                ctx.styleStart = result.length
+
                 // Push block context for inline children to reference.
                 blockStack.append(ctx)
 
@@ -498,7 +524,17 @@ final class RenderBridge {
                         textColor: textColor,
                         theme: theme
                     )
-                    if endedBlock.listContext != nil {
+                    closeStyledBlock(endedBlock, ancestors: blockStack, in: result, theme: theme, baseFont: baseFont, textColor: textColor)
+                    if EditorStyleSheet.element(endedBlock.nodeType) == "codeBlock", endedBlock.styleStart < result.length {
+                        result.addAttribute(editorCodeBlockAttribute, value: EditorCodeBlockPresentation(language: endedBlock.language), range: NSRange(location: endedBlock.styleStart, length: result.length - endedBlock.styleStart))
+                    }
+                    if theme?.styleSheet != nil, endedBlock.listContext?["isLast"] as? Bool == true,
+                       let container = blockStack.last,
+                       ["bulletList", "orderedList", "taskList"].contains(container.nodeType) {
+                        blockStack.removeLast()
+                        closeStyledBlock(container, ancestors: blockStack, in: result, theme: theme, baseFont: baseFont, textColor: textColor)
+                    }
+                    if endedBlock.listContext != nil, theme?.styleSheet == nil {
                         let spacing = (endedBlock.listContext?["isLast"] as? Bool) == true
                             ? (theme?.list?.spacingAfter ?? theme?.list?.itemSpacing)
                             : theme?.list?.itemSpacing
@@ -513,6 +549,12 @@ final class RenderBridge {
             }
         }
 
+        if theme?.styleSheet != nil, result.length > 1 {
+            result.enumerateAttribute(RenderBridgeAttributes.blockBoundary, in: NSRange(location: 1, length: result.length - 1)) { value, range, _ in
+                guard value != nil, let style = result.attribute(.paragraphStyle, at: range.location - 1, effectiveRange: nil) else { return }
+                result.addAttribute(.paragraphStyle, value: style, range: range)
+            }
+        }
         return result
     }
 
@@ -632,7 +674,7 @@ final class RenderBridge {
         let lineFragmentPadding: CGFloat = contentInsets != nil ? 0 : 5
 
         let textStorage = NSTextStorage(attributedString: attributedString)
-        let layoutManager = NSLayoutManager()
+        let layoutManager = EditorLayoutManager()
         let containerWidth = width - leftInset - rightInset - lineFragmentPadding * 2
         let textContainer = NSTextContainer(
             size: CGSize(width: max(containerWidth, 0), height: .greatestFiniteMagnitude)

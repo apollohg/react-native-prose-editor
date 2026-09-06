@@ -70,11 +70,36 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     var baseLineFragmentPadding: CGFloat = 0
 
     /// Optional render theme supplied by React.
+    lazy var styleContentView: EditorStyleBoxView = {
+        let view = EditorStyleBoxView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        insertSubview(view, at: 0)
+        return view
+    }()
+
+    let codeHighlightingSession = NativeCodeHighlightingSession()
+    var onCodeHighlightingError: ((Error) -> Void)?
+    var codeHighlighting: NativeCodeHighlightConfiguration? {
+        didSet {
+            guard oldValue != codeHighlighting else { return }
+            codeHighlightingSession.cancel()
+            restoreCodeHighlighting()
+            scheduleCodeHighlighting()
+        }
+    }
+
     var theme: EditorTheme? {
         didSet {
             renderAppearanceRevision &+= 1
             placeholderLabel.font = resolvedDefaultFont()
             placeholderLabel.textColor = theme?.placeholderColor ?? .placeholderText
+            if let sheet = theme?.styleSheet {
+                var attributes: [NSAttributedString.Key: Any] = [.font: resolvedDefaultFont(), .foregroundColor: theme?.placeholderColor ?? UIColor.placeholderText]
+                EditorStyleSheet.applyText(sheet["placeholder"], to: &attributes)
+                placeholderLabel.attributedText = NSAttributedString(string: placeholder, attributes: attributes)
+            } else { placeholderLabel.attributedText = nil; placeholderLabel.text = placeholder }
+            styleContentView.box = theme?.styleSheet?.box("content")
             backgroundColor = theme?.backgroundColor ?? baseBackgroundColor
             if let contentInsets = theme?.contentInsets {
                 textContainerInset = UIEdgeInsets(
@@ -318,6 +343,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        if window == nil { codeHighlightingSession.cancel() }
+        else { scheduleCodeHighlighting() }
         installImageSelectionTapDependencies()
     }
 
@@ -337,6 +364,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        styleContentView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height, contentSize.height))
         let placeholderX = textContainerInset.left + textContainer.lineFragmentPadding
         let placeholderY = textContainerInset.top
         let placeholderWidth = max(
@@ -381,6 +409,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate, UITextDragD
     }
 
     deinit {
+        codeHighlightingSession.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 

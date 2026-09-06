@@ -22,8 +22,9 @@ internal fun NativeEditorExpoView.setImageLoadingPolicyJsonImpl(policyJson: Stri
 
 internal fun NativeEditorExpoView.applyThemeJson(themeJson: String?) {
     if (lastThemeJson == themeJson) return
-    lastThemeJson = themeJson
     val theme = EditorTheme.fromJson(themeJson)
+    require(themeJson.isNullOrBlank() || theme != null) { "Invalid editor theme version or payload shape." }
+    lastThemeJson = themeJson
     richTextView.applyTheme(theme)
     keyboardToolbarView.applyTheme(theme?.toolbar)
     keyboardToolbarView.applyMentionTheme(theme?.mentions ?: addons.mentions?.theme)
@@ -71,8 +72,10 @@ internal fun NativeEditorExpoView.invalidateAutoGrowContentHeightEmission() {
 internal fun NativeEditorExpoView.setAddonsJsonImpl(addonsJson: String?) {
     if (lastAddonsJson == addonsJson) return
     clearPendingNativeActionRetry()
+    val next = NativeEditorAddons.fromJson(addonsJson)
+    richTextView.editorEditText.setCodeHighlighting(next.codeHighlighting)
     lastAddonsJson = addonsJson
-    addons = NativeEditorAddons.fromJson(addonsJson)
+    addons = next
     keyboardToolbarView.applyMentionTheme(richTextView.editorEditText.theme?.mentions ?: addons.mentions?.theme)
     refreshMentionQuery()
 }

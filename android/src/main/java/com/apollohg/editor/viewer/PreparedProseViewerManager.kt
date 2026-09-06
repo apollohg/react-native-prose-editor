@@ -51,6 +51,7 @@ internal class PreparedProseViewerManager :
         PreparedProseDrawingView(context).also { view ->
             val state = ViewState()
             states[view] = state
+            view.onCodeHighlightsReady = { state.publishFontRevision(1) }
             view.onUsableMetricsChanged = { installCachedLayout(view) }
             view.onVisibleRectChanged = { visible -> state.requestVisibleImages(view, visible) }
             view.onFontConfigurationChanged = { configuration -> state.fontEnvironment.onConfigurationChanged(configuration) }
@@ -79,6 +80,7 @@ internal class PreparedProseViewerManager :
             state.finishWithoutMountedReplacement(view)
             state.release()
         }
+        view.onCodeHighlightsReady = null
         view.onUsableMetricsChanged = null
         view.onVisibleRectChanged = null
         view.onFontConfigurationChanged = null

@@ -80,11 +80,13 @@ private fun validMentionTheme(value: Any?): Boolean {
     if (object_.has("node") && !validMentionThemeSection(
             object_.opt("node"),
             setOf("textColor", "backgroundColor", "borderColor"),
-            setOf("fontWeight")
+            setOf("fontWeight", "style")
         )
     ) {
         return false
     }
+    val node = object_.optJSONObject("node")
+    if (node?.has("style") == true && !validMentionNodeStyle(node.opt("style"))) return false
     if (!object_.has("suggestions")) return true
     val suggestions = object_.opt("suggestions")
     if (!validMentionThemeSection(
@@ -103,13 +105,39 @@ private fun validMentionTheme(value: Any?): Boolean {
     )
 }
 
+private fun validMentionNodeStyle(value: Any?): Boolean {
+    val style = value as? JSONObject ?: return false
+    val colors = setOf("color", "backgroundColor", "textDecorationColor") + listOf("Top", "Right", "Bottom", "Left").map { "border${it}Color" }
+    val nonnegative = listOf("Top", "Right", "Bottom", "Left").map { "border${it}Width" } + listOf("TopLeft", "TopRight", "BottomLeft", "BottomRight").map { "border${it}Radius" }
+    val enums = mapOf(
+        "fontWeight" to setOf("normal", "bold", "100", "200", "300", "400", "500", "600", "700", "800", "900"),
+        "fontStyle" to setOf("normal", "italic"),
+        "borderStyle" to setOf("solid", "dashed", "dotted"),
+        "textDecorationLine" to setOf("none", "underline", "line-through", "underline line-through"),
+        "textDecorationStyle" to setOf("solid", "double", "dashed", "dotted"),
+    )
+    return style.keys().asSequence().all { key ->
+        val field = style.opt(key)
+        when {
+            key in colors -> field is String && field.matches(Regex("#[0-9a-fA-F]{8}"))
+            key in nonnegative -> field is Number && field.toDouble().isFinite() && field.toDouble() >= 0
+            key == "fontSize" || key == "lineHeight" -> field is Number && field.toDouble().isFinite() && field.toDouble() > 0
+            key == "letterSpacing" -> field is Number && field.toDouble().isFinite()
+            key == "fontFamily" -> field is String && field.isNotBlank()
+            key in enums -> field in enums.getValue(key)
+            else -> false
+        }
+    }
+}
+
 private fun validRenderElement(value: Any?): Boolean {
     val object_ = value as? JSONObject ?: return false
     return when (object_.opt("type") as? String) {
         "textRun" -> exactKeys(object_, setOf("type", "text", "marks")) && object_.opt("text") is String &&
             (object_.opt("marks") as? JSONArray)?.let { marks -> (0 until marks.length()).all { validRenderMark(marks.opt(it)) } } == true
-        "blockStart" -> onlyKeys(object_, setOf("type", "nodeType", "depth", "listContext")) && object_.opt("nodeType") is String &&
-            scalarField(object_, "depth") != null && (!object_.has("listContext") || validListContext(object_.opt("listContext")))
+        "blockStart" -> onlyKeys(object_, setOf("type", "nodeType", "depth", "listContext", "language")) && object_.opt("nodeType") is String &&
+            scalarField(object_, "depth") != null && (!object_.has("listContext") || validListContext(object_.opt("listContext"))) &&
+            (!object_.has("language") || object_.isNull("language") || object_.opt("language") is String)
         "blockEnd" -> exactKeys(object_, setOf("type"))
         "voidInline" -> onlyKeys(object_, setOf("type", "nodeType", "docPos", "attrs")) && object_.opt("nodeType") is String &&
             scalarField(object_, "docPos") != null && (!object_.has("attrs") || object_.opt("attrs") is JSONObject)

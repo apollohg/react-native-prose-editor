@@ -14,10 +14,11 @@ import android.view.inputmethod.InputConnectionWrapper
 
 
 internal fun EditorInputConnection.isCurrentInputSession(): Boolean =
-    editorView.isInputConnectionCurrentForEditor(boundEditorId, boundGeneration)
+    !closedForInput && editorView.activeInputConnection === this &&
+        editorView.isInputConnectionCurrentForEditor(boundEditorId, boundGeneration)
 
 internal fun EditorInputConnection.currentMapper(): ImeTextCoordinateMapper? =
-    editorView.imeTextCoordinateMapperForEditor(boundMapperGeneration)
+    if (isCurrentInputSession()) editorView.imeTextCoordinateMapperForEditor(boundMapperGeneration) else null
 
 internal fun EditorInputConnection.imeTextSlice(
     mapper: ImeTextCoordinateMapper,

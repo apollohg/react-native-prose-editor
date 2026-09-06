@@ -813,7 +813,30 @@ pub(super) fn plan(
                 &selection,
                 context.stored_marks,
                 &text,
-            ) else {
+                context.resource_limits,
+                context.editing_limits.max_operations_per_transaction,
+            )
+            .map_err(|error| match error {
+                crate::command_planner::TextReplacementPlanError::OperationLimit {
+                    limit,
+                    actual,
+                } => OperationError::operation_limit_exceeded(
+                    context.request_id,
+                    None,
+                    "maxOperationsPerTransaction",
+                    limit as u64,
+                    actual as u64,
+                ),
+                crate::command_planner::TextReplacementPlanError::Planning => {
+                    OperationError::operation_invalid(
+                        context.request_id,
+                        0,
+                        "command",
+                        "plain text replacement planning failed",
+                    )
+                }
+            })?
+            else {
                 return Ok(CommandPlan::NotApplicable);
             };
             return semantic_transaction(&context, &selection, plan);

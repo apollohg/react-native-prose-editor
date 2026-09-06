@@ -51,13 +51,17 @@ struct EditorTextStyle {
     }
 
     func resolvedFont(fallback: UIFont) -> UIFont {
-        ViewerFontEnvironment.shared.resolveFont(
-            style: self,
-            fallback: fallback,
-            fontScale: 1,
-            semanticGeneration: "legacy-editor-theme"
-        )
+        var attributes: [NSAttributedString.Key: Any] = [.font: fallback]
+        var values: [String: Any] = [:]
+        values["fontFamily"] = fontFamily
+        values["fontSize"] = fontSize
+        values["fontWeight"] = fontWeight
+        values["fontStyle"] = fontStyle
+        EditorStyleSheet.applyText(values, to: &attributes)
+        return attributes[.font] as? UIFont ?? fallback
     }
+
+
 }
 
 struct EditorListTheme {
@@ -162,6 +166,7 @@ struct EditorLinkTheme {
 }
 
 struct EditorMentionNodeTheme {
+    var style: [String: Any] = [:]
     var textColor: UIColor?
     var backgroundColor: UIColor?
     var borderColor: UIColor?
@@ -172,6 +177,7 @@ struct EditorMentionNodeTheme {
     func merged(with override: EditorMentionNodeTheme?) -> EditorMentionNodeTheme {
         guard let override else { return self }
         var merged = self
+        merged.style.merge(override.style) { _, new in new }
         merged.textColor = override.textColor ?? merged.textColor
         merged.backgroundColor = override.backgroundColor ?? merged.backgroundColor
         merged.borderColor = override.borderColor ?? merged.borderColor
@@ -182,6 +188,7 @@ struct EditorMentionNodeTheme {
     }
 
     init(dictionary: [String: Any]) {
+        style = dictionary["style"] as? [String: Any] ?? [:]
         textColor = EditorTheme.color(from: dictionary["textColor"])
         backgroundColor = EditorTheme.color(from: dictionary["backgroundColor"])
         borderColor = EditorTheme.color(from: dictionary["borderColor"])
@@ -392,6 +399,7 @@ struct EditorContentInsets {
 }
 
 struct EditorTheme {
+    var styleSheet: EditorStyleSheet?
     var text: EditorTextStyle?
     var paragraph: EditorTextStyle?
     var blockquote: EditorBlockquoteTheme?
@@ -414,10 +422,25 @@ struct EditorTheme {
         else {
             return nil
         }
+        if let version = raw["version"] {
+            guard let number = version as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue == 1,
+                  raw["styles"] == nil || raw["styles"] is [String: [String: Any]] else { return nil }
+        }
         return EditorTheme(dictionary: raw)
     }
 
     init(dictionary: [String: Any]) {
+        if (dictionary["version"] as? NSNumber)?.intValue == 1,
+           dictionary["styles"] == nil || dictionary["styles"] is [String: [String: Any]] {
+            let styles = dictionary["styles"] as? [String: [String: Any]] ?? [:]
+            self.init(legacyDictionary: Self.legacyProjection(styles: styles, root: dictionary))
+            styleSheet = EditorStyleSheet(styles: styles)
+            return
+        }
+        self.init(legacyDictionary: dictionary)
+    }
+
+    private init(legacyDictionary dictionary: [String: Any]) {
         if let text = dictionary["text"] as? [String: Any] {
             self.text = EditorTextStyle(dictionary: text)
         }
@@ -465,6 +488,9 @@ struct EditorTheme {
         inBlockquote: Bool = false,
         defaultStyle: EditorTextStyle? = nil
     ) -> EditorTextStyle {
+        if let styleSheet {
+            return styleSheet.textStyle(nodeType, ancestors: inBlockquote ? ["blockquote"] : [], semantic: defaultStyle)
+        }
         var style = text ?? EditorTextStyle()
         style = style.merged(with: inBlockquote ? blockquote?.text : nil)
         if nodeType == "paragraph" {

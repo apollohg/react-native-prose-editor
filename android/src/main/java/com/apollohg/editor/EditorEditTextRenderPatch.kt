@@ -143,7 +143,8 @@ internal fun EditorEditText.buildPatchedSpannable(
         theme = theme,
         density = resources.displayMetrics.density,
         hostView = this,
-        atomConfiguration = atomRenderConfiguration
+        atomConfiguration = atomRenderConfiguration,
+        reuseImages = false,
     )
 
 internal fun EditorEditText.cloneJsonArray(array: org.json.JSONArray): org.json.JSONArray =

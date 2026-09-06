@@ -140,6 +140,11 @@ fn walk_children(
                     };
                 elements.push(RenderElement::BlockStart {
                     node_type: child.node_type().to_string(),
+                    language: child
+                        .attrs()
+                        .get("language")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
                     depth,
                     list_context,
                 });
@@ -152,6 +157,11 @@ fn walk_children(
                 // Paragraph or similar text block: BlockStart, walk inline children, BlockEnd
                 elements.push(RenderElement::BlockStart {
                     node_type: child.node_type().to_string(),
+                    language: child
+                        .attrs()
+                        .get("language")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
                     depth,
                     list_context: None,
                 });
@@ -180,6 +190,11 @@ fn walk_children(
                 // Non-void block: treat as generic block container
                 elements.push(RenderElement::BlockStart {
                     node_type: child.node_type().to_string(),
+                    language: child
+                        .attrs()
+                        .get("language")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
                     depth,
                     list_context: None,
                 });

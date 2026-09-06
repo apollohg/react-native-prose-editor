@@ -107,6 +107,62 @@ import { RichTextViewer } from 'react-native-rich-text-editor';
 
 See the [Viewer Guide](https://github.com/apollohg/react-native-rich-text-editor/wiki/Viewer) for styling, images, interactions, and custom atoms.
 
+## Element styling and addons
+
+Version 2 uses a flat, typed stylesheet for both the editor and viewer:
+
+```tsx
+import { EditorStyleSheet, RichTextEditor } from 'react-native-rich-text-editor';
+
+const theme = EditorStyleSheet.create({
+    content: { padding: 16, backgroundColor: '#ffffff' },
+    text: { fontSize: 16, color: '#202124' },
+    paragraph: { marginBottom: 12 },
+    link: { color: '#285dcc', textDecorationLine: 'underline' },
+    blockquote: {
+        backgroundColor: '#f3f5f8',
+        padding: 12,
+        borderWidth: 1,
+        borderColor: '#dce1e8',
+        borderLeftWidth: 4,
+        borderLeftColor: '#285dcc',
+        borderTopRightRadius: 8,
+    },
+    codeBlock: { backgroundColor: '#eff1f5', padding: 12, borderRadius: 8 },
+    image: { backgroundColor: '#eff1f5', borderRadius: 12, resizeMode: 'cover' },
+});
+
+<RichTextEditor documentHandle={documentHandle} theme={theme} />;
+```
+
+Each entry accepts a style object or nested, conditional style arrays. Later entries override earlier properties; explicit `undefined` removes an earlier property. Side and corner properties override shorthands. Supported fields are checked by TypeScript and validated before native updates. These are editor styles: layout fields such as `flex`, transforms, and positioning are not accepted.
+
+Text styling inherits from `text` and enclosing blocks. Backgrounds, spacing, borders, and corner radii belong to each element. Inline entries support typography and backgrounds; mentions also support borders. List containers, items, markers, and checkboxes have separate entries. `toolbar` retains its existing configuration.
+
+Android editing uses per-block text layout for physical margins, borders, and padding, including RTL content. Per-block justification is supported on Android API 26+; API 24/25 use normal alignment.
+
+Custom atom components mount inside Android's native scrolling content. Their measured height participates in document layout, and their controls receive normal React Native touch events.
+
+Addons are a readonly array. Conditional `false`, `null`, and `undefined` entries are allowed; duplicate capabilities are rejected:
+
+```tsx
+import { createMentionsAddon } from 'react-native-rich-text-editor';
+import { createCodeHighlightingAddon } from '@react-native-rich-text-editor/code-highlighting';
+
+<RichTextEditor
+    documentHandle={documentHandle}
+    theme={theme}
+    addons={[
+        createMentionsAddon({ trigger: '@', suggestions }),
+        enableHighlighting && createCodeHighlightingAddon({ theme: 'base16-ocean.dark' }),
+    ]}
+/>;
+```
+
+Syntax highlighting requires the separately installed [code-highlighting package](./packages/code-highlighting), followed by a native rebuild. The base editor does not include syntect or its grammars. Set a code block's `attrs.language`, for example `{ type: 'codeBlock', attrs: { language: 'typescript' }, content: [...] }`. Missing or unsupported languages keep ordinary code styling. The code block theme controls the panel; the highlighting addon controls token colors and font traits. Mention-enabled editor handles still require `withMentionsSchema` when creating their schema.
+
+When migrating from version 1, replace `links` with `link`, heading maps with `h1`–`h6`, `spacingAfter` with `marginBottom`, and `contentInsets` with `content.padding*`. Flatten nested quote/code typography into their element entry, and move list appearance into the relevant container/item/marker entries. Addon objects become `[createMentionsAddon(options)]`. The new built-in schema declares code-block language metadata; coordinate schema changes across collaborating clients.
+
 ## Collaboration
 
 `useYjsCollaboration` connects a room-backed document handle to a Yjs sync and awareness server. The editor and collaboration controller must share the same handle.

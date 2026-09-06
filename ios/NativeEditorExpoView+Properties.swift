@@ -39,6 +39,10 @@ extension NativeEditorExpoView {
         guard lastAddonsJSON != addonsJson else { return }
         lastAddonsJSON = addonsJson
         addons = NativeEditorAddons.from(json: addonsJson)
+        richTextView.textView.onCodeHighlightingError = { [weak self] error in
+            self?.onEditorError(["domain": "addon", "code": "CODE_HIGHLIGHTING_FAILED", "message": error.localizedDescription])
+        }
+        richTextView.textView.codeHighlighting = addons.codeHighlighting
         accessoryToolbar.apply(mentionTheme: richTextView.textView.theme?.mentions ?? addons.mentions?.theme)
         refreshMentionQuery()
     }

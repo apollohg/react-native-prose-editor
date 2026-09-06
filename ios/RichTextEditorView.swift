@@ -304,6 +304,7 @@ final class RichTextEditorView: UIView {
             )
         }
         super.layoutSubviews()
+        updateStyleContentMask()
         layoutManagedSubviews()
         layoutAtomHostContainers()
         refreshOverlaysIfNeeded()
@@ -343,8 +344,19 @@ final class RichTextEditorView: UIView {
         let cornerRadius = theme?.borderRadius ?? 0
         layer.cornerRadius = cornerRadius
         clipsToBounds = cornerRadius > 0
+        updateStyleContentMask()
         refreshOverlays()
         return true
+    }
+
+    private func updateStyleContentMask() {
+        guard let box = textView.theme?.styleSheet?.box("content"), box.radii.contains(where: { $0 > 0 }) else {
+            layer.mask = nil
+            return
+        }
+        let mask = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
+        mask.path = box.path(in: bounds).cgPath
+        layer.mask = mask
     }
 
     @discardableResult

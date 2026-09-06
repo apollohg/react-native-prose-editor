@@ -35,6 +35,14 @@ internal enum PreparedProseImagePixelMapAccounting {
 /// A rendering-only view: it consumes already prepared Core Text lines.
 @objc(PREPPreparedProseDrawingView)
 public final class PreparedProseDrawingView: UIView {
+    let codeHighlightingSession = NativeCodeHighlightingSession()
+    var onCodeHighlightingResolved: ((String) -> Void)?
+    var onCodeHighlightingFailure: ((Error) -> Void)?
+    @objc public static let codeHighlightingDidResolve = Notification.Name("com.apollohg.editor.viewer.codeHighlightingDidResolve")
+    @objc public static let codeHighlightingDidFail = Notification.Name("com.apollohg.editor.viewer.codeHighlightingDidFail")
+
+    deinit { codeHighlightingSession.cancel() }
+
     var imagePixels: [String: UIImage] = [:] {
         didSet {
             PreparedProseInstrumentation.retained(.image, scope: "drawing-\(ObjectIdentifier(self))", bytes: retainedImagePixelsBytesForTesting)
@@ -69,7 +77,11 @@ public final class PreparedProseDrawingView: UIView {
         }
     }
 
-    @objc public func install(layout: PreparedProseLayout?) { self.layout = layout }
+    @objc public func install(layout: PreparedProseLayout?) {
+        guard self.layout !== layout else { return }
+        self.layout = layout
+        scheduleCodeHighlighting()
+    }
 
     @objc(configureImagesWithGeneration:imagesEnabled:policyJSON:)
     public func configureImages(generation: String, imagesEnabled: Bool, policyJSON: String?) {
@@ -203,6 +215,8 @@ public final class PreparedProseDrawingView: UIView {
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
+        if window == nil { codeHighlightingSession.cancel() }
+        else { scheduleCodeHighlighting() }
         updateConfiguredImagesForVisibleWindow()
     }
 
@@ -393,6 +407,15 @@ public final class PreparedProseDrawingView: UIView {
         }
 
         context.saveGState()
+        defer { context.restoreGState() }
+        if let content = layout.decorations.first, let box = content.styleBox {
+            context.addPath(box.path(in: content.bounds).cgPath)
+            context.clip()
+        }
+        for fragment in layout.decorations where fragment.bounds.intersects(rect) {
+            fragment.styleBox?.draw(in: fragment.bounds, context: context)
+        }
+        context.saveGState()
         context.translateBy(x: 0, y: bounds.height)
         context.scaleBy(x: 1, y: -1)
         let scale = CGFloat(Double(bitPattern: layout.key.displayScaleBits))
@@ -425,6 +448,14 @@ public final class PreparedProseDrawingView: UIView {
     private func drawBackground(_ fragment: PreparedProseFragment, in context: CGContext) {
         guard fragment.kind == .background || fragment.kind == .atom || fragment.kind == .image else { return }
         let rect = drawingRect(for: fragment)
+        if let box = fragment.styleBox {
+            context.saveGState()
+            context.translateBy(x: 0, y: bounds.height)
+            context.scaleBy(x: 1, y: -1)
+            box.draw(in: fragment.bounds, context: context)
+            context.restoreGState()
+            return
+        }
         context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
         context.addPath(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
         context.drawPath(using: .fill)
@@ -480,18 +511,34 @@ public final class PreparedProseDrawingView: UIView {
             context.saveGState()
             context.translateBy(x: rect.minX, y: rect.maxY)
             context.scaleBy(x: 1, y: -1)
-            image.draw(in: CGRect(origin: .zero, size: rect.size))
+            let localBounds = CGRect(origin: .zero, size: rect.size)
+            if let box = fragment.styleBox {
+                context.addPath(box.path(in: localBounds, inner: true).cgPath)
+                context.clip()
+                context.clip(to: localBounds.inset(by: box.inset))
+                image.draw(in: box.imageRect(image.size, in: localBounds))
+            } else { image.draw(in: localBounds) }
             context.restoreGState()
         case .marker:
-            if let line = fragment.line {
+            if fragment.label == "•", fragment.line == nil {
+                context.setFillColor(fragment.color ?? UIColor.label.cgColor)
+                context.fillEllipse(in: rect)
+            } else if let line = fragment.line {
                 context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
                 CTLineDraw(line, context)
+            } else if let box = fragment.styleBox {
+                context.saveGState()
+                context.translateBy(x: 0, y: bounds.height)
+                context.scaleBy(x: 1, y: -1)
+                EditorStyleSheet.drawCheckbox(box, in: fragment.bounds, checked: fragment.checked, context: context)
+                context.restoreGState()
             } else {
                 drawTaskMarker(in: rect, checked: fragment.checked, color: UIColor(cgColor: fragment.color ?? UIColor.label.cgColor))
             }
         case .strike:
             context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
-            context.fill(rect)
+            context.addPath(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
+            context.fillPath()
         case .background, .border, .rule:
             break
         }

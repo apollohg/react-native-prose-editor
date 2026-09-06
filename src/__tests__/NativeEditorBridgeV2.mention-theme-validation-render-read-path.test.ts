@@ -28,8 +28,8 @@ describe('NativeEditorBridge v2', () => {
             ).toBe(true);
         });
 
-        it('rejects a numeric fontWeight', () => {
-            expect(validEditorMentionTheme({ node: { fontWeight: 600 } })).toBe(false);
+        it('accepts a React Native numeric fontWeight', () => {
+            expect(validEditorMentionTheme({ node: { fontWeight: 600 } })).toBe(true);
         });
 
         it('rejects a non-numeric borderRadius', () => {
@@ -42,4 +42,10 @@ describe('NativeEditorBridge v2', () => {
             expect(validEditorMentionTheme({ textColor: '#CC0000' })).toBe(false);
         });
     });
+});
+
+it('rejects malformed legacy color aliases before mention insertion', () => {
+    expect(validEditorMentionTheme({ node: { textColor: 'not-a-color', fontSize: 18 } })).toBe(
+        false
+    );
 });

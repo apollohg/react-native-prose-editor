@@ -39,11 +39,15 @@ internal data class PreparedTextPaint(
     val color: Int,
     val lineHeightPx: Int?,
     val spacingAfterPx: Int,
+    val letterSpacing: Float = 0f,
+    val textAlign: String? = null,
+    val resolvedStyle: EditorTextStyle? = null,
 ) {
     fun newTextPaint(): TextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
         typeface = this@PreparedTextPaint.typeface
         textSize = sizePx
         color = this@PreparedTextPaint.color
+        letterSpacing = this@PreparedTextPaint.letterSpacing
     }
 }
 
@@ -67,6 +71,10 @@ internal fun PreparedTextPaint.withStyle(
         typeface = resolvedTypeface,
         sizePx = style.fontSize?.times(density)?.takeIf { it.isFinite() && it > 0f } ?: sizePx,
         color = style.color ?: color,
+        lineHeightPx = style.lineHeight?.times(density)?.toInt() ?: lineHeightPx,
+        letterSpacing = style.letterSpacing?.let { it * density / (style.fontSize?.times(density) ?: sizePx) } ?: letterSpacing,
+        textAlign = style.textAlign ?: textAlign,
+        resolvedStyle = this.resolvedStyle?.mergedWith(style) ?: style,
     )
 }
 
@@ -106,6 +114,8 @@ internal data class PreparedProseTheme(
     val atomPaddingHorizontalPx: Int,
     val atomPaddingVerticalPx: Int,
     val viewerAtoms: ViewerAtomConfiguration? = null,
+    val sourceTheme: EditorTheme? = null,
+    val codeHighlighting: com.apollohg.editor.NativeCodeHighlightingConfig? = null,
 ) {
     companion object {
         fun resolve(
@@ -114,7 +124,9 @@ internal data class PreparedProseTheme(
             fontScale: Float = 1f,
             semanticGeneration: String = "standalone-theme",
         ): PreparedProseTheme {
-            val theme = EditorTheme.fromJson(themeJson) ?: EditorTheme()
+            val decoded = EditorTheme.fromJson(themeJson)
+            require(themeJson.isNullOrBlank() || decoded != null) { "Invalid viewer theme version or payload shape." }
+            val theme = decoded ?: EditorTheme()
             val resolvedFontScale = fontScale.takeIf { it.isFinite() && it > 0f } ?: 1f
             val scaledDensity = density * resolvedFontScale
             fun px(value: Float, fallback: Float): Int = max(0, (value.takeIf { it.isFinite() } ?: fallback).times(density).toInt())
@@ -161,15 +173,22 @@ internal data class PreparedProseTheme(
                 theme.horizontalRule?.color ?: 0xFFC7C7CC.toInt(), max(1, px(theme.horizontalRule?.thickness ?: 1f, 1f)), px(theme.horizontalRule?.verticalMargin ?: 12f, 12f),
                 theme.links, theme.mentions, px(6f, 6f), px(4f, 4f),
                 ViewerAtomConfiguration.parse(themeJson),
+                theme,
             )
         }
     }
 
-    fun paintFor(block: ViewerBlock): PreparedTextPaint = when {
+    fun paintFor(block: ViewerBlock): PreparedTextPaint {
+        sourceTheme?.styleSheet?.let { sheet ->
+            val ancestors = block.containers.map { it.nodeType }.ifEmpty { if (block.inBlockquote) listOf("blockquote") else emptyList() }
+            return text.withStyle(sheet.resolveText(block.nodeType, ancestors), fontDensity, "stylesheet").copy(spacingAfterPx = 0)
+        }
+        return when {
         block.nodeType == "codeBlock" -> code
         headings.containsKey(block.nodeType) -> headings.getValue(block.nodeType)
         block.inBlockquote -> blockquote
         else -> paragraph
+        }
     }
 
     val retainedBytes: Long get() = 3_072L + headings.size * 384L + (viewerAtoms?.retainedBytes ?: 0)

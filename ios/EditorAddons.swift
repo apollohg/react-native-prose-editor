@@ -53,6 +53,7 @@ struct NativeMentionsAddonConfig {
 }
 
 struct NativeEditorAddons {
+    var codeHighlighting: NativeCodeHighlightConfiguration? = nil
     let mentions: NativeMentionsAddonConfig?
 
     static func from(json: String?) -> NativeEditorAddons {
@@ -64,6 +65,7 @@ struct NativeEditorAddons {
         }
 
         return NativeEditorAddons(
+            codeHighlighting: NativeCodeHighlightConfiguration.from(raw["codeHighlighting"]),
             mentions: (raw["mentions"] as? [String: Any]).flatMap(NativeMentionsAddonConfig.init(dictionary:))
         )
     }

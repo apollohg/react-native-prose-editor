@@ -3,6 +3,7 @@ import { Keyboard, Platform, StyleSheet, Text, View, type KeyboardEvent } from '
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import { createCodeHighlightingAddon } from '@react-native-rich-text-editor/code-highlighting';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     createNativeEditorDocumentHandle,
@@ -13,6 +14,7 @@ import {
     withImagesSchema,
     withMentionsSchema,
     type EditorAddons,
+    createMentionsAddon,
     type EditorTheme,
     type ImageRequestContext,
     type LinkRequestContext,
@@ -110,14 +112,15 @@ function EditorScreen() {
     }, []);
 
     const addons = useMemo<EditorAddons>(
-        () => ({
-            mentions: {
+        () => [
+            createCodeHighlightingAddon({ theme: 'InspiredGitHub' }),
+            createMentionsAddon({
                 trigger: MENTION_TRIGGER,
                 suggestions: filterMentionSuggestions(mentionQuery),
                 theme: mentionTheme,
                 onQueryChange: handleMentionQueryChange,
-            },
-        }),
+            }),
+        ],
         [handleMentionQueryChange, mentionQuery]
     );
 
@@ -141,11 +144,11 @@ function EditorScreen() {
 
     /** The sheet runs to the screen edge, so the keyboard becomes a content inset instead of a layout cut. */
     const theme = useMemo<EditorTheme>(() => {
-        const contentInsets = editorTheme.contentInsets ?? {};
+        const content = editorTheme.content;
         const bottomEdge = keyboardHeight > 0 ? keyboardHeight : insets.bottom;
         return {
             ...editorTheme,
-            contentInsets: { ...contentInsets, bottom: (contentInsets.bottom ?? 0) + bottomEdge },
+            content: { ...content, paddingBottom: content.paddingBottom + bottomEdge },
         };
     }, [insets.bottom, keyboardHeight]);
 

@@ -75,6 +75,19 @@ public final class ProseViewerView: UIView {
         drawingView.isOpaque = false
         drawingView.linkInteractionsEnabled = linkTapsEnabled
         drawingView.onActivateInteraction = { [weak self] interaction in self?.activate(interaction) ?? false }
+        drawingView.onCodeHighlightingResolved = { [weak self] generation in
+            guard let self, let request = self.request, request.semanticGenerationIdentity == generation else { return }
+            self.request = ProseViewerRequest(source: request.source, configuration: request.configuration,
+                nativeFontRevision: request.nativeFontRevision &+ 1, nativeFontScale: request.nativeFontScale,
+                fontEnvironmentRevision: request.fontEnvironmentRevision, attachmentRevision: request.attachmentRevision,
+                appearance: request.appearance)
+            self.invalidateIntrinsicContentSize()
+            self.setNeedsLayout()
+        }
+        drawingView.onCodeHighlightingFailure = { [weak self] error in
+            guard let self else { return }
+            self.interactionDelegate?.proseViewer(self, didFail: .compiler(domain: "addon", code: "CODE_HIGHLIGHTING_FAILED", message: error.localizedDescription))
+        }
         drawingView.onVisibleRectChange = { [weak self] visibleRect in
             self?.requestVisibleImageAttachments(in: visibleRect)
         }

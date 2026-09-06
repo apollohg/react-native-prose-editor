@@ -15,6 +15,7 @@ export const INITIAL_CONTENT = [
     'headings, <em>emphasis</em>, <u>underline</u>, <s>strikethrough</s>, and ',
     '<a href="https://github.com/apollohg/react-native-rich-text-editor">links</a>.</p>',
     '<blockquote><p>Type @ anywhere to mention someone on the team.</p></blockquote>',
+    '<pre language="typescript">const greet = (name: string) =&gt; {\n    return `Hello, ${name}!`;\n};</pre>',
     '<h2>Today</h2>',
     '<ul><li><p>Review the toolbar above the keyboard</p></li>',
     '<li><p>Try nested lists</p><ul><li><p>Indent and outdent from the toolbar</p></li></ul></li>',

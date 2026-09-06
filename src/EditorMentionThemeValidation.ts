@@ -4,7 +4,14 @@ import type {
     EditorMentionSuggestionsTheme,
     EditorMentionTheme,
 } from './EditorTheme';
-import { isPlainRecord, hasOnlyOwnKeys } from './NativeEditorResultNormalization';
+import { normalizeEditorTheme } from './EditorStyleSheetNormalization';
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyOwnKeys(value: Record<string, unknown>, fields: readonly string[]): boolean {
+    return Reflect.ownKeys(value).every((key) => typeof key === 'string' && fields.includes(key));
+}
 
 export const MENTION_NODE_STRING_FIELDS = [
     'textColor',
@@ -88,15 +95,16 @@ export function validEditorMentionTheme(value: unknown): value is EditorMentionT
 
     const { node, suggestions } = value;
     if (node !== undefined) {
-        if (
-            !validMentionThemeSection(
-                node,
-                MENTION_NODE_STRING_FIELDS,
-                MENTION_NODE_NUMBER_FIELDS,
-                ['fontWeight']
-            ) ||
-            !validMentionFontWeight(node.fontWeight)
-        ) {
+        if (!isPlainRecord(node)) return false;
+        const { textColor, style, ...appearance } = node;
+        if (textColor !== undefined && typeof textColor !== 'string') return false;
+        try {
+            normalizeEditorTheme({ mention: [{ color: textColor }, appearance] });
+            if (style !== undefined) {
+                if (!isPlainRecord(style)) return false;
+                normalizeEditorTheme({ mention: style });
+            }
+        } catch {
             return false;
         }
     }

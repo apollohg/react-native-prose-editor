@@ -63,8 +63,8 @@ internal fun EditorEditText.taskListMarkerScalarHitAt(x: Float, y: Float): Int? 
     if (localY < 0) return null
 
     val line = textLayout.getLineForVertical(localY.toInt().coerceAtLeast(0))
-    val lineTop = textLayout.getLineTop(line).toFloat()
-    val lineBottom = textLayout.getLineBottom(line).toFloat()
+    val lineTop = textLayout.editorTextLineTop(line).toFloat()
+    val lineBottom = textLayout.editorTextLineBottom(line).toFloat()
     if (localY < lineTop || localY > lineBottom) {
         return null
     }

@@ -1,3 +1,19 @@
+import type { EditorTheme, EditorMentionStyle } from './EditorStyleSheetTypes';
+import { normalizeEditorTheme } from './EditorStyleSheetNormalization';
+import { normalizeEditorMentionTheme } from './EditorMentionThemeNormalization';
+export type {
+    EditorTheme,
+    EditorTextStyle,
+    EditorLinkTheme,
+    EditorHeadingTheme,
+    EditorListTheme,
+    EditorOrderedListNumberingScheme,
+    EditorOrderedListMarkerTheme,
+    EditorHorizontalRuleTheme,
+    EditorBlockquoteTheme,
+    EditorCodeBlockTheme,
+} from './EditorStyleSheetTypes';
+
 /**
  * Font weight accepted by every themed text style. Numeric weights are
  * strings, matching React Native's `fontWeight`.
@@ -19,18 +35,9 @@ export type EditorFontWeight =
 export type EditorFontStyle = 'normal' | 'italic';
 
 /** The mention itself, rendered inline in the document. */
-export interface EditorMentionNodeTheme {
-    /** Color of the mention label. */
+export interface EditorMentionNodeTheme extends EditorMentionStyle {
+    /** @deprecated Use color. Retained for persisted mention themes. */
     textColor?: string;
-    /** Fill drawn behind the mention label. */
-    backgroundColor?: string;
-    /** Weight of the mention label. */
-    fontWeight?: EditorFontWeight;
-    /** Drawn by `RichTextViewer`. The editor renders the node with text
-     *  spans and cannot stroke a border, so these are ignored there. */
-    borderColor?: string;
-    borderWidth?: number;
-    borderRadius?: number;
 }
 
 /** A single row in the suggestion list. */
@@ -70,131 +77,12 @@ export interface EditorMentionSuggestionsTheme {
 
 /**
  * Mention styling. It is configured on the mentions addon
- * (`EditorAddons.mentions.theme` for the editor,
- * `RichTextViewerAddons.mentions.theme` for the viewer) rather than on
- * {@link EditorTheme}, and can be overridden per mention through
+ * through `createMentionsAddon({ theme })`, and can be overridden per mention through
  * `MentionsAddonConfig.resolveTheme`.
  */
 export interface EditorMentionTheme {
     node?: EditorMentionNodeTheme;
     suggestions?: EditorMentionSuggestionsTheme;
-}
-
-/**
- * Typography for one kind of text block. Unset fields fall back to the
- * enclosing style — see the cascade described on {@link EditorTheme}.
- */
-export interface EditorTextStyle {
-    /** Platform font family name. Falls back to the system font when unresolvable. */
-    fontFamily?: string;
-    /** Text size, in layout units. */
-    fontSize?: number;
-    fontWeight?: EditorFontWeight;
-    fontStyle?: EditorFontStyle;
-    /** Text color. */
-    color?: string;
-    /** Total line height, in layout units — not a multiplier of `fontSize`. */
-    lineHeight?: number;
-    /** Space below each block using this style, in layout units. */
-    spacingAfter?: number;
-}
-
-/** Styling for text carrying the `link` mark. */
-export interface EditorLinkTheme {
-    fontFamily?: string;
-    /** Text size, in layout units. */
-    fontSize?: number;
-    fontWeight?: EditorFontWeight;
-    fontStyle?: EditorFontStyle;
-    color?: string;
-    /** Fill drawn behind the link text. */
-    backgroundColor?: string;
-    /** Whether link text is underlined. */
-    underline?: boolean;
-}
-
-/** Per-level heading typography, merged over the base `text` style. */
-export interface EditorHeadingTheme {
-    h1?: EditorTextStyle;
-    h2?: EditorTextStyle;
-    h3?: EditorTextStyle;
-    h4?: EditorTextStyle;
-    h5?: EditorTextStyle;
-    h6?: EditorTextStyle;
-}
-
-export type EditorOrderedListNumberingScheme =
-    | 'decimal'
-    | 'lowerAlpha'
-    | 'upperAlpha'
-    | 'lowerRoman'
-    | 'upperRoman';
-
-export interface EditorOrderedListMarkerTheme {
-    /**
-     * Numbering schemes selected by visual list depth and cycled when necessary.
-     * Defaults to `decimal`, `lowerAlpha`, `lowerRoman`.
-     */
-    schemes?: readonly EditorOrderedListNumberingScheme[];
-    /** Punctuation drawn after the formatted index. Defaults to `.`. */
-    suffix?: '.' | ')';
-}
-
-/** Layout of list indentation and markers. */
-export interface EditorListTheme {
-    /** Indentation added per nesting depth, in layout units. */
-    indent?: number;
-    /** Multiplier applied to the indentation of the outermost list level. */
-    baseIndentMultiplier?: number;
-    /** Space between consecutive list items, in layout units. */
-    itemSpacing?: number;
-    /** Space after a list before following content, including nested lists, in layout units. */
-    spacingAfter?: number;
-    /** Color of bullets and numbers. Defaults to the resolved text color. */
-    markerColor?: string;
-    /** Scale applied to the bullet glyph of unordered lists, relative to the item's font size. */
-    markerScale?: number;
-    /** Gap between the marker and the item text, in layout units. */
-    markerGap?: number;
-    /** Ordered-list marker presentation by visual nesting depth. */
-    orderedMarker?: EditorOrderedListMarkerTheme;
-}
-
-/** The rule drawn for `horizontalRule` nodes. */
-export interface EditorHorizontalRuleTheme {
-    color?: string;
-    /** Rule line thickness, in layout units. */
-    thickness?: number;
-    /** Space above and below the rule, in layout units. */
-    verticalMargin?: number;
-}
-
-/** Blockquote typography and the leading border bar. */
-export interface EditorBlockquoteTheme {
-    /** Typography for text inside a blockquote, merged over the base `text` style. */
-    text?: EditorTextStyle;
-    /** Leading inset reserved per blockquote depth, in layout units. */
-    indent?: number;
-    /** Color of the vertical bar drawn beside the quote. */
-    borderColor?: string;
-    /** Width of the vertical bar, in layout units. */
-    borderWidth?: number;
-    /** Gap between the bar and the quoted text, in layout units. */
-    markerGap?: number;
-}
-
-/** Code block typography and its background panel. */
-export interface EditorCodeBlockTheme {
-    /** Typography for code text. Falls back to the platform monospace font. */
-    text?: EditorTextStyle;
-    /** Fill drawn behind the block. */
-    backgroundColor?: string;
-    /** Panel corner radius, in layout units. */
-    borderRadius?: number;
-    /** Inner horizontal padding, in layout units. */
-    paddingHorizontal?: number;
-    /** Inner vertical padding, in layout units. */
-    paddingVertical?: number;
 }
 
 /**
@@ -260,45 +148,6 @@ export interface EditorContentInsets {
     left?: number;
 }
 
-/**
- * Native content theme for `RichTextEditor` and `RichTextViewer`.
- *
- * Numeric values are layout units — density-independent pixels on Android,
- * points on iOS. Colors are strings, and the portable formats are `#RGB`,
- * `#RGBA`, `#RRGGBB`, `#RRGGBBAA`, `rgb(r, g, b)`, `rgba(r, g, b, a)`, and
- * `transparent`; named colors beyond `black`, `white`, `red`, `green`,
- * `blue`, and `gray` resolve on Android only.
- *
- * Text styles cascade: `text` is the base every block inherits, then
- * `blockquote.text` (inside a blockquote), then the node's own entry —
- * `paragraph`, `codeBlock.text`, or `headings.h1`…`headings.h6`. One
- * exception: `text.lineHeight` does not reach paragraphs, so set
- * `paragraph.lineHeight` to give paragraphs a line height.
- *
- * Mention styling lives on the mentions addon, not here — see
- * {@link EditorMentionTheme}.
- */
-export interface EditorTheme {
-    /** Base typography inherited by every block. */
-    text?: EditorTextStyle;
-    /** Paragraph typography, merged over `text`. */
-    paragraph?: EditorTextStyle;
-    blockquote?: EditorBlockquoteTheme;
-    codeBlock?: EditorCodeBlockTheme;
-    headings?: EditorHeadingTheme;
-    list?: EditorListTheme;
-    horizontalRule?: EditorHorizontalRuleTheme;
-    links?: EditorLinkTheme;
-    toolbar?: EditorToolbarTheme;
-    /** Color of the editor's placeholder text. */
-    placeholderColor?: string;
-    /** Fill drawn behind the content. */
-    backgroundColor?: string;
-    /** Corner radius of the content surface, in layout units. */
-    borderRadius?: number;
-    contentInsets?: EditorContentInsets;
-}
-
 function stripUndefined(value: unknown): unknown {
     if (Array.isArray(value)) {
         return value.map((item) => stripUndefined(item)).filter((item) => item !== undefined);
@@ -327,15 +176,21 @@ export function serializeEditorTheme(
     theme?: EditorTheme,
     mentionTheme?: EditorMentionTheme
 ): string | undefined {
-    const cleanedTheme = theme ? stripUndefined(theme) : undefined;
+    const normalized = theme === undefined ? undefined : normalizeEditorTheme(theme);
+    const cleanedTheme =
+        normalized && (normalized.styles || normalized.toolbar)
+            ? stripUndefined(normalized)
+            : undefined;
     const base =
         cleanedTheme && typeof cleanedTheme === 'object'
             ? (cleanedTheme as Record<string, unknown>)
             : undefined;
-    const cleanedMentions = mentionTheme ? stripUndefined(mentionTheme) : undefined;
+    const cleanedMentions = mentionTheme
+        ? stripUndefined(normalizeEditorMentionTheme(mentionTheme))
+        : undefined;
 
     if (cleanedMentions == null) {
         return base ? JSON.stringify(base) : undefined;
     }
-    return JSON.stringify({ ...(base ?? {}), mentions: cleanedMentions });
+    return JSON.stringify({ version: 1, ...(base ?? {}), mentions: cleanedMentions });
 }

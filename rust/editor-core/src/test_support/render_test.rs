@@ -103,6 +103,7 @@ fn test_plain_paragraph() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -135,6 +136,7 @@ fn test_formatted_text_partial_bold() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -174,6 +176,7 @@ fn test_multiple_marks_bold_italic() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -203,6 +206,7 @@ fn test_two_paragraphs() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -213,6 +217,7 @@ fn test_two_paragraphs() {
             RenderElement::BlockEnd,
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -313,6 +318,7 @@ fn test_bullet_list_two_items() {
             // First list item
             RenderElement::BlockStart {
                 node_type: "listItem".to_string(),
+                language: None,
                 depth: 0,
                 list_context: Some(ListContext {
                     ordered: false,
@@ -327,6 +333,7 @@ fn test_bullet_list_two_items() {
             },
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 1,
                 list_context: None,
             },
@@ -339,6 +346,7 @@ fn test_bullet_list_two_items() {
             // Second list item
             RenderElement::BlockStart {
                 node_type: "listItem".to_string(),
+                language: None,
                 depth: 0,
                 list_context: Some(ListContext {
                     ordered: false,
@@ -353,6 +361,7 @@ fn test_bullet_list_two_items() {
             },
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 1,
                 list_context: None,
             },
@@ -387,6 +396,7 @@ fn test_ordered_list_start_3() {
         *first_block,
         RenderElement::BlockStart {
             node_type: "listItem".to_string(),
+            language: None,
             depth: 0,
             list_context: Some(ListContext {
                 ordered: true,
@@ -422,6 +432,7 @@ fn test_ordered_list_start_3() {
         *second_block,
         RenderElement::BlockStart {
             node_type: "listItem".to_string(),
+            language: None,
             depth: 0,
             list_context: Some(ListContext {
                 ordered: true,
@@ -451,6 +462,7 @@ fn test_ordered_list_start_requires_exact_u32() {
         max_elements[0],
         RenderElement::BlockStart {
             node_type: "listItem".to_string(),
+            language: None,
             depth: 0,
             list_context: Some(ListContext {
                 ordered: true,
@@ -493,6 +505,7 @@ fn test_hard_break_in_paragraph() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -533,6 +546,7 @@ fn test_horizontal_rule_between_paragraphs() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -548,6 +562,7 @@ fn test_horizontal_rule_between_paragraphs() {
             },
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -574,6 +589,7 @@ fn test_empty_paragraph() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -612,6 +628,7 @@ fn test_incremental_regenerate_first_block_only() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -671,6 +688,7 @@ fn test_incremental_middle_block() {
         vec![
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
+                language: None,
                 depth: 0,
                 list_context: None,
             },
@@ -701,6 +719,7 @@ fn test_list_item_paragraph_depth() {
         elements[0],
         RenderElement::BlockStart {
             node_type: "listItem".to_string(),
+            language: None,
             depth: 0,
             list_context: Some(ListContext {
                 ordered: false,
@@ -719,6 +738,7 @@ fn test_list_item_paragraph_depth() {
         elements[1],
         RenderElement::BlockStart {
             node_type: "paragraph".to_string(),
+            language: None,
             depth: 1,
             list_context: None,
         },
@@ -829,6 +849,7 @@ fn test_ordered_list_default_start() {
         *first_li,
         RenderElement::BlockStart {
             node_type: "listItem".to_string(),
+            language: None,
             depth: 0,
             list_context: Some(ListContext {
                 ordered: true,
@@ -981,4 +1002,22 @@ fn marker_strings_are_the_cross_layer_contract() {
     assert_eq!(render::task_list_marker_string(false), "\u{2610} ");
     assert_eq!(render::list_marker_string(false, 1), "\u{2022} ");
     assert_eq!(render::list_marker_string(true, 3), "3. ");
+}
+
+#[test]
+fn code_language_survives_full_and_incremental_rendering() {
+    let document = Document::new(doc(vec![Node::element(
+        "codeBlock".to_string(),
+        HashMap::from([("language".to_string(), serde_json::json!("rust"))]),
+        Fragment::from(vec![text("let value = 1;\n// 😀")]),
+    )]));
+    let schema = tiptap_schema();
+    let full = generate(&document, &schema);
+    assert!(
+        matches!(&full[0], RenderElement::BlockStart { language: Some(language), .. } if language == "rust")
+    );
+    let blocks = render_blocks(&document, &schema);
+    assert!(
+        matches!(&blocks[0][0], RenderElement::BlockStart { language: Some(language), .. } if language == "rust")
+    );
 }

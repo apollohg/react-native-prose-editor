@@ -273,6 +273,10 @@ internal fun EditorEditText.resolvedImageRect(
     spanStart: Int,
     spanEnd: Int
 ): RectF {
+    (textLayout as? EditorDocumentLayout)?.imageBounds(imageSpan)?.let {
+        it.offset(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
+        return it
+    }
     imageSpan.currentDrawRect()?.let { drawnRect ->
         return drawnRect
     }
@@ -287,6 +291,6 @@ internal fun EditorEditText.resolvedImageRect(
         maxOf(startHorizontal, endHorizontal),
         minOf(startHorizontal, endHorizontal) + widthPx
     )
-    val top = extendedPaddingTop + textLayout.getLineBottom(line) - heightPx
+    val top = extendedPaddingTop + textLayout.editorTextLineBottom(line) - heightPx
     return RectF(left, top.toFloat(), right, top + heightPx.toFloat())
 }

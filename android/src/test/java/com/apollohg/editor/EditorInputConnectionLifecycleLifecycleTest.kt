@@ -337,25 +337,23 @@ internal class EditorInputConnectionLifecycleLifecycleTest : EditorInputConnecti
     }
 
     @Test
-    fun `focused native multiline insertion uses structured content insertion`() {
+    fun `focused native multiline insertion uses atomic plain text replacement`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.applyUpdateJSON(renderUpdateJson("Hello world"), notifyListener = false)
         assertTrue(editText.requestFocus())
         editText.editorId = 1
 
         var insertedContent: Triple<Int, Int, String>? = null
-        editText.onInsertContentJsonAtSelectionScalarForTesting = { scalarFrom, scalarTo, json ->
-            insertedContent = Triple(scalarFrom, scalarTo, json)
+        editText.onReplaceTextInRustForTesting = { scalarFrom, scalarTo, text ->
+            insertedContent = Triple(scalarFrom, scalarTo, text)
         }
 
         editText.text!!.insert(6, "one\ntwo")
 
-        val (scalarFrom, scalarTo, json) = insertedContent!!
+        val (scalarFrom, scalarTo, text) = insertedContent!!
         assertEquals(6, scalarFrom)
         assertEquals(6, scalarTo)
-        val content = JSONObject(json).getJSONArray("content")
-        assertEquals("one", content.getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("text"))
-        assertEquals("two", content.getJSONObject(1).getJSONArray("content").getJSONObject(0).getString("text"))
+        assertEquals("one\ntwo", text)
         assertEquals(0, editText.reconciliationCount)
     }
 

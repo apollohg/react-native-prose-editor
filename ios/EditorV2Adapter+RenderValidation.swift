@@ -125,11 +125,12 @@ extension EditorV2Adapter {
             guard isValidMentionThemeSection(
                 node,
                 stringKeys: mentionNodeStringKeys,
-                extraKeys: ["fontWeight"]
+                extraKeys: ["fontWeight", "style"]
             ) else {
                 return false
             }
         }
+        if let style = (object["node"] as? [String: Any])?["style"], !isValidMentionStyle(style) { return false }
         guard let suggestions = object["suggestions"] else { return true }
         guard isValidMentionThemeSection(
             suggestions,
@@ -144,6 +145,35 @@ extension EditorV2Adapter {
             stringKeys: mentionOptionStringKeys,
             extraKeys: ["fontWeight"]
         )
+    }
+
+    private static func isValidMentionStyle(_ value: Any) -> Bool {
+        guard let style = value as? [String: Any] else { return false }
+        let colors: Set<String> = ["color", "backgroundColor", "textDecorationColor", "borderColor", "borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor"]
+        let dimensions: Set<String> = ["fontSize", "lineHeight", "letterSpacing", "borderWidth", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "borderRadius", "borderTopLeftRadius", "borderTopRightRadius", "borderBottomLeftRadius", "borderBottomRightRadius"]
+        let strings: Set<String> = ["fontFamily", "fontWeight", "fontStyle", "textDecorationLine", "textDecorationStyle", "borderStyle"]
+        guard hasOnlyKeys(style, colors.union(dimensions).union(strings)) else { return false }
+        for key in colors where style[key] != nil {
+            guard let color = style[key] as? String, color.range(of: "^#[0-9a-fA-F]{8}$", options: .regularExpression) != nil else { return false }
+        }
+        for key in dimensions where style[key] != nil {
+            guard let number = finiteNumber(style[key])?.doubleValue else { return false }
+            if ["fontSize", "lineHeight"].contains(key), number <= 0 { return false }
+            if key.hasPrefix("border"), number < 0 { return false }
+        }
+        for key in strings where style[key] != nil {
+            guard let value = style[key] as? String else { return false }
+            switch key {
+            case "fontFamily": if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+            case "fontWeight": if !mentionThemeFontWeights.contains(value) { return false }
+            case "fontStyle": if !["normal", "italic"].contains(value) { return false }
+            case "textDecorationLine": if !["none", "underline", "line-through", "underline line-through"].contains(value) { return false }
+            case "textDecorationStyle": if !["solid", "double", "dotted", "dashed"].contains(value) { return false }
+            case "borderStyle": if !["solid", "dotted", "dashed"].contains(value) { return false }
+            default: return false
+            }
+        }
+        return true
     }
 
     private static func isValidRenderElement(_ value: Any) -> Bool {
@@ -162,12 +192,13 @@ extension EditorV2Adapter {
             }
             return marks.allSatisfy(isValidRenderMark)
         case "blockStart":
-            guard hasOnlyKeys(object, ["type", "nodeType", "depth", "listContext"]),
+            guard hasOnlyKeys(object, ["type", "nodeType", "language", "depth", "listContext"]),
                   object["nodeType"] is String,
                   uint32Field(object, "depth") != nil
             else {
                 return false
             }
+            if let language = object["language"], !(language is NSNull), !(language is String) { return false }
             return object["listContext"].map(isValidListContext) ?? true
         case "blockEnd":
             return Set(object.keys) == ["type"]

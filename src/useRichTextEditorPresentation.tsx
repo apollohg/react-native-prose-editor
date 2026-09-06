@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { serializeEditorTheme } from './EditorTheme';
-import { serializeEditorAddons } from './addons';
+import { serializeNormalizedEditorAddons } from './addons';
 import { serializeEditorImageLoadingPolicy } from './ImageLoadingPolicy';
 import { serializeEditorAtoms, type AtomAttrsUpdate } from './atoms';
 import { AtomUpdateAttrsError, DEFAULT_ATOM_CHIP_HEIGHT, type AtomInstance } from './atomInstances';
 import { type NativeEditorDocumentHandle } from './NativeEditorBridge';
 import { DefaultAtomChip } from './DefaultAtomChip';
 import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
-import { ATOM_NATIVE_ID_PREFIX } from './atomConstants';
+import { ATOM_CONTENT_NATIVE_ID_PREFIX, ATOM_NATIVE_ID_PREFIX } from './atomConstants';
 import { AtomHost, atomIsVisible } from './AtomHost';
 import { IMAGE_NODE_NAME } from './schemas';
 import {
@@ -188,7 +188,9 @@ export function useRichTextEditorPresentation(
         [mentionSuggestionTheme, theme]
     );
 
-    const addonsJson = useSerializedValue(addons, (value) => serializeEditorAddons(value));
+    const addonsJson = useSerializedValue(addons, (value) =>
+        serializeNormalizedEditorAddons(value)
+    );
 
     const imageLoadingPolicyJson = useSerializedValue(imageLoadingPolicy, (value) =>
         serializeEditorImageLoadingPolicy(value)
@@ -282,6 +284,7 @@ export function useRichTextEditorPresentation(
                 : atomState.instances.map((instance) => {
                       const Component = atomComponents.get(instance.nodeType) ?? DefaultAtomChip;
                       const position = atomPositions.get(instance.key);
+                      const width = position?.width ?? atomContentWidth;
                       return (
                           <View
                               key={instance.key}
@@ -289,13 +292,14 @@ export function useRichTextEditorPresentation(
                               collapsable={false}
                               style={{
                                   position: 'absolute',
-                                  top: Platform.OS === 'ios' ? 0 : (position?.y ?? 0),
-                                  left: Platform.OS === 'ios' ? 0 : (position?.x ?? 0),
-                                  width: atomContentWidth,
+                                  top: 0,
+                                  left: 0,
+                                  width,
                               }}>
                               <AtomHost
+                                  nativeID={`${ATOM_CONTENT_NATIVE_ID_PREFIX}${instance.key}`}
                                   component={Component}
-                                  width={atomContentWidth}
+                                  width={width}
                                   estimatedHeight={
                                       (atoms ?? []).find((atom) => atom.name === instance.nodeType)
                                           ?.estimatedHeight ?? DEFAULT_ATOM_CHIP_HEIGHT

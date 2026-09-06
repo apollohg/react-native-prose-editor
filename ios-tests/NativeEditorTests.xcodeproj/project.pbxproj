@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		FABC012345678901234567B2 /* EditorHighlightingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC012345678901234567B3 /* EditorHighlightingTests.swift */; };
+		FABC012345678901234567A2 /* EditorCodeHighlighting.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC012345678901234567A3 /* EditorCodeHighlighting.swift */; };
+		FABC01234567890123456792 /* CodeHighlightingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC01234567890123456793 /* CodeHighlightingTests.swift */; };
+		FABC01234567890123456782 /* NativeCodeHighlighting.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC01234567890123456783 /* NativeCodeHighlighting.swift */; };
+		FABC01234567890123456780 /* EditorStyleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC01234567890123456781 /* EditorStyleSheet.swift */; };
 		0A70A1000000000000000001 /* AtomMountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A70A1000000000000000002 /* AtomMountingTests.swift */; };
 		109AE358027371C57610E495 /* OrderedListMarkerFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A50C4C90F9D98044CF98CF7 /* OrderedListMarkerFormatter.swift */; };
 		109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */; };
@@ -209,6 +214,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		FABC012345678901234567B3 /* EditorHighlightingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorHighlightingTests.swift; sourceTree = "<group>"; };
+		FABC012345678901234567A3 /* EditorCodeHighlighting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorCodeHighlighting.swift; sourceTree = "<group>"; };
+		FABC01234567890123456793 /* CodeHighlightingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeHighlightingTests.swift; sourceTree = "<group>"; };
+		FABC01234567890123456783 /* NativeCodeHighlighting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCodeHighlighting.swift; sourceTree = "<group>"; };
+		FABC01234567890123456781 /* EditorStyleSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStyleSheet.swift; sourceTree = "<group>"; };
 		073AA28E404CB1E78224E266 /* PreparedProseInstrumentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseInstrumentation.swift; sourceTree = "<group>"; };
 		08E2E15E6EE0B9E2C50A927D /* NativeEditorTestHost.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NativeEditorTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A70A1000000000000000002 /* AtomMountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtomMountingTests.swift; sourceTree = "<group>"; };
@@ -467,6 +477,9 @@
 				3C9F7745ADC93BA05F2BBD49 /* EditorTextView+Rendering.swift */,
 				1CEE31BAAA7114F56D4EE442 /* EditorTextView+Selection.swift */,
 				2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */,
+				FABC01234567890123456781 /* EditorStyleSheet.swift */,
+				FABC012345678901234567A3 /* EditorCodeHighlighting.swift */,
+				FABC01234567890123456783 /* NativeCodeHighlighting.swift */,
 				4493157DC02C94D7F7D40FEB /* EditorV2Adapter.swift */,
 				4154ED326138B8F2724F08DE /* EditorV2Adapter+Commands.swift */,
 				10A13C02E22F5783115D5F8B /* EditorV2Adapter+TextCommands.swift */,
@@ -666,6 +679,8 @@
 				792A20FDDF1499F4AE403856 /* PreparedProseRevisionTests+ImageOwnership.swift */,
 				0780A5775C1E80CDFA5038C9 /* PreparedProseRevisionTests+ImagePublication.swift */,
 				A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */,
+				FABC012345678901234567B3 /* EditorHighlightingTests.swift */,
+				FABC01234567890123456793 /* CodeHighlightingTests.swift */,
 				6719498D45D63EEA11945D9A /* RenderBridgeTests+AttachmentsAndMeasurement.swift */,
 				1D1D200829D77BC4AEA06753 /* RenderBridgeTests+MarkerGeometry.swift */,
 				F02BC3E8518DDD70F1D31135 /* RenderBridgeTests+ThemeAndAtoms.swift */,
@@ -1049,6 +1064,10 @@
 				C996249B0095BED0D2E2A4EF /* EditorTextView+Rendering.swift in Sources */,
 				AB5CAC4B09DAD54C06464938 /* EditorTextView+Selection.swift in Sources */,
 				43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */,
+				FABC01234567890123456780 /* EditorStyleSheet.swift in Sources */,
+				FABC012345678901234567A2 /* EditorCodeHighlighting.swift in Sources */,
+				FABC01234567890123456792 /* CodeHighlightingTests.swift in Sources */,
+				FABC01234567890123456782 /* NativeCodeHighlighting.swift in Sources */,
 				1F1FFFFC3EFDB8DDED227B5F /* EditorV2Adapter.swift in Sources */,
 				F791E0FE55F7A074E7F619AB /* EditorV2Adapter+Commands.swift in Sources */,
 				CE7A48FAC386B6C2CF02E9E3 /* EditorV2Adapter+TextCommands.swift in Sources */,
@@ -1136,6 +1155,7 @@
 				5709362F467F56AD882E8803 /* RenderBridge+Atoms.swift in Sources */,
 				49A4C36AD8423E0B4BB88B88 /* RenderBridge+Attachments.swift in Sources */,
 				5642EBDE70DB95F3337A753E /* RenderBridgeTests.swift in Sources */,
+				FABC012345678901234567B2 /* EditorHighlightingTests.swift in Sources */,
 				4161D5D3C37840E4282CEDEC /* RenderBridgeTests+AttachmentsAndMeasurement.swift in Sources */,
 				4548281E9C42980AFC9D2300 /* RenderBridgeTests+MarkerGeometry.swift in Sources */,
 				6DE0D2CCB823B74C1AED0C4A /* RenderBridgeTests+ThemeAndAtoms.swift in Sources */,

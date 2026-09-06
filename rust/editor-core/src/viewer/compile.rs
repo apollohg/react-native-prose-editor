@@ -167,10 +167,12 @@ fn viewer_element(element: RenderElement, mention_prefix: Option<&str>) -> FfiVi
         },
         RenderElement::BlockStart {
             node_type,
+            language,
             depth,
             list_context,
         } => FfiViewerElement::BlockStart {
             node_type,
+            language,
             depth,
             list_context_json: list_context.as_ref().map(canonical_list_context_json),
         },
@@ -285,6 +287,7 @@ fn hash_element(digest: &mut Sha256, element: &FfiViewerElement) {
         }
         FfiViewerElement::BlockStart {
             node_type,
+            language,
             depth,
             list_context_json,
         } => {
@@ -292,6 +295,7 @@ fn hash_element(digest: &mut Sha256, element: &FfiViewerElement) {
             hash_string(digest, node_type);
             digest.update(depth.to_be_bytes());
             hash_optional_string(digest, list_context_json.as_deref());
+            hash_optional_string(digest, language.as_deref());
         }
         FfiViewerElement::BlockEnd => digest.update([4]),
     }
@@ -368,11 +372,13 @@ fn element_retained_bytes(element: &FfiViewerElement) -> usize {
             .saturating_add(label.capacity()),
         FfiViewerElement::BlockStart {
             node_type,
+            language,
             list_context_json,
             ..
         } => node_type
             .capacity()
-            .saturating_add(list_context_json.as_ref().map_or(0, String::capacity)),
+            .saturating_add(list_context_json.as_ref().map_or(0, String::capacity))
+            .saturating_add(language.as_ref().map_or(0, String::capacity)),
         FfiViewerElement::BlockEnd => 0,
     }
 }

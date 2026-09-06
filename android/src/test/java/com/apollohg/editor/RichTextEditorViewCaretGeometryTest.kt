@@ -105,7 +105,8 @@ internal class RichTextEditorViewCaretGeometryTest : RichTextEditorViewTestFixtu
         editText.setSelection(5) // collapsed caret on the spacer line
 
         val layout = editText.layout!!
-        val inflatedLineHeight = (layout.getLineBottom(0) - layout.getLineTop(0)).toFloat()
+        val inflatedLineHeight = (layout.getLineTop(1) - layout.getLineTop(0)).toFloat()
+        assertTrue("paragraph gap remains outside the text line", layout.getLineTop(1) - layout.editorTextLineBottom(0) >= 60)
         val caret = editText.nativeCursorDrawRect()
 
         assertNotNull("a caret rect should be produced for a collapsed selection", caret)
@@ -195,11 +196,12 @@ internal class RichTextEditorViewCaretGeometryTest : RichTextEditorViewTestFixtu
 
         val layout = editText.layout!!
         val line = 0
-        val inflatedLineHeight = (layout.getLineBottom(line) - layout.getLineTop(line)).toFloat()
+        val inflatedLineHeight = (layout.getLineTop(line + 1) - layout.getLineTop(line)).toFloat()
+        assertTrue("paragraph gap remains outside the text line", layout.getLineTop(line + 1) - layout.editorTextLineBottom(line) >= 60)
         val rect = editText.caretRect()!!
 
         assertTrue(
-            "reproduction guard: spacer should inflate the line box",
+            "reproduction guard: baseline compensation includes the paragraph gap",
             layout.getLineDescent(line) > editText.paint.fontMetrics.descent
         )
         assertTrue("caret height should be positive", rect.height() > 0f)

@@ -114,7 +114,14 @@ fn build_schema(convention: NamingConvention) -> Schema {
             name: "codeBlock".to_string(),
             content: ContentRule::parse("text*").unwrap(),
             group: Some("block".to_string()),
-            attrs: HashMap::new(),
+            attrs: HashMap::from([(
+                "language".to_string(),
+                AttrSpec {
+                    default: Some(serde_json::Value::Null),
+                    has_default: true,
+                    ..AttrSpec::default()
+                },
+            )]),
             role: NodeRole::TextBlock,
             html_tag: Some("pre".to_string()),
             html_rules: None,

@@ -78,10 +78,12 @@ extension CoreTextProseLayoutEngine {
                 var labelDescent: CGFloat = 0
                 var labelLeading: CGFloat = 0
                 let labelWidth = CGFloat(CTLineGetTypographicBounds(labelLine, &labelAscent, &labelDescent, &labelLeading))
+                let requestedHeight = EditorTheme.cgFloat(appearance.attributes[editorInlineLineHeightAttribute]) ?? 0
+                let extra = max(0, requestedHeight - labelAscent - max(labelDescent, 2)) / 2
                 let metrics = PreparedAtomMetrics(
                     width: max(paint.font.lineHeight, labelWidth + appearance.padding.left + appearance.padding.right),
-                    ascent: labelAscent + appearance.padding.top,
-                    descent: max(labelDescent, 2) + appearance.padding.bottom
+                    ascent: labelAscent + extra + appearance.padding.top,
+                    descent: max(labelDescent, 2) + extra + appearance.padding.bottom
                 )
                 let range = NSRange(location: result.length, length: 1)
                 result.append(NSAttributedString(string: "\u{FFFC}", attributes: [
@@ -136,6 +138,28 @@ extension CoreTextProseLayoutEngine {
     }
 
     func attributes(for marks: [FfiViewerMark], paint: PreparedTextPaint, theme: PreparedProseTheme, warningSemanticGeneration: String) -> [NSAttributedString.Key: Any] {
+        if let sheet = theme.styleSheet {
+            var base: [NSAttributedString.Key: Any] = [.font: paint.font, .foregroundColor: paint.color]
+            EditorStyleSheet.applyText(paint.textValues, to: &base, scale: theme.fontScale)
+            let markValues: [Any] = marks.map { mark in
+                var values = jsonDictionary(mark.attrsJson)
+                values["type"] = mark.markType
+                return values
+            }
+            var resolved = sheet.inlineAttributes(markValues, base: base, scale: theme.fontScale)
+            for mark in marks {
+                let values = jsonDictionary(mark.attrsJson)
+                switch mark.markType {
+                case "textColor", "color", "foregroundColor":
+                    if let color = EditorTheme.color(from: values["color"] ?? values["textColor"]) { resolved[.foregroundColor] = color }
+                case "highlight", "backgroundColor":
+                    if let color = EditorTheme.color(from: values["color"] ?? values["backgroundColor"]) { resolved[.backgroundColor] = color }
+                case "textStyle", "font": EditorStyleSheet.applyText(values, to: &resolved, scale: theme.fontScale)
+                default: break
+                }
+            }
+            return coreTextAttributes(resolved)
+        }
         var linkTheme: EditorLinkTheme?
         var explicitForeground: UIColor?
         var background: UIColor?
@@ -229,44 +253,56 @@ extension CoreTextProseLayoutEngine {
         displayScale: CGFloat
     ) -> [PreparedProseFragment] {
         let unit = displayScale.isFinite && displayScale > 0 ? 1 / displayScale : 1
-        return (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).compactMap { run in
+        return (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).flatMap { run -> [PreparedProseFragment] in
             let attributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
             guard (attributes[preparedStrikeAttribute] as? NSNumber)?.boolValue == true,
                   let colorValue = attributes[kCTForegroundColorAttributeName as NSAttributedString.Key]
-            else { return nil }
-            let color = colorValue as! CGColor
-
+            else { return [] }
+            let color = (attributes[.strikethroughColor] as? UIColor)?.cgColor ?? (colorValue as! CGColor)
             var ascent: CGFloat = 0
-            var descent: CGFloat = 0
-            var leading: CGFloat = 0
-            let typographicWidth = CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), &ascent, &descent, &leading))
+            let width = CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), &ascent, nil, nil))
             let stringRange = CTRunGetStringRange(run)
             let start = CGFloat(CTLineGetOffsetForStringIndex(line, stringRange.location, nil))
             let end = CGFloat(CTLineGetOffsetForStringIndex(line, stringRange.location + stringRange.length, nil))
-            let width = max(typographicWidth, abs(end - start))
-            guard width.isFinite, width > 0, ascent.isFinite, ascent > 0 else { return nil }
-
+            let extent = max(width, abs(end - start))
+            guard extent.isFinite, extent > 0, ascent.isFinite, ascent > 0 else { return [] }
             let thickness = max(unit, min(2, ascent * 0.08))
             let centerY = lineOrigin.y - ascent * 0.35
-            return PreparedProseFragment(
-                kind: .strike,
-                bounds: CGRect(
-                    x: lineOrigin.x + min(start, end),
-                    y: centerY - thickness / 2,
-                    width: width,
-                    height: thickness
-                ),
-                color: color,
-                strokeWidth: thickness
-            )
+            let style = NSUnderlineStyle(rawValue: attributes[.strikethroughStyle] as? Int ?? NSUnderlineStyle.single.rawValue)
+            let dotted = style.contains(.patternDot)
+            let dashed = style.contains(.patternDash)
+            let doubleLine = style.rawValue & 0xff == NSUnderlineStyle.double.rawValue
+            var result: [PreparedProseFragment] = []
+            for offset: CGFloat in doubleLine ? [-thickness, thickness] : [0] {
+                var x: CGFloat = 0
+                while x < extent {
+                    let length = min(extent - x, dotted ? thickness : (dashed ? thickness * 4 : extent))
+                    result.append(PreparedProseFragment(kind: .strike,
+                        bounds: CGRect(x: lineOrigin.x + min(start, end) + x, y: centerY + offset - thickness / 2, width: length, height: thickness),
+                        color: color, cornerRadius: dotted ? thickness / 2 : 0, strokeWidth: thickness))
+                    x += length + thickness * 2
+                }
+            }
+            return result
         }
     }
 
+    private func coreTextAttributes(_ attributes: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+        var result = attributes
+        if let font = attributes[.font] as? UIFont { result[kCTFontAttributeName as NSAttributedString.Key] = Self.coreTextFont(from: font) }
+        if let color = attributes[.foregroundColor] as? UIColor { result[kCTForegroundColorAttributeName as NSAttributedString.Key] = color.cgColor }
+        if let color = attributes[.backgroundColor] as? UIColor { result[kCTBackgroundColorAttributeName as NSAttributedString.Key] = color.cgColor }
+        if let color = attributes[.underlineColor] as? UIColor { result[kCTUnderlineColorAttributeName as NSAttributedString.Key] = color.cgColor }
+        if let decoration = attributes[.underlineStyle] { result[kCTUnderlineStyleAttributeName as NSAttributedString.Key] = decoration }
+        if let spacing = attributes[.kern] { result[kCTKernAttributeName as NSAttributedString.Key] = spacing }
+        if let decoration = attributes[.strikethroughStyle] as? Int, decoration != 0 { result[preparedStrikeAttribute] = NSNumber(value: true) }
+        return result
+    }
+
     func baseAttributes(_ paint: PreparedTextPaint) -> [NSAttributedString.Key: Any] {
-        [
-            kCTFontAttributeName as NSAttributedString.Key: Self.coreTextFont(from: paint.font),
-            kCTForegroundColorAttributeName as NSAttributedString.Key: paint.color.cgColor,
-        ]
+        var attributes: [NSAttributedString.Key: Any] = [.font: paint.font, .foregroundColor: paint.color]
+        EditorStyleSheet.applyText(paint.textValues, to: &attributes)
+        return coreTextAttributes(attributes)
     }
 
     func makeListMarker(
@@ -275,9 +311,16 @@ extension CoreTextProseLayoutEngine {
         paint: PreparedTextPaint,
         theme: PreparedProseTheme
     ) -> PreparedListMarker {
-        let scale = !context.ordered && context.kind != "task"
-            ? max(0.01, theme.listMarkerScale)
-            : 1
+        let scale: CGFloat
+        if let sheet = theme.styleSheet {
+            scale = EditorTheme.cgFloat(sheet["listMarker"]["scale"]) ?? (context.ordered ? 1 : LayoutConstants.unorderedListMarkerFontScale)
+            if !context.ordered, context.kind != "task" {
+                let diameter = EditorLayoutManager.unorderedBulletDrawingRect(usedRect: .zero, lineFragmentRect: .zero, markerWidth: 0, baselineY: 0, baseFont: paint.font, markerScale: scale, origin: .zero).width
+                return PreparedListMarker(line: nil, label: "•", width: diameter, ascent: diameter / 2, descent: diameter / 2, checked: false)
+            }
+        } else {
+            scale = !context.ordered && context.kind != "task" ? max(0.01, theme.listMarkerScale) : 1
+        }
         let font = paint.font.withSize(max(1, paint.font.pointSize * scale))
         let label: String
         if context.kind == "task" {
@@ -292,7 +335,7 @@ extension CoreTextProseLayoutEngine {
             label = "•"
         }
         guard !label.isEmpty else {
-            let side = max(font.lineHeight, font.pointSize)
+            let side = theme.styleSheet?.checkbox(checked: context.checked).number("size", fallback: 24) ?? max(font.lineHeight, font.pointSize)
             return PreparedListMarker(line: nil, label: label, width: side, ascent: side * 0.75, descent: side * 0.25, checked: context.checked)
         }
         let line = CTLineCreateWithAttributedString(
@@ -336,6 +379,14 @@ extension CoreTextProseLayoutEngine {
                 attributes[kCTFontAttributeName as NSAttributedString.Key] = Self.coreTextFont(from: font)
             }
             attributes[kCTForegroundColorAttributeName as NSAttributedString.Key] = (mention?.textColor ?? paint.color).cgColor
+            if let values = mention?.style, !values.isEmpty {
+                var styled: [NSAttributedString.Key: Any] = [.font: paint.font, .foregroundColor: mention?.textColor ?? paint.color]
+                EditorStyleSheet.applyText(values, to: &styled, scale: theme.fontScale)
+                var boxValues = values
+                boxValues["backgroundColor"] = values["backgroundColor"] ?? "#007aff1f"
+                let box = EditorStyleBox(boxValues)
+                return PreparedAtomAppearance(styleBox: box, attributes: coreTextAttributes(styled), background: box.color("backgroundColor") ?? .clear, borderColor: nil, borderWidth: 0, radius: 0, padding: UIEdgeInsets(top: 4, left: 6, bottom: 4, right: 6).adding(box.inset))
+            }
             return PreparedAtomAppearance(
                 attributes: attributes,
                 background: mention?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12),
@@ -360,4 +411,18 @@ extension CoreTextProseLayoutEngine {
         return value
     }
 
+}
+
+extension CoreTextProseLayoutEngine {
+    func inlineBackgroundFragments(for line: CTLine, bounds: CGRect) -> [PreparedProseFragment] {
+        (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).compactMap { run in
+            let attributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
+            guard let value = attributes[kCTBackgroundColorAttributeName as NSAttributedString.Key] else { return nil }
+            let color = value as! CGColor
+            let range = CTRunGetStringRange(run)
+            let start = CGFloat(CTLineGetOffsetForStringIndex(line, range.location, nil))
+            let end = CGFloat(CTLineGetOffsetForStringIndex(line, range.location + range.length, nil))
+            return PreparedProseFragment(kind: .background, bounds: CGRect(x: bounds.minX + min(start, end), y: bounds.minY, width: abs(end - start), height: bounds.height), color: color)
+        }
+    }
 }

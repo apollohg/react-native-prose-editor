@@ -1,8 +1,6 @@
 package com.apollohg.editor
 
 import android.graphics.Rect
-import android.text.Layout
-import android.text.StaticLayout
 import android.view.View
 
 internal fun EditorEditText.resolveAutoGrowHeightImpl(): Int {
@@ -18,11 +16,7 @@ internal fun EditorEditText.resolveAutoGrowHeightImpl(): Int {
 
     val currentText = text
     if (availableWidth > 0 && currentText != null) {
-        val staticLayout = StaticLayout.Builder
-            .obtain(currentText, 0, currentText.length, paint, availableWidth)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setIncludePad(includeFontPadding)
-            .build()
+        val staticLayout = EditorDocumentLayout(currentText, paint, availableWidth, includeFontPadding)
         val textHeight = staticLayout.height.takeIf { it > 0 } ?: lineHeight
         return maxOf(
             textHeight + compoundPaddingTop + compoundPaddingBottom,
@@ -72,9 +66,9 @@ internal fun EditorEditText.ensureSelectionVisible() {
         val caretLeft = textLayout.getPrimaryHorizontal(clampedOffset).toInt()
         val rect = Rect(
             caretLeft + totalPaddingLeft,
-            textLayout.getLineTop(line) + totalPaddingTop,
+            textLayout.editorTextLineTop(line) + totalPaddingTop,
             caretLeft + totalPaddingLeft + 1,
-            textLayout.getLineBottom(line) + totalPaddingTop + viewportBottomClearance
+            textLayout.editorTextLineBottom(line) + totalPaddingTop + viewportBottomClearance
         )
         requestRectangleOnScreen(rect)
     }

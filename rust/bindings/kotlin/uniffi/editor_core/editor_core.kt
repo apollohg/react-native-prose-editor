@@ -2299,6 +2299,7 @@ sealed class FfiViewerElement {
 
     data class BlockStart(
         val `nodeType`: kotlin.String,
+        val `language`: kotlin.String?,
         val `depth`: kotlin.UShort,
         val `listContextJson`: kotlin.String?) : FfiViewerElement() {
         companion object
@@ -2336,6 +2337,7 @@ public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewe
                 )
             4 -> FfiViewerElement.BlockStart(
                 FfiConverterString.read(buf),
+                FfiConverterOptionalString.read(buf),
                 FfiConverterUShort.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
@@ -2378,6 +2380,7 @@ public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewe
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`nodeType`)
+                + FfiConverterOptionalString.allocationSize(value.`language`)
                 + FfiConverterUShort.allocationSize(value.`depth`)
                 + FfiConverterOptionalString.allocationSize(value.`listContextJson`)
             )
@@ -2417,6 +2420,7 @@ public object FfiConverterTypeFfiViewerElement : FfiConverterRustBuffer<FfiViewe
             is FfiViewerElement.BlockStart -> {
                 buf.putInt(4)
                 FfiConverterString.write(value.`nodeType`, buf)
+                FfiConverterOptionalString.write(value.`language`, buf)
                 FfiConverterUShort.write(value.`depth`, buf)
                 FfiConverterOptionalString.write(value.`listContextJson`, buf)
                 Unit

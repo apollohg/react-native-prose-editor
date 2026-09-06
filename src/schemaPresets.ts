@@ -157,6 +157,7 @@ export const tiptapCompatibleSchemaSpec: SchemaSpec = {
             toDOM: ['blockquote', 0],
         },
         codeBlock: {
+            attrs: { language: { default: null } },
             content: 'text*',
             group: 'block',
             role: 'textBlock',

@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import android.text.Spanned
 import org.json.JSONObject
 
 /**
@@ -16,15 +17,15 @@ internal fun EditorEditText.insertTextInRust(text: String, atScalarPos: Int) {
     }
 }
 
-internal fun EditorEditText.replaceTextRangeInRust(scalarFrom: Int, scalarTo: Int, text: String) {
-    if (!hasLiveEditor()) return
+internal fun EditorEditText.replaceTextRangeInRust(scalarFrom: Int, scalarTo: Int, text: String): Boolean {
+    if (!hasLiveEditor()) return false
     onReplaceTextInRustForTesting?.let { callback ->
         callback(scalarFrom, scalarTo, text)
-        return
+        return true
     }
-    v2Driver?.let { driver ->
-        driver.replaceTextRange(scalarFrom, scalarTo, text)?.let { applyRustUpdateJSON(it) }
-    }
+    val update = v2Driver?.replaceTextRange(scalarFrom, scalarTo, text) ?: return false
+    applyRustUpdateJSON(update)
+    return true
 }
 
 internal fun EditorEditText.insertPlainTextRangeInRust(
@@ -46,14 +47,9 @@ internal fun EditorEditText.insertPlainTextRangeInRust(
         return
     }
     if (text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0) {
-        val docJson = plainTextDocumentFragmentJson(text)
-        onInsertContentJsonAtSelectionScalarForTesting?.let { callback ->
-            callback(scalarFrom, scalarTo, docJson)
-            applyRequestedCursorScalar(requestedCursorScalar)
+        if (!replaceTextRangeInRust(scalarFrom, scalarTo, text)) {
+            restoreAuthorizedTextSnapshotForEditor()
             return
-        }
-        v2Driver?.let { driver ->
-            driver.insertContentJsonAtSelection(docJson, scalarFrom, scalarTo)?.let { applyRustUpdateJSON(it) }
         }
         applyRequestedCursorScalar(requestedCursorScalar)
         return
@@ -75,7 +71,10 @@ internal fun EditorEditText.requestedCursorScalar(
     newCursorPosition: Int
 ): Int? {
     if (newCursorPosition == 1) return null
-    val insertedScalarLength = insertedText.codePointCount(0, insertedText.length)
+    val rawStart = PositionBridge.scalarToUtf16(scalarFrom, currentText)
+    val inCodeBlock = (text as? Spanned)?.getSpans(rawStart, rawStart, CodeBlockSpan::class.java)?.isNotEmpty() == true
+    val effectiveText = if (inCodeBlock) insertedText else insertedText.replace("\r\n", "\n").replace('\r', '\n')
+    val insertedScalarLength = effectiveText.codePointCount(0, effectiveText.length)
     val currentScalarLength = currentText.codePointCount(0, currentText.length)
     val nextScalarLength =
         (currentScalarLength - (scalarTo - scalarFrom) + insertedScalarLength).coerceAtLeast(0)
@@ -106,29 +105,6 @@ internal fun EditorEditText.applyRequestedCursorScalar(requestedCursorScalar: In
     if (selectionStart != safeUtf16 || selectionEnd != safeUtf16) {
         setSelection(safeUtf16, safeUtf16)
     }
-}
-
-internal fun EditorEditText.plainTextDocumentFragmentJson(text: String): String {
-    val normalizedText = text.replace("\r\n", "\n").replace('\r', '\n')
-    val content = org.json.JSONArray()
-    for (line in normalizedText.split('\n')) {
-        val paragraph = org.json.JSONObject().put("type", "paragraph")
-        if (line.isNotEmpty()) {
-            paragraph.put(
-                "content",
-                org.json.JSONArray().put(
-                    org.json.JSONObject()
-                        .put("type", "text")
-                        .put("text", line)
-                )
-            )
-        }
-        content.put(paragraph)
-    }
-    return org.json.JSONObject()
-        .put("type", "doc")
-        .put("content", content)
-        .toString()
 }
 
     /**

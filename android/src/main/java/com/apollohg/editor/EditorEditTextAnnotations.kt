@@ -174,11 +174,11 @@ internal fun EditorEditText.annotationBounds(textLayout: Layout, start: Int, end
         ) - scrollX
         val lineBounds = Rect(
             kotlin.math.floor(left.toDouble()).toInt(),
-            totalPaddingTop + textLayout.getLineTop(line) - scrollY,
+            totalPaddingTop + textLayout.editorTextLineTop(line) - scrollY,
             kotlin.math.ceil(right.toDouble()).toInt().coerceAtLeast(
                 kotlin.math.floor(left.toDouble()).toInt() + 1
             ),
-            totalPaddingTop + textLayout.getLineBottom(line) - scrollY
+            totalPaddingTop + textLayout.editorTextLineBottom(line) - scrollY
         )
         if (bounds.isEmpty) bounds.set(lineBounds) else bounds.union(lineBounds)
     }

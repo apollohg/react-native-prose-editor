@@ -65,9 +65,10 @@ export function validRenderElement(value: unknown): value is RenderElement {
             );
         case 'blockStart':
             return (
-                hasOnlyOwnKeys(value, ['type', 'nodeType', 'depth', 'listContext']) &&
+                hasOnlyOwnKeys(value, ['type', 'nodeType', 'depth', 'listContext', 'language']) &&
                 typeof value.nodeType === 'string' &&
                 nativeEditorV2U32(value.depth) != null &&
+                (value.language === undefined || typeof value.language === 'string') &&
                 (value.listContext === undefined || validListContext(value.listContext))
             );
         case 'blockEnd':

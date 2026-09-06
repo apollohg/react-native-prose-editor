@@ -1,3 +1,4 @@
+import { createMentionsAddon } from '../EditorAddon';
 jest.mock('../specs/PreparedProseViewerNativeComponent', () => {
     const React = require('react');
     const { View } = require('react-native');
@@ -13,6 +14,53 @@ import { fireEvent, render } from '@testing-library/react-native';
 import { NativeProseViewer } from '../NativeProseViewer';
 
 describe('NativeProseViewer', () => {
+    it('updates callbacks per viewer and clears removed addon capabilities', () => {
+        const first = jest.fn();
+        const next = jest.fn();
+        const shared = createMentionsAddon({ prefix: '@', onPress: first });
+        const highlighting = {
+            id: 'code-highlighting',
+            version: 1,
+            capability: 'code-highlighting',
+            options: { provider: 'syntect', theme: 'base16-ocean.dark' },
+        } as const;
+        const contentJSON = { type: 'doc', content: [] };
+        const viewers = (addons: import('../EditorAddon').EditorAddons) => (
+            <>
+                <NativeProseViewer
+                    testID='first-viewer'
+                    contentJSON={contentJSON}
+                    addons={addons}
+                />
+                <NativeProseViewer
+                    testID='other-viewer'
+                    contentJSON={contentJSON}
+                    addons={[shared]}
+                />
+            </>
+        );
+        const { getByTestId, rerender } = render(viewers([shared, highlighting]));
+        const press = (testID: string) =>
+            fireEvent(getByTestId(testID), 'onPressMention', {
+                nativeEvent: { docPos: 1, label: 'Alice', attrsJson: '{}' },
+            });
+        const oldConfig = getByTestId('first-viewer').props.configJson;
+        expect(JSON.parse(oldConfig).codeHighlighting).toEqual(highlighting.options);
+        rerender(viewers([createMentionsAddon({ prefix: '@', onPress: next }), highlighting]));
+        expect(getByTestId('first-viewer').props.configJson).toBe(oldConfig);
+        press('first-viewer');
+        press('other-viewer');
+        expect(first).toHaveBeenCalledTimes(1);
+        expect(next).toHaveBeenCalledTimes(1);
+        rerender(viewers([]));
+        expect(getByTestId('first-viewer').props.mentionInteractionsEnabled).toBe(false);
+        expect(getByTestId('first-viewer').props.onPressMention).toBeUndefined();
+        expect(
+            JSON.parse(getByTestId('first-viewer').props.configJson).codeHighlighting
+        ).toBeUndefined();
+        expect(getByTestId('other-viewer').props.mentionInteractionsEnabled).toBe(true);
+    });
+
     it('passes JSON directly to the Fabric component with serialized configuration', () => {
         const document = {
             type: 'doc',
@@ -34,7 +82,7 @@ describe('NativeProseViewer', () => {
             sourceKind: 'json',
             source: JSON.stringify(document),
             configJson: expect.any(String),
-            themeJson: JSON.stringify({ text: { color: '#112233' } }),
+            themeJson: JSON.stringify({ version: 1, styles: { text: { color: '#112233ff' } } }),
             imagePolicyJson: expect.any(String),
             imagesEnabled: false,
             collapsesWhenEmpty: true,
@@ -49,9 +97,7 @@ describe('NativeProseViewer', () => {
     });
 
     it('passes HTML directly to the Fabric component', () => {
-        const { getByTestId } = render(
-            <NativeProseViewer contentHTML='<p>Hello from HTML</p>' />
-        );
+        const { getByTestId } = render(<NativeProseViewer contentHTML='<p>Hello from HTML</p>' />);
 
         expect(getByTestId('prepared-prose-viewer').props).toMatchObject({
             sourceKind: 'html',
@@ -79,13 +125,13 @@ describe('NativeProseViewer', () => {
         const { getByTestId } = render(
             <NativeProseViewer
                 contentJSON={{ type: 'doc', content: [] }}
-                addons={{
-                    mentions: {
+                addons={[
+                    createMentionsAddon({
                         trigger: '@',
                         prefix: '@',
-                        theme: { textColor: '#112233', backgroundColor: '#ddeeff' },
-                    },
-                }}
+                        theme: { node: { textColor: '#112233', backgroundColor: '#ddeeff' } },
+                    }),
+                ]}
             />
         );
 
@@ -94,7 +140,7 @@ describe('NativeProseViewer', () => {
             mentions: { trigger: '@', prefix: '@' },
         });
         expect(JSON.parse(nativeProps.themeJson)).toMatchObject({
-            mentions: { textColor: '#112233', backgroundColor: '#ddeeff' },
+            mentions: { node: { style: { color: '#112233ff', backgroundColor: '#ddeeffff' } } },
         });
     });
 
@@ -102,10 +148,7 @@ describe('NativeProseViewer', () => {
         const onPressLink = jest.fn();
         const onPressMention = jest.fn();
         const { getByTestId, rerender } = render(
-            <NativeProseViewer
-                contentJSON={{ type: 'doc', content: [] }}
-                enableLinkTaps
-            />
+            <NativeProseViewer contentJSON={{ type: 'doc', content: [] }} enableLinkTaps />
         );
 
         expect(getByTestId('prepared-prose-viewer').props).toMatchObject({
@@ -130,7 +173,7 @@ describe('NativeProseViewer', () => {
                 contentJSON={{ type: 'doc', content: [] }}
                 enableLinkTaps={false}
                 onPressLink={onPressLink}
-                addons={{ mentions: { onPress: onPressMention } }}
+                addons={[createMentionsAddon({ onPress: onPressMention })]}
             />
         );
         expect(getByTestId('prepared-prose-viewer').props).toMatchObject({
@@ -147,7 +190,7 @@ describe('NativeProseViewer', () => {
             <NativeProseViewer
                 contentJSON={{ type: 'doc', content: [] }}
                 onPressLink={onPressLink}
-                addons={{ mentions: { onPress: onMentionPress } }}
+                addons={[createMentionsAddon({ onPress: onMentionPress })]}
                 onError={onError}
             />
         );
@@ -192,7 +235,7 @@ describe('NativeProseViewer', () => {
         const { getByTestId } = render(
             <NativeProseViewer
                 contentJSON={{ type: 'doc', content: [] }}
-                addons={{ mentions: { onPress: onMentionPress } }}
+                addons={[createMentionsAddon({ onPress: onMentionPress })]}
                 onError={onError}
             />
         );

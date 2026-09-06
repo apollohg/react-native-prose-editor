@@ -1,4 +1,4 @@
-import type { EditorMentionTheme } from './EditorTheme';
+import type { SerializedEditorMentionTheme } from './EditorMentionThemeNormalization';
 import { type SchemaDefinition } from './schemas';
 import {
     type EditorCollaborationLimits,
@@ -116,8 +116,9 @@ export interface RenderElement {
     atomId?: string;
     label?: string;
     attrs?: Record<string, unknown>;
-    mentionTheme?: EditorMentionTheme;
+    mentionTheme?: SerializedEditorMentionTheme;
     listContext?: ListContext;
+    language?: string;
 }
 
 /**

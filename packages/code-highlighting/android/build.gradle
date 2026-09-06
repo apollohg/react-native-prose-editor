@@ -1,0 +1,25 @@
+plugins {
+    id 'com.android.library'
+}
+
+apply from: new File(project(':expo-modules-core').projectDir, 'ExpoModulesCorePlugin.gradle')
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+
+group = 'com.apollohg.editor.highlighting'
+version = '2.0.0'
+
+android {
+    namespace = 'com.apollohg.editor.highlighting'
+    compileSdkVersion safeExtGet('compileSdkVersion', 35)
+    defaultConfig {
+        minSdkVersion safeExtGet('minSdkVersion', 24)
+        targetSdkVersion safeExtGet('targetSdkVersion', 35)
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+}
+
+dependencies {
+    implementation project(':react-native-rich-text-editor')
+    implementation 'net.java.dev.jna:jna:5.18.1@aar'
+}

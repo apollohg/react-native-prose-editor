@@ -3,7 +3,7 @@ package com.apollohg.editor
 import android.graphics.Color
 import android.text.Layout
 import android.text.SpannableStringBuilder
-import android.widget.TextView
+import android.view.View
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -22,6 +22,7 @@ object RenderBridge {
         val pendingLeadingMargins: MutableMap<Int, PendingLeadingMargin> = linkedMapOf(),
         val pendingCodeBlockSpans: MutableList<PendingCodeBlockSpan> = mutableListOf(),
         val atomOccurrences: MutableMap<String, Int> = mutableMapOf(),
+        val reusableImages: MutableList<BlockImageSpan> = mutableListOf(),
         var isFirstBlock: Boolean = true,
         var nextBlockSpacingBefore: Float? = null,
         var pendingListBoundarySpacing: Float? = null,
@@ -49,7 +50,7 @@ object RenderBridge {
         textColor: Int,
         theme: EditorTheme? = null,
         density: Float = 1f,
-        hostView: TextView? = null,
+        hostView: View? = null,
         atomConfiguration: AtomRenderConfiguration? = null
     ): SpannableStringBuilder {
         val elements = try {
@@ -75,10 +76,10 @@ object RenderBridge {
         textColor: Int,
         theme: EditorTheme? = null,
         density: Float = 1f,
-        hostView: TextView? = null,
+        hostView: View? = null,
         atomConfiguration: AtomRenderConfiguration? = null
     ): SpannableStringBuilder {
-        val state = RenderBuildState()
+        val state = RenderBuildState(reusableImages = reusableImages(hostView))
         appendElements(
             state = state,
             elements = elements,
@@ -91,6 +92,7 @@ object RenderBridge {
         )
         applyPendingLeadingMargins(state.result, state.pendingLeadingMargins)
         applyPendingCodeBlockSpans(state.result, state.pendingCodeBlockSpans, theme, density)
+        if (theme?.styleSheet != null) state.result.applyStyleSheetLineMetrics()
         return state.result
     }
 
@@ -102,10 +104,11 @@ object RenderBridge {
         textColor: Int,
         theme: EditorTheme? = null,
         density: Float = 1f,
-        hostView: TextView? = null,
-        atomConfiguration: AtomRenderConfiguration? = null
+        hostView: View? = null,
+        atomConfiguration: AtomRenderConfiguration? = null,
+        reuseImages: Boolean = true,
     ): SpannableStringBuilder {
-        val state = RenderBuildState()
+        val state = RenderBuildState(reusableImages = if (reuseImages) reusableImages(hostView) else mutableListOf())
         for (blockOffset in 0 until blocks.length()) {
             val blockElements = blocks.optJSONArray(blockOffset) ?: continue
             appendElements(
@@ -132,8 +135,14 @@ object RenderBridge {
         }
         applyPendingLeadingMargins(state.result, state.pendingLeadingMargins)
         applyPendingCodeBlockSpans(state.result, state.pendingCodeBlockSpans, theme, density)
+        if (theme?.styleSheet != null) state.result.applyStyleSheetLineMetrics()
         return state.result
     }
+
+    private fun reusableImages(host: View?): MutableList<BlockImageSpan> =
+        if (host is EditorEditText) {
+            host.text.getSpans(0, host.length(), BlockImageSpan::class.java).filter { it.canReuseFor(host) }.toMutableList()
+        } else mutableListOf()
 
     fun measureHeight(
         json: String,
@@ -157,7 +166,7 @@ object RenderBridge {
             hostView = null
         )
 
-        if (spannable.isEmpty()) return 0f
+        if (spannable.isEmpty() && spannable.getSpans(0, 0, EditorBlockBoxSpan::class.java).isEmpty()) return 0f
 
         val contentInsets = theme?.contentInsets
         val topInset = ((contentInsets?.top ?: 0f) * density).toInt()
@@ -172,11 +181,7 @@ object RenderBridge {
 
         val availableWidth = (width - leftInset - rightInset).coerceAtLeast(0f).toInt()
 
-        val staticLayout = android.text.StaticLayout.Builder
-            .obtain(spannable, 0, spannable.length, paint, availableWidth)
-            .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
-            .setIncludePad(true)
-            .build()
+        val staticLayout = EditorDocumentLayout(spannable, paint, availableWidth, includeFontPadding = true)
 
         val height = staticLayout.height + topInset + bottomInset
         return height.toFloat()

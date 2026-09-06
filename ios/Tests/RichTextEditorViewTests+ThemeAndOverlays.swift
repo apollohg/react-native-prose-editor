@@ -338,3 +338,32 @@ extension RichTextEditorViewTests {
     }
 
 }
+
+extension RichTextEditorViewTests {
+    func testVersionedThemeClearingPreservesDocumentAndSelection() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
+        view.editorId = editorId
+        view.setContent(html: "<p>Hello</p>")
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 2, scalarHead: 2)
+        view.textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        let text = view.textView.text
+        let selection = view.textView.selectedRange
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"content":{"borderTopLeftRadius":20,"borderTopWidth":3,"paddingLeft":8},"paragraph":{"backgroundColor":"#ff0000ff","paddingLeft":9},"placeholder":{"fontSize":24}}}
+        """))
+        XCTAssertTrue(view.applyTheme(theme))
+        view.layoutIfNeeded()
+        XCTAssertEqual(view.textView.text, text)
+        XCTAssertEqual(view.textView.selectedRange, selection)
+        XCTAssertNotNil(view.layer.mask)
+        XCTAssertTrue(view.applyTheme(nil))
+        view.layoutIfNeeded()
+        XCTAssertNil(view.layer.mask)
+        XCTAssertNil(view.textView.styleContentView.box)
+        XCTAssertNil(view.textView.textStorage.attribute(editorStyleBoxesAttribute, at: 0, effectiveRange: nil))
+        XCTAssertEqual(view.textView.text, text)
+        XCTAssertEqual(view.textView.selectedRange, selection)
+    }
+}

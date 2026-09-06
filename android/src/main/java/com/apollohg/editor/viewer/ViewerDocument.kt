@@ -19,6 +19,7 @@ internal data class ViewerListContext(
     val kind: String?,
     val checked: Boolean,
     val isLast: Boolean,
+    val isFirst: Boolean = false,
 )
 
 /** Identifies the nearest list item and its first/final renderable leaf. */
@@ -48,6 +49,8 @@ internal sealed interface ViewerInline {
     data class Atom(val nodeType: String, val docPos: Long, val attrsJson: String, val label: String) : ViewerInline
 }
 
+internal data class ViewerContainerAncestor(val identity: Int, val nodeType: String, val firstLeaf: Int, val lastLeaf: Int)
+
 internal data class ViewerBlock(
     val nodeType: String,
     val depth: Int,
@@ -59,6 +62,8 @@ internal data class ViewerBlock(
     val outermostListItemIdentity: Int? = null,
     val outermostListItemIsLast: Boolean = false,
     val isBlockAtom: Boolean = false,
+    val containers: List<ViewerContainerAncestor> = emptyList(),
+    val language: String? = null,
 )
 
 /** Semantic positions live only in [ViewerInline.Atom], never in Android drawing spans. */
@@ -127,6 +132,8 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
             val listContext: ViewerListContext?,
             val listItemIdentity: Int?,
             val listItemContext: ViewerListContext?,
+            val identity: Int,
+            val language: String? = null,
             val inlines: MutableList<ViewerInline> = mutableListOf(),
         )
 
@@ -139,6 +146,7 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
         val descendantLeavesByListItem = mutableMapOf<Int, MutableList<Int>>()
         val listItemDepths = mutableMapOf<Int, Int>()
         var nextListItemIdentity = 0
+        var nextContainerIdentity = 0
 
         fun nearestListContext(builders: List<Builder>): ViewerListContext? = builders.asReversed().firstNotNullOfOrNull { it.listContext }
         fun listItemAncestors(builders: List<Builder>): List<ViewerListItemAncestor> = builders.mapNotNull { builder ->
@@ -156,6 +164,8 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                 listItemBoundary = null,
                 inlines = inlines,
                 isBlockAtom = isBlockAtom,
+                language = ancestors.lastOrNull()?.language,
+                containers = ancestors.filter { it.nodeType in CONTAINER_BLOCKS && it.nodeType != "doc" }.map { ViewerContainerAncestor(it.identity, it.nodeType, 0, 0) },
                 listItemAncestors = itemAncestors,
                 outermostListItemIdentity = itemAncestors.firstOrNull()?.identity,
                 outermostListItemIsLast = itemAncestors.firstOrNull()?.context?.isLast == true,
@@ -172,6 +182,9 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
             when (element) {
                 is FfiViewerElement.BlockStart -> {
                     val context = listContext(element.listContextJson)
+                    if (context?.isFirst == true) {
+                        stack += Builder(if (context.kind == "task") "taskList" else if (context.ordered) "orderedList" else "bulletList", element.depth.toInt(), null, null, null, nextContainerIdentity++)
+                    }
                     val identity = if (context != null) nextListItemIdentity++ else null
                     identity?.let { listItemDepths[it] = element.depth.toInt() }
                     stack += Builder(
@@ -180,6 +193,8 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                         context,
                         identity,
                         if (identity == null) null else context,
+                        nextContainerIdentity++,
+                        element.language,
                     )
                 }
                 is FfiViewerElement.TextRun -> stack.lastOrNull()?.inlines?.add(ViewerInline.Text(element.text, element.marks))
@@ -200,6 +215,7 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                     if (builder.nodeType !in CONTAINER_BLOCKS && builder.listItemIdentity == null) {
                         appendLeaf(builder.nodeType, builder.depth, builder.inlines, stack + builder)
                     }
+                    if (builder.listItemContext?.isLast == true && stack.lastOrNull()?.nodeType in setOf("bulletList", "orderedList", "taskList")) stack.removeLastOrNull()
                 }
             }
         }
@@ -225,6 +241,14 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
                     listItemAncestors = updatedAncestors,
                 )
             }
+        }
+        val containerLeaves = mutableMapOf<Int, MutableList<Int>>()
+        rendered.forEachIndexed { index, block -> block.containers.forEach { containerLeaves.getOrPut(it.identity) { mutableListOf() } += index } }
+        rendered.indices.forEach { index ->
+            rendered[index] = rendered[index].copy(containers = rendered[index].containers.map {
+                val leaves = containerLeaves.getValue(it.identity)
+                it.copy(firstLeaf = leaves.first(), lastLeaf = leaves.last())
+            })
         }
         val fallback = if (rendered.isEmpty() && !compiled.isEmpty()) listOf(ViewerBlock("paragraph", 0, false, null, null, emptyList())) else rendered
         val admittedAttachmentCount = fallback.count { block ->
@@ -274,6 +298,7 @@ internal fun listContext(json: String?): ViewerListContext? = runCatching {
         value.optionalString("kind"),
         value.optBoolean("checked"),
         value.optBoolean("isLast"),
+        value.optBoolean("isFirst"),
     )
 }.getOrNull()
 

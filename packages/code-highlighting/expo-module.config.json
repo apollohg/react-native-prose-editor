@@ -1,0 +1,10 @@
+{
+    "platforms": ["ios", "android"],
+    "ios": {
+        "modules": ["NativeCodeHighlightingModule"],
+        "podspecPath": "./NativeEditorCodeHighlighting.podspec"
+    },
+    "android": {
+        "modules": ["com.apollohg.editor.highlighting.NativeCodeHighlightingModule"]
+    }
+}

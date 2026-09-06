@@ -485,7 +485,7 @@ internal class EditorInputConnectionInputTest : EditorInputConnectionTestFixture
     }
 
     @Test
-    fun `old input connection remains usable after framework recreation from render`() {
+    fun `recreated input connection retires old callbacks and commits through the new wrapper`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.applyUpdateJSON(renderUpdateJson(""), notifyListener = false)
         editText.setSelection(0)
@@ -508,7 +508,9 @@ internal class EditorInputConnectionInputTest : EditorInputConnectionTestFixture
         val recreatedConnection = editText.onCreateInputConnection(EditorInfo())
         assertNotNull(recreatedConnection)
 
-        assertTrue(originalConnection.commitText("b", 1))
+        assertTrue(originalConnection.commitText("ignored", 1))
+        assertEquals(listOf("a" to 0), inserted)
+        assertTrue(recreatedConnection!!.commitText("b", 1))
 
         assertEquals(listOf("a" to 0, "b" to 1), inserted)
         assertEquals("ab", editText.text?.toString())

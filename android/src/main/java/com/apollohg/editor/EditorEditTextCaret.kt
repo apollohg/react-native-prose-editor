@@ -44,7 +44,7 @@ internal fun EditorEditText.clipLegacyNativeCursorTail(canvas: Canvas) {
     val textLayout = layout ?: return
     val offset = selectionEnd.coerceIn(0, textLayout.text.length)
     val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint, textLayout.text)
-    val lineBottom = textLayout.getLineBottom(textLayout.getLineForOffset(offset)).toFloat()
+    val lineBottom = textLayout.editorTextLineBottom(textLayout.getLineForOffset(offset)).toFloat()
     if (bounds.bottom >= lineBottom) return
 
     val centerX = totalPaddingLeft + textLayout.getPrimaryHorizontal(offset)

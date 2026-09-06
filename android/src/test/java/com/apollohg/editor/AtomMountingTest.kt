@@ -98,13 +98,13 @@ class AtomMountingTest {
     }
 
     @Test
-    fun `atom child stays under its React Native managed parent`() {
+    fun `atom child stays in scroll content with React logical ownership`() {
         val editor = nativeEditorView()
         val child = atomChild(editor.context, "counterCard:0")
 
         editor.addAtomChild(child, 0)
 
-        assertSame(editor, child.parent)
+        assertSame(editor.richTextView.editorContentFrame, child.parent)
         assertEquals(1, editor.atomChildCount)
         assertSame(child, editor.atomChildAt(0))
     }
@@ -116,18 +116,7 @@ class AtomMountingTest {
         editor.onAtomLayoutForTesting = {}
         activity.setContentView(editor, ViewGroup.LayoutParams(320, 240))
         installAtoms(editor.richTextView, listOf("first", "second", "third", "fourth"))
-        val drawAtomHosts = requireNotNull(editor.richTextView.onDrawAtomHosts)
-        var drawingFromScrollView = false
-        editor.richTextView.onDrawAtomHosts = { canvas, drawingTime ->
-            drawingFromScrollView = true
-            try {
-                drawAtomHosts(canvas, drawingTime)
-            } finally {
-                drawingFromScrollView = false
-            }
-        }
         var drawCount = 0
-        var drawnFromScrollView = false
         val host = object : FrameLayout(activity) {
             init {
                 setWillNotDraw(false)
@@ -138,7 +127,6 @@ class AtomMountingTest {
             override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
                 drawCount += 1
-                drawnFromScrollView = drawingFromScrollView
             }
         }
         editor.addAtomChild(host, 0)
@@ -147,16 +135,17 @@ class AtomMountingTest {
         shadowOf(Looper.getMainLooper()).idle()
         editor.richTextView.layoutAtomHostViews()
         val initialAtomY = host.y.toInt()
+        val initialWindowPosition = IntArray(2).also(host::getLocationOnScreen)
         val requestedScrollY = (host.y.toInt() - 160).coerceAtLeast(1)
         editor.richTextView.editorScrollView.scrollTo(0, requestedScrollY)
         editor.richTextView.layoutAtomHostViews()
-        val atomY = host.y.toInt()
+        val atomY = IntArray(2).also(host::getLocationOnScreen)[1]
         drawCount = 0
         val bitmap = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
         editor.draw(Canvas(bitmap))
 
-        assertSame(editor, host.parent)
+        assertSame(editor.richTextView.editorContentFrame, host.parent)
         assertTrue(
             "editor=${editor.width}x${editor.height}, viewport=${editor.richTextView.editorScrollView.height}",
             editor.richTextView.editorScrollView.scrollY > 0,
@@ -166,11 +155,12 @@ class AtomMountingTest {
             atomY in 0 until bitmap.height,
         )
         assertEquals(
-            initialAtomY - editor.richTextView.editorScrollView.scrollY,
+            initialWindowPosition[1] - editor.richTextView.editorScrollView.scrollY,
             atomY,
         )
         assertEquals(1, drawCount)
-        assertTrue(drawnFromScrollView)
+        assertEquals(initialAtomY, host.top)
+        assertEquals(0f, host.translationY)
         assertEquals(
             View.OVER_SCROLL_IF_CONTENT_SCROLLS,
             editor.richTextView.editorScrollView.overScrollMode,
@@ -198,7 +188,7 @@ class AtomMountingTest {
             View.MeasureSpec.makeMeasureSpec(500, View.MeasureSpec.AT_MOST),
         )
 
-        assertEquals(280, child.measuredWidth)
+        assertEquals(view.editorEditText.measuredWidth - view.editorEditText.compoundPaddingLeft - view.editorEditText.compoundPaddingRight, child.measuredWidth)
         assertEquals(132, child.measuredHeight)
     }
 
@@ -519,7 +509,7 @@ class AtomMountingTest {
         editor.dispatchTouchEvent(MotionEvent.obtain(1, 2, MotionEvent.ACTION_UP, x, y, 0))
 
         assertEquals(1, releases)
-        assertEquals(0, editor.atomScrollTouchDispatchCountForTesting)
+        assertEquals(0, editor.richTextView.editorScrollView.scrollY)
     }
 
     @Test
@@ -541,7 +531,7 @@ class AtomMountingTest {
         val firstY = textLayout.getLineTop(textLayout.getLineForOffset(text.getSpanStart(firstSpan)))
         val secondY = textLayout.getLineTop(textLayout.getLineForOffset(text.getSpanStart(secondSpan)))
 
-        assertEquals(firstY - secondY, (first.translationY - second.translationY).toInt())
+        assertEquals(firstY - secondY, first.top - second.top)
     }
 
     @Test
@@ -564,8 +554,10 @@ class AtomMountingTest {
         editor.layoutAtomHostViews()
 
         assertFalse(host.isLayoutRequested)
-        assertEquals(host.childCount - 2, host.indexOfChild(first))
-        assertEquals(host.childCount - 1, host.indexOfChild(second))
+        assertSame(editor.editorContentFrame, first.parent)
+        assertSame(editor.editorContentFrame, second.parent)
+        assertEquals(editor.editorContentFrame.childCount - 2, editor.editorContentFrame.indexOfChild(first))
+        assertEquals(editor.editorContentFrame.childCount - 1, editor.editorContentFrame.indexOfChild(second))
     }
 
     @Test
@@ -586,7 +578,7 @@ class AtomMountingTest {
     }
 
     @Test
-    fun `layout atom host views offsets from the React Native layout`() {
+    fun `native content bounds replace stale React Native layout coordinates`() {
         val editor = nativeEditorView()
         editor.onAtomLayoutForTesting = {}
         val view = editor.richTextView
@@ -607,10 +599,10 @@ class AtomMountingTest {
             textLayout.getLineTop(textLayout.getLineForOffset(spanStart)) -
             view.editorEditText.scrollY
 
-        assertEquals(13, child.left)
-        assertEquals(19, child.top)
-        assertEquals((expectedX - child.left).toFloat(), child.translationX)
-        assertEquals((expectedY - child.top).toFloat(), child.translationY)
+        assertEquals(expectedX, child.left)
+        assertEquals(expectedY, child.top)
+        assertEquals(0f, child.translationX)
+        assertEquals(0f, child.translationY)
     }
 
     @Test
@@ -642,7 +634,7 @@ class AtomMountingTest {
         val event = events.last()
         assertEquals(expectedWidth, event["width"] as Float)
         assertEquals(
-            listOf(mapOf("key" to "counterCard:0", "x" to expectedX, "y" to expectedY, "height" to span.reservedHeightPx / density)),
+            listOf(mapOf("key" to "counterCard:0", "x" to expectedX, "y" to expectedY, "height" to span.reservedHeightPx / density, "width" to (editText.width - editText.compoundPaddingLeft - editText.compoundPaddingRight) / density)),
             event["positions"],
         )
         assertEquals(mapOf("y" to 0f, "height" to editor.richTextView.editorScrollView.height / density), event["viewport"])
@@ -685,7 +677,7 @@ class AtomMountingTest {
     }
 
     @Test
-    fun `scrolling republishes viewport atom positions for React hit testing`() {
+    fun `scrolling preserves content positions while publishing viewport changes`() {
         val editor = nativeEditorView()
         val events = mutableListOf<List<AtomLayoutPosition>>()
         editor.richTextView.onAtomLayoutChange = { _, positions -> events.add(positions) }
@@ -699,12 +691,198 @@ class AtomMountingTest {
         val scrollY = editor.richTextView.editorScrollView.scrollY
         assertTrue(scrollY > 0)
         assertEquals(
-            initialPositions.map { position ->
-                position.copy(yPx = position.yPx - scrollY)
-            },
+            initialPositions,
             events.last(),
         )
         assertTrue(events.size > initialCount)
+    }
+
+    @Test
+    fun `React logical child reorder and removal preserve content parenting`() {
+        val editor = nativeEditorView()
+        installAtoms(editor.richTextView, listOf("first", "second"))
+        val first = atomChild(editor.context, "first")
+        val second = atomChild(editor.context, "second")
+        editor.addAtomChild(first, 0)
+        editor.addAtomChild(second, 1)
+        editor.removeAtomChildAt(0)
+        editor.addAtomChild(first, 1)
+        assertSame(second, editor.atomChildAt(0))
+        assertSame(first, editor.atomChildAt(1))
+        val content = editor.richTextView.editorContentFrame
+        assertSame(content, first.parent)
+        assertSame(content, second.parent)
+        assertTrue(content.indexOfChild(second) < content.indexOfChild(first))
+        editor.removeAtomChildAt(0)
+        assertNull(second.parent)
+        assertSame(first, editor.atomChildAt(0))
+    }
+
+    @Test
+    fun `stale width measurement cannot resize an atom after reflow`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("first", "second", "third"))
+        layout(view, 320, 240)
+        val card = View(view.context)
+        val host = ReactViewGroup(view.context).apply { addView(card) }
+        val width = view.editorEditText.width - view.editorEditText.compoundPaddingLeft - view.editorEditText.compoundPaddingRight
+        host.layout(0, 0, width, 80)
+        card.layout(0, 0, width, 80)
+        view.mountAtomChild(host, "first")
+        layout(view, 320, 240)
+        host.layout(0, 0, width, 150)
+        card.layout(0, 0, width, 150)
+        layout(view, 400, 240)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(80, view.measuredAtomHeightForTesting("first"))
+        val newWidth = host.width
+        host.layout(0, 0, newWidth, 150)
+        card.layout(0, 0, newWidth, 150)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(150, view.measuredAtomHeightForTesting("first"))
+    }
+
+    @Test
+    fun `flattened Fabric siblings do not prevent root height changes`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("first", "second", "third"))
+        layout(view, 320, 240)
+        val root = ReactViewGroup(view.context).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom-content:first")
+        }
+        val button = View(view.context)
+        val host = ReactViewGroup(view.context).apply { addView(root); addView(button) }
+        val width = view.editorEditText.width
+        host.layout(0, 0, width, 100)
+        root.layout(0, 0, width, 100)
+        button.layout(20, 20, 60, 60)
+        view.mountAtomChild(host, "first")
+        layout(view, 320, 240)
+
+        host.layout(0, 0, width, 180)
+        root.layout(0, 0, width, 180)
+        button.layout(20, 80, 60, 120)
+        shadowOf(Looper.getMainLooper()).idle()
+        layout(view, 320, 240)
+        assertEquals(180, view.measuredAtomHeightForTesting("first"))
+        assertEquals(180, host.height)
+
+        host.layout(0, 0, width, 80)
+        root.layout(0, 0, width, 80)
+        button.layout(20, 20, 60, 60)
+        shadowOf(Looper.getMainLooper()).idle()
+        layout(view, 320, 240)
+        assertEquals(80, view.measuredAtomHeightForTesting("first"))
+        assertEquals(80, host.height)
+    }
+
+    @Test
+    fun `flattened measurement root rejects the previous Yoga width`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("first", "second", "third"))
+        layout(view, 320, 240)
+        val root = ReactViewGroup(view.context).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom-content:first")
+            layout(0, 0, 320, 80)
+        }
+        val button = View(view.context).apply { layout(20, 20, 60, 60) }
+        val host = ReactViewGroup(view.context).apply {
+            addView(root); addView(button)
+            layout(0, 0, 320, 80)
+        }
+        view.mountAtomChild(host, "first")
+        layout(view, 400, 240)
+        host.layout(0, 0, 400, 150)
+        root.layout(0, 0, 320, 150)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(80, view.measuredAtomHeightForTesting("first"))
+
+        host.layout(0, 0, 400, 150)
+        root.layout(0, 0, 400, 150)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(150, view.measuredAtomHeightForTesting("first"))
+    }
+
+    @Test
+    fun `Fabric parent cannot swallow native content remeasurement after atom growth`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val parent = object : FrameLayout(activity) {
+            override fun requestLayout() = Unit
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                super.onMeasure(MeasureSpec.makeMeasureSpec(320, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(240, MeasureSpec.EXACTLY))
+            }
+        }
+        val editor = nativeEditorView().apply { onAtomLayoutForTesting = {} }
+        parent.addView(editor, FrameLayout.LayoutParams(320, 240))
+        activity.setContentView(parent)
+        val view = editor.richTextView
+        installAtoms(view, listOf("first", "second", "third", "fourth", "fifth"))
+        layout(editor, 320, 240)
+        val root = ReactViewGroup(editor.context).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom-content:first")
+            layout(0, 0, 320, 100)
+        }
+        val host = ReactViewGroup(editor.context).apply {
+            setTag(R.id.view_tag_native_id, "prose-atom:first")
+            addView(root)
+            layout(0, 0, 320, 100)
+        }
+        editor.addAtomChild(host, 0)
+        layout(editor, 320, 240)
+        val before = view.editorEditText.height
+
+        host.layout(0, 0, 320, 180)
+        root.layout(0, 0, 320, 180)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(180, view.measuredAtomHeightForTesting("first"))
+        assertEquals(before + 80, view.editorEditText.height)
+        assertTrue(view.editorContentFrame.height >= view.editorEditText.layout.height)
+
+        host.layout(0, 0, 320, 80)
+        root.layout(0, 0, 320, 80)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(before - 20, view.editorEditText.height)
+    }
+
+    @Test
+    fun `atom growth above viewport preserves the visible text anchor`() {
+        val activity = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(activity)
+        installAtoms(view, listOf("first", "second", "third", "fourth", "fifth"))
+        layout(view, 320, 240)
+        val width = view.editorEditText.width - view.editorEditText.compoundPaddingLeft - view.editorEditText.compoundPaddingRight
+        val host = atomChild(activity, "first").apply { layout(0, 0, width, 100) }
+        view.mountAtomChild(host, "first")
+        layout(view, 320, 240)
+        view.editorScrollView.scrollTo(0, 150)
+        val text = requireNotNull(view.editorEditText.text)
+        val anchor = text.getSpanStart(atomSpans(view).first { it.atomKey == "second" })
+        fun anchorY(): Int {
+            val layout = requireNotNull(view.editorEditText.layout)
+            return layout.getLineTop(layout.getLineForOffset(anchor)) - view.editorScrollView.scrollY
+        }
+        val before = anchorY()
+        host.layout(0, host.top, width, host.top + 180)
+        shadowOf(Looper.getMainLooper()).idle()
+        layout(view, 320, 240)
+        assertEquals(before, anchorY())
+        assertEquals(230, view.editorScrollView.scrollY)
+        assertEquals(0f, host.translationY)
+        assertSame(text, view.editorEditText.text)
+    }
+
+    @Test
+    fun `owner change rejects queued measurements from the previous document`() {
+        val view = RichTextEditorView(RuntimeEnvironment.getApplication())
+        installAtoms(view, listOf("first"))
+        val child = atomChild(view.context, "first").apply { layout(0, 0, 280, 80) }
+        view.mountAtomChild(child, "first")
+        child.layout(0, 0, 280, 160)
+        view.setEditorIdWhileDetached(91L)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(view.measuredAtomHeightForTesting("first"))
     }
 
     private fun installAtoms(view: RichTextEditorView, keys: List<String>) {

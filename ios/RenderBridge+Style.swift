@@ -14,6 +14,30 @@ extension RenderBridge {
         baseFont: UIFont = .systemFont(ofSize: 16)
     ) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
+        if let sheet = theme?.styleSheet {
+            let ancestors = blockStack.dropLast().map(\.nodeType)
+            let text = sheet.textStyle(context.nodeType, ancestors: ancestors)
+            let horizontal = blockStack.reduce(UIEdgeInsets.zero) { $0.adding(sheet.box($1.nodeType).outerInsets) }
+            let listName = context.listContext.map { ($0["kind"] as? String) == "task" ? "taskList" : (($0["ordered"] as? NSNumber)?.boolValue == true ? "orderedList" : "bulletList") }
+            let list = listName.map { sheet[$0] } ?? [:]
+            let indent = EditorTheme.cgFloat(list["indent"]) ?? LayoutConstants.indentPerDepth
+            let multiplier = EditorTheme.cgFloat(list["baseIndentMultiplier"]) ?? 1
+            let listDepth = max(0, blockStack.filter { $0.listContext != nil }.count - 1)
+            let listInset = listName == nil ? 0 : indent * (CGFloat(listDepth) + multiplier) + listMarkerWidth(for: context, theme: theme, baseFont: baseFont)
+            style.headIndent = horizontal.left + listInset
+            style.firstLineHeadIndent = style.headIndent
+            style.tailIndent = -horizontal.right
+            if let height = text.lineHeight { style.minimumLineHeight = height; style.maximumLineHeight = height }
+            let values = sheet.textValues(context.nodeType, ancestors: ancestors)
+            switch values["textAlign"] as? String {
+            case "center": style.alignment = .center
+            case "right": style.alignment = .right
+            case "justify": style.alignment = .justified
+            default: break
+            }
+            return style
+        }
+
         let blockStyle = theme?.effectiveTextStyle(
             for: context.nodeType,
             inBlockquote: blockquoteDepth(in: blockStack) > 0
@@ -143,6 +167,7 @@ extension RenderBridge {
     ) -> [NSAttributedString.Key: Any] {
         guard let currentBlock = effectiveBlockContext(blockStack) else { return attrs }
         var mutableAttrs = attrs
+        if theme?.styleSheet != nil { mutableAttrs[editorStyledContentAttribute] = true }
         let renderedFont = mutableAttrs[.font] as? UIFont ?? .systemFont(ofSize: 16)
         let paragraphBaseFont = blockBaseFont ?? renderedFont
         mutableAttrs[.paragraphStyle] = paragraphStyleForBlock(
@@ -173,15 +198,23 @@ extension RenderBridge {
             }
             mutableAttrs[RenderBridgeAttributes.listMarkerColor] = theme?.list?.markerColor
             mutableAttrs[RenderBridgeAttributes.listMarkerScale] = theme?.list?.markerScale
+            if let sheet = theme?.styleSheet {
+                mutableAttrs[RenderBridgeAttributes.listMarkerScale] = EditorTheme.cgFloat(sheet["listMarker"]["scale"]) ?? ((markerContext["ordered"] as? Bool) == true ? 1 : LayoutConstants.unorderedListMarkerFontScale)
+            }
             mutableAttrs[RenderBridgeAttributes.listMarkerGap] = theme?.list?.markerGap
             mutableAttrs[RenderBridgeAttributes.listMarkerBaseFont] = paragraphBaseFont
+            if let sheet = theme?.styleSheet, (markerContext["kind"] as? String) == "task" {
+                let checkbox = sheet.checkbox(checked: markerContext["checked"] as? Bool == true)
+                mutableAttrs[editorTaskCheckboxAttribute] = EditorMentionRenderedBox(box: checkbox)
+                mutableAttrs[RenderBridgeAttributes.listMarkerGap] = checkbox.number("gap", fallback: 8)
+            }
             mutableAttrs[RenderBridgeAttributes.listMarkerWidth] = listMarkerWidth(
                 for: currentBlock,
                 theme: theme,
                 baseFont: paragraphBaseFont
             )
         }
-        if currentBlock.nodeType == "codeBlock" {
+        if currentBlock.nodeType == "codeBlock", theme?.styleSheet == nil {
             mutableAttrs[RenderBridgeAttributes.codeBlockBackgroundColor] =
                 theme?.codeBlock?.backgroundColor ?? UIColor.secondarySystemBackground
             mutableAttrs[RenderBridgeAttributes.codeBlockBorderRadius] =
@@ -191,7 +224,7 @@ extension RenderBridge {
             mutableAttrs[RenderBridgeAttributes.codeBlockPaddingVertical] =
                 theme?.codeBlock?.paddingVertical ?? 8
         }
-        if blockquoteDepth(in: blockStack) > 0 {
+        if blockquoteDepth(in: blockStack) > 0, theme?.styleSheet == nil {
             let foreground = mutableAttrs[.foregroundColor] as? UIColor ?? .separator
             mutableAttrs[RenderBridgeAttributes.blockquoteBorderColor] =
                 theme?.blockquote?.borderColor
@@ -241,9 +274,22 @@ extension RenderBridge {
         baseFont: UIFont
     ) -> CGFloat {
         guard let listContext = context.listContext else { return 0 }
-        _ = listContext
-        _ = theme
-        _ = baseFont
+        if let sheet = theme?.styleSheet {
+            if (listContext["kind"] as? String) == "task" {
+                let box = sheet.checkbox(checked: listContext["checked"] as? Bool == true)
+                return box.number("size", fallback: 24) + box.number("gap", fallback: 8)
+            }
+            let ordered = (listContext["ordered"] as? Bool) == true
+            let scale = EditorTheme.cgFloat(sheet["listMarker"]["scale"]) ?? (ordered ? 1 : LayoutConstants.unorderedListMarkerFontScale)
+            let gap = EditorTheme.cgFloat(sheet["listMarker"]["gap"]) ?? 8
+            if !ordered {
+                return EditorLayoutManager.unorderedBulletDrawingRect(usedRect: .zero, lineFragmentRect: .zero, markerWidth: 0, baselineY: 0, baseFont: baseFont, markerScale: scale, origin: .zero).width + gap
+            }
+            let label = ordered
+                ? OrderedListMarkerFormatter.label(index: jsonUInt32(listContext["index"]) ?? 1, nestingDepth: Int(context.depth), theme: theme?.list?.orderedMarker)
+                : "•"
+            return ceil((label as NSString).size(withAttributes: [.font: baseFont.withSize(baseFont.pointSize * scale)]).width) + gap
+        }
         return LayoutConstants.listMarkerWidth
     }
 
@@ -251,6 +297,9 @@ extension RenderBridge {
         for blockStack: [BlockContext],
         theme: EditorTheme?
     ) -> EditorTextStyle? {
+        if let sheet = theme?.styleSheet {
+            return sheet.textStyle(blockStack.last?.nodeType ?? "paragraph", ancestors: blockStack.dropLast().map(\.nodeType))
+        }
         let inBlockquote = blockquoteDepth(in: blockStack) > 0
         guard let currentBlock = effectiveBlockContext(blockStack) else {
             return theme?.effectiveTextStyle(for: "paragraph", inBlockquote: inBlockquote)
@@ -275,7 +324,7 @@ extension RenderBridge {
     }
 
     static func isTransparentContainer(_ nodeType: String) -> Bool {
-        nodeType == "blockquote" || nodeType == "columns" || nodeType == "column"
+        nodeType == "blockquote" || nodeType == "columns" || nodeType == "column" || ["bulletList", "orderedList", "taskList"].contains(EditorStyleSheet.element(nodeType))
     }
 
     static func resolvedFont(

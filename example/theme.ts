@@ -1,8 +1,8 @@
 import { Platform } from 'react-native';
+import { EditorStyleSheet } from 'react-native-rich-text-editor';
 import type {
     EditorMentionTheme,
     EditorTextStyle,
-    EditorTheme,
     EditorToolbarTheme,
 } from 'react-native-rich-text-editor';
 
@@ -95,59 +95,52 @@ export const toolbarTheme: EditorToolbarTheme = {
     buttonBorderRadius: RADIUS.control,
 };
 
-export const editorTheme: EditorTheme = {
-    backgroundColor: PALETTE.paper,
-    borderRadius: 0,
-    placeholderColor: PALETTE.inkFaint,
-    contentInsets: { top: SPACE.xxl, right: SPACE.xl, bottom: SPACE.xxxl, left: SPACE.xl },
-    text: {
-        color: PALETTE.ink,
-        fontSize: FONT_SIZE.body,
-        spacingAfter: SPACE.md,
+export const editorTheme = EditorStyleSheet.create({
+    content: {
+        backgroundColor: PALETTE.paper,
+        borderRadius: 0,
+        paddingTop: SPACE.xxl,
+        paddingHorizontal: SPACE.xl,
+        paddingBottom: SPACE.xxxl,
     },
-    paragraph: {
-        lineHeight: LINE_HEIGHT.body,
-    },
-    headings: {
-        h1: headingStyle(0),
-        h2: headingStyle(1),
-        h3: headingStyle(2),
-        h4: headingStyle(3),
-        h5: headingStyle(4),
-        h6: headingStyle(5),
-    },
+    placeholder: { color: PALETTE.inkFaint },
+    text: { color: PALETTE.ink, fontSize: FONT_SIZE.body },
+    paragraph: { lineHeight: LINE_HEIGHT.body, marginBottom: SPACE.md },
+    h1: headingStyle(0),
+    h2: headingStyle(1),
+    h3: headingStyle(2),
+    h4: headingStyle(3),
+    h5: headingStyle(4),
+    h6: headingStyle(5),
     blockquote: {
-        text: { fontFamily: SERIF_FAMILY, fontStyle: 'italic', color: PALETTE.inkMuted },
-        indent: SPACE.lg,
-        borderColor: PALETTE.spruce,
-        borderWidth: 2,
-        markerGap: SPACE.md,
+        fontFamily: SERIF_FAMILY,
+        fontStyle: 'italic',
+        color: PALETTE.inkMuted,
+        borderLeftColor: PALETTE.spruce,
+        borderLeftWidth: 2,
+        paddingLeft: SPACE.md,
     },
-    list: {
-        indent: SPACE.xl,
-        baseIndentMultiplier: 1,
-        itemSpacing: SPACE.xs,
-        spacingAfter: SPACE.md,
-        markerColor: PALETTE.spruce,
-        markerScale: 1,
-        markerGap: SPACE.sm,
+    bulletList: { indent: SPACE.xl, baseIndentMultiplier: 1, marginBottom: SPACE.md },
+    orderedList: { indent: SPACE.xl, baseIndentMultiplier: 1, marginBottom: SPACE.md },
+    taskList: { indent: SPACE.xl, baseIndentMultiplier: 1, marginBottom: SPACE.md },
+    listItem: { marginBottom: SPACE.xs },
+    taskItem: { marginBottom: SPACE.xs },
+    listMarker: { color: PALETTE.spruce, scale: 1, gap: SPACE.sm },
+    horizontalRule: { backgroundColor: PALETTE.hairline, height: 1, marginVertical: SPACE.xl },
+    link: { color: PALETTE.spruce, textDecorationLine: 'underline', fontWeight: '500' },
+    codeBlock: {
+        backgroundColor: PALETTE.wash,
+        padding: SPACE.md,
+        borderRadius: RADIUS.control,
+        marginVertical: SPACE.md,
     },
-    horizontalRule: {
-        color: PALETTE.hairline,
-        thickness: 1,
-        verticalMargin: SPACE.xl,
-    },
-    links: {
-        color: PALETTE.spruce,
-        underline: true,
-        fontWeight: '500',
-    },
+    image: { backgroundColor: PALETTE.wash, borderRadius: RADIUS.card, marginVertical: SPACE.md },
     toolbar: toolbarTheme,
-};
+});
 
 export const mentionTheme: EditorMentionTheme = {
     node: {
-        textColor: PALETTE.spruceDeep,
+        color: PALETTE.spruceDeep,
         backgroundColor: PALETTE.spruceTint,
         fontWeight: '600',
         borderRadius: SPACE.xs,
@@ -178,6 +171,6 @@ function headingStyle(index: number): EditorTextStyle {
         fontSize,
         fontWeight: '700',
         lineHeight: Math.round(fontSize * HEADING_LINE_HEIGHT_RATIO),
-        spacingAfter: Math.round(fontSize * HEADING_SPACING_RATIO),
+        marginBottom: Math.round(fontSize * HEADING_SPACING_RATIO),
     };
 }

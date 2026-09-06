@@ -1,0 +1,29 @@
+[package]
+name = "native-editor-highlighting"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.95"
+
+[lib]
+name = "native_editor_highlighting"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+syntect = { version = "=5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes"] }
+two-face = { version = "=0.5.1", default-features = false, features = ["syntect-fancy"] }
+uniffi = "0.29"
+thiserror = "2"
+
+[features]
+cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+required-features = ["cli"]
+
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 1
+strip = "debuginfo"

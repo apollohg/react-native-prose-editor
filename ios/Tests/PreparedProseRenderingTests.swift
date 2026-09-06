@@ -3,6 +3,138 @@ import UIKit
 import XCTest
 
 final class PreparedProseRenderingTests: XCTestCase {
+    func testVersionedMentionHonorsLineHeightAndStrikeDecoration() throws {
+        let source = #"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"mention","attrs":{"label":"Jay"}}]}]}"#
+        try withCompiledDocument(source: .json(source), configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(document, themeJSON: ##"{"version":1,"styles":{"mention":{"lineHeight":60,"borderTopWidth":3,"borderBottomWidth":5,"textDecorationLine":"line-through","textDecorationColor":"#ff0000ff"}}}"##)
+            let atom = try XCTUnwrap(layout.blocks.flatMap(\.fragments).first { $0.kind == .atom })
+            XCTAssertGreaterThanOrEqual(atom.bounds.height, 76)
+            XCTAssertTrue(layout.blocks.flatMap(\.fragments).contains { $0.kind == .strike && $0.color == UIColor.red.cgColor })
+        }
+    }
+
+    func testVersionedBulletScaleMatchesEditorMarkerDiameter() throws {
+        for scale: CGFloat in [1, 2] {
+            let theme = PreparedProseTheme.resolve(themeJSON: "{\"version\":1,\"styles\":{\"listMarker\":{\"scale\":\(scale)}}}")
+            let context = ViewerListContext(ordered: false, index: 1, kind: nil, checked: false, isLast: true)
+            let marker = CoreTextProseLayoutEngine().makeListMarker(context, nestingDepth: 0, paint: theme.text, theme: theme)
+            let expected = EditorLayoutManager.unorderedBulletDrawingRect(usedRect: .zero, lineFragmentRect: .zero, markerWidth: 0, baselineY: 0, baseFont: theme.text.font, markerScale: scale, origin: .zero)
+            XCTAssertEqual(marker.width, expected.width, accuracy: 0.01)
+            XCTAssertEqual(marker.ascent + marker.descent, expected.height, accuracy: 0.01)
+        }
+    }
+
+    func testVersionedStrikeKeepsDecorationColorAndPattern() throws {
+        try withCompiledDocument(source: .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Decorated text","marks":[{"type":"strike"}]}]}]}"#), configJSON: Fixture.customConfig) { document in
+            for pattern in ["dashed", "dotted", "double"] {
+                let theme = "{\"version\":1,\"styles\":{\"strike\":{\"textDecorationColor\":\"#ff0000ff\",\"textDecorationStyle\":\"\(pattern)\"}}}"
+                let layout = try prepare(document, themeJSON: theme)
+                let strikes = layout.blocks.flatMap(\.fragments).filter { $0.kind == .strike }
+                XCTAssertGreaterThan(strikes.count, 1)
+                XCTAssertTrue(strikes.allSatisfy { $0.color == UIColor.red.cgColor })
+                if pattern == "double" { XCTAssertEqual(strikes.count, 2) }
+                if pattern == "dotted" { XCTAssertTrue(strikes.allSatisfy { $0.cornerRadius > 0 }) }
+            }
+        }
+    }
+
+    func testVersionedStyleFixtureProducesEditorAndViewerImages() throws {
+        let source = #"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Styled native text","marks":[{"type":"bold"}]}]},{"type":"blockquote","content":[{"type":"paragraph","content":[{"type":"text","text":"A quote with its own inset, border, and rounded background."}]},{"type":"paragraph","content":[{"type":"text","text":"Continuous container spacing."}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"First list item"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"Second list item"}]}]}]},{"type":"paragraph","content":[{"type":"text","text":"Mention "},{"type":"mention","attrs":{"label":"Jay Den"}},{"type":"text","text":" after chip."}]},{"type":"codeBlock","content":[{"type":"text","text":"let answer = 42;\nprint(answer)"}]}]}"#
+        let themeJSON = ##"{"version":1,"styles":{"content":{"backgroundColor":"#ffffffff","paddingTop":12,"paddingBottom":12,"paddingLeft":12,"paddingRight":12},"text":{"fontSize":16,"color":"#243047ff"},"bold":{"fontSize":24,"fontWeight":"700","color":"#303b8bff"},"paragraph":{"marginBottom":10},"blockquote":{"backgroundColor":"#edf0ffff","borderLeftColor":"#6267c9ff","borderLeftWidth":4,"borderTopLeftRadius":10,"borderBottomRightRadius":16,"paddingTop":10,"paddingRight":10,"paddingBottom":8,"marginBottom":12},"bulletList":{"backgroundColor":"#f3f7faff","paddingTop":8,"paddingBottom":8,"borderRadius":10,"marginBottom":12},"listMarker":{"color":"#6267c9ff"},"mention":{"fontWeight":"600","color":"#333b91ff","backgroundColor":"#e4e8ffff","borderLeftWidth":2,"borderRightWidth":2,"borderTopWidth":1,"borderBottomWidth":1,"borderColor":"#9098dfff","borderRadius":8},"codeBlock":{"color":"#dbeaffff","backgroundColor":"#243047ff","borderRadius":10,"paddingTop":12,"paddingBottom":12}}}"##
+        let editorId = makeV2Editor(configJson: Fixture.customConfig)
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setJson(id: editorId, json: source)
+        let editor = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 650))
+        editor.editorId = editorId
+        XCTAssertTrue(editor.applyTheme(try XCTUnwrap(EditorTheme.from(json: themeJSON))))
+        editor.textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        editor.layoutIfNeeded()
+        XCTAssertTrue(editor.textView.text.contains("Styled native text"))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 2
+        let editorImage = UIGraphicsImageRenderer(size: editor.bounds.size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(editor.bounds)
+            editor.layer.render(in: context.cgContext)
+        }
+        let directory = FileManager.default.temporaryDirectory
+        try XCTUnwrap(editorImage.pngData()).write(to: directory.appendingPathComponent("ios-styles-editor.png"))
+        try withCompiledDocument(source: .json(source), configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(document, themeJSON: themeJSON)
+            let drawing = PreparedProseDrawingView(frame: CGRect(origin: .zero, size: layout.size))
+            drawing.install(layout: layout)
+            let viewerImage = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 650), format: format).image { context in
+                UIColor.white.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 320, height: 650))
+                drawing.draw(drawing.bounds)
+            }
+            try XCTUnwrap(viewerImage.pngData()).write(to: directory.appendingPathComponent("ios-styles-viewer.png"))
+            XCTAssertGreaterThan(layout.blocks.count, 5)
+        }
+        print("STYLE_FIXTURES: \(directory.path)")
+    }
+
+    func testVersionedParagraphBoxReservesAllSidesAndRetainsTrailingMargin() throws {
+        let document = ViewerDocument(semanticKey: "style-box", paragraphs: [.init(text: "Hello")], isEmpty: false, retainedBytes: 0)
+        let plain = try prepare(document, themeJSON: nil)
+        let styled = try prepare(document, themeJSON: """
+        {"version":1,"styles":{"paragraph":{"paddingTop":11,"paddingBottom":13,"paddingLeft":7,"paddingRight":9,"borderTopWidth":2,"borderBottomWidth":3,"borderLeftWidth":4,"borderRightWidth":5,"marginTop":17,"marginBottom":19,"backgroundColor":"#ff0000ff","borderTopLeftRadius":8}}}
+        """)
+        let text = try XCTUnwrap(styled.blocks.flatMap(\.fragments).first { $0.kind == .text })
+        XCTAssertEqual(text.bounds.minX, 11)
+        XCTAssertEqual(text.bounds.minY, 30)
+        XCTAssertGreaterThanOrEqual(styled.size.height - plain.size.height, 65)
+        XCTAssertTrue(styled.blocks.flatMap(\.fragments).contains { $0.kind == .background })
+    }
+
+    func testVersionedNestedQuoteAndListKeepDistinctContinuousBoxes() throws {
+        try withCompiledDocument(source: .json(#"{"type":"doc","content":[{"type":"blockquote","content":[{"type":"paragraph","content":[{"type":"text","text":"First"}]},{"type":"blockquote","content":[{"type":"paragraph","content":[{"type":"text","text":"Nested"}]}]},{"type":"paragraph","content":[{"type":"text","text":"Last"}]}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"One"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"Two"}]}]}]}]}"#), configJSON: Fixture.customConfig) { document in
+            let layout = try prepare(document, themeJSON: """
+            {"version":1,"styles":{"blockquote":{"paddingTop":5,"paddingBottom":7,"backgroundColor":"#ffff00ff"},"bulletList":{"paddingTop":9,"paddingBottom":11,"backgroundColor":"#ff0000ff"},"listItem":{"marginBottom":3}}}
+            """)
+            let quoteBoxes = layout.decorations.filter { $0.styleBox?.color("backgroundColor") == UIColor.yellow }
+            XCTAssertEqual(quoteBoxes.count, 2)
+            XCTAssertGreaterThan(quoteBoxes[0].bounds.height, quoteBoxes[1].bounds.height)
+            XCTAssertTrue(quoteBoxes[0].bounds.contains(quoteBoxes[1].bounds))
+            let listBoxes = layout.decorations.filter { $0.styleBox?.color("backgroundColor") == UIColor.red }
+            XCTAssertEqual(listBoxes.count, 1)
+            XCTAssertGreaterThan(try XCTUnwrap(listBoxes.first, String(describing: document.blocks.map { ($0.nodeType, $0.styleAncestors) })).bounds.height, 50)
+        }
+    }
+
+    func testVersionedInlineBackgroundHasPreparedPaintFragment() throws {
+        try withCompiledDocument(source: .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Painted","marks":[{"type":"bold"}]}]}]}"#), configJSON: #"{"initialization":{"type":"localEmpty"}}"#) { document in
+            let layout = try prepare(document, themeJSON: """
+            {"version":1,"styles":{"bold":{"backgroundColor":"#ff0000ff"}}}
+            """)
+            XCTAssertTrue(layout.blocks.flatMap(\.fragments).contains { $0.kind == .background && $0.color == UIColor.red.cgColor })
+        }
+    }
+
+    func testVersionedImageStyleKeepsDeclaredSizeAndClipsDecodedPixels() throws {
+        try withCompiledDocument(source: .json(#"{"type":"doc","content":[{"type":"image","attrs":{"src":"https://example.test/image.png","width":64,"height":32}}]}"#), configJSON: Fixture.localConfig) { document in
+            let layout = try prepare(document, themeJSON: """
+            {"version":1,"styles":{"image":{"paddingLeft":4,"paddingRight":6,"paddingTop":3,"paddingBottom":5,"borderTopWidth":2,"borderBottomWidth":2,"borderLeftWidth":2,"borderRightWidth":2,"borderTopLeftRadius":16,"backgroundColor":"#00ff00ff","resizeMode":"contain"}}}
+            """)
+            let attachment = try XCTUnwrap(layout.imageAttachments.first)
+            XCTAssertEqual(attachment.bounds.width, 78)
+            XCTAssertEqual(attachment.bounds.height, 44)
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let pixels = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 32), format: format).image { context in
+                UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 64, height: 32))
+            }
+            let drawing = PreparedProseDrawingView(frame: CGRect(origin: .zero, size: layout.size))
+            drawing.install(layout: layout)
+            drawing.imagePixels = [attachment.id: pixels]
+            let result = try XCTUnwrap(UIGraphicsImageRenderer(size: layout.size, format: format).image { _ in drawing.draw(drawing.bounds) }.cgImage)
+            let data = try XCTUnwrap(result.dataProvider?.data)
+            let bytes = try XCTUnwrap(CFDataGetBytePtr(data))
+            let corner = Int(attachment.bounds.minY) * result.bytesPerRow + Int(attachment.bounds.minX) * 4
+            XCTAssertEqual(bytes[corner + 3], 0)
+        }
+    }
+
     func testImagePixelsPreserveAllFourCornersInCoreTextDrawingContext() throws {
         try withCompiledDocument(
             source: .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Before"}]},{"type":"image","attrs":{"src":"https://example.test/corners.png","width":64,"height":64}}]}"#),
@@ -549,7 +681,7 @@ private struct Fixture {
     let expectedKinds: Set<PreparedProseFragmentKind>
     let assertDocument: (ViewerDocument) -> Bool
 
-    static let themeJSON = ##"{"mentions":{"node":{"textColor":"#102030","backgroundColor":"#DDEEFF","borderColor":"#445566","borderWidth":2,"borderRadius":7}},"links":{"color":"#007AFF"}}"##
+    static let themeJSON = ###"{"mentions":{"node":{"textColor":"#102030","backgroundColor":"#DDEEFF","borderColor":"#445566","borderWidth":2,"borderRadius":7}},"links":{"color":"#007AFF"}}"###
     static let localConfig = #"{"initialization":{"type":"localEmpty"}}"#
     static let customConfig = #"{"schema":{"nodes":[{"name":"doc","content":"block+","role":"doc"},{"name":"paragraph","content":"inline*","group":"block","role":"textBlock"},{"name":"codeBlock","content":"text*","group":"block","role":"textBlock"},{"name":"blockquote","content":"block+","group":"block","role":"block"},{"name":"bulletList","content":"listItem+","group":"block","role":"list"},{"name":"orderedList","content":"listItem+","group":"block","role":"list","attrs":{"start":{"default":1}}},{"name":"taskList","content":"listItem+","group":"block","role":"list"},{"name":"listItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},{"name":"horizontal_rule","content":"","group":"block","role":"block","isVoid":true},{"name":"opaqueBlock","content":"","group":"block","role":"block","isVoid":true,"allowUndeclaredAttrs":true},{"name":"hardBreak","content":"","group":"inline","role":"hardBreak","isVoid":true},{"name":"mention","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true,"attrs":{"label":{"default":null}}},{"name":"opaque","content":"","group":"inline","role":"inline","isVoid":true,"allowUndeclaredAttrs":true},{"name":"text","group":"inline","role":"text"}],"marks":[{"name":"bold"},{"name":"italic"},{"name":"underline"},{"name":"strike"},{"name":"code"},{"name":"link","attrs":{"href":{}}},{"name":"textColor","attrs":{"color":{}}},{"name":"highlight","attrs":{"color":{}}},{"name":"textStyle","attrs":{"fontFamily":{},"fontSize":{}}}]},"initialization":{"type":"localEmpty"}}"#
 

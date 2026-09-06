@@ -19,6 +19,9 @@ extension RenderBridge {
         textColor: UIColor,
         theme: EditorTheme? = nil
     ) -> [NSAttributedString.Key: Any] {
+        if let sheet = theme?.styleSheet {
+            return sheet.inlineAttributes(marks, base: defaultAttributes(baseFont: baseFont, textColor: textColor))
+        }
         var attrs = defaultAttributes(baseFont: baseFont, textColor: textColor)
 
         if marks.isEmpty {
@@ -170,6 +173,7 @@ extension RenderBridge {
         switch nodeType {
         case "horizontalRule", "horizontal_rule":
             let attachment = HorizontalRuleAttachment()
+            attachment.styleBox = theme?.styleSheet?.box("horizontalRule")
             attachment.lineColor = theme?.horizontalRule?.color ?? textColor.withAlphaComponent(0.3)
             attachment.lineHeight = theme?.horizontalRule?.thickness ?? LayoutConstants.horizontalRuleHeight
             attachment.verticalPadding = resolvedHorizontalRuleVerticalMargin(theme: theme)
@@ -195,6 +199,7 @@ extension RenderBridge {
                 preferredWidth: jsonCGFloat(elementAttrs["width"]),
                 preferredHeight: jsonCGFloat(elementAttrs["height"])
             )
+            attachment.styleBox = theme?.styleSheet?.box("image")
             let attrStr = NSMutableAttributedString(attachment: attachment)
             let range = NSRange(location: 0, length: attrStr.length)
             attrStr.addAttributes(attrs, range: range)
@@ -233,6 +238,15 @@ extension RenderBridge {
                 node?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12)
             if let mentionFont = mentionFont(from: blockFont, theme: node) {
                 attrs[.font] = mentionFont
+            }
+            if let values = node?.style, !values.isEmpty {
+                EditorStyleSheet.applyText(values, to: &attrs)
+                var boxValues = values
+                boxValues["backgroundColor"] = values["backgroundColor"] ?? "#007aff1f"
+                attrs.removeValue(forKey: .backgroundColor)
+                let chip = EditorMentionRenderedBox(box: EditorStyleBox(boxValues), label: NSAttributedString(string: label, attributes: attrs))
+                attrs[editorMentionBoxAttribute] = chip
+                attrs[editorInlineLineHeightAttribute] = chip.size.height
             }
         } else {
             attrs[.backgroundColor] = UIColor.systemGray5

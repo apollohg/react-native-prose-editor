@@ -18,12 +18,15 @@ internal fun RenderBridge.applyBlockStyle(
 ) {
     val currentBlock = effectiveBlockContext(blockStack) ?: return
     val indent = calculateIndent(currentBlock, blockStack, theme, density)
-    val markerWidth = calculateMarkerWidth(density)
+    val markerWidth = if (currentBlock.listContext?.optString("kind") == "task" && theme?.styleSheet != null) {
+        val checkbox = resolvedCheckboxStyle(theme.styleSheet, currentBlock.listContext.optBoolean("checked"))
+        ((checkbox.size ?: 18f) + (checkbox.gap ?: 6f)) * density
+    } else calculateMarkerWidth(density)
     val quoteDepth = blockquoteDepth(blockStack)
     val indentPerDepth = (theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density
     val listBaseIndentAdjustment =
         calculateListBaseIndentAdjustment(currentBlock, theme, density)
-    val quoteStripeColor = if (quoteDepth > 0) {
+    val quoteStripeColor = if (quoteDepth > 0 && theme?.styleSheet == null) {
         theme?.blockquote?.borderColor ?: Color.argb(
             (Color.alpha(resolveInlineTextColor(blockStack, Color.BLACK, theme)) * 0.3f).toInt(),
             Color.red(resolveInlineTextColor(blockStack, Color.BLACK, theme)),
@@ -89,7 +92,7 @@ internal fun RenderBridge.applyBlockStyle(
     }
     annotateTopLevelChild(builder, start, end, currentBlock.topLevelChildIndex)
 
-    val lineHeight = resolveTextStyle(
+    val lineHeight = theme?.styleSheet?.resolveText(currentBlock.nodeType, blockStack.dropLast(1).map { it.nodeType })?.lineHeight ?: resolveTextStyle(
         currentBlock.nodeType,
         theme,
         quoteDepth > 0
@@ -143,7 +146,7 @@ internal fun RenderBridge.applyPendingLeadingMargins(
 
             builder
                 .getSpans(0, builder.length, LeadingMarginSpan::class.java)
-                .filter { builder.getSpanStart(it) == paragraphStart }
+                .filter { it !is EditorBlockBoxSpan && builder.getSpanStart(it) == paragraphStart }
                 .forEach(builder::removeSpan)
 
             builder.setSpan(
@@ -176,7 +179,7 @@ internal fun RenderBridge.applyPendingLeadingMargins(
 
             builder
                 .getSpans(0, builder.length, LeadingMarginSpan::class.java)
-                .filter { builder.getSpanStart(it) == paragraphStart }
+                .filter { it !is EditorBlockBoxSpan && builder.getSpanStart(it) == paragraphStart }
                 .forEach(builder::removeSpan)
 
             builder.setSpan(span, paragraphStart, paragraphEnd, Spanned.SPAN_PARAGRAPH)
@@ -190,7 +193,7 @@ internal fun RenderBridge.applyPendingCodeBlockSpans(
     theme: EditorTheme?,
     density: Float
 ) {
-    if (pendingCodeBlockSpans.isEmpty()) return
+    if (pendingCodeBlockSpans.isEmpty() || theme?.styleSheet != null) return
 
     val backgroundColor = theme?.codeBlock?.backgroundColor ?: LayoutConstants.CODE_BACKGROUND_COLOR
     val cornerRadiusPx = (theme?.codeBlock?.borderRadius ?: 8f) * density
@@ -250,6 +253,15 @@ internal fun RenderBridge.calculateIndent(
     theme: EditorTheme?,
     density: Float
 ): Float {
+    theme?.styleSheet?.let { sheet ->
+        val lists = blockStack.filter { it.listContext != null }
+        return lists.mapIndexed { index, block ->
+            val context = block.listContext!!
+            val name = if (context.optString("kind") == "task") "taskList" else if (context.optBoolean("ordered")) "orderedList" else "bulletList"
+            val style = sheet[name]
+            (style?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * (if (index == 0) style?.baseIndentMultiplier ?: 1f else 1f) * density
+        }.sum()
+    }
     val indentPerDepth = (theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density
     val quoteDepth = blockquoteDepth(blockStack)
     val columnsDepth = columnContainerDepth(blockStack)
@@ -353,5 +365,5 @@ internal fun RenderBridge.columnContainerDepth(blockStack: List<BlockContext>): 
 }
 
 internal fun RenderBridge.isTransparentContainer(nodeType: String): Boolean {
-    return nodeType == "blockquote" || nodeType == "columns" || nodeType == "column"
+    return nodeType in setOf("blockquote", "columns", "column", "bulletList", "orderedList", "taskList")
 }

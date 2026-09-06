@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "target": "ES2020",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "declaration": true,
+        "skipLibCheck": true,
+        "rootDir": "src",
+        "outDir": "dist",
+        "paths": {
+            "react-native-rich-text-editor": ["../../dist"],
+            "expo-modules-core": ["../../example/node_modules/expo/node_modules/expo-modules-core"]
+        }
+    },
+    "include": ["src"]
+}

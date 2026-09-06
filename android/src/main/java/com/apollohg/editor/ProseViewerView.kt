@@ -193,6 +193,10 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         preparedDrawingView.publishesAccessibilitySubtree = false
         updatePreparedInteractionCapabilities()
+        preparedDrawingView.onCodeHighlightsReady = {
+            preparedRequest?.let { preparedRequest = it.copy(nativeFontRevision = it.nativeFontRevision + 1) }
+            requestLayout()
+        }
         preparedDrawingView.onInteractionActivated = { activatePreparedInteraction(it) }
         viewerImagePipeline.onPixels = { attachment, lease ->
             val current = preparedRequest

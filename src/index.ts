@@ -99,6 +99,37 @@ export type {
     EditorFontWeight,
 } from './EditorTheme';
 
+export { EditorStyleSheet } from './EditorStyleSheet';
+export type {
+    EditorStyleProp,
+    EditorStyleMap,
+    EditorTypographyStyle,
+    EditorBorderStyle,
+    EditorPaddingStyle,
+    EditorMarginStyle,
+    EditorSurfaceStyle,
+    EditorBoxStyle,
+    EditorInlineStyle,
+    EditorImageStyle,
+    EditorListStyle,
+    EditorListMarkerStyle,
+    EditorCheckboxAppearance,
+    EditorTaskCheckboxStyle,
+    EditorHorizontalRuleStyle,
+    EditorMentionStyle,
+} from './EditorStyleSheetTypes';
+
+export {
+    createMentionsAddon,
+    type EditorAddon,
+    type EditorAddonEntry,
+    type MentionsAddon,
+    type MentionsAddonOptions,
+    type MentionPressEvent,
+    type CodeHighlightingAddon,
+    type CodeHighlightingAddonOptions,
+} from './EditorAddon';
+
 export {
     MENTION_NODE_NAME,
     mentionNodeSpec,

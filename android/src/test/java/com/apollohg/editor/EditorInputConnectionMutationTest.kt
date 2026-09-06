@@ -721,7 +721,7 @@ class EditorInputConnectionMutationTest : EditorInputConnectionTestSupport() {
     }
 
     @Test
-    fun `multiline plain paste inserts structured content`() {
+    fun `multiline plain paste replaces its range atomically`() {
         val context = RuntimeEnvironment.getApplication()
         val editText = EditorEditText(context)
         editText.applyUpdateJSON(renderUpdateJson("Hello world"), notifyListener = false)
@@ -729,8 +729,8 @@ class EditorInputConnectionMutationTest : EditorInputConnectionTestSupport() {
         editText.editorId = 1
 
         var insertedContent: Triple<Int, Int, String>? = null
-        editText.onInsertContentJsonAtSelectionScalarForTesting = { scalarFrom, scalarTo, json ->
-            insertedContent = Triple(scalarFrom, scalarTo, json)
+        editText.onReplaceTextInRustForTesting = { scalarFrom, scalarTo, text ->
+            insertedContent = Triple(scalarFrom, scalarTo, text)
         }
 
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -738,12 +738,10 @@ class EditorInputConnectionMutationTest : EditorInputConnectionTestSupport() {
 
         assertTrue(editText.onTextContextMenuItem(android.R.id.paste))
 
-        val (scalarFrom, scalarTo, json) = insertedContent!!
+        val (scalarFrom, scalarTo, text) = insertedContent!!
         assertEquals(6, scalarFrom)
         assertEquals(11, scalarTo)
-        val content = JSONObject(json).getJSONArray("content")
-        assertEquals("one", content.getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("text"))
-        assertEquals("two", content.getJSONObject(1).getJSONArray("content").getJSONObject(0).getString("text"))
+        assertEquals("one\ntwo", text)
     }
 
     @Test

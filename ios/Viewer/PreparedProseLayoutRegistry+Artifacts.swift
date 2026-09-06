@@ -90,6 +90,11 @@ extension PreparedProseLayoutRegistry {
         compiledDocument: ViewerDocument?,
         fabricGeneration: FabricGenerationToken?
     ) throws -> ViewerDocument {
+        if let data = request.configuration.configJSON.data(using: .utf8),
+           let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let highlighting = NativeCodeHighlightConfiguration.from(values["codeHighlighting"]) {
+            _ = try NativeCodeHighlightingRegistry.provider(id: highlighting.provider)
+        }
         compiledCondition.lock()
         if let fabricGeneration,
            !isFabricLeaseActiveLocked(fabricGeneration) {
@@ -195,6 +200,10 @@ extension PreparedProseLayoutRegistry {
                 fontScale: request.nativeFontScale,
                 semanticGeneration: request.semanticGenerationIdentity
             )
+        }
+        if let data = request.configuration.configJSON.data(using: .utf8),
+           let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            theme.codeHighlighting = NativeCodeHighlightConfiguration.from(values["codeHighlighting"])
         }
         themesByGeneration[request.generationIdentity] = theme
         themesRetainedBytes += theme.estimatedRetainedBytes

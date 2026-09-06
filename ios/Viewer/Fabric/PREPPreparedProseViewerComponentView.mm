@@ -176,6 +176,8 @@ int64_t ComponentTagFromState(
   int64_t _ownedComponentTag;
   uint64_t _ownedLeaseHandle;
   BOOL _hasOwnedSurface;
+  id _codeHighlightingObserver;
+  id _codeHighlightingFailureObserver;
   id _imageMetadataObserver;
   id _imageResourceObserver;
   id _fontEnvironmentObserver;
@@ -200,6 +202,14 @@ int64_t ComponentTagFromState(
     self.isAccessibilityElement = NO;
     [self addSubview:_drawingView];
     __weak PREPPreparedProseViewerComponentView *weakSelf = self;
+    _codeHighlightingObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:PREPPreparedProseDrawingView.codeHighlightingDidResolve
+                    object:_drawingView queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *note) { [weakSelf handleCodeHighlighting:note]; }];
+    _codeHighlightingFailureObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:PREPPreparedProseDrawingView.codeHighlightingDidFail
+                    object:_drawingView queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *note) { [weakSelf handleCodeHighlightingFailure:note]; }];
     _imageMetadataObserver = [[NSNotificationCenter defaultCenter]
         addObserverForName:PREPPreparedProseDrawingView.imageMetadataDidResolve
                     object:_drawingView
@@ -236,6 +246,8 @@ int64_t ComponentTagFromState(
   // helper is idempotent and talks only to the stable registry token; it never
   // asks a detached UIView for its current tag or root surface.
   [self releaseAllFabricOwnership];
+  if (_codeHighlightingObserver) [[NSNotificationCenter defaultCenter] removeObserver:_codeHighlightingObserver];
+  if (_codeHighlightingFailureObserver) [[NSNotificationCenter defaultCenter] removeObserver:_codeHighlightingFailureObserver];
   if (_imageMetadataObserver) [[NSNotificationCenter defaultCenter] removeObserver:_imageMetadataObserver];
   if (_imageResourceObserver) [[NSNotificationCenter defaultCenter] removeObserver:_imageResourceObserver];
   if (_fontEnvironmentObserver) [[NSNotificationCenter defaultCenter] removeObserver:_fontEnvironmentObserver];
@@ -661,6 +673,23 @@ int64_t ComponentTagFromState(
         .fatal = true,
     });
   }
+}
+
+- (void)handleCodeHighlighting:(NSNotification *)note
+{
+  NSString *generation = note.userInfo[@"generation"];
+  if (!generation || !_viewerState || ![_ownedSemanticGeneration isEqualToString:generation]) return;
+  [self invalidateNativeFontEnvironmentWithScale:NativeFontScale(_viewerState)];
+}
+
+- (void)handleCodeHighlightingFailure:(NSNotification *)note
+{
+  NSString *generation = note.userInfo[@"generation"];
+  if (!generation || !_viewerState || ![_ownedSemanticGeneration isEqualToString:generation]) return;
+  const auto emitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
+  NSString *message = note.userInfo[@"message"];
+  if (emitter) emitter->onError({.domain = "addon", .code = "CODE_HIGHLIGHTING_FAILED",
+      .message = std::string(message.UTF8String ?: "Code highlighting failed"), .fatal = false});
 }
 
 - (void)handleImageMetadata:(NSNotification *)note

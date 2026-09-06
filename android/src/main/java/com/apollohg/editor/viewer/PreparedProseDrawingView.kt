@@ -26,6 +26,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     private val accessibilityManager = context.getSystemService(AccessibilityManager::class.java)
     var preparedLayout: PreparedProseLayout? = null
         private set
+    var onCodeHighlightsReady: (() -> Unit)? = null
+    private val codeHighlighting = ViewerCodeHighlighting(this)
     var onUsableMetricsChanged: (() -> Unit)? = null
     var onVisibleRectChanged: ((Rect) -> Unit)? = null
     var onFontConfigurationChanged: ((Configuration) -> Unit)? = null
@@ -139,6 +141,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         ) return
         clearVirtualAccessibilityFocus()
         preparedLayout = layout
+        codeHighlighting.update()
         this.contentOriginXPx = contentOriginXPx
         this.contentOriginYPx = contentOriginYPx
         if (announceAccessibilitySubtree) announceAccessibilitySubtreeChanged()
@@ -153,6 +156,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         canvas.translate(contentOriginXPx.toFloat(), contentOriginYPx.toFloat())
         canvas.clipRect(0, 0, artifact.widthPx, artifact.heightPx)
         try {
+            artifact.contentBox?.let { com.apollohg.editor.EditorBoxDrawing.draw(canvas, RectF(0f, 0f, artifact.widthPx.toFloat(), artifact.heightPx.toFloat()), it) }
             recordPreparedProseDraw {
                 onVisibleRectChanged?.invoke(Rect(canvas.clipBounds))
                 val visible = mutableListOf<PreparedProseFragment>()
@@ -172,6 +176,13 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
     private fun drawBackground(canvas: Canvas, fragment: PreparedProseFragment) {
         if (fragment.kind != PreparedProseFragmentKind.BACKGROUND && fragment.kind != PreparedProseFragmentKind.ATOM && fragment.kind != PreparedProseFragmentKind.IMAGE) return
+        fragment.box?.let { box ->
+            val saved = canvas.save()
+            canvas.clipRect(fragment.bounds)
+            com.apollohg.editor.EditorBoxDrawing.draw(canvas, RectF(fragment.decorationBounds ?: fragment.bounds), box)
+            canvas.restoreToCount(saved)
+            return
+        }
         paint.style = Paint.Style.FILL
         paint.color = fragment.color ?: return
         canvas.drawRoundRect(RectF(fragment.bounds), fragment.cornerRadius, fragment.cornerRadius, paint)
@@ -202,6 +213,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                     val saved = canvas.save()
                     canvas.translate(fragment.layoutX.toFloat(), fragment.layoutY.toFloat())
                     layout.draw(canvas)
+                    com.apollohg.editor.EditorTextDecorationDrawing.draw(canvas, layout)
                     canvas.restoreToCount(saved)
                 } ?: if (fragment.kind == PreparedProseFragmentKind.MARKER) drawTaskMarker(canvas, fragment) else Unit
             }
@@ -209,6 +221,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
                 val saved = canvas.save()
                 canvas.translate(fragment.labelX.toFloat(), fragment.labelY.toFloat())
                 layout.draw(canvas)
+                com.apollohg.editor.EditorTextDecorationDrawing.draw(canvas, layout)
                 canvas.restoreToCount(saved)
             }
             PreparedProseFragmentKind.STRIKE -> {
@@ -219,7 +232,9 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
             PreparedProseFragmentKind.IMAGE -> {
                 val attachment = preparedLayout?.imageAttachments?.firstOrNull { it.bounds == fragment.bounds } ?: return
                 val bitmap = synchronized(imagePixelsLock) { imagePixels[attachment.id]?.bitmap } ?: return
-                canvas.drawBitmap(bitmap, null, fragment.bounds, paint)
+                fragment.box?.let {
+                    com.apollohg.editor.EditorBoxDrawing.drawImage(canvas, bitmap, RectF(fragment.bounds), it, fragment.resizeMode)
+                } ?: canvas.drawBitmap(bitmap, null, fragment.bounds, paint)
             }
             else -> Unit
         }
@@ -227,6 +242,10 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
     private fun drawTaskMarker(canvas: Canvas, fragment: PreparedProseFragment) {
         val bounds = RectF(fragment.bounds)
+        fragment.box?.let {
+            com.apollohg.editor.drawCheckbox(canvas, bounds, it, fragment.checked, fragment.borderColor ?: fragment.color ?: android.graphics.Color.BLACK)
+            return
+        }
         val inset = maxOf(1f, bounds.height() * 0.2f)
         val box = RectF(bounds).apply { inset(inset, inset) }
         paint.style = Paint.Style.STROKE
@@ -256,12 +275,14 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        codeHighlighting.update()
         viewTreeObserver.addOnScrollChangedListener(scrollChangedListener)
         reconcileVirtualAccessibilityFocus()
         if (width > 0) onUsableMetricsChanged?.invoke()
     }
 
     override fun onDetachedFromWindow() {
+        codeHighlighting.cancel()
         if (viewTreeObserver.isAlive) {
             viewTreeObserver.removeOnScrollChangedListener(scrollChangedListener)
         }

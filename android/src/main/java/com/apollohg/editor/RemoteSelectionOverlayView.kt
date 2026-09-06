@@ -297,12 +297,11 @@ class RemoteSelectionOverlayView @JvmOverloads constructor(
         if (!isFocused) return null
 
         val clampedOffset = endUtf16.coerceIn(0, textLength)
-        val lineLookupOffset = clampedOffset.coerceAtMost(maxOf(textLength - 1, 0))
-        val line = layout.getLineForOffset(lineLookupOffset)
+        val line = layout.getLineForOffset(clampedOffset)
         val horizontal = layout.getPrimaryHorizontal(clampedOffset)
         val caretLeft = baseX + horizontal
-        val caretTop = baseY + layout.getLineTop(line)
-        val caretBottom = baseY + layout.getLineBottom(line)
+        val caretTop = baseY + layout.editorTextLineTop(line)
+        val caretBottom = baseY + layout.editorTextLineBottom(line)
         return RectF(caretLeft, caretTop, caretLeft + caretWidth, caretBottom)
     }
 

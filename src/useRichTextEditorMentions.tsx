@@ -1,7 +1,8 @@
+import { normalizeEditorMentionTheme } from './EditorMentionThemeNormalization';
 import { useCallback, useEffect, useMemo } from 'react';
 import {
     buildMentionFragmentJson,
-    normalizeEditorAddons,
+    normalizeNativeEditorAddons,
     type EditorAddonEvent,
     type MentionQueryChangeEvent,
     type MentionSelectionAttrsEvent,
@@ -118,7 +119,9 @@ export function useRichTextEditorMentions(
         (selectionEvent: MentionSelectionAttrsEvent): Record<string, unknown> => {
             const attrs = resolveMentionSelectionAttrs(selectionEvent);
             const resolvedTheme = resolveMentionTheme({ ...selectionEvent, attrs });
-            return resolvedTheme != null ? { ...attrs, mentionTheme: resolvedTheme } : attrs;
+            return resolvedTheme != null
+                ? { ...attrs, mentionTheme: normalizeEditorMentionTheme(resolvedTheme) }
+                : attrs;
         },
         [resolveMentionSelectionAttrs, resolveMentionTheme]
     );
@@ -327,9 +330,9 @@ export function useRichTextEditorMentions(
     const handleMentionSuggestionPress = useCallback(
         (suggestion: MentionSuggestion) => {
             if (mentionQuery == null) return;
-            const normalized = normalizeEditorAddons(addonsRef.current)?.mentions?.suggestions.find(
-                (candidate) => candidate.key === suggestion.key
-            );
+            const normalized = normalizeNativeEditorAddons(
+                addonsRef.current
+            )?.mentions?.suggestions.find((candidate) => candidate.key === suggestion.key);
             if (normalized == null) return;
 
             setMentionQuery(null);
@@ -343,6 +346,14 @@ export function useRichTextEditorMentions(
         },
         [insertMentionSuggestion, mentionQuery]
     );
+
+    const mentionsEnabled = addons.mentions != null;
+    const mentionTrigger = addons.mentions?.trigger?.trim() || '@';
+    useEffect(() => {
+        if (!mentionsEnabled || (mentionQuery != null && mentionQuery.trigger !== mentionTrigger)) {
+            setMentionQuery(null);
+        }
+    }, [mentionsEnabled, mentionQuery, mentionTrigger, setMentionQuery]);
 
     const mentionSuggestions = addons?.mentions?.suggestions;
 
@@ -360,7 +371,7 @@ export function useRichTextEditorMentions(
             return undefined;
         }
 
-        const normalized = normalizeEditorAddons(addons)?.mentions?.suggestions;
+        const normalized = normalizeNativeEditorAddons(addons)?.mentions?.suggestions;
         if (normalized == null) return undefined;
 
         const themes: Record<string, EditorMentionTheme> = {};

@@ -1,14 +1,12 @@
 package com.apollohg.editor
 
 import android.content.Context
-import android.graphics.Canvas
 import android.graphics.Point
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.Window
 import androidx.core.view.ViewCompat
 import expo.modules.kotlin.AppContext
@@ -26,6 +24,8 @@ class NativeEditorExpoView(
     context: Context,
     appContext: AppContext
 ) : ExpoView(context, appContext), EditorEditText.EditorListener {
+
+    override val shouldUseAndroidLayout = true
 
     internal enum class ToolbarPlacement {
         KEYBOARD,
@@ -221,14 +221,6 @@ class NativeEditorExpoView(
     internal var lastAddonsJson: String? = null
     internal var lastAtomsJson: String? = null
     internal val reactChildren = mutableListOf<View>()
-    internal val atomScrollTouchSlopPx = ViewConfiguration.get(context).scaledTouchSlop
-    private var atomScrollGestureActive = false
-    private var atomScrollGestureIntercepted = false
-    private var atomScrollGestureLockedToChild = false
-    internal var atomScrollDownX = 0f
-    internal var atomScrollDownY = 0f
-    internal var atomScrollTouchDispatchCountForTesting = 0
-        internal set
     internal var lastRemoteSelectionsJson: String? = null
     internal var lastToolbarItemsJson: String? = null
     internal var lastToolbarFrameJson: String? = null
@@ -304,7 +296,6 @@ class NativeEditorExpoView(
     init {
         addView(richTextView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         richTextView.onAtomLayoutChange = ::emitAtomLayout
-        richTextView.onDrawAtomHosts = ::drawAtomHostsIntoScrollView
         richTextView.editorEditText.editorListener = this
         richTextView.onBeforeDetachedFromWindow = {
             prepareForDetachFromWindow()
@@ -384,74 +375,6 @@ class NativeEditorExpoView(
     internal fun removeAtomChildAt(index: Int) = removeAtomChildAtImpl(index)
 
     internal fun removeAtomChild(child: View) = removeAtomChildImpl(child)
-
-    override fun drawChild(canvas: Canvas, child: View, drawingTime: Long): Boolean {
-        if (reactChildren.contains(child) && atomKey(child) != null) return false
-        return super.drawChild(canvas, child, drawingTime)
-    }
-
-    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            atomScrollGestureActive = atomChildAt(event.x, event.y) != null
-            atomScrollGestureIntercepted = false
-            atomScrollGestureLockedToChild = false
-            atomScrollDownX = event.x
-            atomScrollDownY = event.y
-            return super.dispatchTouchEvent(event)
-        }
-        if (!atomScrollGestureActive) return super.dispatchTouchEvent(event)
-
-        if (
-            !atomScrollGestureIntercepted &&
-            !atomScrollGestureLockedToChild &&
-            event.actionMasked == MotionEvent.ACTION_MOVE &&
-            atomScrollMovedHorizontallyBeyondSlop(event)
-        ) {
-            atomScrollGestureLockedToChild = true
-        }
-
-        if (
-            !atomScrollGestureIntercepted &&
-            !atomScrollGestureLockedToChild &&
-            event.actionMasked == MotionEvent.ACTION_MOVE &&
-            atomScrollMovedVerticallyBeyondSlop(event) &&
-            richTextView.editorScrollView.let {
-                it.canScrollVertically(-1) || it.canScrollVertically(1)
-            }
-        ) {
-            atomScrollGestureIntercepted = true
-            val cancel = MotionEvent.obtain(event)
-            cancel.action = MotionEvent.ACTION_CANCEL
-            super.dispatchTouchEvent(cancel)
-            cancel.recycle()
-
-            val down = MotionEvent.obtain(
-                event.downTime,
-                event.eventTime,
-                MotionEvent.ACTION_DOWN,
-                atomScrollDownX,
-                atomScrollDownY,
-                event.metaState,
-            )
-            dispatchAtomScrollTouch(down)
-            down.recycle()
-        }
-        val handled = if (atomScrollGestureIntercepted) {
-            dispatchAtomScrollTouch(event)
-            true
-        } else {
-            super.dispatchTouchEvent(event)
-        }
-        if (
-            event.actionMasked == MotionEvent.ACTION_UP ||
-            event.actionMasked == MotionEvent.ACTION_CANCEL
-        ) {
-            atomScrollGestureActive = false
-            atomScrollGestureIntercepted = false
-            atomScrollGestureLockedToChild = false
-        }
-        return handled
-    }
 
     fun setRemoteSelectionsJson(remoteSelectionsJson: String?) =
         setRemoteSelectionsJsonImpl(remoteSelectionsJson)
@@ -867,7 +790,5 @@ class NativeEditorExpoView(
 
     internal fun addNativeAtomView(child: View, index: Int) = super.addView(child, index)
 
-    internal fun drawNativeAtomView(canvas: Canvas, child: View, drawingTime: Long): Boolean =
-        super.drawChild(canvas, child, drawingTime)
 
 }

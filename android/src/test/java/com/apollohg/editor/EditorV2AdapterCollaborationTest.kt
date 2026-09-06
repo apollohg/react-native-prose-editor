@@ -17,6 +17,34 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 internal class EditorV2AdapterCollaborationTest : EditorV2AdapterTestFixture() {
     @Test
+    fun `atomic admission accepts language and rejects malformed language`() {
+        fun snapshot(language: Any) = JSONObject(atomicRenderSnapshot("base", "7")).apply {
+            getJSONArray("renderBlocks").getJSONArray(0).put(0, JSONObject()
+                .put("type", "blockStart").put("nodeType", "codeBlock").put("depth", 0).put("language", language))
+        }.toString()
+        assertNotNull(adoptExternalRender(makeAdapter(), snapshot("rust")))
+        assertNotNull(adoptExternalRender(makeAdapter(), snapshot(JSONObject.NULL)))
+        assertNull(adoptExternalRender(makeAdapter(), snapshot(42)))
+        assertNull(adoptExternalRender(makeAdapter(), snapshot(JSONObject())))
+    }
+
+    @Test
+    fun `atomic admission accepts canonical mention style and rejects malformed style`() {
+        fun snapshot(style: Any) = JSONObject(atomicRenderSnapshot("base", "7")).put("renderBlocks",
+            org.json.JSONArray().put(org.json.JSONArray().put(JSONObject()
+                .put("type", "opaqueInlineAtom").put("nodeType", "mention").put("label", "Ada").put("docPos", 1)
+                .put("mentionTheme", JSONObject().put("node", JSONObject().put("style", style)))))).toString()
+        val valid = JSONObject().put("color", "#123456ff").put("fontWeight", "700").put("fontSize", 18)
+            .put("borderTopWidth", 2).put("borderTopColor", "#abcdef88").put("borderTopLeftRadius", 5)
+            .put("textDecorationLine", "underline line-through").put("textDecorationStyle", "double")
+        assertNotNull(adoptExternalRender(makeAdapter(), snapshot(valid)))
+        listOf<Any>("bad", JSONObject().put("unknown", 1), JSONObject().put("fontSize", -1),
+            JSONObject().put("color", "red"), JSONObject().put("borderLeftWidth", "2"),
+            JSONObject().put("fontWeight", 700), JSONObject().put("fontStyle", "oblique"))
+            .forEach { assertNull(adoptExternalRender(makeAdapter(), snapshot(it))) }
+    }
+
+    @Test
     fun `room typing survives a remote revision advance between keystrokes`() {
         val adapter = makeRoomAdapter()
         adapter.claimNativeBindingIfUnowned(1L)

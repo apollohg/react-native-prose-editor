@@ -11,9 +11,15 @@ import {
     type EditorResourceLimits,
     type ResolvedEditorResourceLimits,
 } from './ResourceLimits';
-import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
+import { serializeEditorTheme, type EditorTheme } from './EditorTheme';
 import type { DocumentJSON } from './NativeEditorBridge';
-import { withMentionsSchema } from './addons';
+import { normalizeEditorAddons, withMentionsSchema } from './addons';
+import type {
+    EditorAddons,
+    CodeHighlightingAddonOptions,
+    MentionPressEvent,
+    MentionsAddonOptions,
+} from './EditorAddon';
 import { withAtomsSchema, type AtomNodeDefinition } from './atoms';
 import { useViewerAtoms, type RichTextViewerAtomAttrsUpdateEvent } from './useViewerAtoms';
 import NativePreparedProseViewer from './specs/PreparedProseViewerNativeComponent';
@@ -50,15 +56,8 @@ export interface RichTextViewerErrorEvent {
     fatal: boolean;
 }
 
-/** A tap on a mention node. Requires `addons.mentions.onPress`. */
-export interface RichTextViewerMentionPressEvent {
-    /** Engine document position of the pressed mention node. */
-    docPos: number;
-    /** Rendered mention label. */
-    label: string;
-    /** The mention node's attributes, as stored in the document. */
-    attrs: Record<string, unknown>;
-}
+/** A tap on a mention node. Requires a mention addon with `onPress`. */
+export type RichTextViewerMentionPressEvent = MentionPressEvent;
 
 /** A tap on link-marked text. Requires `enableLinkTaps` and `onPressLink`. */
 export interface RichTextViewerLinkPressEvent {
@@ -69,23 +68,9 @@ export interface RichTextViewerLinkPressEvent {
 }
 
 /** Mention rendering and press handling for the viewer. */
-export interface RichTextViewerMentionsConfig {
-    /** The trigger character this content was authored with. Recorded in the
-     *  viewer configuration; what gets drawn comes from `prefix`. */
-    trigger?: string;
-    /** Prepended to a mention's label when the label does not already start
-     *  with it. Unset renders the stored label unchanged. */
-    prefix?: string;
-    /** Mention styling. See {@link EditorMentionTheme}. */
-    theme?: EditorMentionTheme;
-    /** Called when a mention is pressed. Mentions are inert until this is set. */
-    onPress?: (event: RichTextViewerMentionPressEvent) => void;
-}
+export type RichTextViewerMentionsConfig = MentionsAddonOptions;
 
-/** Optional viewer features, mirroring the editor's `EditorAddons`. */
-export interface RichTextViewerAddons {
-    mentions?: RichTextViewerMentionsConfig;
-}
+export type RichTextViewerAddons = EditorAddons;
 
 /** Props shared by both content forms of {@link RichTextViewerProps}. */
 export interface RichTextViewerBaseProps extends ViewProps {
@@ -164,10 +149,12 @@ function resolveViewerConfiguration(
     allowBase64Images: boolean,
     resourceLimits: ResolvedEditorResourceLimits | undefined,
     mentions: RichTextViewerMentionsConfig | undefined,
-    atoms: readonly AtomNodeDefinition<any>[] | undefined
+    atoms: readonly AtomNodeDefinition<any>[] | undefined,
+    codeHighlighting: CodeHighlightingAddonOptions | undefined
 ): PreparedProseViewerConfiguration {
     return {
         initialization: { type: 'localEmpty' },
+        ...(codeHighlighting ? { codeHighlighting } : {}),
         schema: withAtomsSchema(withMentionsSchema(schema ?? defaultSchema), atoms ?? []),
         ...(allowBase64Images ? { policy: { allowBase64Images: true } } : {}),
         ...(resourceLimits ? { limits: { resource: resourceLimits } } : {}),
@@ -222,7 +209,7 @@ export function RichTextViewer(props: RichTextViewerProps) {
         onError,
         ...viewProps
     } = props;
-    const mentions = addons?.mentions;
+    const { mentions, codeHighlighting } = useMemo(() => normalizeEditorAddons(addons), [addons]);
     const resolvedResourceLimits = useMemo(
         () => (resourceLimits ? resolveEditorResourceLimits(resourceLimits) : undefined),
         [resourceLimits]
@@ -235,10 +222,11 @@ export function RichTextViewer(props: RichTextViewerProps) {
                     allowBase64Images,
                     resolvedResourceLimits,
                     mentions,
-                    atoms
+                    atoms,
+                    codeHighlighting
                 )
             ),
-        [allowBase64Images, mentions, resolvedResourceLimits, schema, atoms]
+        [allowBase64Images, mentions, resolvedResourceLimits, schema, atoms, codeHighlighting]
     );
     const themeJson = useMemo(
         () => serializeEditorTheme(theme, mentions?.theme),

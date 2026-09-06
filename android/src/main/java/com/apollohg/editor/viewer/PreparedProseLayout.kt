@@ -63,6 +63,9 @@ internal data class PreparedProseFragment(
     val atomDocPos: Long? = null,
     val atomAttrsJson: String? = null,
     val checked: Boolean = false,
+    val box: com.apollohg.editor.EditorBoxStyle? = null,
+    val decorationBounds: Rect? = null,
+    val resizeMode: String = "contain",
 ) {
     val retainedBytes: Long
         get() = 160L + (layout?.text?.length ?: 0).toLong() * 4 + (labelLayout?.text?.length ?: 0).toLong() * 4 + (label?.length ?: 0).toLong() * 2 + (atomNodeType?.length ?: 0).toLong() * 2 + (atomAttrsJson?.length ?: 0).toLong() * 2
@@ -115,6 +118,10 @@ internal data class PreparedProseLayout(
     val retainedBytes: Long,
     val error: ProseViewerError? = null,
     val viewerAtoms: List<PreparedViewerAtom> = emptyList(),
+    val contentBox: com.apollohg.editor.EditorBoxStyle? = null,
+    val codeHighlighting: com.apollohg.editor.NativeCodeHighlightingConfig? = null,
+    val codeHighlightBlocks: List<com.apollohg.editor.CodeHighlightBlock> = emptyList(),
+    val highlightedCodeKeys: Set<String> = emptySet(),
 ) {
     val fragmentKinds: Set<PreparedProseFragmentKind> get() = blocks.flatMapTo(linkedSetOf()) { block -> block.fragments.map { it.kind } }
 

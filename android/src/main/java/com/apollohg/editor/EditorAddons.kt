@@ -62,7 +62,8 @@ data class NativeMentionsAddonConfig(
 }
 
 data class NativeEditorAddons(
-    val mentions: NativeMentionsAddonConfig?
+    val mentions: NativeMentionsAddonConfig?,
+    val codeHighlighting: NativeCodeHighlightingConfig? = null
 ) {
     companion object {
         fun fromJson(json: String?): NativeEditorAddons {
@@ -73,7 +74,8 @@ data class NativeEditorAddons(
                 return NativeEditorAddons(null)
             }
             return NativeEditorAddons(
-                mentions = NativeMentionsAddonConfig.fromJson(root.optJSONObject("mentions"))
+                mentions = NativeMentionsAddonConfig.fromJson(root.optJSONObject("mentions")),
+                codeHighlighting = NativeCodeHighlightingConfig.fromJson(root.optJSONObject("codeHighlighting"))
             )
         }
     }

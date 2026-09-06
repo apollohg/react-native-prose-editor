@@ -247,7 +247,9 @@ export function useRichTextEditorEvents(
                 if (
                     typeof position?.key !== 'string' ||
                     !Number.isFinite(position.x) ||
-                    !Number.isFinite(position.y)
+                    !Number.isFinite(position.y) ||
+                    (position.width !== undefined &&
+                        (!Number.isFinite(position.width) || position.width < 0))
                 ) {
                     continue;
                 }
@@ -260,7 +262,8 @@ export function useRichTextEditorEvents(
                     if (
                         previous?.x !== position.x ||
                         previous.y !== position.y ||
-                        previous.height !== position.height
+                        previous.height !== position.height ||
+                        previous.width !== position.width
                     )
                         return next;
                 }

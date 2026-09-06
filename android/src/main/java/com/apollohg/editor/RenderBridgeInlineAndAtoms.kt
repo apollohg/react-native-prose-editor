@@ -12,7 +12,7 @@ import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import android.text.style.UnderlineSpan
-import android.widget.TextView
+import android.view.View
 import org.json.JSONObject
 
 /**
@@ -45,6 +45,19 @@ internal fun RenderBridge.appendStyledText(
     val end = builder.length
 
     if (start == end) return
+
+    theme?.styleSheet?.let { sheet ->
+        val node = blockStack.lastOrNull()?.nodeType ?: "paragraph"
+        val style = sheet.resolveText(node, blockStack.dropLast(1).map { it.nodeType }, marks.mapNotNull {
+            when (it) { is String -> it; is JSONObject -> it.optString("type"); else -> null }
+        })
+        builder.setSpan(EditorResolvedTextSpan(EditorTextStyle(fontSize = baseFontSize / density, color = textColor).mergedWith(style), density), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        marks.filterIsInstance<JSONObject>().firstOrNull { it.optString("type") == "link" }?.optNullableString("href")?.let {
+            builder.setSpan(Annotation(NATIVE_LINK_HREF_ANNOTATION, it), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        if (applyBlockSpans) applyBlockStyle(builder, start, end, blockStack, pendingLeadingMargins, theme, density)
+        return
+    }
 
     val currentBlock = effectiveBlockContext(blockStack)
     val isCodeBlock = currentBlock?.nodeType == "codeBlock"
@@ -237,13 +250,16 @@ internal fun RenderBridge.appendVoidBlock(
     theme: EditorTheme?,
     density: Float,
     spacingBefore: Float?,
-    hostView: TextView?,
+    hostView: View?,
     topLevelChildIndex: Int?,
     atomConfiguration: AtomRenderConfiguration?,
     atomKey: String,
     docPos: Int?,
     hasStableAtomId: Boolean,
     isDirectRootChild: Boolean,
+    reusableImages: MutableList<BlockImageSpan> = mutableListOf(),
+    ancestorBoxInset: EditorEdges = EditorEdges(),
+    containerDepth: Int = 0,
 ) {
     if (docPos != null && atomConfiguration?.registeredNodeTypes?.contains(nodeType) == true) {
         val start = builder.length
@@ -287,10 +303,14 @@ internal fun RenderBridge.appendVoidBlock(
                 HorizontalRuleSpan(
                     lineColor = ruleColor,
                     lineHeight = (theme?.horizontalRule?.thickness ?: LayoutConstants.HORIZONTAL_RULE_HEIGHT) * density,
-                    verticalPadding = (theme?.horizontalRule?.verticalMargin ?: LayoutConstants.HORIZONTAL_RULE_VERTICAL_PADDING) * density
+                    verticalPadding = (theme?.horizontalRule?.verticalMargin ?: LayoutConstants.HORIZONTAL_RULE_VERTICAL_PADDING) * density,
+                    boxInset = theme?.styleSheet?.box("horizontalRule")?.outerInset?.scaled(density) ?: EditorEdges()
                 ),
                 start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
+            theme?.styleSheet?.let {
+                builder.setSpan(EditorBlockBoxSpan(it.box("horizontalRule").scaled(density), ancestorBoxInset, containerDepth), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
             annotateTopLevelChild(builder, start, end, topLevelChildIndex)
         }
         "image" -> {
@@ -308,16 +328,11 @@ internal fun RenderBridge.appendVoidBlock(
             val start = builder.length
             builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
             val end = builder.length
-            builder.setSpan(
-                BlockImageSpan(
-                    source = source,
-                    hostView = hostView,
-                    density = density,
-                    preferredWidthDp = preferredWidthDp,
-                    preferredHeightDp = preferredHeightDp
-                ),
-                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
+            val imageStyle = theme?.styleSheet?.let { it["image"] ?: EditorElementStyle(EditorTextStyle(), it.box("image")) }
+            val reused = reusableImages.firstOrNull { it.matches(source, preferredWidthDp, preferredHeightDp) }
+            val span = reused?.also { reusableImages.remove(it); it.imageStyle = imageStyle } ?: BlockImageSpan(source, hostView, density, preferredWidthDp, preferredHeightDp, imageStyle)
+            span.ancestorWidthInset = ancestorBoxInset.left + ancestorBoxInset.right
+            builder.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             annotateTopLevelChild(builder, start, end, topLevelChildIndex)
         }
         else -> {
@@ -347,6 +362,15 @@ internal fun RenderBridge.appendOpaqueInlineAtom(
     val start = builder.length
     builder.append(text)
     val end = builder.length
+    if (isMention && theme?.styleSheet != null) {
+        val base = EditorTextStyle(fontSize = baseFontSize / density, color = textColor)
+            .mergedWith(theme.styleSheet.resolveText(blockStack.lastOrNull()?.nodeType ?: "paragraph", blockStack.dropLast(1).map { it.nodeType }))
+        builder.setSpan(EditorMentionSpan(resolvedMentionStyle(base, theme, mentionTheme), density), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        builder.setSpan(Annotation("nativeVoidNodeType", nodeType), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        builder.setSpan(Annotation("nativeDocPos", docPos.toString()), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        applyBlockStyle(builder, start, end, blockStack, pendingLeadingMargins, theme, density)
+        return
+    }
     val resolvedMentionTheme = if (isMention) {
         (theme?.mentions?.mergedWith(mentionTheme) ?: mentionTheme)?.node
     } else {

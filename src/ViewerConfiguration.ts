@@ -1,3 +1,4 @@
+import type { CodeHighlightingAddonOptions } from './EditorAddon';
 import type { SchemaDefinition } from './schemas';
 import type { ResolvedEditorResourceLimits } from './ResourceLimits';
 
@@ -12,6 +13,7 @@ export interface PreparedProseViewerConfiguration {
     policy?: { allowBase64Images: true };
     limits?: { resource: ResolvedEditorResourceLimits };
     mentions?: PreparedProseViewerMentionsConfiguration;
+    codeHighlighting?: CodeHighlightingAddonOptions;
 }
 
 export function serializePreparedProseViewerConfiguration(

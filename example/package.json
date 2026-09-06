@@ -1,6 +1,6 @@
 {
   "name": "native-editor-example",
-  "version": "1.0.3",
+  "version": "2.0.0",
   "private": true,
   "main": "expo/AppEntry",
   "scripts": {
@@ -15,8 +15,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "react-native-rich-text-editor": "file:..",
     "@expo/vector-icons": "^15.0.3",
+    "@react-native-rich-text-editor/code-highlighting": "file:../packages/code-highlighting",
     "expo": "^57.0.18",
     "expo-font": "~57.0.1",
     "expo-image-manipulator": "~57.0.14",
@@ -25,6 +25,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-rich-text-editor": "file:..",
     "react-native-safe-area-context": "~5.7.0"
   },
   "devDependencies": {

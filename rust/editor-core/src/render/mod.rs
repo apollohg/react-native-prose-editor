@@ -87,6 +87,7 @@ pub enum RenderElement {
     /// Start of a block-level container (paragraph, listItem, etc.).
     BlockStart {
         node_type: String,
+        language: Option<String>,
         depth: u16,
         list_context: Option<ListContext>,
     },
@@ -147,10 +148,12 @@ impl Clone for RenderElement {
             },
             Self::BlockStart {
                 node_type,
+                language,
                 depth,
                 list_context,
             } => Self::BlockStart {
                 node_type: node_type.clone(),
+                language: language.clone(),
                 depth: *depth,
                 list_context: list_context.clone(),
             },

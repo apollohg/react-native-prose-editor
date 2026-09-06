@@ -347,3 +347,16 @@ fn test_from_html_del_tag_roundtrips_to_s() {
     let html = to_html(&d, &schema());
     assert_eq!(html, "<p><s>Hello</s></p>");
 }
+
+#[test]
+fn code_language_survives_html_and_json_roundtrips() {
+    let schema = schema();
+    let document = Document::new(Node::element("doc".to_string(), HashMap::new(), Fragment::from(vec![
+        Node::element("codeBlock".to_string(), HashMap::from([("language".to_string(), serde_json::json!("rust"))]),
+            Fragment::from(vec![Node::text("let value = 1;".to_string(), vec![])])),
+    ])));
+    let html = to_html(&document, &schema);
+    let restored = from_html(&html, &schema, &FromHtmlOptions::default()).unwrap();
+    assert_eq!(restored.root().child(0).unwrap().attrs().get("language"), Some(&serde_json::json!("rust")));
+    assert_eq!(to_prosemirror_json(&restored, &schema), to_prosemirror_json(&document, &schema));
+}

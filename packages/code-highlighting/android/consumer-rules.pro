@@ -1,0 +1,1 @@
+-keep class uniffi.native_editor_highlighting.** { *; }

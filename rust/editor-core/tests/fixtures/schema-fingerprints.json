@@ -69,6 +69,7 @@
                     },
                     {
                         "name": "codeBlock",
+                        "attrs": { "language": { "default": null } },
                         "content": "text*",
                         "group": "block",
                         "role": "textBlock",
@@ -138,7 +139,7 @@
                     { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "51c0df6074a5a70866c82f1388aaf8849667074ae39adc3912ca9906ba80984a"
+            "expectedFingerprint": "131ccbe95b159c364f95a203c248970f444a487db4fd23f75c6f7099c4a6bc62"
         },
         {
             "name": "default ProseMirror schema",
@@ -209,6 +210,7 @@
                     },
                     {
                         "name": "codeBlock",
+                        "attrs": { "language": { "default": null } },
                         "content": "text*",
                         "group": "block",
                         "role": "textBlock",
@@ -278,7 +280,7 @@
                     { "name": "link", "attrs": { "href": {} }, "htmlTag": "a" }
                 ]
             },
-            "expectedFingerprint": "f7bd5bcc7d18ca5c66f7b3bf34bca0c6d0e724f669d6e0ebc85565b3687bc469"
+            "expectedFingerprint": "16334f711a4020e2cc375064ef668563152d7d1ddecf49ef30e3e270cdfcc5c7"
         },
         {
             "name": "custom root schema",

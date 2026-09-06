@@ -10,7 +10,7 @@ import android.text.style.MetricAffectingSpan
  * Vertical geometry for the text caret, clipped to the rendered glyph height.
  *
  * Android's [android.widget.Editor] draws the native caret from
- * `Layout.getLineTop(line)` to `Layout.getLineBottom(line)`. When a
+ * `Layout.editorTextLineTop(line)` to `Layout.editorTextLineBottom(line)`. When a
  * [ParagraphSpacerSpan] inflates a line's descent to create inter-block
  * spacing, `getLineBottom` includes that gap and the caret stretches into it.
  * `getLineBottomWithoutSpacing` cannot help: the inflation lives in the line's
@@ -52,7 +52,7 @@ object CaretGeometry {
         text: CharSequence,
     ): VerticalBounds {
         val line = layout.getLineForOffset(offset.coerceIn(0, layout.text.length))
-        val top = layout.getLineTop(line).toFloat()
+        val top = layout.editorTextLineTop(line).toFloat()
         val resolvedPaint = resolvedPaintAtOffset(
             fallbackPaint,
             text,
@@ -71,7 +71,10 @@ object CaretGeometry {
     ): TextPaint {
         val resolved = TextPaint(fallbackPaint)
         val spanned = text as? Spanned ?: return resolved
-        if (spanned.isEmpty()) return resolved
+        if (spanned.isEmpty()) {
+            spanned.getSpans(0, 0, MetricAffectingSpan::class.java).forEach { it.updateMeasureState(resolved) }
+            return resolved
+        }
         val clampedOffset = offset.coerceIn(0, spanned.length)
         val probe = if (clampedOffset > lineStart) {
             clampedOffset - 1

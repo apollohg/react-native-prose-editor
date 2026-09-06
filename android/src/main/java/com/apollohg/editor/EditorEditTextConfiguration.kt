@@ -64,17 +64,29 @@ internal fun EditorEditText.applyThemeImpl(theme: EditorTheme?) {
     this.theme = theme
     renderAppearanceRevision += 1L
     setBackgroundColor(theme?.backgroundColor ?: baseBackgroundColor)
+    theme?.styleSheet?.let { background = EditorBoxDrawable(it.box("content").scaled(resources.displayMetrics.density)) }
     applyContentInsets(theme?.contentInsets)
     if (hasLiveEditor()) {
         val previousScrollX = scrollX
         val previousScrollY = scrollY
         val stateJSON = v2Driver?.currentStateJson() ?: return
-        applyUpdateJSON(stateJSON, notifyListener = false)
+        reuseImagesDuringThemeUpdate = true
+        try { applyUpdateJSON(stateJSON, notifyListener = false) } finally { reuseImagesDuringThemeUpdate = false }
         if (heightBehavior == EditorHeightBehavior.FIXED) {
             preserveScrollPosition(previousScrollX, previousScrollY)
         } else {
             requestLayout()
         }
+    } else {
+        standaloneRenderJSON?.let { json ->
+            reuseImagesDuringThemeUpdate = true
+            try {
+                val rendered = RenderBridge.buildSpannable(json, baseFontSize, baseTextColor, theme, resources.displayMetrics.density, this, atomRenderConfiguration)
+                applyFullRenderPreservingEditorState(rendered)
+            } finally { reuseImagesDuringThemeUpdate = false }
+        }
+        requestLayout()
+        invalidate()
     }
 }
 
@@ -185,7 +197,7 @@ internal fun EditorEditText.updateEffectivePadding() {
     val right = ((contentInsets?.right ?: 0f) * density).toInt()
     val bottom = ((contentInsets?.bottom ?: 0f) * density).toInt()
 
-    if (heightBehavior == EditorHeightBehavior.FIXED) {
+    if (heightBehavior == EditorHeightBehavior.FIXED && theme?.styleSheet == null) {
         setPadding(left, 0, right, 0)
         setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, null, null)
     } else {

@@ -242,7 +242,14 @@ enum ViewerInline: Hashable {
 
 /// A renderable leaf block. Container nodes are represented by the inherited
 /// context instead of being re-laid out as synthetic paragraphs.
+struct ViewerStyleAncestor: Hashable {
+    let identity: Int
+    let nodeType: String
+}
+
 struct ViewerBlock: Hashable {
+    let styleAncestors: [ViewerStyleAncestor]
+    let language: String?
     let isBlockAtom: Bool
     let nodeType: String
     let depth: UInt16
@@ -264,8 +271,12 @@ struct ViewerBlock: Hashable {
         outermostListItemIdentity: Int? = nil,
         outermostListItemIsLast: Bool = false,
         inlines: [ViewerInline],
-        isBlockAtom: Bool = false
+        isBlockAtom: Bool = false,
+        styleAncestors: [ViewerStyleAncestor] = [],
+        language: String? = nil
     ) {
+        self.language = language
+        self.styleAncestors = styleAncestors
         self.isBlockAtom = isBlockAtom
         self.nodeType = nodeType
         self.depth = depth
@@ -289,7 +300,9 @@ struct ViewerBlock: Hashable {
             outermostListItemIdentity: outermostListItemIdentity,
             outermostListItemIsLast: outermostListItemIsLast,
             inlines: inlines,
-            isBlockAtom: isBlockAtom
+            isBlockAtom: isBlockAtom,
+            styleAncestors: styleAncestors,
+            language: language
         )
     }
 }
@@ -359,6 +372,10 @@ struct ViewerDocument {
         preparedTheme = nil
 
         struct Builder {
+            let language: String?
+            let styleIdentity: Int
+            let listStyleIdentity: Int?
+            let listParentIdentity: Int
             let nodeType: String
             let depth: UInt16
             let listContext: ViewerListContext?
@@ -367,6 +384,8 @@ struct ViewerDocument {
         }
 
         var stack: [Builder] = []
+        var nextStyleIdentity = 0
+        var listStyleGroups: [Int: Int] = [:]
         var rendered: [ViewerBlock] = []
         var renderableLeavesByListItem: [Int: [Int]] = [:]
         var listItemDepthByIdentity: [Int: UInt16] = [:]
@@ -374,8 +393,13 @@ struct ViewerDocument {
         let preferredTextBlockName = compiled.preferredTextBlockName()
         for element in compiled.elements() {
             switch element {
-            case let .blockStart(nodeType: nodeType, depth: depth, listContextJson: listContextJSON):
+            case let .blockStart(nodeType: nodeType, language: language, depth: depth, listContextJson: listContextJSON):
                 let listContext = Self.listContext(from: listContextJSON)
+                let parentIdentity = stack.last?.styleIdentity ?? -1
+                if listContext != nil, listStyleGroups[parentIdentity] == nil {
+                    listStyleGroups[parentIdentity] = nextStyleIdentity
+                    nextStyleIdentity += 1
+                }
                 let listItemIdentity: Int?
                 if listContext != nil {
                     listItemIdentity = nextListItemIdentity
@@ -386,6 +410,10 @@ struct ViewerDocument {
                 }
                 stack.append(
                     Builder(
+                        language: language,
+                        styleIdentity: nextStyleIdentity,
+                        listStyleIdentity: listContext == nil ? nil : listStyleGroups[parentIdentity],
+                        listParentIdentity: parentIdentity,
                         nodeType: nodeType,
                         depth: depth,
                         listContext: listContext,
@@ -393,6 +421,7 @@ struct ViewerDocument {
                         inlines: []
                     )
                 )
+                nextStyleIdentity += 1
             case let .textRun(text: text, marks: marks):
                 guard !stack.isEmpty else { continue }
                 stack[stack.count - 1].inlines.append(.text(text: text, marks: marks))
@@ -422,7 +451,15 @@ struct ViewerDocument {
                         outermostListItemIdentity: outermostListItem?.listItemIdentity,
                         outermostListItemIsLast: outermostListItem?.listContext?.isLast ?? false,
                         inlines: [.atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJson, label: label)],
-                        isBlockAtom: true
+                        isBlockAtom: true,
+                        styleAncestors: stack.flatMap { builder -> [ViewerStyleAncestor] in
+                            var values: [ViewerStyleAncestor] = []
+                            if let identity = builder.listStyleIdentity, let context = builder.listContext {
+                                values.append(ViewerStyleAncestor(identity: identity, nodeType: context.kind == "task" ? "taskList" : context.ordered ? "orderedList" : "bulletList"))
+                            }
+                            values.append(ViewerStyleAncestor(identity: builder.styleIdentity, nodeType: builder.nodeType))
+                            return values
+                        }
                     )
                 )
                 if let listItemIdentity {
@@ -430,8 +467,9 @@ struct ViewerDocument {
                 }
             case .blockEnd:
                 guard let builder = stack.popLast() else { continue }
+                if builder.listContext?.isLast == true { listStyleGroups.removeValue(forKey: builder.listParentIdentity) }
                 guard !builder.inlines.isEmpty ||
-                    (stack.isEmpty && builder.nodeType == preferredTextBlockName)
+                    builder.nodeType == preferredTextBlockName || builder.nodeType == "codeBlock"
                 else { continue }
                 let ancestors = stack + [builder]
                 let listContext = ancestors.reversed().compactMap(\.listContext).first
@@ -454,7 +492,19 @@ struct ViewerDocument {
                         listItemAncestors: listItemAncestors,
                         outermostListItemIdentity: outermostListItem?.listItemIdentity,
                         outermostListItemIsLast: outermostListItem?.listContext?.isLast ?? false,
-                        inlines: builder.inlines
+                        inlines: builder.inlines,
+                        styleAncestors: stack.flatMap { builder -> [ViewerStyleAncestor] in
+                            var values: [ViewerStyleAncestor] = []
+                            if let identity = builder.listStyleIdentity, let context = builder.listContext {
+                                values.append(ViewerStyleAncestor(identity: identity, nodeType: context.kind == "task" ? "taskList" : context.ordered ? "orderedList" : "bulletList"))
+                            }
+                            values.append(ViewerStyleAncestor(identity: builder.styleIdentity, nodeType: builder.nodeType))
+                            return values
+                        } + {
+                            guard let identity = builder.listStyleIdentity, let context = builder.listContext else { return [] }
+                            return [ViewerStyleAncestor(identity: identity, nodeType: context.kind == "task" ? "taskList" : context.ordered ? "orderedList" : "bulletList")]
+                        }(),
+                        language: builder.language
                     )
                 )
                 if let listItemIdentity {

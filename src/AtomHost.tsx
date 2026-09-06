@@ -70,6 +70,7 @@ export function AtomHost({
     estimatedHeight,
     visible = true,
     onMeasure,
+    nativeID,
 }: {
     component: AtomComponent;
     atomProps: Omit<AtomComponentProps, 'updatePending' | 'updateError' | 'setActive'>;
@@ -77,6 +78,7 @@ export function AtomHost({
     estimatedHeight: number;
     visible?: boolean;
     onMeasure?: (event: import('react-native').LayoutChangeEvent) => void;
+    nativeID?: string;
 }) {
     const [measurement, setMeasurement] = useState({ width, height: estimatedHeight });
     const [focused, setFocused] = useState(false);
@@ -130,6 +132,8 @@ export function AtomHost({
     return (
         <View
             testID='atom-host'
+            nativeID={nativeID}
+            collapsable={false}
             pointerEvents={atomProps.interactive === false ? 'none' : 'box-none'}
             accessibilityElementsHidden={!show}
             importantForAccessibility={!show ? 'no-hide-descendants' : 'auto'}

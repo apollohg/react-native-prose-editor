@@ -231,15 +231,15 @@ internal class EditorInputConnectionCompositionRemoteAndReturnTest : EditorInput
     }
 
     @Test
-    fun `multiline composition commits as structured content`() {
+    fun `multiline composition commits its original range atomically`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.applyUpdateJSON(renderUpdateJson("Hello world"), notifyListener = false)
         editText.setSelection(6, 11)
         editText.editorId = 1
 
         var insertedContent: Triple<Int, Int, String>? = null
-        editText.onInsertContentJsonAtSelectionScalarForTesting = { scalarFrom, scalarTo, json ->
-            insertedContent = Triple(scalarFrom, scalarTo, json)
+        editText.onReplaceTextInRustForTesting = { scalarFrom, scalarTo, text ->
+            insertedContent = Triple(scalarFrom, scalarTo, text)
         }
 
         val inputConnection = editText.onCreateInputConnection(EditorInfo())
@@ -248,12 +248,10 @@ internal class EditorInputConnectionCompositionRemoteAndReturnTest : EditorInput
         assertTrue(inputConnection!!.setComposingRegion(6, 11))
         assertTrue(inputConnection.commitText("one\ntwo", 1))
 
-        val (scalarFrom, scalarTo, json) = insertedContent!!
+        val (scalarFrom, scalarTo, text) = insertedContent!!
         assertEquals(6, scalarFrom)
         assertEquals(11, scalarTo)
-        val content = JSONObject(json).getJSONArray("content")
-        assertEquals("one", content.getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("text"))
-        assertEquals("two", content.getJSONObject(1).getJSONArray("content").getJSONObject(0).getString("text"))
+        assertEquals("one\ntwo", text)
     }
 
     @Test

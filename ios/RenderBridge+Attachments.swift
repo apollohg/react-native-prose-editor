@@ -9,6 +9,8 @@ struct BlockContext {
     var topLevelChildIndex: Int? = nil
     var listMarkerContext: [String: Any]? = nil
     var markerPending: Bool = false
+    var styleStart: Int = 0
+    var language: String? = nil
 }
 
 // MARK: - HorizontalRuleAttachment
@@ -19,6 +21,7 @@ struct BlockContext {
 /// vertical padding. Used for `horizontalRule` void block elements.
 final class HorizontalRuleAttachment: NSTextAttachment {
 
+    var styleBox: EditorStyleBox?
     var lineColor: UIColor = .separator
     var lineHeight: CGFloat = LayoutConstants.horizontalRuleHeight
     var verticalPadding: CGFloat = LayoutConstants.horizontalRuleVerticalPadding
@@ -29,7 +32,7 @@ final class HorizontalRuleAttachment: NSTextAttachment {
         glyphPosition position: CGPoint,
         characterIndex charIndex: Int
     ) -> CGRect {
-        let totalHeight = lineHeight + (verticalPadding * 2)
+        let totalHeight = lineHeight + (verticalPadding * 2) + (styleBox?.inset.top ?? 0) + (styleBox?.inset.bottom ?? 0)
         return CGRect(
             x: 0,
             y: 0,
@@ -45,6 +48,7 @@ final class HorizontalRuleAttachment: NSTextAttachment {
     ) -> UIImage? {
         let renderer = UIGraphicsImageRenderer(bounds: imageBounds)
         return renderer.image { context in
+            if let styleBox { styleBox.draw(in: imageBounds, context: context.cgContext); return }
             lineColor.setFill()
             let lineY = imageBounds.midY - (lineHeight / 2)
             let lineRect = CGRect(
@@ -95,6 +99,7 @@ final class AtomBlockAttachment: NSTextAttachment {
 }
 
 final class BlockImageAttachment: NSTextAttachment {
+    var styleBox: EditorStyleBox?
     let source: String
     let placeholderTint: UIColor
     private weak var loadOwner: RenderImageLoadOwner?
@@ -146,7 +151,8 @@ final class BlockImageAttachment: NSTextAttachment {
             max(0, $0.size.width - ($0.lineFragmentPadding * 2))
         } ?? 0
         let widthCandidates = [lineFragmentWidth, containerWidth].filter { $0.isFinite && $0 > 0 }
-        let maxWidth = max(160, widthCandidates.min() ?? 160)
+        let inset = styleBox?.inset ?? .zero
+        let maxWidth = styleBox == nil ? max(160, widthCandidates.min() ?? 160) : max(1, (widthCandidates.min() ?? 160) - inset.left - inset.right)
         let fallbackAspectRatio = loadedImage.flatMap { image -> CGFloat? in
             let imageSize = image.size
             guard imageSize.width > 0, imageSize.height > 0 else { return nil }
@@ -171,7 +177,7 @@ final class BlockImageAttachment: NSTextAttachment {
         let width = max(1, resolvedWidth ?? maxWidth)
         let height = max(1, resolvedHeight ?? min(180, maxWidth * fallbackAspectRatio))
         let scale = min(1, maxWidth / width)
-        return CGRect(x: 0, y: 0, width: width * scale, height: height * scale)
+        return CGRect(x: 0, y: 0, width: width * scale + inset.left + inset.right, height: height * scale + inset.top + inset.bottom)
     }
 
     override func image(
@@ -179,9 +185,21 @@ final class BlockImageAttachment: NSTextAttachment {
         textContainer: NSTextContainer?,
         characterIndex charIndex: Int
     ) -> UIImage? {
-        if let loadedImage {
-            return loadedImage
+        if let styleBox {
+            return UIGraphicsImageRenderer(bounds: imageBounds).image { renderer in
+                styleBox.draw(in: imageBounds, context: renderer.cgContext)
+                renderer.cgContext.addPath(styleBox.path(in: imageBounds, inner: true).cgPath)
+                renderer.cgContext.clip()
+                renderer.cgContext.clip(to: imageBounds.inset(by: styleBox.inset))
+                if let loadedImage {
+                    loadedImage.draw(in: styleBox.imageRect(loadedImage.size, in: imageBounds))
+                } else {
+                    let iconBounds = imageBounds.insetBy(dx: imageBounds.width * 0.35, dy: imageBounds.height * 0.35)
+                    UIImage(systemName: "photo")?.withTintColor(placeholderTint, renderingMode: .alwaysOriginal).draw(in: iconBounds)
+                }
+            }
         }
+        if let loadedImage { return loadedImage }
 
         let renderer = UIGraphicsImageRenderer(bounds: imageBounds)
         return renderer.image { _ in

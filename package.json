@@ -1,6 +1,6 @@
 {
     "name": "react-native-rich-text-editor",
-    "version": "1.0.3",
+    "version": "2.0.0",
     "description": "Native rich text editor with Rust core for React Native",
     "license": "Apache-2.0",
     "homepage": "https://github.com/apollohg/react-native-rich-text-editor",
@@ -62,6 +62,7 @@
         "test:android:api24": "npm run prebuild:example:android && cd example/android && ./gradlew :react-native-rich-text-editor:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.apollohg.editor.AndroidApi24SmokeTest",
         "test:android:device": "bash ./scripts/run-android-on-device.sh",
         "test:android:device:ime": "bash ./scripts/run-android-on-device.sh --class com.apollohg.editor.NativeDeviceImeRegressionTest",
+        "prototype:android:layout": "bash ./scripts/run-android-layout-prototype.sh",
         "test:android:device:performance": "bash ./scripts/run-android-on-device.sh --class com.apollohg.editor.NativeDevicePerformanceTest",
         "test:android:performance": "npm run prebuild:example:android && cd example/android && ./gradlew :react-native-rich-text-editor:testDebugUnitTest -PapollohgShowPerfTestOutput=true --tests com.apollohg.editor.NativePerformanceTest",
         "test:ios": "bash ./scripts/run-ios-tests.sh",
@@ -127,6 +128,7 @@
         "android/build.gradle",
         "android/consumer-rules.pro",
         "android/expo",
+        "!android/expo/build",
         "android/src/debug",
         "android/src/main",
         "android/src/release",

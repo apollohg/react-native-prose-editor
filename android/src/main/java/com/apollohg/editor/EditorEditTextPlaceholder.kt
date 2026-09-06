@@ -48,23 +48,44 @@ internal fun EditorEditText.shouldDisplayPlaceholderForTestingImpl(): Boolean = 
 internal fun EditorEditText.buildPlaceholderLayout(availableWidth: Int): StaticLayout? {
     if (!shouldDisplayPlaceholder()) return null
     if (availableWidth <= 0) return null
+    val insets = placeholderContentInsets(availableWidth)
+    val contentWidth = (availableWidth - insets.left - insets.right).toInt().coerceAtLeast(1)
 
     val placeholderPaint = resolvedPlaceholderPaint()
+    val styledPlaceholder = theme?.styleSheet?.let { sheet ->
+        android.text.SpannableStringBuilder(placeholderText).apply {
+            setSpan(EditorResolvedTextSpan(sheet.resolveText("placeholder"), resources.displayMetrics.density), 0, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            applyStyleSheetLineMetrics()
+        }
+    } ?: placeholderText
     return StaticLayout.Builder
         .obtain(
-            placeholderText,
+            styledPlaceholder,
             0,
             placeholderText.length,
             placeholderPaint,
-            availableWidth
+            contentWidth
         )
         .setAlignment(Layout.Alignment.ALIGN_NORMAL)
         .setIncludePad(includeFontPadding)
         .build()
 }
 
+internal fun EditorEditText.placeholderContentInsets(availableWidth: Int): EditorEdges {
+    val current = layout
+    val document = if (current is EditorDocumentLayout && current.width == availableWidth) current else {
+        EditorDocumentLayout(editableText, paint, availableWidth.coerceAtLeast(1), includeFontPadding, lineSpacingMultiplier, lineSpacingExtra)
+    }
+    return EditorEdges(
+        top = document.textLineTop(0).toFloat(),
+        right = availableWidth - document.contentRight(0),
+        bottom = (document.height - document.textLineBottom(document.lineCount - 1)).toFloat(),
+        left = document.contentLeft(0),
+    )
+}
+
 internal fun EditorEditText.resolvedPlaceholderPaint(): TextPaint {
-    val textStyle = theme?.effectiveTextStyle("paragraph")
+    val textStyle = theme?.styleSheet?.resolveText("placeholder") ?: theme?.effectiveTextStyle("paragraph")
     val resolvedTextSize = textStyle?.fontSize?.times(resources.displayMetrics.density) ?: baseFontSize
     val resolvedTypeface = resolvePlaceholderTypeface(textStyle)
 
@@ -72,6 +93,8 @@ internal fun EditorEditText.resolvedPlaceholderPaint(): TextPaint {
         color = theme?.placeholderColor ?: currentHintTextColor
         textSize = resolvedTextSize
         typeface = resolvedTypeface
+        textStyle?.letterSpacing?.let { letterSpacing = it * resources.displayMetrics.density / textSize }
+        if (theme?.styleSheet != null && textStyle != null) EditorResolvedTextSpan(textStyle, resources.displayMetrics.density).updateDrawState(this)
     }
 }
 
@@ -95,5 +118,6 @@ internal fun EditorEditText.resolvePlaceholderHeightForMeasuredWidth(widthPx: In
 internal fun EditorEditText.resolvePlaceholderHeightForAvailableWidth(availableWidth: Int): Int? {
     val placeholderLayout = buildPlaceholderLayout(availableWidth) ?: return null
     val placeholderHeight = placeholderLayout.height.takeIf { it > 0 } ?: lineHeight
-    return placeholderHeight + compoundPaddingTop + compoundPaddingBottom
+    val insets = placeholderContentInsets(availableWidth)
+    return placeholderHeight + insets.top.toInt() + insets.bottom.toInt() + compoundPaddingTop + compoundPaddingBottom
 }

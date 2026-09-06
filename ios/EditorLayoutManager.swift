@@ -4,7 +4,80 @@ import CoreText
 /// Draws list markers visually in the gutter without inserting them into the
 /// editable text storage. This keeps UIKit paragraph-start behaviors, such as
 /// sentence auto-capitalization, working naturally inside list items.
-final class EditorLayoutManager: NSLayoutManager {
+final class EditorLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
+    override init() {
+        super.init()
+        delegate = self
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        delegate = self
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>, properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes: UnsafePointer<Int>, font: UIFont, forGlyphRange glyphRange: NSRange) -> Int {
+        guard let storage = textStorage else { return 0 }
+        // Reserve one chip glyph while retaining every canonical UTF-16 offset.
+        var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
+        var changed = false
+        for index in 0..<glyphRange.length {
+            var range = NSRange()
+            guard storage.attribute(editorMentionBoxAttribute, at: characterIndexes[index], effectiveRange: &range) is EditorMentionRenderedBox else { continue }
+            properties[index] = characterIndexes[index] == range.location && (index == 0 || characterIndexes[index - 1] != range.location) ? .controlCharacter : .null
+            changed = true
+        }
+        guard changed else { return 0 }
+        setGlyphs(glyphs, properties: properties, characterIndexes: characterIndexes, font: font, forGlyphRange: glyphRange)
+        return glyphRange.length
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction, forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
+        textStorage?.attribute(editorMentionBoxAttribute, at: charIndex, effectiveRange: nil) is EditorMentionRenderedBox ? .whitespace : action
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager, boundingBoxForControlGlyphAt glyphIndex: Int, for textContainer: NSTextContainer, proposedLineFragment proposedRect: CGRect, glyphPosition: CGPoint, characterIndex charIndex: Int) -> CGRect {
+        guard let chip = textStorage?.attribute(editorMentionBoxAttribute, at: charIndex, effectiveRange: nil) as? EditorMentionRenderedBox else { return .zero }
+        return CGRect(origin: .zero, size: chip.size)
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldBreakLineByWordBeforeCharacterAt charIndex: Int) -> Bool {
+        guard let storage = textStorage, charIndex < storage.length else { return true }
+        var range = NSRange()
+        guard storage.attribute(editorMentionBoxAttribute, at: charIndex, effectiveRange: &range) is EditorMentionRenderedBox else { return true }
+        return charIndex == range.location
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<CGRect>, lineFragmentUsedRect: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>, in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
+        guard let storage = textStorage, storage.length > 0 else { return false }
+        let characters = characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        var height = lineFragmentUsedRect.pointee.height
+        storage.enumerateAttribute(editorInlineLineHeightAttribute, in: characters) { value, _, _ in
+            height = max(height, EditorTheme.cgFloat(value) ?? 0)
+        }
+        let extra = height - lineFragmentUsedRect.pointee.height
+        var leading: CGFloat = 0
+        if glyphRange.location == 0,
+           storage.attribute(editorStyledContentAttribute, at: 0, effectiveRange: nil) != nil,
+           let style = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle {
+            leading = style.paragraphSpacingBefore
+        }
+        guard extra != 0 || leading != 0 else { return false }
+        lineFragmentRect.pointee.size.height += extra + leading
+        lineFragmentUsedRect.pointee.size.height = height
+        lineFragmentUsedRect.pointee.origin.y += leading
+        baselineOffset.pointee += extra / 2 + leading
+        return true
+    }
+
+    override func usedRect(for textContainer: NSTextContainer) -> CGRect {
+        var rect = super.usedRect(for: textContainer)
+        if let storage = textStorage, storage.length > 0,
+           storage.attribute(editorStyledContentAttribute, at: storage.length - 1, effectiveRange: nil) != nil,
+           let paragraph = storage.attribute(.paragraphStyle, at: storage.length - 1, effectiveRange: nil) as? NSParagraphStyle {
+            rect.size.height += paragraph.paragraphSpacing
+        }
+        return rect
+    }
     private(set) var blockquoteStripeDrawPassesForTesting: [[CGRect]] = []
     private(set) var codeBlockDrawPassesForTesting: [[CGRect]] = []
 
@@ -62,6 +135,8 @@ final class EditorLayoutManager: NSLayoutManager {
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         guard let textStorage, glyphsToShow.length > 0 else { return }
 
+        drawStyleBoxes(in: textStorage, glyphsToShow: glyphsToShow, origin: origin)
+        drawMentionBoxes(in: textStorage, glyphsToShow: glyphsToShow, origin: origin)
         drawCodeBlockBackgrounds(
             in: textStorage,
             glyphsToShow: glyphsToShow,
@@ -131,6 +206,48 @@ final class EditorLayoutManager: NSLayoutManager {
 
         if !drawnStripeRects.isEmpty {
             blockquoteStripeDrawPassesForTesting.append(drawnStripeRects)
+        }
+    }
+
+    private func drawMentionBoxes(in storage: NSTextStorage, glyphsToShow: NSRange, origin: CGPoint) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let visible = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        storage.enumerateAttribute(editorMentionBoxAttribute, in: visible) { value, range, _ in
+            guard let box = value as? EditorMentionRenderedBox else { return }
+            let glyph = self.glyphIndexForCharacter(at: range.location)
+            let line = self.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+            let location = self.location(forGlyphAt: glyph)
+            let fragment = self.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let rect = CGRect(x: fragment.minX + location.x + origin.x, y: line.midY - box.size.height / 2 + origin.y, width: box.size.width, height: box.size.height)
+            box.box.draw(in: rect, context: context)
+            let labelHeight = box.label?.size().height ?? 0
+            box.label?.draw(at: CGPoint(x: rect.minX + box.padding.left,
+                                       y: rect.minY + box.padding.top + (rect.height - box.padding.top - box.padding.bottom - labelHeight) / 2))
+        }
+    }
+
+    private func drawStyleBoxes(in storage: NSTextStorage, glyphsToShow: NSRange, origin: CGPoint) {
+        guard let context = UIGraphicsGetCurrentContext(), let container = textContainers.first else { return }
+        let visible = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        var groups: [ObjectIdentifier: (EditorRenderedBox, NSRange)] = [:]
+        storage.enumerateAttribute(editorStyleBoxesAttribute, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            for box in value as? [EditorRenderedBox] ?? [] {
+                let id = ObjectIdentifier(box)
+                groups[id] = (box, groups[id].map { NSUnionRange($0.1, range) } ?? range)
+            }
+        }
+        for (descriptor, range) in groups.values.sorted(by: { $0.0.depth < $1.0.depth }) where NSIntersectionRange(range, visible).length > 0 {
+            let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var union = CGRect.null
+            enumerateLineFragments(forGlyphRange: glyphs) { line, used, _, _, _ in
+                union = union.union(used.height > 0 ? used : line)
+            }
+            guard !union.isNull else { continue }
+            let rect = CGRect(x: origin.x + descriptor.leading + container.lineFragmentPadding,
+                              y: origin.y + union.minY - descriptor.topInset,
+                              width: max(0, container.size.width - descriptor.leading - descriptor.trailing - container.lineFragmentPadding * 2),
+                              height: union.height + descriptor.topInset + descriptor.bottomInset)
+            descriptor.box.draw(in: rect, context: context)
         }
     }
 
@@ -250,7 +367,8 @@ final class EditorLayoutManager: NSLayoutManager {
             baselineY: baselineY,
             baseFont: baseFont,
             origin: textContainerOrigin,
-            markerGap: markerGap
+            markerGap: markerGap,
+            explicitSize: (attrs[editorTaskCheckboxAttribute] as? EditorMentionRenderedBox)?.box.number("size", fallback: 24)
         ).insetBy(dx: -10, dy: -8)
 
         return markerRect.contains(tapPoint) ? paragraphStart : nil
@@ -348,8 +466,14 @@ final class EditorLayoutManager: NSLayoutManager {
                 baselineY: baselineY,
                 baseFont: baseFont,
                 origin: origin,
-                markerGap: markerGap
+                markerGap: markerGap,
+                explicitSize: (attrs[editorTaskCheckboxAttribute] as? EditorMentionRenderedBox)?.box.number("size", fallback: 24)
             )
+            if let box = attrs[editorTaskCheckboxAttribute] as? EditorMentionRenderedBox,
+               let context = UIGraphicsGetCurrentContext() {
+                EditorStyleSheet.drawCheckbox(box.box, in: checkboxRect, checked: listContext["checked"] as? Bool == true, context: context)
+                return
+            }
             drawTaskCheckbox(
                 in: checkboxRect,
                 checked: (listContext["checked"] as? NSNumber)?.boolValue ?? false,
@@ -359,11 +483,9 @@ final class EditorLayoutManager: NSLayoutManager {
         }
 
         if ordered {
-            let markerFont = markerFont(
-                for: listContext,
-                baseFont: baseFont,
-                markerScale: markerScale
-            )
+            let markerFont = attrs[editorStyledContentAttribute] != nil
+                ? baseFont.withSize(baseFont.pointSize * markerScale)
+                : markerFont(for: listContext, baseFont: baseFont, markerScale: markerScale)
             let markerText = attrs[RenderBridgeAttributes.orderedListMarkerLabel] as? String
                 ?? RenderBridge.listMarkerString(listContext: listContext)
                     .trimmingCharacters(in: .whitespaces)
@@ -680,10 +802,11 @@ final class EditorLayoutManager: NSLayoutManager {
         baselineY: CGFloat,
         baseFont: UIFont,
         origin: CGPoint,
-        markerGap: CGFloat = LayoutConstants.listMarkerTextGap
+        markerGap: CGFloat = LayoutConstants.listMarkerTextGap,
+        explicitSize: CGFloat? = nil
     ) -> CGRect {
         let referenceRect = usedRect.height > 0 ? usedRect : lineFragmentRect
-        let checkboxSize = min(
+        let checkboxSize = explicitSize ?? min(
             max(baseFont.lineHeight * 1.05, 24),
             max(markerWidth - 4, 24)
         )
