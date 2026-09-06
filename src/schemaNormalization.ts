@@ -14,7 +14,16 @@ import {
     type MarkSpec,
     ALLOWED_MARK_HTML_TAGS,
 } from './schemaDefinition';
-import { schemaBoundaryError } from './schemaResolution';
+import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
+
+export function schemaBoundaryError(limit: number, actual: number): NativeEditorBoundaryError {
+    return new NativeEditorBoundaryError(
+        'SCHEMA_INVALID',
+        `schema work exceeds configured limit ${limit}`,
+        limit,
+        actual
+    );
+}
 
 /** Mirror native's invalid-schema fallback before constructing an empty doc. */
 export function utf8ByteLengthUpTo(value: string, maximum: number): number {

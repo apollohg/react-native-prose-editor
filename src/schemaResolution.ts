@@ -11,18 +11,10 @@ import {
     consumeSchemaStringWork,
     utf8ByteLengthUpTo,
     normalizeSchemaDefinition,
+    schemaBoundaryError,
 } from './schemaNormalization';
 import { type SchemaDefinition, type NodeSpec, type AttrSpec } from './schemaDefinition';
-import { constructDefaultEmptyDocument } from './schemaDocument';
-
-export function schemaBoundaryError(limit: number, actual: number): NativeEditorBoundaryError {
-    return new NativeEditorBoundaryError(
-        'SCHEMA_INVALID',
-        `schema work exceeds configured limit ${limit}`,
-        limit,
-        actual
-    );
-}
+import { constructDefaultEmptyDocument } from './schemaDocumentConstruction';
 
 export function resolveDescriptorLimits(
     limits?: DocumentDescriptorLimits
