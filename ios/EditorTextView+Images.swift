@@ -163,8 +163,8 @@ extension EditorTextView {
             guard glyphRange.length > 0 else { return }
 
             var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            rect.origin.x += textContainerInset.left - contentOffset.x
-            rect.origin.y += textContainerInset.top - contentOffset.y
+            rect.origin.x += textContainerInset.left
+            rect.origin.y += textContainerInset.top
 
             if rect.insetBy(dx: -8, dy: -8).contains(location) {
                 resolvedRange = range

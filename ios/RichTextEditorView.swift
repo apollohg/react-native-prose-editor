@@ -262,6 +262,7 @@ final class RichTextEditorView: UIView {
             )
         }
         textView.onViewportMayChange = { [weak self] in
+            self?.layoutManagedSubviews()
             self?.refreshOverlaysIfNeeded()
             self?.emitAtomContentWidthIfAvailable()
         }
@@ -271,7 +272,8 @@ final class RichTextEditorView: UIView {
         addSubview(textView)
         addSubview(remoteSelectionOverlayView)
         addSubview(taskListMarkerTapOverlayView)
-        addSubview(imageTapOverlayView)
+        // Image touches must stay inside the scroll view's gesture hierarchy.
+        textView.addSubview(imageTapOverlayView)
         addSubview(imageResizeOverlayView)
         layoutManagedSubviews()
     }
@@ -781,8 +783,8 @@ final class RichTextEditorView: UIView {
         if taskListMarkerTapOverlayView.frame != managedFrame {
             taskListMarkerTapOverlayView.frame = managedFrame
         }
-        if imageTapOverlayView.frame != managedFrame {
-            imageTapOverlayView.frame = managedFrame
+        if imageTapOverlayView.frame != textView.bounds {
+            imageTapOverlayView.frame = textView.bounds
         }
         if imageResizeOverlayView.frame != managedFrame {
             imageResizeOverlayView.frame = managedFrame

@@ -319,6 +319,10 @@ enum EditorV2Shadow {
 
     // MARK: - Selection sync / position mapping
 
+    static func setNodeSelection(id: UInt64, docPos: UInt32) -> EditorV2SelectionSync? {
+        adapter(for: id)?.syncNodeSelection(docPos: docPos)
+    }
+
     @discardableResult
     static func setSelectionScalar(
         id: UInt64,

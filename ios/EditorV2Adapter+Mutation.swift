@@ -221,6 +221,7 @@ extension EditorV2Adapter {
         postSelectionMirror: (UInt32, UInt32)? = nil,
         includeSelectionInUpdate: Bool = false,
         adoptEngineSelection: Bool = false,
+        publishMutation: Bool = true,
         _ call: () -> FfiJsonResult
     ) -> String? {
         guard !destroyed else {
@@ -300,7 +301,7 @@ extension EditorV2Adapter {
                     // ensureSelection push a stale caret back into the engine.
                     lastSyncedScalarSelection = cachedAuthoritativeScalarSelection
                 }
-                if changed {
+                if changed && publishMutation {
                     publishCachedCollaborationSelection()
                     notifyCollaborationMutation()
                 }

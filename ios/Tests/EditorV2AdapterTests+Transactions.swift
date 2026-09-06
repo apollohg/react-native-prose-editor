@@ -132,6 +132,35 @@ extension EditorV2AdapterTests {
         XCTAssertEqual(calls, ["awarenessSelection", "wake:awareness"])
     }
 
+    func testRoomImageSelectionPublishesAwarenessWithoutDocumentWake() {
+        var selections: [[String: Any]] = []
+        var wakes: [String] = []
+        let adapter = makeAttachedAdapter(
+            configJson: #"{"initialization":{"type":"localHtml","html":"<p>Hello</p><img src=\"https://example.com/cat.png\"><p>After</p>"}}"#,
+            roomBound: true,
+            setAwarenessSelection: { _, json in
+                let data = Data(json.utf8)
+                selections.append((try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:])
+                return FfiJsonResult(value: #"{"outboundChanged":true}"#, error: nil)
+            },
+            collaborationWake: { _, reason in wakes.append(reason.rawValue) },
+            file: #filePath,
+            line: #line
+        )
+        _ = adapter.currentStateJSON()
+        selections.removeAll()
+        wakes.removeAll()
+
+        let sync = adapter.syncNodeSelection(docPos: 7)
+
+        XCTAssertEqual(sync?.docAnchor, 7)
+        XCTAssertEqual(selections.count, 1)
+        XCTAssertEqual(selections.first?["type"] as? String, "text")
+        XCTAssertEqual((selections.first?["anchor"] as? NSNumber)?.uint32Value, 7)
+        XCTAssertEqual((selections.first?["head"] as? NSNumber)?.uint32Value, 8)
+        XCTAssertEqual(wakes, ["awareness"])
+    }
+
     func testAwarenessPublicationFailureDoesNotRollbackCommittedTyping() {
         var rejectAwareness = false
         let adapter = makeAttachedAdapter(

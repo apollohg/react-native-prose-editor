@@ -303,16 +303,10 @@ final class RemoteSelectionOverlayView: UIView {
 
 final class ImageTapOverlayView: UIView {
     private weak var editorView: RichTextEditorView?
-    private lazy var tapRecognizer: UITapGestureRecognizer = {
-        let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        recognizer.cancelsTouchesInView = true
-        return recognizer
-    }()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        addGestureRecognizer(tapRecognizer)
     }
 
     required init?(coder: NSCoder) {
@@ -327,13 +321,6 @@ final class ImageTapOverlayView: UIView {
         guard let editorView else { return false }
         let pointInTextView = convert(point, to: editorView.textView)
         return editorView.textView.hasImageAttachment(at: pointInTextView)
-    }
-
-    @objc
-    private func handleTap(_ recognizer: UITapGestureRecognizer) {
-        guard recognizer.state == .ended, let editorView else { return }
-        let pointInTextView = convert(recognizer.location(in: self), to: editorView.textView)
-        _ = editorView.textView.selectImageAttachment(at: pointInTextView)
     }
 
     func interceptsPointForTesting(_ point: CGPoint) -> Bool {

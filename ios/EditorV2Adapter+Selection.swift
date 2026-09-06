@@ -1,6 +1,35 @@
 import Foundation
 
 extension EditorV2Adapter {
+    func syncNodeSelection(docPos: UInt32) -> EditorV2SelectionSync? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        guard let update = performMutation(adoptEngineSelection: true, publishMutation: false, {
+            self.callWithEnvelope([
+                "selection": ["type": "atom", "docPos": Int(docPos), "edge": "node"],
+            ]) { requestJSON in
+                editorV2SetSelection(editorId: self.editorId, requestJson: requestJSON)
+            }
+        }),
+              let data = update.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let selection = object["selection"] as? [String: Any]
+        else { return nil }
+        if selection["type"] as? String == "node",
+           let pos = Self.uint32Field(selection, "pos")
+        {
+            publishCollaborationSelection(docAnchor: pos, docHead: pos + 1)
+            return EditorV2SelectionSync(docAnchor: pos, docHead: pos, refreshedUpdateJSON: update)
+        }
+        guard let mapping = Self.textDocumentSelection(from: update) else { return nil }
+        publishCollaborationSelection(docAnchor: mapping.docAnchor, docHead: mapping.docHead)
+        return EditorV2SelectionSync(
+            docAnchor: mapping.docAnchor,
+            docHead: mapping.docHead,
+            refreshedUpdateJSON: update
+        )
+    }
+
     enum SelectionSyncOutcome {
         case ok
         case refreshed(String)

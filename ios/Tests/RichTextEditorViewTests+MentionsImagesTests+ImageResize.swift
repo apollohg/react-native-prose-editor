@@ -2,6 +2,94 @@ import XCTest
 import ExpoModulesCore
 
 extension RichTextEditorViewTests {
+    func testImageTouchRemainsInTextViewScrollHierarchy() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p>After</p>
+        """ + String(repeating: "<p>More content</p>", count: 20))
+        view.layoutIfNeeded()
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            return XCTFail("expected image attachment")
+        }
+        view.textView.contentOffset = .zero
+        let rect = renderedRect(in: view.textView, utf16Range: imageRange)
+        let point = CGPoint(x: rect.midX, y: rect.midY)
+        guard let hitView = view.hitTest(point, with: nil) else {
+            return XCTFail("expected an image touch target")
+        }
+        XCTAssertTrue(view.textView.isScrollEnabled)
+        XCTAssertTrue(
+            hitView.isDescendant(of: view.textView),
+            "image touches must reach the text view's scroll recognizer"
+        )
+    }
+
+    func testImageTapHitTestingUsesScrolledTextViewCoordinates() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        view.editorId = editorId
+        view.setContent(html: String(repeating: "<p>Before</p>", count: 12) + """
+        <img src="https://example.com/cat.png" width="140" height="80"><p>After</p>
+        """ + String(repeating: "<p>After</p>", count: 12))
+        view.layoutIfNeeded()
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            return XCTFail("expected image attachment")
+        }
+        view.textView.contentOffset = .zero
+        let rect = renderedRect(in: view.textView, utf16Range: imageRange)
+        view.textView.contentOffset = CGPoint(x: 0, y: rect.minY - 40)
+        view.layoutIfNeeded()
+        let point = CGPoint(x: rect.midX, y: rect.midY)
+        XCTAssertEqual(view.textView.imageAttachmentRange(at: point), imageRange)
+        XCTAssertNil(view.textView.imageAttachmentRange(at: CGPoint(x: rect.midX, y: rect.maxY + 40)))
+        let pointInEditor = view.textView.convert(point, to: view)
+        XCTAssertTrue(view.imageTapOverlayInterceptsPointForTesting(pointInEditor))
+        XCTAssertTrue(view.hitTest(pointInEditor, with: nil)?.isDescendant(of: view.textView) == true)
+    }
+
+    func testImageSelectionSurvivesKeyboardThemeRefresh() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p>After</p>
+        """)
+        view.layoutIfNeeded()
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            return XCTFail("expected image attachment")
+        }
+        view.textView.contentOffset = .zero
+        let rect = renderedRect(in: view.textView, utf16Range: imageRange)
+        XCTAssertTrue(view.tapImageOverlayForTesting(at: CGPoint(x: rect.midX, y: rect.midY)))
+        flushMainQueue()
+        flushMainQueue()
+        assertSelectedUtf16Range(in: view.textView, imageRange)
+        XCTAssertEqual(currentSelection(in: editorId)["type"] as? String, "node")
+        XCTAssertTrue(view.applyTheme(EditorTheme(dictionary: [
+            "contentInsets": ["bottom": 320],
+        ])))
+        flushMainQueue()
+        view.layoutIfNeeded()
+        assertSelectedUtf16Range(in: view.textView, imageRange)
+        XCTAssertNotNil(view.imageResizeOverlayRectForTesting())
+        XCTAssertTrue(view.textView.isScrollEnabled)
+    }
+
     func testSelectedImageOverlayHidesWhenEditorLosesFocus() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

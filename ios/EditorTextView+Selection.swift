@@ -242,13 +242,17 @@ extension EditorTextView {
 
         let anchor = selection.anchor
         let head = selection.head
-        guard let sync = EditorV2Shadow.setSelectionScalar(
-            id: editorId,
-            scalarAnchor: anchor,
-            scalarHead: head
-        ) else {
-            return
+        let sync: EditorV2SelectionSync?
+        if let image = selectedImageSelectionState() {
+            sync = EditorV2Shadow.setNodeSelection(id: editorId, docPos: image.docPos)
+        } else {
+            sync = EditorV2Shadow.setSelectionScalar(
+                id: editorId,
+                scalarAnchor: anchor,
+                scalarHead: head
+            )
         }
+        guard let sync else { return }
         Self.selectionLog.debug(
             "[textViewDidChangeSelection] scalar=\(anchor)-\(head) doc=\(sync.docAnchor)-\(sync.docHead) textState=\(self.textSnapshotSummary(), privacy: .public)"
         )
