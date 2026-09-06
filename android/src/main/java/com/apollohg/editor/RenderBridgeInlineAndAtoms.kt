@@ -309,7 +309,7 @@ internal fun RenderBridge.appendVoidBlock(
                 start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
             theme?.styleSheet?.let {
-                builder.setSpan(EditorBlockBoxSpan(it.box("horizontalRule").scaled(density), ancestorBoxInset, containerDepth), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                builder.setSpan(EditorBlockBoxSpan(it.box("horizontalRule").scaled(density), ancestorBoxInset, containerDepth, "horizontalRule"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
             annotateTopLevelChild(builder, start, end, topLevelChildIndex)
         }
@@ -333,6 +333,10 @@ internal fun RenderBridge.appendVoidBlock(
             val span = reused?.also { reusableImages.remove(it); it.imageStyle = imageStyle } ?: BlockImageSpan(source, hostView, density, preferredWidthDp, preferredHeightDp, imageStyle)
             span.ancestorWidthInset = ancestorBoxInset.left + ancestorBoxInset.right
             builder.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            imageStyle?.let {
+                // Image margins already occupy space in the replacement span.
+                builder.setSpan(EditorBlockBoxSpan(EditorBoxStyle(), ancestorBoxInset, containerDepth, "image", it.box.margin.scaled(density)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
             annotateTopLevelChild(builder, start, end, topLevelChildIndex)
         }
         else -> {

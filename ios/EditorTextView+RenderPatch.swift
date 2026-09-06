@@ -542,6 +542,11 @@ extension EditorTextView {
             authorizedReplacementText: attrStr.string,
             authorizedReplacementAttributedText: attrStr
         )
+        if theme?.styleSheet != nil {
+            textStorage.beginEditing()
+            RenderBridge.collapseStyledSiblingMargins(in: textStorage)
+            textStorage.endEditing()
+        }
         let metadataStartedAt = DispatchTime.now().uptimeNanoseconds
         applyTopLevelChildMetadataPatch(
             patch,

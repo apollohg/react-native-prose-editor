@@ -102,6 +102,96 @@ final class PreparedProseRenderingTests: XCTestCase {
         }
     }
 
+    func testVersionedQuoteOmitsOnlyFinalParagraphBottomMargin() throws {
+        try withCompiledDocument(source: .html("<blockquote><p>First</p><p>Last</p></blockquote><p>Outside</p>"), configJSON: Fixture.localConfig) { document in
+            let layout = try prepare(document, themeJSON: """
+            {"version":1,"styles":{"paragraph":{"marginBottom":12,"paddingBottom":3,"borderBottomWidth":2},"blockquote":{"paddingBottom":7,"marginBottom":11,"backgroundColor":"#ffff00ff"}}}
+            """)
+            XCTAssertEqual(layout.blocks.count, 3)
+            let first = layout.blocks[0].bounds
+            let last = layout.blocks[1].bounds
+            let outside = layout.blocks[2].bounds
+            let quote = try XCTUnwrap(layout.decorations.first { $0.styleBox?.color("backgroundColor") == UIColor.yellow })
+            XCTAssertEqual(last.minY - first.maxY, 12, accuracy: 0.01)
+            XCTAssertEqual(quote.bounds.maxY - last.maxY, 7, accuracy: 0.01)
+            XCTAssertEqual(outside.minY - quote.bounds.maxY, 11, accuracy: 0.01)
+            XCTAssertEqual(layout.size.height - outside.maxY, 12, accuracy: 0.5)
+        }
+    }
+
+    func testVersionedQuoteKeepsNestedContainerSpacing() throws {
+        for (content, expected): (String, CGFloat) in [("<blockquote><p>Nested</p></blockquote>", 14), ("<ul><li><p>Nested</p></li></ul>", 23)] {
+            try withCompiledDocument(source: .html("<blockquote>\(content)</blockquote>"), configJSON: Fixture.localConfig) { document in
+                let layout = try prepare(document, themeJSON: """
+                {"version":1,"styles":{"paragraph":{"marginBottom":12},"blockquote":{"paddingBottom":7,"backgroundColor":"#ffff00ff"}}}
+                """)
+                let outer = try XCTUnwrap(layout.decorations.first { $0.styleBox?.color("backgroundColor") == UIColor.yellow })
+                let block = try XCTUnwrap(layout.blocks.last)
+                XCTAssertEqual(outer.bounds.maxY - block.bounds.maxY, expected, accuracy: 0.01, content)
+            }
+        }
+    }
+
+    func testVersionedSiblingMarginsCollapseWithoutCollapsingPadding() throws {
+        try withCompiledDocument(source: .html("<p>First</p><pre><code>Second</code></pre>"), configJSON: Fixture.localConfig) { document in
+            for (bottom, top, collapsed) in [(12, 20, 20), (-12, -20, -20), (12, -5, 7)] {
+                let layout = try prepare(document, themeJSON: """
+                {"version":1,"styles":{"paragraph":{"marginBottom":\(bottom),"paddingBottom":3,"borderBottomWidth":2},"codeBlock":{"marginTop":\(top),"paddingTop":7,"borderTopWidth":4}}}
+                """)
+                XCTAssertEqual(layout.blocks.count, 2)
+                XCTAssertEqual(layout.blocks[1].bounds.minY - layout.blocks[0].bounds.maxY, CGFloat(collapsed), accuracy: 0.01)
+            }
+        }
+    }
+
+    func testVersionedSiblingQuoteMarginsCollapseOutsideTheirPadding() throws {
+        try withCompiledDocument(source: .html("<blockquote><p>First</p></blockquote><blockquote><p>Second</p></blockquote>"), configJSON: Fixture.localConfig) { document in
+            let layout = try prepare(document, themeJSON: """
+            {"version":1,"styles":{"paragraph":{"marginBottom":12},"blockquote":{"marginTop":20,"marginBottom":14,"paddingTop":3,"paddingBottom":5,"backgroundColor":"#ffff00ff"}}}
+            """)
+            let quotes = layout.decorations.filter { $0.styleBox?.color("backgroundColor") == UIColor.yellow }.sorted { $0.bounds.minY < $1.bounds.minY }
+            XCTAssertEqual(quotes.count, 2)
+            XCTAssertEqual(quotes[1].bounds.minY - quotes[0].bounds.maxY, 20, accuracy: 0.01)
+        }
+    }
+
+    func testVersionedVoidBlockMarginsCollapseWithAdjacentParagraphs() throws {
+        for (nodeType, html) in [("image", "<img src=\"https://example.test/image.png\" width=\"64\" height=\"32\">"), ("horizontalRule", "<hr>")] {
+            try withCompiledDocument(source: .html("<p>First</p>\(html)<p>Last</p>"), configJSON: Fixture.localConfig) { document in
+                let layout = try prepare(document, themeJSON: """
+                {"version":1,"styles":{"paragraph":{"marginTop":17,"marginBottom":12},"\(nodeType)":{"marginTop":20,"marginBottom":8}}}
+                """)
+                XCTAssertEqual(layout.blocks.count, 3)
+                XCTAssertEqual(layout.blocks[1].bounds.minY - layout.blocks[0].bounds.maxY, 20, accuracy: 0.01, nodeType)
+                XCTAssertEqual(layout.blocks[2].bounds.minY - layout.blocks[1].bounds.maxY, 17, accuracy: 0.01, nodeType)
+            }
+        }
+    }
+
+    func testVersionedNegativeMarginsRetainAndDrawEarlierVisibleBlocks() throws {
+        try withCompiledDocument(source: .html("<p>First</p><pre><code>Second</code></pre>"), configJSON: Fixture.localConfig) { document in
+            let layout = try prepare(document, themeJSON: """
+            {"version":1,"styles":{"content":{"paddingTop":80},"paragraph":{"marginBottom":-60,"backgroundColor":"#ff0000ff"},"codeBlock":{"marginTop":-60,"marginBottom":0,"paddingTop":0,"paddingBottom":0}}}
+            """)
+            let first = layout.blocks[0].bounds
+            XCTAssertGreaterThanOrEqual(layout.size.height, first.maxY)
+            let drawing = PreparedProseDrawingView(frame: CGRect(x: 0, y: 0, width: layout.size.width, height: max(layout.size.height, first.maxY)))
+            drawing.install(layout: layout)
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            format.preferredRange = .standard
+            let clip = CGRect(x: 0, y: first.minY + 2, width: layout.size.width, height: 2)
+            let pixels = try XCTUnwrap(UIGraphicsImageRenderer(size: drawing.bounds.size, format: format).image { context in
+                context.cgContext.clip(to: clip)
+                drawing.draw(clip)
+            }.cgImage)
+            let data = try XCTUnwrap(pixels.dataProvider?.data)
+            let bytes = try XCTUnwrap(CFDataGetBytePtr(data))
+            let offset = Int(clip.minY) * pixels.bytesPerRow + 200 * 4
+            XCTAssertGreaterThan(bytes[offset + 3], 0)
+        }
+    }
+
     func testVersionedInlineBackgroundHasPreparedPaintFragment() throws {
         try withCompiledDocument(source: .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Painted","marks":[{"type":"bold"}]}]}]}"#), configJSON: #"{"initialization":{"type":"localEmpty"}}"#) { document in
             let layout = try prepare(document, themeJSON: """

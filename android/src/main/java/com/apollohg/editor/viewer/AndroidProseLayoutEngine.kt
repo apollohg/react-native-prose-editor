@@ -210,6 +210,13 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         }
         val containerBounds = mutableMapOf<Int, Rect>()
         val sheet = theme.sourceTheme?.styleSheet
+        val leafBoxes = visibleBlocks.mapIndexed { index, block ->
+            val box = sheet?.box(block.nodeType)?.scaled(density) ?: EditorBoxStyle()
+            val parent = block.containers.lastOrNull()
+            if (block.nodeType == "paragraph" && parent?.nodeType == "blockquote" && parent.lastLeaf == index) {
+                box.copy(margin = box.margin.copy(bottom = 0f))
+            } else box
+        }
         var blocks = visibleBlocks.mapIndexed { index, block ->
             val nextAncestorIdentities = visibleBlocks.getOrNull(index + 1)
                 ?.let(::listItemAncestors)
@@ -219,6 +226,16 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 .filter { it.identity !in nextAncestorIdentities }
                 .mapTo(mutableSetOf()) { it.identity }
             val containers = if (sheet == null) emptyList() else block.containers
+            if (sheet != null && index > 0) {
+                val previous = visibleBlocks[index - 1].containers
+                var common = 0
+                while (common < previous.size && common < containers.size && previous[common].identity == containers[common].identity) common++
+                val bottom = (previous.getOrNull(common)?.let { sheet.box(it.nodeType).scaled(density).margin.bottom }
+                    ?: leafBoxes[index - 1].margin.bottom).toInt()
+                val top = (containers.getOrNull(common)?.let { sheet.box(it.nodeType).scaled(density).margin.top }
+                    ?: leafBoxes[index].margin.top).toInt()
+                cursorY += maxOf(0, bottom, top) + minOf(0, bottom, top) - bottom - top
+            }
             var containerInset = EditorEdges()
             containers.forEach { ancestor ->
                 val box = sheet!!.box(ancestor.nodeType).scaled(density)
@@ -229,7 +246,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 }
                 containerInset += box.outerInset.copy(top = 0f, bottom = 0f)
             }
-            val box = sheet?.box(block.nodeType)?.scaled(density) ?: EditorBoxStyle()
+            val box = leafBoxes[index]
             val outer = box.outerInset
             val leafTop = cursorY
             val leftInset = (containerInset.left + outer.left).toInt()
@@ -252,7 +269,10 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                     bounds.right = attachment.bounds.right + box.inset.right.toInt()
                 }
                 val decoration = PreparedProseFragment(PreparedProseFragmentKind.BACKGROUND, bounds, box = box)
-                val seed = Rect(theme.insetLeftPx, leafTop, widthPx - theme.insetRightPx, end)
+                val seed = Rect(theme.insetLeftPx, leafTop, widthPx - theme.insetRightPx, end).apply {
+                    union(bounds)
+                    prepared.block.fragments.forEach { union(it.bounds) }
+                }
                 prepared = prepared.copy(block = PreparedProseBlock(listOf(decoration) + prepared.block.fragments, seed), nextY = end)
             }
             cursorY = prepared.nextY

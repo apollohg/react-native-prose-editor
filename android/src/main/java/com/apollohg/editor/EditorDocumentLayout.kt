@@ -65,8 +65,8 @@ internal class EditorDocumentLayout(
             }
             return low
         }
-        boxes = content.getSpans(0, content.length, EditorBlockBoxSpan::class.java).map {
-            Box(it, content.getSpanStart(it), content.getSpanEnd(it), it.box, it.depth)
+        boxes = content.resolvedBlockSpacing().map { (span, style) ->
+            Box(span, content.getSpanStart(span), content.getSpanEnd(span), style, span.depth)
         } + content.getSpans(0, content.length, CodeBlockSpan::class.java).map {
             Box(it, content.getSpanStart(it), content.getSpanEnd(it), it.documentBox, Int.MAX_VALUE)
         }

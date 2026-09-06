@@ -33,6 +33,26 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [34])
 internal class RichTextEditorViewRenderPatchesTest : RichTextEditorViewTestFixture() {
     @Test
+    fun `partial render patch retains collapsed margins against unchanged neighbors`() {
+        val editor = EditorEditText(RuntimeEnvironment.getApplication())
+        editor.applyTheme(EditorTheme.fromJson("""{"version":1,"styles":{"paragraph":{"lineHeight":27,"marginTop":8,"marginBottom":12}}}"""))
+        val initial = JSONArray().put(paragraphRenderBlock("First")).put(paragraphRenderBlock("Middle")).put(paragraphRenderBlock("Last"))
+        editor.applyUpdateJSON(renderUpdateJson(initial), notifyListener = false)
+        val patch = JSONObject().put("startIndex", 1).put("deleteCount", 1)
+            .put("renderBlocks", JSONArray().put(paragraphRenderBlock("Changed")))
+
+        editor.applyUpdateJSON(renderUpdateJson(JSONArray(), includeFullRenderBlocks = false, renderPatch = patch), notifyListener = false)
+
+        assertTrue(editor.lastRenderAppliedPatch())
+        editor.measure(View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY))
+        editor.layout(0, 0, 320, 400)
+        val layout = editor.layout as EditorDocumentLayout
+        val margin = (12 * editor.resources.displayMetrics.density).toInt()
+        assertEquals(margin, layout.textLineTop(1) - layout.textLineBottom(0))
+        assertEquals(margin, layout.textLineTop(2) - layout.textLineBottom(1))
+    }
+
+    @Test
     fun `apply update json resolves patch-only payload for middle paragraph split`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         val initialBlocks = JSONArray().apply {

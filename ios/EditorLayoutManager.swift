@@ -56,15 +56,26 @@ final class EditorLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         }
         let extra = height - lineFragmentUsedRect.pointee.height
         var leading: CGFloat = 0
-        if glyphRange.location == 0,
-           storage.attribute(editorStyledContentAttribute, at: 0, effectiveRange: nil) != nil,
-           let style = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle {
-            leading = style.paragraphSpacingBefore
+        var overlap: CGFloat = 0
+        if characters.location < storage.length,
+           storage.attribute(editorStyledContentAttribute, at: characters.location, effectiveRange: nil) != nil,
+           let style = storage.attribute(.paragraphStyle, at: characters.location, effectiveRange: nil) as? NSParagraphStyle {
+            let paragraph = (storage.string as NSString).paragraphRange(for: NSRange(location: characters.location, length: 0))
+            if characters.location == paragraph.location {
+                if glyphRange.location == 0 {
+                    leading = style.paragraphSpacingBefore
+                } else {
+                    let previous = storage.attribute(.paragraphStyle, at: characters.location - 1, effectiveRange: nil) as? NSParagraphStyle
+                    overlap = min(0, style.paragraphSpacingBefore) + min(0, previous?.paragraphSpacing ?? 0)
+                }
+            }
         }
-        guard extra != 0 || leading != 0 else { return false }
+        guard extra != 0 || leading != 0 || overlap != 0 else { return false }
+        // TextKit clamps negative paragraph spacing; move the following fragment.
+        lineFragmentRect.pointee.origin.y += overlap
         lineFragmentRect.pointee.size.height += extra + leading
         lineFragmentUsedRect.pointee.size.height = height
-        lineFragmentUsedRect.pointee.origin.y += leading
+        lineFragmentUsedRect.pointee.origin.y += leading + overlap
         baselineOffset.pointee += extra / 2 + leading
         return true
     }

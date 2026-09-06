@@ -2,6 +2,29 @@ import XCTest
 import ExpoModulesCore
 
 extension RichTextEditorViewTests {
+    func testVersionedParagraphSplitKeepsCollapsedSiblingMargins() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        textView.captureApplyUpdateTraceForTesting = true
+        textView.theme = try XCTUnwrap(EditorTheme.from(json: #"{"version":1,"styles":{"paragraph":{"marginTop":20,"marginBottom":12}}}"#))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
+        let beta = (textView.text as NSString).range(of: "Beta")
+        let splitOffset = UInt32(NSMaxRange(beta))
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: splitOffset, scalarHead: splitOffset)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        textView.insertText("\n")
+        XCTAssertTrue(textView.lastRenderAppliedPatch())
+        let text = textView.textStorage.string as NSString
+        var start = 0
+        while start < text.length {
+            let range = text.paragraphRange(for: NSRange(location: start, length: 0))
+            let style = try XCTUnwrap(textView.textStorage.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle)
+            XCTAssertEqual(style.paragraphSpacingBefore, start == 0 ? 20 : 8, accuracy: 0.01, "paragraph at \(start)")
+            start = NSMaxRange(range)
+        }
+    }
+
     func testParagraphSplitAppliesTopLevelRenderPatch() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

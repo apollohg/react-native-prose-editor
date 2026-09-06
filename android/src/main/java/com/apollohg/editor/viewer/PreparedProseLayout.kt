@@ -71,7 +71,7 @@ internal data class PreparedProseFragment(
         get() = 160L + (layout?.text?.length ?: 0).toLong() * 4 + (labelLayout?.text?.length ?: 0).toLong() * 4 + (label?.length ?: 0).toLong() * 2 + (atomNodeType?.length ?: 0).toLong() * 2 + (atomAttrsJson?.length ?: 0).toLong() * 2
 }
 
-/** A vertically sorted immutable culling unit. */
+/** An immutable culling unit in document paint order. */
 internal data class PreparedProseBlock(
     val fragments: List<PreparedProseFragment>,
     val bounds: Rect,
@@ -123,9 +123,16 @@ internal data class PreparedProseLayout(
     val codeHighlightBlocks: List<com.apollohg.editor.CodeHighlightBlock> = emptyList(),
     val highlightedCodeKeys: Set<String> = emptySet(),
 ) {
+    val hasMonotonicBlockBounds = (1 until blocks.size).all {
+        blocks[it - 1].topPx <= blocks[it].topPx && blocks[it - 1].bottomPx <= blocks[it].bottomPx
+    }
     val fragmentKinds: Set<PreparedProseFragmentKind> get() = blocks.flatMapTo(linkedSetOf()) { block -> block.fragments.map { it.kind } }
 
     inline fun forEachBlockIntersecting(clip: Rect, action: (PreparedProseBlock) -> Unit) {
+        if (!hasMonotonicBlockBounds) {
+            for (block in blocks) if (block.intersects(clip)) action(block)
+            return
+        }
         var lower = 0
         var upper = blocks.size
         while (lower < upper) {

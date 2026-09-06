@@ -85,6 +85,17 @@ final class CoreTextProseLayoutEngine {
             let followingIds = Set(document.blocks.indices.contains(index + 1) ? document.blocks[index + 1].styleAncestors.map(\.identity) : [])
             let opening = block.styleAncestors.filter { !priorIds.contains($0.identity) }
             let closing = block.styleAncestors.filter { !followingIds.contains($0.identity) }
+            if let sheet = theme.styleSheet, index > 0 {
+                let previous = document.blocks[index - 1]
+                let shared = zip(previous.styleAncestors, block.styleAncestors).prefix { $0 == $1 }.count
+                let previousSibling = previous.styleAncestors.dropFirst(shared).first?.nodeType ?? previous.nodeType
+                let nextSibling = block.styleAncestors.dropFirst(shared).first?.nodeType ?? block.nodeType
+                let previousMargin = sheet.box(previousSibling).margin.bottom
+                let nextMargin = sheet.box(nextSibling).margin.top
+                cursorY -= previousMargin + nextMargin - EditorStyleSheet.collapsedMargin(previousMargin, nextMargin)
+            }
+            let omitBottomMargin = block.nodeType == "paragraph"
+                && block.styleAncestors.last.map { $0.nodeType == "blockquote" && closing.contains($0) } == true
             let top = opening.reduce(CGFloat.zero) { $0 + (theme.styleSheet?.box($1.nodeType).outerInsets.top ?? 0) }
             let bottom = closing.reduce(CGFloat.zero) { $0 + (theme.styleSheet?.box($1.nodeType).outerInsets.bottom ?? 0) }
             cursorY += top
@@ -96,6 +107,7 @@ final class CoreTextProseLayoutEngine {
                 theme: theme,
                 width: canonicalWidth,
                 cursorY: cursorY,
+                omitBottomMargin: omitBottomMargin,
                 disappearingListItemIdentities: disappearingListItemIdentities,
                 displayScale: displayScale,
                 warningSemanticGeneration: warningSemanticGeneration
@@ -133,7 +145,8 @@ final class CoreTextProseLayoutEngine {
             cursorY = prepared.nextY + bottom
             retainedBytes += prepared.retainedBytes
         }
-        cursorY = (theme.styleSheet == nil ? (blocks.map(\.bounds.maxY).max() ?? cursorY) : cursorY) + theme.contentInsets.bottom
+        let renderedBottom = blocks.map(\.bounds.maxY).max() ?? cursorY
+        cursorY = (theme.styleSheet == nil ? renderedBottom : max(cursorY, renderedBottom)) + theme.contentInsets.bottom
         var decorations = containerBounds.keys.sorted { (containerStyles[$0]?.1 ?? 0) < (containerStyles[$1]?.1 ?? 0) }.compactMap { identity -> PreparedProseFragment? in
             guard let bounds = containerBounds[identity], let style = containerStyles[identity]?.0 else { return nil }
             return PreparedProseFragment(kind: .background, bounds: bounds, styleBox: style)
@@ -179,6 +192,7 @@ final class CoreTextProseLayoutEngine {
         theme: PreparedProseTheme,
         width: CGFloat,
         cursorY: CGFloat,
+        omitBottomMargin: Bool,
         disappearingListItemIdentities: Set<Int>,
         displayScale: CGFloat,
         warningSemanticGeneration: String
@@ -217,7 +231,7 @@ final class CoreTextProseLayoutEngine {
         let textX = contentX + listInset + quoteInset + codeInset + box.inset.left
         let itemSpacing: CGFloat
         if sheet != nil {
-            itemSpacing = box.margin.bottom
+            itemSpacing = omitBottomMargin ? 0 : box.margin.bottom
         } else if block.listContext == nil {
             itemSpacing = paint.spacingAfter
         } else {

@@ -39,6 +39,8 @@ internal class EditorBlockBoxSpan(
     val box: EditorBoxStyle,
     val ancestorInset: EditorEdges,
     val depth: Int,
+    val nodeType: String? = null,
+    val marginForCollapsing: EditorEdges = box.margin,
 ) : LeadingMarginSpan {
     override fun getLeadingMargin(first: Boolean): Int = box.outerInset.left.toInt()
     override fun drawLeadingMargin(canvas: Canvas, paint: Paint, x: Int, dir: Int, top: Int, baseline: Int, bottom: Int, text: CharSequence, start: Int, end: Int, first: Boolean, layout: Layout?) = Unit

@@ -401,7 +401,7 @@ public final class PreparedProseDrawingView: UIView {
         let blocks = layout.blocks
         var lower = 0
         var upper = blocks.count
-        while lower < upper {
+        while layout.hasMonotonicBlockBounds && lower < upper {
             let middle = (lower + upper) / 2
             if blocks[middle].bounds.maxY < rect.minY { lower = middle + 1 } else { upper = middle }
         }
@@ -423,7 +423,8 @@ public final class PreparedProseDrawingView: UIView {
         var visibleBlockCount = 0
         for index in lower..<blocks.count {
             let block = blocks[index]
-            guard block.bounds.minY <= rect.maxY else { break }
+            if layout.hasMonotonicBlockBounds && block.bounds.minY > rect.maxY { break }
+            guard block.bounds.intersects(rect) else { continue }
             visibleFragments.append(contentsOf: block.fragments)
             visibleBlockCount += 1
         }

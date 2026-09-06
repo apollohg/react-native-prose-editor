@@ -208,7 +208,7 @@ final class RenderBridge {
         var pendingTrailingParagraphSpacing: CGFloat? = nil
         var atomOccurrences: [String: Int] = [:]
 
-        for element in elements {
+        for (elementIndex, element) in elements.enumerated() {
             guard let type = element["type"] as? String else { continue }
             let topLevelChildIndex = jsonInt(element["topLevelChildIndex"])
 
@@ -351,6 +351,7 @@ final class RenderBridge {
                     style.paragraphSpacingBefore = sheet.box(nodeType).margin.top
                     style.paragraphSpacing = sheet.box(nodeType).margin.bottom
                     styled.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: styled.length))
+                    styled.addAttribute(editorBlockSpacingBoxAttribute, value: EditorRenderedBox(box: sheet.box(nodeType), depth: blockStack.count, leading: 0, trailing: 0), range: NSRange(location: 0, length: styled.length))
                     result.append(styled)
                 } else { result.append(attrStr) }
                 pendingTrailingParagraphSpacing = theme?.effectiveTextStyle(
@@ -524,7 +525,11 @@ final class RenderBridge {
                         textColor: textColor,
                         theme: theme
                     )
-                    closeStyledBlock(endedBlock, ancestors: blockStack, in: result, theme: theme, baseFont: baseFont, textColor: textColor)
+                    let omitBottomMargin = endedBlock.nodeType == "paragraph"
+                        && blockStack.last?.nodeType == "blockquote"
+                        && elements.indices.contains(elementIndex + 1)
+                        && elements[elementIndex + 1]["type"] as? String == "blockEnd"
+                    closeStyledBlock(endedBlock, ancestors: blockStack, in: result, theme: theme, baseFont: baseFont, textColor: textColor, omitBottomMargin: omitBottomMargin)
                     if EditorStyleSheet.element(endedBlock.nodeType) == "codeBlock", endedBlock.styleStart < result.length {
                         result.addAttribute(editorCodeBlockAttribute, value: EditorCodeBlockPresentation(language: endedBlock.language), range: NSRange(location: endedBlock.styleStart, length: result.length - endedBlock.styleStart))
                     }
@@ -550,10 +555,7 @@ final class RenderBridge {
         }
 
         if theme?.styleSheet != nil, result.length > 1 {
-            result.enumerateAttribute(RenderBridgeAttributes.blockBoundary, in: NSRange(location: 1, length: result.length - 1)) { value, range, _ in
-                guard value != nil, let style = result.attribute(.paragraphStyle, at: range.location - 1, effectiveRange: nil) else { return }
-                result.addAttribute(.paragraphStyle, value: style, range: range)
-            }
+            collapseStyledSiblingMargins(in: result)
         }
         return result
     }

@@ -3,6 +3,10 @@ import UIKit
 struct EditorStyleSheet {
     let styles: [String: [String: Any]]
 
+    static func collapsedMargin(_ first: CGFloat, _ second: CGFloat) -> CGFloat {
+        max(0, first, second) + min(0, first, second)
+    }
+
     static func element(_ nodeType: String) -> String {
         switch nodeType {
         case "code_block": return "codeBlock"
@@ -276,6 +280,7 @@ extension EditorTheme {
 }
 
 let editorStyleBoxesAttribute = NSAttributedString.Key("com.apollohg.editor.styleBoxes")
+let editorBlockSpacingBoxAttribute = NSAttributedString.Key("com.apollohg.editor.blockSpacingBox")
 
 final class EditorRenderedBox: NSObject {
     let box: EditorStyleBox
@@ -293,7 +298,7 @@ final class EditorRenderedBox: NSObject {
 }
 
 extension RenderBridge {
-    static func closeStyledBlock(_ context: BlockContext, ancestors: [BlockContext], in result: NSMutableAttributedString, theme: EditorTheme?, baseFont: UIFont, textColor: UIColor) {
+    static func closeStyledBlock(_ context: BlockContext, ancestors: [BlockContext], in result: NSMutableAttributedString, theme: EditorTheme?, baseFont: UIFont, textColor: UIColor, omitBottomMargin: Bool = false) {
         guard let sheet = theme?.styleSheet else { return }
         var start = min(context.styleStart, result.length)
         while start < result.length, result.attribute(RenderBridgeAttributes.blockBoundary, at: start, effectiveRange: nil) != nil { start += 1 }
@@ -305,7 +310,9 @@ extension RenderBridge {
         guard start < result.length else { return }
         let range = NSRange(location: start, length: result.length - start)
         let outer = ancestors.reduce(UIEdgeInsets.zero) { $0.adding(sheet.box($1.nodeType).outerInsets) }
-        let box = sheet.box(context.nodeType)
+        var values = sheet.box(context.nodeType).values
+        if omitBottomMargin { values["marginBottom"] = 0 }
+        let box = EditorStyleBox(values)
         let descriptor = EditorRenderedBox(box: box, depth: ancestors.count, leading: outer.left + box.margin.left, trailing: outer.right + box.margin.right)
         result.enumerateAttribute(editorStyleBoxesAttribute, in: range) { value, subrange, _ in
             var boxes = value as? [EditorRenderedBox] ?? []
@@ -327,6 +334,56 @@ extension RenderBridge {
                 result.addAttribute(.paragraphStyle, value: style, range: subrange)
                 if leading { descriptor.topInset = style.paragraphSpacingBefore - box.margin.top }
                 else { descriptor.bottomInset = style.paragraphSpacing - box.margin.bottom }
+            }
+        }
+    }
+
+    static func collapseStyledSiblingMargins(in result: NSMutableAttributedString) {
+        typealias Span = (box: EditorRenderedBox, parent: ObjectIdentifier?, range: NSRange)
+        var spans: [ObjectIdentifier: Span] = [:]
+        result.enumerateAttributes(in: NSRange(location: 0, length: result.length)) { attributes, range, _ in
+            var boxes = attributes[editorStyleBoxesAttribute] as? [EditorRenderedBox] ?? []
+            if let spacingBox = attributes[editorBlockSpacingBoxAttribute] as? EditorRenderedBox { boxes.append(spacingBox) }
+            for (index, box) in boxes.enumerated() {
+                let identity = ObjectIdentifier(box)
+                let parent = index > 0 ? ObjectIdentifier(boxes[index - 1]) : nil
+                spans[identity] = (box, parent, spans[identity].map { NSUnionRange($0.range, range) } ?? range)
+            }
+        }
+        let text = result.string as NSString
+        var leadingSpacing: [Int: (range: NSRange, value: CGFloat)] = [:]
+        for opening in Dictionary(grouping: spans.values, by: { $0.range.location }).values {
+            guard let outer = opening.min(by: { $0.box.depth < $1.box.depth }) else { continue }
+            let paragraph = NSIntersectionRange(text.paragraphRange(for: NSRange(location: outer.range.location, length: 0)), outer.range)
+            leadingSpacing[outer.range.location] = (paragraph, outer.box.topInset + outer.box.box.margin.top)
+        }
+        for siblings in Dictionary(grouping: spans.values, by: \.parent).values {
+            let ordered = siblings.sorted { $0.range.location < $1.range.location }
+            for (previous, next) in zip(ordered, ordered.dropFirst()) {
+                let gap = NSRange(location: NSMaxRange(previous.range), length: max(0, next.range.location - NSMaxRange(previous.range)))
+                var adjacent = NSMaxRange(previous.range) <= next.range.location
+                result.enumerateAttribute(RenderBridgeAttributes.blockBoundary, in: gap) { value, _, _ in
+                    if value == nil { adjacent = false }
+                }
+                guard adjacent else { continue }
+                let bottom = previous.box.box.margin.bottom
+                let top = next.box.box.margin.top
+                let adjustment = bottom + top - EditorStyleSheet.collapsedMargin(bottom, top)
+                leadingSpacing[next.range.location]?.value -= adjustment
+            }
+        }
+        for spacing in leadingSpacing.values {
+            result.enumerateAttribute(.paragraphStyle, in: spacing.range) { value, range, _ in
+                guard let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle,
+                      style.paragraphSpacingBefore != spacing.value else { return }
+                style.paragraphSpacingBefore = spacing.value
+                result.addAttribute(.paragraphStyle, value: style, range: range)
+            }
+        }
+        if result.length > 1 {
+            result.enumerateAttribute(RenderBridgeAttributes.blockBoundary, in: NSRange(location: 1, length: result.length - 1)) { value, range, _ in
+                guard value != nil, let style = result.attribute(.paragraphStyle, at: range.location - 1, effectiveRange: nil) else { return }
+                result.addAttribute(.paragraphStyle, value: style, range: range)
             }
         }
     }

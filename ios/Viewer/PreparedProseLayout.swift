@@ -276,6 +276,7 @@ public final class PreparedProseLayout: NSObject {
     let key: ProseLayoutKey
     let size: CGSize
     let blocks: [PreparedProseBlock]
+    let hasMonotonicBlockBounds: Bool
     let interactions: [PreparedProseInteraction]
     let accessibilityNodes: [PreparedProseAccessibilityNode]
     let imageAttachments: [ViewerImageAttachment]
@@ -301,6 +302,9 @@ public final class PreparedProseLayout: NSObject {
         self.key = key
         self.size = size
         self.blocks = blocks
+        self.hasMonotonicBlockBounds = zip(blocks, blocks.dropFirst()).allSatisfy {
+            $0.bounds.minY <= $1.bounds.minY && $0.bounds.maxY <= $1.bounds.maxY
+        }
         self.interactions = interactions
         self.accessibilityNodes = accessibilityNodes
         self.imageAttachments = imageAttachments

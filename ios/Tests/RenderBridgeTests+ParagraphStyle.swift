@@ -538,6 +538,126 @@ extension RenderBridgeTests {
 }
 
 extension RenderBridgeTests {
+    func testVersionedSiblingMarginsCollapseWithoutCollapsingPadding() throws {
+        for (bottom, top, collapsed) in [(12, 20, 20), (-12, -20, -20), (12, -5, 7), (0, -20, -20), (-60, -60, -60)] {
+            let theme = try XCTUnwrap(EditorTheme.from(json: """
+            {"version":1,"styles":{"paragraph":{"marginTop":80,"marginBottom":\(bottom),"paddingBottom":3,"borderBottomWidth":2},"codeBlock":{"marginTop":\(top),"paddingTop":7,"borderTopWidth":4}}}
+            """))
+            let rendered = RenderBridge.renderElements(fromArray: [
+                ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+                ["type": "textRun", "text": "First", "marks": []], ["type": "blockEnd"],
+                ["type": "blockStart", "nodeType": "codeBlock", "depth": 0],
+                ["type": "textRun", "text": String(repeating: "Second ", count: 8), "marks": []], ["type": "blockEnd"]
+            ], baseFont: baseFont, textColor: textColor, theme: theme)
+            let first = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+            let second = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: (rendered.string as NSString).range(of: "Second").location, effectiveRange: nil) as? NSParagraphStyle)
+            XCTAssertEqual(first.paragraphSpacing + second.paragraphSpacingBefore, CGFloat(collapsed + 16), accuracy: 0.01)
+            let storage = NSTextStorage(attributedString: rendered)
+            let manager = EditorLayoutManager()
+            let container = NSTextContainer(size: CGSize(width: 320, height: 1_000))
+            manager.addTextContainer(container)
+            storage.addLayoutManager(manager)
+            manager.ensureLayout(for: container)
+            let firstLine = manager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: nil)
+            let secondGlyph = manager.glyphIndexForCharacter(at: (rendered.string as NSString).range(of: "Second").location)
+            let secondLine = manager.lineFragmentUsedRect(forGlyphAt: secondGlyph, effectiveRange: nil)
+            XCTAssertEqual(secondLine.minY - firstLine.maxY, CGFloat(collapsed + 16), accuracy: 0.5)
+            var wrappedLines: [CGRect] = []
+            manager.enumerateLineFragments(forGlyphRange: NSRange(location: secondGlyph, length: manager.numberOfGlyphs - secondGlyph)) { _, used, _, _, _ in
+                wrappedLines.append(used)
+            }
+            XCTAssertGreaterThan(wrappedLines.count, 1)
+            for (previous, next) in zip(wrappedLines, wrappedLines.dropFirst()) {
+                XCTAssertEqual(next.minY, previous.maxY, accuracy: 0.5)
+            }
+        }
+    }
+
+    func testVersionedSiblingQuoteMarginsCollapseOutsideTheirPadding() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"paragraph":{"marginBottom":12},"blockquote":{"marginTop":20,"marginBottom":14,"paddingTop":3,"paddingBottom":5}}}
+        """))
+        let elements: [[String: Any]] = ["First", "Second"].flatMap { text in [
+            ["type": "blockStart", "nodeType": "blockquote", "depth": 0],
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 1],
+            ["type": "textRun", "text": text, "marks": []],
+            ["type": "blockEnd"], ["type": "blockEnd"]
+        ] }
+        let rendered = RenderBridge.renderElements(fromArray: elements, baseFont: baseFont, textColor: textColor, theme: theme)
+        let first = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        let second = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: (rendered.string as NSString).range(of: "Second").location, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(first.paragraphSpacing + second.paragraphSpacingBefore, 28, accuracy: 0.01)
+    }
+
+    func testVersionedVoidBlockMarginsCollapseWithAdjacentParagraphs() throws {
+        for nodeType in ["image", "horizontalRule"] {
+            let theme = try XCTUnwrap(EditorTheme.from(json: """
+            {"version":1,"styles":{"paragraph":{"marginTop":17,"marginBottom":12},"\(nodeType)":{"marginTop":20,"marginBottom":8}}}
+            """))
+            let rendered = RenderBridge.renderElements(fromArray: [
+                ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+                ["type": "textRun", "text": "First", "marks": []], ["type": "blockEnd"],
+                ["type": "voidBlock", "nodeType": nodeType, "docPos": 7, "attrs": [:]],
+                ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+                ["type": "textRun", "text": "Last", "marks": []], ["type": "blockEnd"]
+            ], baseFont: baseFont, textColor: textColor, theme: theme)
+            let text = rendered.string as NSString
+            let first = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+            let attachment = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: text.range(of: "\u{FFFC}").location, effectiveRange: nil) as? NSParagraphStyle)
+            let last = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: text.range(of: "Last").location, effectiveRange: nil) as? NSParagraphStyle)
+            XCTAssertEqual(first.paragraphSpacing + attachment.paragraphSpacingBefore, 20, accuracy: 0.01, nodeType)
+            XCTAssertEqual(attachment.paragraphSpacing + last.paragraphSpacingBefore, 17, accuracy: 0.01, nodeType)
+        }
+    }
+
+    func testVersionedQuoteOmitsOnlyFinalParagraphBottomMargin() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"paragraph":{"marginBottom":12,"paddingBottom":3,"borderBottomWidth":2},"blockquote":{"paddingBottom":7,"marginBottom":11}}}
+        """))
+        let rendered = RenderBridge.renderElements(fromArray: [
+            ["type": "blockStart", "nodeType": "blockquote", "depth": 0],
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 1],
+            ["type": "textRun", "text": "First", "marks": []],
+            ["type": "blockEnd"],
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 1],
+            ["type": "textRun", "text": "Last", "marks": []],
+            ["type": "blockEnd"],
+            ["type": "blockEnd"],
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "textRun", "text": "Outside", "marks": []],
+            ["type": "blockEnd"]
+        ], baseFont: baseFont, textColor: textColor, theme: theme)
+        let text = rendered.string as NSString
+        for (label, expected): (String, CGFloat) in [("First", 17), ("Last", 23), ("Outside", 17)] {
+            let index = text.range(of: label).location
+            let style = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle)
+            XCTAssertEqual(style.paragraphSpacing, expected, accuracy: 0.01, label)
+        }
+        let boxes = try XCTUnwrap(rendered.attribute(editorStyleBoxesAttribute, at: text.range(of: "Last").location, effectiveRange: nil) as? [EditorRenderedBox])
+        XCTAssertEqual(boxes.first?.bottomInset, 12)
+        XCTAssertEqual(boxes.last?.box.inset.bottom, 5)
+    }
+
+    func testVersionedQuoteKeepsNestedContainerSpacing() throws {
+        let theme = try XCTUnwrap(EditorTheme.from(json: """
+        {"version":1,"styles":{"paragraph":{"marginBottom":12},"blockquote":{"paddingBottom":7}}}
+        """))
+        for (nodeType, expected): (String, CGFloat) in [("blockquote", 14), ("listItem", 23)] {
+            var child: [String: Any] = ["type": "blockStart", "nodeType": nodeType, "depth": 1]
+            if nodeType == "listItem" {
+                child["listContext"] = ["ordered": false, "index": 1, "isFirst": true, "isLast": true]
+            }
+            let rendered = RenderBridge.renderElements(fromArray: [
+                ["type": "blockStart", "nodeType": "blockquote", "depth": 0], child,
+                ["type": "blockStart", "nodeType": "paragraph", "depth": 2],
+                ["type": "textRun", "text": "Nested", "marks": []],
+                ["type": "blockEnd"], ["type": "blockEnd"], ["type": "blockEnd"]
+            ], baseFont: baseFont, textColor: textColor, theme: theme)
+            let style = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+            XCTAssertEqual(style.paragraphSpacing, expected, accuracy: 0.01, nodeType)
+        }
+    }
+
     func testStyleBoxResolvesAsymmetricBordersCornersAndImageFit() {
         let box = EditorStyleBox(["borderTopWidth": 2, "borderLeftWidth": 4, "borderRightWidth": 0,
                                   "borderBottomWidth": 3, "paddingLeft": 6, "borderTopLeftRadius": 20,

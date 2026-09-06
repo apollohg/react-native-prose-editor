@@ -362,7 +362,7 @@ internal fun RenderBridge.appendElements(
                             val ancestors = state.blockStack.fold(EditorEdges()) { total, block -> total + sheet.box(block.nodeType).outerInset.scaled(density) }
                             val empty = start == state.result.length
                             val flags = if (empty) Spanned.SPAN_MARK_MARK else Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                            state.result.setSpan(EditorBlockBoxSpan(sheet.box(endedBlock.nodeType).scaled(density), ancestors, state.blockStack.size), start, state.result.length, flags)
+                            state.result.setSpan(EditorBlockBoxSpan(sheet.box(endedBlock.nodeType).scaled(density), ancestors, state.blockStack.size, endedBlock.nodeType), start, state.result.length, flags)
                             if (empty && !isTransparentContainer(endedBlock.nodeType) && !isListItemNodeType(endedBlock.nodeType)) {
                                 val style = EditorTextStyle(fontSize = baseFontSize / density, color = textColor)
                                     .mergedWith(sheet.resolveText(endedBlock.nodeType, state.blockStack.map { it.nodeType }))
