@@ -7,6 +7,14 @@ function readSource(relativePath: string): string {
     return fs.readFileSync(path.join(REPO_ROOT, relativePath), 'utf8');
 }
 
+function readIOSPerformanceHarness(): string {
+    return [
+        'ios/Tests/NativePerformanceTests.swift',
+        'ios/Tests/NativePerformanceTests+CollectionHarness.swift',
+        'ios/Tests/NativePerformanceTests+PreparedProseMeasurements.swift',
+    ].map(readSource).join('\n');
+}
+
 function methodBody(source: string, signature: string): string {
     const start = source.indexOf(signature);
     expect(start).toBeGreaterThanOrEqual(0);
@@ -308,7 +316,7 @@ describe('prepared prose native lifecycle contracts', () => {
     it('makes device evidence phase-scoped, nonempty, and attached to real traversal surfaces', () => {
         const iosInstrumentation = readSource('ios/Viewer/PreparedProseInstrumentation.swift');
         const androidInstrumentation = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseInstrumentation.kt');
-        const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
+        const iosHarness = readIOSPerformanceHarness();
         const androidDevice = readSource('android/src/androidTest/java/com/apollohg/editor/NativeDevicePerformanceTest.kt');
         const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
 
@@ -500,7 +508,7 @@ describe('prepared prose native lifecycle contracts', () => {
     });
 
     it('prints the prepared-prose benchmark export before gating the same local export', () => {
-        const performanceTests = readSource('ios/Tests/NativePerformanceTests.swift');
+        const performanceTests = readSource('ios/Tests/NativePerformanceTests+PreparedProseMeasurements.swift');
         const benchmark = performanceTests.slice(
             performanceTests.indexOf('func testPerformance_preparedProseCorpusGates_iPhone13() throws {'),
             performanceTests.indexOf('\n    /// Fixture-only device contract')
@@ -538,7 +546,7 @@ describe('prepared prose native lifecycle contracts', () => {
             .toMatchObject({ fontFamily: {}, fontSize: {} });
         expect(configuration.imageLoadingPolicy).toMatchObject({ maxConcurrentRequests: 2, maxPendingRequests: 64 });
 
-        const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
+        const iosHarness = readIOSPerformanceHarness();
         const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
         [iosHarness, androidHarness].forEach((source) => {
             expect(source).toContain('prepared-prose-benchmark-config');
@@ -550,18 +558,19 @@ describe('prepared prose native lifecycle contracts', () => {
     it('keeps native phases separate from reset, measurement, and export', () => {
         const iosInstrumentation = readSource('ios/Viewer/PreparedProseInstrumentation.swift');
         const androidInstrumentation = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseInstrumentation.kt');
-        const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
+        const iosHarness = readIOSPerformanceHarness();
         const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
         const fixtures = JSON.parse(readSource('scripts/tests/prepared-prose-harness-static-fixtures.json')) as {
             preparation: { requirement: string };
             differingHeights: { requirement: string };
             drawEvidence: { requirement: string };
         };
-        const iosCollectionHarnessStart = iosHarness.lastIndexOf('private final class PreparedProseCollectionHarness');
-        const iosPerformanceGatesStart = iosHarness.lastIndexOf('private enum PreparedProsePerformanceGates');
+        const iosCollectionSource = readSource('ios/Tests/NativePerformanceTests+CollectionHarness.swift');
+        const iosCollectionHarnessStart = iosCollectionSource.lastIndexOf('final class PreparedProseCollectionHarness');
+        const iosPerformanceGatesStart = iosCollectionSource.lastIndexOf('enum PreparedProsePerformanceGates');
         expect(iosCollectionHarnessStart).toBeGreaterThanOrEqual(0);
         expect(iosPerformanceGatesStart).toBeGreaterThan(iosCollectionHarnessStart);
-        const iosCollectionHarness = iosHarness.slice(iosCollectionHarnessStart, iosPerformanceGatesStart);
+        const iosCollectionHarness = iosCollectionSource.slice(iosCollectionHarnessStart, iosPerformanceGatesStart);
 
         [iosInstrumentation, androidInstrumentation].forEach((source) => {
             expect(source).toContain('beginPhase');
