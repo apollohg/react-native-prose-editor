@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const required = [
+    'LICENSE', 'THIRD_PARTY_NOTICES.md', 'RUST-STANDARD-LIBRARY-NOTICES.html',
     'dist/index.js', 'dist/index.d.ts',
     'ios/Generated_highlighting.swift',
     'ios/native_editor_highlightingFFI/module.modulemap',

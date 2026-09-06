@@ -33,3 +33,9 @@ npm run test:rust
 npm run build:native
 npm pack
 ```
+
+## Licenses and attribution
+
+This package's own code is [Apache-2.0](./LICENSE). Syntect is MIT-licensed; its bundled grammars, themes, Rust dependencies, and native dependencies retain their own licenses. Full texts, copyright notices, and corresponding-source links are included in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) and [RUST-STANDARD-LIBRARY-NOTICES.html](./RUST-STANDARD-LIBRARY-NOTICES.html).
+
+Include these notices alongside the core editor's notices in your distributed app's open-source acknowledgements or accompanying materials. Keep the MPL corresponding-source links and notices for the framework/native dependency versions your app actually resolves. Refresh these files when upgrading dependencies, syntax/theme assets, or the Rust toolchain.

@@ -231,4 +231,8 @@ See the [example app](./example) to try the editor and viewer, and the [Developm
 
 ## License
 
-[Apache-2.0](./LICENSE)
+[Apache-2.0](./LICENSE) for this project's own code. Dependencies retain their respective licenses.
+
+[Third-party notices](./THIRD_PARTY_NOTICES.md) cover the bundled Rust libraries, native dependencies, and copied icon assets; [Rust standard-library notices](./RUST-STANDARD-LIBRARY-NOTICES.html) accompany the prebuilt native libraries. The optional highlighting package ships its own notices for syntect, grammars, themes, and its other dependencies.
+
+When distributing an app, include the applicable notices with the app's open-source acknowledgements or other accompanying materials, including the MPL corresponding-source links. Retain notices for the actual React Native/Expo and native dependency versions resolved by your app as well. An npm package's notices are not automatically copied into the final app by Metro. Refresh notices when dependencies, bundled assets, or the Rust toolchain change.

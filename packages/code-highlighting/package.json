@@ -25,6 +25,7 @@
         "README.md",
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
+        "RUST-STANDARD-LIBRARY-NOTICES.html",
         "scripts/verify-package.mjs"
     ],
     "peerDependencies": {

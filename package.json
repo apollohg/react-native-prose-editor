@@ -120,6 +120,8 @@
     "files": [
         "README.md",
         "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+        "RUST-STANDARD-LIBRARY-NOTICES.html",
         "app.plugin.js",
         "dist",
         "src",

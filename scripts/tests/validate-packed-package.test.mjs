@@ -85,6 +85,8 @@ function makeFixture(name) {
     "expo-module.config.json",
     "react-native.config.js",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "RUST-STANDARD-LIBRARY-NOTICES.html",
     "ReactNativeProseEditor.podspec",
     "src/specs",
     "ios",

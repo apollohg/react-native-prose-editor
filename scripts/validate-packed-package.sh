@@ -703,6 +703,9 @@ pack_ios_consumer_tarball() {
 validate_package_entries() {
   local root="$1"
   require_file "$root" "ReactNativeProseEditor.podspec"
+  require_file "$root" "LICENSE"
+  require_file "$root" "THIRD_PARTY_NOTICES.md"
+  require_file "$root" "RUST-STANDARD-LIBRARY-NOTICES.html"
   [[ ! -e "$root/ios/ReactNativeProseEditor.podspec" ]] || \
     fail "packed npm package must not contain the legacy nested podspec"
   [[ ! -e "$root/ios/build/generated" ]] || \
