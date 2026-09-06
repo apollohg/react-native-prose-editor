@@ -1914,6 +1914,7 @@ PODS:
   - SDWebImageWebPCoder (0.15.0):
     - libwebp (~> 1.0)
     - SDWebImage/Core (~> 5.17)
+  - SVGgh (1.12.1)
   - Yoga (0.0.0)
 
 DEPENDENCIES:
@@ -2005,6 +2006,7 @@ DEPENDENCIES:
   - ReactCodegen (from `build/generated/ios/ReactCodegen`)
   - ReactCommon/turbomodule/core (from `../example/node_modules/react-native/ReactCommon`)
   - ReactNativeDependencies (from `../example/node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec`)
+  - SVGgh (~> 1.12.1)
   - Yoga (from `../example/node_modules/react-native/ReactCommon/yoga`)
 
 SPEC REPOS:
@@ -2012,6 +2014,7 @@ SPEC REPOS:
     - libwebp
     - SDWebImage
     - SDWebImageWebPCoder
+    - SVGgh
 
 EXTERNAL SOURCES:
   EXConstants:
@@ -2283,8 +2286,9 @@ SPEC CHECKSUMS:
   ReactNativeDependencies: 6738e602b46fd24aa453cd58267ec3bb8bf29d27
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   SDWebImageWebPCoder: 0e06e365080397465cc73a7a9b472d8a3bd0f377
+  SVGgh: 63c92d45b520163b640b73a2b41896ea864e8310
   Yoga: 18b74b3ade30bebc1904004dfaceae1dd02a330a
 
-PODFILE CHECKSUM: 92672680bebc27e5da3235787c9a0210d6a06880
+PODFILE CHECKSUM: cbd9b4e33c2f110fd328ec86f36c60ce26e59c05
 
 COCOAPODS: 1.17.0

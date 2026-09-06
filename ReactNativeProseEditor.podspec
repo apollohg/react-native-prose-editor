@@ -23,6 +23,7 @@ Pod::Spec.new do |s|
   s.static_framework = false
 
   s.dependency 'ExpoModulesCore'
+  s.dependency 'SVGgh', '~> 1.12.1'
 
   # Swift source files (including generated UniFFI bindings).
   s.source_files = ['ios/*.swift', 'ios/Viewer/**/*.{swift,h,mm}', 'common/cpp/**/*.{h,cpp}']

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180" font-family="sans-serif">
+  <g transform="translate(16,16)">
+    <rect width="64" height="64" rx="8" fill="#2468ac"/>
+    <circle cx="32" cy="32" r="16" fill="#ffffff"/>
+    <path d="M8 100 L32 76 L56 100 Z" fill="#32a852"/>
+    <text x="88" y="32" font-size="24" fill="#202020">Sample</text>
+    <text x="88" y="64" font-size="16" fill="#404040">Vector fixture</text>
+  </g>
+</svg>

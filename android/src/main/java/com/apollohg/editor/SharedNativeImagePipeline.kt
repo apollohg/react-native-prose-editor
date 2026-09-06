@@ -12,6 +12,9 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
+import android.util.Xml
+import com.caverock.androidsvg.SVG
+import org.xmlpull.v1.XmlPullParser
 import android.util.LruCache
 import android.text.Annotation
 import android.text.Layout
@@ -451,8 +454,7 @@ internal object RenderImageDecoder {
         }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            Log.w(LOG_TAG, "decodeBitmap: invalid image bounds for ${bytes.size} bytes")
-            return null
+            return decodeSvgLease(bytes, policy, priority)
         }
 
         val sampleSize = calculateInSampleSize(
@@ -485,6 +487,167 @@ internal object RenderImageDecoder {
         val lease = reservation.commit(bitmap, decodedBytes)
             ?: return constrainUnbudgetedBitmap(bitmap, decodedBytes, policy, priority)
         return constrainDecodedLease(lease, policy, priority)
+    }
+
+    private fun decodeSvgLease(
+        bytes: ByteArray,
+        policy: ImageLoadingPolicy,
+        priority: DecodedBitmapPriority,
+    ): DecodedBitmapLease? {
+        val svg = try {
+            if (!isSelfContainedSvg(bytes)) return null
+            SVG.getFromInputStream(bytes.inputStream())
+        } catch (_: Exception) {
+            return null
+        } catch (_: OutOfMemoryError) {
+            return null
+        }
+        val viewBox = svg.documentViewBox
+        val aspectRatio = svg.documentAspectRatio.toDouble()
+        var width = svg.documentWidth.toDouble()
+        var height = svg.documentHeight.toDouble()
+        if (width <= 0 && height > 0 && aspectRatio > 0) width = height * aspectRatio
+        if (height <= 0 && width > 0 && aspectRatio > 0) height = width / aspectRatio
+        if (width <= 0) width = viewBox?.width()?.toDouble() ?: 300.0
+        if (height <= 0) height = viewBox?.height()?.toDouble() ?: 150.0
+        if (!width.isFinite() || !height.isFinite() || width <= 0 || height <= 0 ||
+            policy.maxDecodedBytes < 4 || policy.maxDecodeDimensionPx <= 0
+        ) return null
+        val scale = minOf(
+            1.0,
+            policy.maxDecodeDimensionPx / width,
+            policy.maxDecodeDimensionPx / height,
+            kotlin.math.sqrt(policy.maxDecodedBytes.toDouble() / 4.0 / width / height),
+        )
+        val targetWidth = kotlin.math.floor(width * scale).toInt().coerceAtLeast(1)
+        val targetHeight = kotlin.math.floor(height * scale).toInt().coerceAtLeast(1)
+        val estimatedBytes = estimatedArgbBytes(targetWidth, targetHeight, 1)
+        if (estimatedBytes > policy.maxDecodedBytes) return null
+        val reservation = DecodedBitmapBudget.shared().reserve(estimatedBytes, priority) ?: return null
+        var bitmap: Bitmap? = null
+        try {
+            bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+            if (viewBox == null) svg.setDocumentViewBox(0f, 0f, width.toFloat(), height.toFloat())
+            svg.setDocumentWidth("100%")
+            svg.setDocumentHeight("100%")
+            svg.renderToCanvas(Canvas(bitmap))
+            val decodedBytes = decodedAllocationBytes(bitmap)
+            if (decodedBytes > policy.maxDecodedBytes) return null
+            val lease = reservation.commit(bitmap, decodedBytes) ?: return null
+            bitmap = null
+            return lease
+        } catch (_: Exception) {
+            return null
+        } catch (_: OutOfMemoryError) {
+            return null
+        } finally {
+            bitmap?.recycle()
+            reservation.close()
+        }
+    }
+
+    private const val MAX_SVG_ELEMENTS = 8192
+    private const val MAX_SVG_DEPTH = 128
+    private val svgUrlReference = Regex("url\\s*\\(([^)]*)\\)", RegexOption.IGNORE_CASE)
+
+    private val svgUrlStart = Regex("url\\s*\\(", RegexOption.IGNORE_CASE)
+    private val svgLiteralAttributes = setOf("id", "href", "title", "class", "aria-label")
+
+    private class SvgNode {
+        val children = mutableListOf<Int>()
+        val references = mutableListOf<String>()
+    }
+
+    private fun isSelfContainedSvg(bytes: ByteArray): Boolean {
+        val parser = Xml.newPullParser()
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
+        parser.setInput(bytes.inputStream(), null)
+        val nodes = mutableListOf<SvgNode>()
+        val ids = mutableMapOf<String, Int>()
+        val stack = ArrayDeque<Int>()
+        var styleText: StringBuilder? = null
+        while (true) {
+            when (parser.nextToken()) {
+                XmlPullParser.END_DOCUMENT -> break
+                // Reject declarations before AndroidSVG can expand entities or load CSS.
+                XmlPullParser.DOCDECL, XmlPullParser.PROCESSING_INSTRUCTION -> return false
+                XmlPullParser.START_TAG -> {
+                    if (nodes.isEmpty() && (parser.name != "svg" ||
+                            parser.namespace != "http://www.w3.org/2000/svg")
+                    ) return false
+                    if (nodes.size >= MAX_SVG_ELEMENTS || stack.size >= MAX_SVG_DEPTH ||
+                        parser.name in setOf("script", "foreignObject", "image")
+                    ) return false
+                    val node = SvgNode()
+                    val index = nodes.size
+                    stack.lastOrNull()?.let { nodes[it].children.add(index) }
+                    nodes.add(node)
+                    stack.addLast(index)
+                    if (parser.name == "style") styleText = StringBuilder()
+                    for (attribute in 0 until parser.attributeCount) {
+                        val name = parser.getAttributeName(attribute)
+                        val value = parser.getAttributeValue(attribute)
+                        val literal = name in svgLiteralAttributes || name.startsWith("data-")
+                        if (name.startsWith("on", ignoreCase = true) ||
+                            (name == "href" && !value.trim().startsWith("#")) ||
+                            (!literal && !hasOnlyLocalSvgReferences(value))
+                        ) return false
+                        if (name == "id" && ids.put(value, index) != null) return false
+                        if (name == "href") node.references.add(value.trim().removePrefix("#"))
+                        if (!literal) {
+                            svgUrlReference.findAll(value).forEach {
+                                node.references.add(it.groupValues[1].trim().trim('\'', '"').removePrefix("#"))
+                            }
+                        }
+                    }
+                }
+                XmlPullParser.TEXT, XmlPullParser.CDSECT, XmlPullParser.ENTITY_REF ->
+                    styleText?.append(parser.text.orEmpty())
+                XmlPullParser.END_TAG -> {
+                    if (parser.name == "style") {
+                        val css = styleText.toString()
+                        // Stylesheet selectors obscure reference cycles; inline styles remain supported.
+                        if (!hasOnlyLocalSvgReferences(css) || svgUrlReference.containsMatchIn(css)) return false
+                        styleText = null
+                    }
+                    stack.removeLast()
+                }
+            }
+        }
+        if (nodes.isEmpty()) return false
+        val costs = IntArray(nodes.size)
+        val heights = IntArray(nodes.size)
+        val visiting = BooleanArray(nodes.size)
+        fun expandedCost(index: Int, depth: Int): Int {
+            if (depth > MAX_SVG_DEPTH || visiting[index]) return MAX_SVG_ELEMENTS + 1
+            if (costs[index] != 0) {
+                return if (depth + heights[index] - 1 <= MAX_SVG_DEPTH) costs[index]
+                else MAX_SVG_ELEMENTS + 1
+            }
+            visiting[index] = true
+            var cost = 1
+            var height = 1
+            val node = nodes[index]
+            for (child in node.children + node.references.mapNotNull { ids[it] }) {
+                cost += expandedCost(child, depth + 1)
+                height = maxOf(height, 1 + heights[child])
+                if (cost > MAX_SVG_ELEMENTS) break
+            }
+            visiting[index] = false
+            costs[index] = cost
+            heights[index] = height
+            return cost
+        }
+        return expandedCost(0, 1) <= MAX_SVG_ELEMENTS
+    }
+
+    private fun hasOnlyLocalSvgReferences(value: String): Boolean {
+        if (value.contains('\\') || value.contains('@')) return false
+        if (!svgUrlReference.findAll(value).all {
+                it.groupValues[1].trim().trim('\'', '"').startsWith("#")
+            }
+        ) return false
+        return !svgUrlStart.containsMatchIn(svgUrlReference.replace(value, ""))
     }
 
     private data class ConstrainedBitmapTarget(

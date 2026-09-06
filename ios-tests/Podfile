@@ -18,6 +18,7 @@ install! 'cocoapods', deterministic_uuids: false
 prepare_react_native_project!
 
 target 'NativeEditorTestHost' do
+  pod 'SVGgh', '~> 1.12.1'
   use_expo_modules!(
     projectRoot: File.join(__dir__, '..', 'example'),
     exclude: ['react-native-rich-text-editor'],

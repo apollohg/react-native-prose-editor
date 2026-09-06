@@ -95,6 +95,94 @@ fn compile_json_with(
 }
 
 #[test]
+fn paragraph_images_compile_in_reading_order() {
+    for content in [
+        serde_json::json!([{"type": "image", "attrs": {"src": "https://example.test/a.png"}}]),
+        serde_json::json!([
+            {"type": "text", "text": "Before", "marks": [{"type": "bold"}]},
+            {"type": "image", "attrs": {"src": "https://example.test/a.png"}},
+            {"type": "text", "text": "After"}
+        ]),
+    ] {
+        let result = compile_json(serde_json::json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": content}]
+        }));
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let compiled = result.value.unwrap();
+        let elements = compiled.elements();
+        let leaves: Vec<_> = elements
+            .iter()
+            .filter_map(|element| match element {
+                FfiViewerElement::TextRun { text, .. } => Some(text.as_str()),
+                FfiViewerElement::BlockAtom {
+                    node_type,
+                    attrs_json,
+                    ..
+                } => {
+                    assert!(attrs_json.contains("https://example.test/a.png"));
+                    Some(node_type.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        if content.as_array().unwrap().len() == 1 {
+            assert_eq!(leaves, ["image"]);
+        } else {
+            assert_eq!(leaves, ["Before", "image", "After"]);
+            assert!(
+                matches!(&elements[1], FfiViewerElement::TextRun { marks, .. } if !marks.is_empty())
+            );
+            assert!(matches!(&elements[2], FfiViewerElement::BlockEnd));
+        }
+        assert!(!compiled.is_empty());
+    }
+}
+
+#[test]
+fn paragraph_images_preserve_list_structure_and_can_be_hidden() {
+    let document = serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "bullet_list", "content": [{
+            "type": "list_item", "content": [{"type": "paragraph", "content": [
+                {"type": "image", "attrs": {"src": "https://example.test/a.png"}},
+                {"type": "text", "text": "Caption"}
+            ]}]
+        }]}]
+    });
+    for enabled in [true, false] {
+        let result = compile_json_with(document.clone(), local_config(), enabled);
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let elements = result.value.unwrap().elements();
+        assert!(elements.iter().any(|element| matches!(element,
+            FfiViewerElement::TextRun { text, .. } if text == "Caption")));
+        assert_eq!(
+            elements.iter().any(|element| matches!(element,
+            FfiViewerElement::BlockAtom { node_type, .. } if node_type == "image")),
+            enabled
+        );
+    }
+}
+
+#[test]
+fn paragraph_images_preserve_unknown_inline_nodes() {
+    let result = compile_json(serde_json::json!({"type": "doc", "content": [{
+        "type": "paragraph", "content": [
+            {"type": "text", "text": "Before"},
+            {"type": "futureInline", "attrs": {"label": "Unknown"}},
+            {"type": "image", "attrs": {"src": "https://example.test/a.png"}},
+            {"type": "text", "text": "After"}
+        ]
+    }]}));
+    assert!(result.error.is_none(), "{:?}", result.error);
+    let elements = result.value.unwrap().elements();
+    assert!(elements.iter().any(|element| matches!(element,
+        FfiViewerElement::InlineAtom { node_type, .. } if node_type == "__opaque_json")));
+    assert!(elements.iter().any(|element| matches!(element,
+        FfiViewerElement::BlockAtom { node_type, .. } if node_type == "image")));
+}
+
+#[test]
 fn json_and_html_with_the_same_content_have_the_same_semantic_key() {
     let json = serde_json::json!({
         "type": "doc",

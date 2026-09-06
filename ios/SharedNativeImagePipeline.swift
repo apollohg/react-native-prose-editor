@@ -319,7 +319,10 @@ private final class DispatchImageTimeoutTask: ImageLoadingTask {
 
 private final class DefaultImageDataDecoder: ImageDataDecoding {
     func decode(_ data: Data, maxDimension: Int) -> UIImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetType(source) != nil else {
+            return NativeSVGImageDecoder.decode(data, maxDimension: maxDimension)
+        }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -328,7 +331,7 @@ private final class DefaultImageDataDecoder: ImageDataDecoding {
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else {
-            return nil
+            return NativeSVGImageDecoder.decode(data, maxDimension: maxDimension)
         }
         return UIImage(cgImage: image)
     }

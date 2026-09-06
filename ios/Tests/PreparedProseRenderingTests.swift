@@ -3,6 +3,50 @@ import UIKit
 import XCTest
 
 final class PreparedProseRenderingTests: XCTestCase {
+    func testImagePixelsPreserveAllFourCornersInCoreTextDrawingContext() throws {
+        try withCompiledDocument(
+            source: .json(#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Before"}]},{"type":"image","attrs":{"src":"https://example.test/corners.png","width":64,"height":64}}]}"#),
+            configJSON: #"{"initialization":{"type":"localEmpty"}}"#
+        ) { document in
+            let layout = try prepare(document, themeJSON: nil)
+            let attachment = try XCTUnwrap(layout.imageAttachments.first)
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            format.preferredRange = .standard
+            let source = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64), format: format).image { context in
+                for (index, color) in [UIColor.red, .green, .blue, .yellow].enumerated() {
+                    color.setFill()
+                    context.fill(CGRect(x: (index % 2) * 32, y: (index / 2) * 32, width: 32, height: 32))
+                }
+            }
+            let drawing = PreparedProseDrawingView(frame: CGRect(origin: .zero, size: layout.size))
+            drawing.install(layout: layout)
+            drawing.imagePixels = [attachment.id: source]
+            let renderer = UIGraphicsImageRenderer(size: layout.size, format: format)
+            let actual = try XCTUnwrap(renderer.image { _ in drawing.draw(drawing.bounds) }.cgImage)
+            let expected = try XCTUnwrap(renderer.image { _ in source.draw(in: attachment.bounds) }.cgImage)
+            let actualData = try XCTUnwrap(actual.dataProvider?.data)
+            let expectedData = try XCTUnwrap(expected.dataProvider?.data)
+            let actualBytes = try XCTUnwrap(CFDataGetBytePtr(actualData))
+            let expectedBytes = try XCTUnwrap(CFDataGetBytePtr(expectedData))
+            XCTAssertEqual(actual.bitsPerPixel, 32)
+            XCTAssertEqual(expected.bitsPerPixel, 32)
+            for yFraction in [0.25, 0.75] {
+                for xFraction in [0.25, 0.75] {
+                    let x = Int(attachment.bounds.minX + attachment.bounds.width * xFraction)
+                    let y = Int(attachment.bounds.minY + attachment.bounds.height * yFraction)
+                    for channel in 0..<4 {
+                        XCTAssertEqual(
+                            actualBytes[y * actual.bytesPerRow + x * 4 + channel],
+                            expectedBytes[y * expected.bytesPerRow + x * 4 + channel],
+                            "image corner at \(xFraction), \(yFraction)"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     func testCompilerBackedJSONAndHTMLFixturesPreserveInheritedContexts() throws {
         for fixture in Fixture.structuralFixtures {
             try withCompiledDocument(source: fixture.source, configJSON: fixture.configJSON) { document in

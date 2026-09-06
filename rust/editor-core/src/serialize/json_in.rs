@@ -85,7 +85,7 @@ pub fn from_prosemirror_json_with_limits(
     mode: UnknownTypeMode,
     limits: &ResourceLimits,
 ) -> Result<Document, JsonParseError> {
-    let mut budget = ParseBudget::new(limits.max_document_nodes, limits.max_document_depth);
+    let mut budget = ParseBudget::new(limits);
     let root = parse_node(json, schema, mode, "block", &mut budget)?;
     Ok(Document::new(root))
 }
@@ -95,16 +95,33 @@ struct ParseBudget {
     max_nodes: usize,
     max_depth: usize,
     placement: WorkBudget,
+    copied_attrs: crate::boundary::JsonValueMeter,
 }
 
 impl ParseBudget {
-    fn new(max_nodes: usize, max_depth: usize) -> Self {
+    fn new(limits: &ResourceLimits) -> Self {
         Self {
             nodes: 0,
-            max_nodes,
-            max_depth,
-            placement: WorkBudget::new(max_nodes.saturating_mul(64)),
+            max_nodes: limits.max_document_nodes,
+            max_depth: limits.max_document_depth,
+            placement: WorkBudget::new(limits.max_document_nodes.saturating_mul(64)),
+            copied_attrs: crate::boundary::JsonValueMeter::new(
+                limits.max_input_bytes,
+                limits.max_document_nodes.saturating_mul(64),
+                limits.max_document_depth,
+                0,
+            ),
         }
+    }
+
+    fn copy_attrs(&mut self, node: &Node) -> Result<HashMap<String, Value>, JsonParseError> {
+        self.copied_attrs
+            .admit_object(node.attrs())
+            .map_err(|error| JsonParseError::ResourceLimit {
+                limit: error.limit,
+                actual: error.actual,
+            })?;
+        Ok(crate::boundary::clone_json_object_stack_safe(node.attrs()))
     }
 
     fn admit_node(&mut self, depth: usize) -> Result<(), JsonParseError> {
@@ -284,6 +301,7 @@ fn parse_node(
                     .collect();
                 let children =
                     resolve_opaque_placements(children, parent, schema, &budget.placement)?;
+                let children = lift_paragraph_images(children, parent, schema, budget)?;
                 built.push(Node::element(type_name, attrs, Fragment::from(children)));
             }
         }
@@ -294,6 +312,75 @@ fn parse_node(
         ));
     }
     Ok(built.pop().expect("one parsed root"))
+}
+
+fn paragraph_images_need_lifting(schema: &Schema) -> bool {
+    let Some(image) = schema.node("image") else {
+        return false;
+    };
+    let Some(paragraph) = schema.node("paragraph") else {
+        return false;
+    };
+    image.is_void
+        && matches!(image.role, crate::schema::NodeRole::Block)
+        && matches!(paragraph.role, crate::schema::NodeRole::TextBlock)
+        && !paragraph
+            .content
+            .symbols()
+            .any(|symbol| schema.node_matches_symbol("image", symbol))
+}
+
+fn lift_paragraph_images(
+    children: Vec<Node>,
+    parent: &crate::schema::NodeSpec,
+    schema: &Schema,
+    budget: &mut ParseBudget,
+) -> Result<Vec<Node>, JsonParseError> {
+    if !paragraph_images_need_lifting(schema)
+        || !children.iter().any(|child| {
+            child.node_type() == "paragraph"
+                && child
+                    .content()
+                    .is_some_and(|content| content.iter().any(|node| node.node_type() == "image"))
+        })
+    {
+        return Ok(children);
+    }
+
+    let mut normalized = Vec::with_capacity(children.len());
+    for child in children {
+        let Some(content) = child.content().filter(|content| {
+            child.node_type() == "paragraph"
+                && content.iter().any(|node| node.node_type() == "image")
+        }) else {
+            normalized.push(child);
+            continue;
+        };
+        let mut inlines = Vec::new();
+        for node in content.iter() {
+            if node.node_type() != "image" {
+                inlines.push(node.clone());
+                continue;
+            }
+            // List items still need their leading paragraph, even before an image.
+            if !inlines.is_empty() || (normalized.is_empty() && schema.is_list_item(&parent.name)) {
+                normalized.push(Node::element(
+                    child.node_type().to_string(),
+                    budget.copy_attrs(&child)?,
+                    Fragment::from(std::mem::take(&mut inlines)),
+                ));
+            }
+            normalized.push(node.clone());
+        }
+        if !inlines.is_empty() {
+            normalized.push(Node::element(
+                child.node_type().to_string(),
+                budget.copy_attrs(&child)?,
+                Fragment::from(inlines),
+            ));
+        }
+    }
+    Ok(normalized)
 }
 
 /// Parse a text node from a JSON object.
@@ -430,11 +517,15 @@ fn resolve_opaque_placements(
     {
         return Ok(children);
     }
+    let lift_images = parent.name == "paragraph" && paragraph_images_need_lifting(schema);
+    let child_indices: Vec<_> = (0..children.len())
+        .filter(|&index| !lift_images || children[index].node_type() != "image")
+        .collect();
     let choices = parent
         .content
         .choose_matches(
-            &children,
-            |child, symbol| placement_choice(child, symbol, schema),
+            &child_indices,
+            |&index, symbol| placement_choice(&children[index], symbol, schema),
             budget,
         )
         .map_err(|_| JsonParseError::ResourceLimit {
@@ -447,7 +538,7 @@ fn resolve_opaque_placements(
                 parent.name
             ))
         })?;
-    for (index, choice) in choices.into_iter().enumerate() {
+    for (index, choice) in child_indices.into_iter().zip(choices) {
         let placement = match choice {
             PlacementChoice::Known => continue,
             PlacementChoice::Inline => "inline",
@@ -718,6 +809,84 @@ mod tests {
     use serde_json::json;
 
     use super::normalize_json_aliases;
+
+    #[test]
+    fn paragraph_images_bound_copied_attributes() {
+        let schema = crate::schema::Schema::from_json(&json!({
+            "nodes": [
+                {"name": "doc", "content": "block+", "role": "doc"},
+                {"name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "attrs": {"metadata": {"default": null}}},
+                {"name": "image", "group": "block", "role": "block", "isVoid": true, "attrs": {"src": {}}},
+                {"name": "text", "group": "inline", "role": "text"}
+            ], "marks": []
+        })).unwrap();
+        let source = json!({"type": "doc", "content": [{
+            "type": "paragraph", "attrs": {"metadata": "x".repeat(600)}, "content": [
+                {"type": "text", "text": "Before"},
+                {"type": "image", "attrs": {"src": "a.png"}},
+                {"type": "text", "text": "After"}
+            ]
+        }]});
+        let limits = crate::boundary::ResourceLimits {
+            max_input_bytes: 1024,
+            ..Default::default()
+        };
+        assert!(source.to_string().len() < limits.max_input_bytes);
+        assert!(matches!(
+            super::from_prosemirror_json_with_limits(
+                &source,
+                &schema,
+                super::UnknownTypeMode::Error,
+                &limits
+            ),
+            Err(super::JsonParseError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn paragraph_images_remain_inline_when_the_schema_supports_them() {
+        let schema = crate::schema::Schema::from_json(&json!({
+            "nodes": [
+                {"name": "doc", "content": "block+", "role": "doc"},
+                {"name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock"},
+                {"name": "image", "group": "inline", "role": "inline", "isVoid": true, "attrs": {"src": {}}},
+                {"name": "text", "group": "inline", "role": "text"}
+            ],
+            "marks": []
+        })).unwrap();
+        let source = json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "image", "attrs": {"src": "https://example.test/a.png"}}
+        ]}]});
+        let document =
+            super::from_prosemirror_json(&source, &schema, super::UnknownTypeMode::Error).unwrap();
+        assert_eq!(
+            crate::serialize::to_prosemirror_json(&document, &schema),
+            source
+        );
+    }
+
+    #[test]
+    fn paragraph_images_split_without_losing_attributes_or_empty_siblings() {
+        let schema = crate::schema::presets::tiptap_schema();
+        let image = json!({"type": "image", "attrs": {
+            "src": "https://example.test/a.png", "alt": "Diagram", "title": "Figure",
+            "width": 320, "height": 200
+        }});
+        let source = json!({"type": "doc", "content": [{"type": "blockquote", "content": [
+            {"type": "paragraph"},
+            {"type": "paragraph", "content": [image.clone(), image.clone()]},
+            {"type": "paragraph"}
+        ]}]});
+        let document =
+            super::from_prosemirror_json(&source, &schema, super::UnknownTypeMode::Error).unwrap();
+        let output = crate::serialize::to_prosemirror_json(&document, &schema);
+        let children = output["content"][0]["content"].as_array().unwrap();
+        assert_eq!(children.len(), 4);
+        assert_eq!(children[0]["type"], "paragraph");
+        assert_eq!(children[1], image);
+        assert_eq!(children[2], image);
+        assert_eq!(children[3]["type"], "paragraph");
+    }
 
     #[test]
     fn canonical_json_alias_normalization_borrows_the_original_tree() {

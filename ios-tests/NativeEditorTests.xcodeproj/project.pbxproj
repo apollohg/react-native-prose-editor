@@ -11,7 +11,7 @@
 		109AE358027371C57610E495 /* OrderedListMarkerFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A50C4C90F9D98044CF98CF7 /* OrderedListMarkerFormatter.swift */; };
 		109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */; };
 		15DF0E47EE9EC526F7D5052F /* PreparedProseViewerShadowNode.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AD2EDD1353EF86CAD0E419CB /* PreparedProseViewerShadowNode.cpp */; };
-		191425460B07769B3AE268AC /* PREPPreparedProseViewerComponentView.mm in Sources */ = {isa = PBXBuildFile; fileRef = 9B53E618A4451AF063C952EB /* PREPPreparedProseViewerComponentView.mm */; };
+		191425460B07769B3AE268AC /* PREPPreparedProseViewerComponentView.mm in Sources */ = {isa = PBXBuildFile; fileRef = 9B53E618A4451AF063C952EB /* PREPPreparedProseViewerComponentView.mm */; settings = {COMPILER_FLAGS = "-fcxx-modules"; }; };
 		1F1FFFFC3EFDB8DDED227B5F /* EditorV2Adapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4493157DC02C94D7F7D40FEB /* EditorV2Adapter.swift */; };
 		21E6208ADEC776190F2D6C98 /* ProseViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B44533DC8D4FA27875F041AC /* ProseViewerView.swift */; };
 		25A847DC895BEC66CFACC067 /* EditorV2Shadow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBFD853F5749EC81448D20B9 /* EditorV2Shadow.swift */; };
@@ -21,7 +21,7 @@
 		3A6AEEFA6827371E8015A30F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6225248E2F347AD95F31C25 /* AppDelegate.swift */; };
 		3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */; };
 		3E7691BD09A616262AD0EECE /* PreparedProseRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9572B3EEFB6B7316A05D6C88 /* PreparedProseRevisionTests.swift */; };
-		40373230CB2B4D39BD5350B6 /* PreparedProseMeasurementsManager.mm in Sources */ = {isa = PBXBuildFile; fileRef = A183A542FD912C410D3A2B03 /* PreparedProseMeasurementsManager.mm */; };
+		40373230CB2B4D39BD5350B6 /* PreparedProseMeasurementsManager.mm in Sources */ = {isa = PBXBuildFile; fileRef = A183A542FD912C410D3A2B03 /* PreparedProseMeasurementsManager.mm */; settings = {COMPILER_FLAGS = "-fcxx-modules"; }; };
 		408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */; };
 		41CB569BDACE6252AAA1E146 /* EditorAddons.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA17728099475A1BA3392F9D /* EditorAddons.swift */; };
 		41D57FCA7CB45A181563B8DC /* libPods-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A73C3B3A56B96545251AA8A /* libPods-NativeEditorTests.a */; };
@@ -86,6 +86,9 @@
 		ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */; };
 		FA494E1FD4D112BBA6BDBC7C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 542F8BBC5410DE5DFB15900A /* PrivacyInfo.xcprivacy */; };
 		FF166FE6F4CB4E81B0144C80 /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 8124EA2F2AA895E829E051F4 /* libPods-NativeEditorTestHost.a */; };
+		754770FC478089090BC4561D /* shapes-and-text.svg in Resources */ = {isa = PBXBuildFile; fileRef = 619DFE1B49017FD6416BD806 /* shapes-and-text.svg */; };
+		795FC94EAF1080186A91073B /* NativeSVGPreflight.mm in Sources */ = {isa = PBXBuildFile; fileRef = 528C2882E31F2C709EE5EB6B /* NativeSVGPreflight.mm */; };
+		B449DB726B51D7148CBF6B43 /* NativeSVGImageDecoder.mm in Sources */ = {isa = PBXBuildFile; fileRef = 10A10ADFCF589EAD534657FC /* NativeSVGImageDecoder.mm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -185,6 +188,11 @@
 		EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerFontEnvironment.swift; sourceTree = "<group>"; };
 		F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionBridge.swift; sourceTree = "<group>"; };
 		FED85E6F34BC6FB48B3EE3A5 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-NativeEditorTestHost/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+		10A10ADFCF589EAD534657FC /* NativeSVGImageDecoder.mm */ = {isa = PBXFileReference; includeInIndex = 1; path = NativeSVGImageDecoder.mm; sourceTree = "<group>"; };
+		528C2882E31F2C709EE5EB6B /* NativeSVGPreflight.mm */ = {isa = PBXFileReference; includeInIndex = 1; path = NativeSVGPreflight.mm; sourceTree = "<group>"; };
+		619DFE1B49017FD6416BD806 /* shapes-and-text.svg */ = {isa = PBXFileReference; includeInIndex = 1; path = "shapes-and-text.svg"; sourceTree = "<group>"; };
+		9832D06BCABDE9A2DB014C2D /* NativeSVGPreflight.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = NativeSVGPreflight.h; sourceTree = "<group>"; };
+		D80BC5D9EB6B88AE64DAC0A2 /* NativeSVGImageDecoder.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = NativeSVGImageDecoder.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -282,6 +290,15 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		0B99925A94C2BFE2F54819D1 /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				619DFE1B49017FD6416BD806 /* shapes-and-text.svg */,
+			);
+			name = Fixtures;
+			path = Fixtures;
+			sourceTree = "<group>";
+		};
 		1F4B898E39618084B1EF4DD5 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -304,6 +321,10 @@
 				E6D474133975B772D0171A1A /* ViewerDocument.swift */,
 				EE4C4C5D4FC3F55C32B754E3 /* ViewerFontEnvironment.swift */,
 				7B442A5CDD350874561BF9F8 /* ViewerImagePipeline.swift */,
+				D80BC5D9EB6B88AE64DAC0A2 /* NativeSVGImageDecoder.h */,
+				10A10ADFCF589EAD534657FC /* NativeSVGImageDecoder.mm */,
+				9832D06BCABDE9A2DB014C2D /* NativeSVGPreflight.h */,
+				528C2882E31F2C709EE5EB6B /* NativeSVGPreflight.mm */,
 			);
 			path = Viewer;
 			sourceTree = "<group>";
@@ -378,6 +399,7 @@
 				732E5EBF40F9EB2B798C8EC8 /* RichTextEditorViewTests+LayoutRenderingTests.swift */,
 				6E0CDDAA60A46C98575CBF62 /* RichTextEditorViewTests+MentionsImagesTests.swift */,
 				91E0FB789730788D37089B12 /* EditorV2StagingViewTests.swift */,
+				0B99925A94C2BFE2F54819D1 /* Fixtures */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -545,6 +567,7 @@
 				56EEC26EE3197DA0363914DC /* prepared-prose-harness-static-fixtures.json in Resources */,
 				2D4DE27F01FB5A5C12DD4366 /* security-contract-fixtures.json in Resources */,
 				A5CC2A434974FCEBEC188106 /* viewer-performance-corpus.json in Resources */,
+				754770FC478089090BC4561D /* shapes-and-text.svg in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -746,6 +769,8 @@
 				81A987FAE78E964982371CDE /* ViewerDocument.swift in Sources */,
 				DF21563725718BD10927F352 /* ViewerFontEnvironment.swift in Sources */,
 				97C50B5BFA0AA550E225668C /* ViewerImagePipeline.swift in Sources */,
+				B449DB726B51D7148CBF6B43 /* NativeSVGImageDecoder.mm in Sources */,
+				795FC94EAF1080186A91073B /* NativeSVGPreflight.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -818,6 +843,7 @@
 				PRODUCT_NAME = NativeEditorTests;
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../ios/editor_coreFFI";
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/NativeEditorTests-Bridging-Header.h";
 				SWIFT_OBJC_INTERFACE_HEADER_NAME = "ReactNativeProseEditor-Swift.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NativeEditorTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NativeEditorTestHost";
@@ -1044,6 +1070,7 @@
 				PRODUCT_NAME = NativeEditorTests;
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../ios/editor_coreFFI";
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/NativeEditorTests-Bridging-Header.h";
 				SWIFT_OBJC_INTERFACE_HEADER_NAME = "ReactNativeProseEditor-Swift.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NativeEditorTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NativeEditorTestHost";

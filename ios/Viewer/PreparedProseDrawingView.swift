@@ -477,7 +477,11 @@ public final class PreparedProseDrawingView: UIView {
             guard let layout,
                   let attachment = layout.imageAttachments.first(where: { $0.bounds == fragment.bounds }),
                   let image = imagePixels[attachment.id] else { return }
-            image.draw(in: drawingRect(for: fragment))
+            context.saveGState()
+            context.translateBy(x: rect.minX, y: rect.maxY)
+            context.scaleBy(x: 1, y: -1)
+            image.draw(in: CGRect(origin: .zero, size: rect.size))
+            context.restoreGState()
         case .marker:
             if let line = fragment.line {
                 context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
