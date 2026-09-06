@@ -1,17 +1,17 @@
 import {
-    NativeEditorV2BoundaryError,
-    NativeEditorV2NonRetryableError,
+    NativeEditorEngineBoundaryError,
+    NativeEditorNonRetryableError,
     nativeEditorV2ErrorToException,
     normalizeNativeEditorV2Error,
 } from './NativeEditorBoundaryError';
 import { normalizeNativeEditorV2U64 } from './NativeEditorV2Decimal';
 import {
-    type NativeEditorV2Result,
+    type NativeEditorResult,
     ERR_V2_NATIVE_RESPONSE,
     ERR_V2_DESTROYED,
 } from './NativeEditorNativeModule';
 import { type RenderElement, type RenderMark } from './NativeEditorTypes';
-import { type NativeEditorV2PeerInfo } from './NativeEditorCollaborationTransport';
+import { type NativeEditorPeerInfo } from './NativeEditorCollaborationTransport';
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return value != null && typeof value === 'object' && !Array.isArray(value);
@@ -26,7 +26,7 @@ export function isPlainRecord(value: unknown): value is Record<string, unknown> 
 export function normalizeNativeEditorV2Result<T>(
     raw: unknown,
     normalizeValue: (value: unknown) => T | null
-): NativeEditorV2Result<T> | null {
+): NativeEditorResult<T> | null {
     if (!isPlainRecord(raw)) return null;
     const hasValue = raw.value !== null && raw.value !== undefined;
     const hasError = raw.error !== null && raw.error !== undefined;
@@ -113,7 +113,7 @@ export const V2_DOCUMENT_STATES = ['LocalReady', 'AwaitRemote', 'RoomReady'] as 
  * waiting for the server's copy: content getters return empty values and the
  * view renders nothing until it promotes to `RoomReady`.
  */
-export type NativeEditorV2DocumentState = (typeof V2_DOCUMENT_STATES)[number];
+export type NativeEditorDocumentState = (typeof V2_DOCUMENT_STATES)[number];
 
 export const V2_TRANSPORT_STATES = [
     'Detached',
@@ -127,12 +127,12 @@ export const V2_TRANSPORT_STATES = [
 ] as const;
 
 /** Raw transport lifecycle. `YjsTransportStatus` is the friendlier projection of it. */
-export type NativeEditorV2TransportState = (typeof V2_TRANSPORT_STATES)[number];
+export type NativeEditorTransportState = (typeof V2_TRANSPORT_STATES)[number];
 
 export const V2_RENDER_STATES = ['Loading', 'Ready'] as const;
 
 /** Whether the engine has a render snapshot to draw. */
-export type NativeEditorV2RenderState = (typeof V2_RENDER_STATES)[number];
+export type NativeEditorRenderState = (typeof V2_RENDER_STATES)[number];
 
 export const V2_DOCUMENT_ORIGINS = [
     'nativeView',
@@ -143,7 +143,7 @@ export const V2_DOCUMENT_ORIGINS = [
     'import',
 ] as const;
 
-export type NativeEditorV2DocumentOrigin = (typeof V2_DOCUMENT_ORIGINS)[number];
+export type NativeEditorDocumentOrigin = (typeof V2_DOCUMENT_ORIGINS)[number];
 
 export function whitelisted<T extends string>(value: unknown, allowed: readonly T[]): T | null {
     return typeof value === 'string' && (allowed as readonly string[]).includes(value)
@@ -152,14 +152,14 @@ export function whitelisted<T extends string>(value: unknown, allowed: readonly 
 }
 
 /** The engine's own account of a session: readiness, revisions, and history. */
-export interface NativeEditorV2EditorState {
-    documentState: NativeEditorV2DocumentState;
-    transportState: NativeEditorV2TransportState;
-    renderState: NativeEditorV2RenderState;
+export interface NativeEditorState {
+    documentState: NativeEditorDocumentState;
+    transportState: NativeEditorTransportState;
+    renderState: NativeEditorRenderState;
     /** Decimal-string revision advancing on every document change. */
     documentRevision: string;
     /** Trusted origin of the transaction that produced documentRevision. */
-    documentOrigin: NativeEditorV2DocumentOrigin;
+    documentOrigin: NativeEditorDocumentOrigin;
     /** Decimal-string revision advancing on every state change, document or not. */
     stateRevision: string;
     canUndo: boolean;
@@ -168,7 +168,7 @@ export interface NativeEditorV2EditorState {
 
 export function normalizeNativeEditorV2StateValue(
     value: unknown
-): NativeEditorV2EditorState | null {
+): NativeEditorState | null {
     const parsed = typeof value === 'string' ? parseNativeEditorV2JsonValue(value) : value;
     if (!isPlainRecord(parsed)) return null;
     const documentState = whitelisted(parsed.documentState, V2_DOCUMENT_STATES);
@@ -203,7 +203,7 @@ export function normalizeNativeEditorV2StateValue(
     };
 }
 
-export type NativeEditorV2MutationOutcome =
+export type NativeEditorMutationOutcome =
     | {
           type: 'transaction';
           changed: boolean;
@@ -217,7 +217,7 @@ export type NativeEditorV2MutationOutcome =
 
 export function normalizeNativeEditorV2MutationOutcomeValue(
     value: unknown
-): NativeEditorV2MutationOutcome | null {
+): NativeEditorMutationOutcome | null {
     const parsed = parseNativeEditorV2JsonValue(value);
     if (!isPlainRecord(parsed)) return null;
     if (parsed.type === 'notApplicable') {
@@ -256,14 +256,14 @@ export function normalizeNativeEditorV2MutationOutcomeValue(
     return null;
 }
 
-export interface NativeEditorV2CommitInfo {
+export interface NativeEditorCommitInfo {
     changed: boolean;
     documentRevision: string;
 }
 
 export function normalizeNativeEditorV2CommitValue(
     value: unknown
-): NativeEditorV2CommitInfo | null {
+): NativeEditorCommitInfo | null {
     const parsed = parseNativeEditorV2JsonValue(value);
     if (!isPlainRecord(parsed)) return null;
     const changed = optionalBoolean(parsed.changed);
@@ -341,10 +341,10 @@ export function validRenderMark(value: unknown): value is RenderMark {
     );
 }
 
-export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV2PeerInfo[] | null {
+export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorPeerInfo[] | null {
     const parsed = typeof value === 'string' ? parseNativeEditorV2JsonValue(value) : value;
     if (!isPlainRecord(parsed) || !Array.isArray(parsed.peers)) return null;
-    const peers: NativeEditorV2PeerInfo[] = [];
+    const peers: NativeEditorPeerInfo[] = [];
     for (const rawPeer of parsed.peers) {
         if (!isPlainRecord(rawPeer)) return null;
         const clientId = normalizeNativeEditorV2DecimalId(rawPeer.clientId);
@@ -352,7 +352,7 @@ export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV
         const isLocal = optionalBoolean(rawPeer.isLocal);
         if (clientId == null || clock == null || isLocal == null) return null;
         if (rawPeer.state !== null && !isPlainRecord(rawPeer.state)) return null;
-        let cursor: NativeEditorV2PeerInfo['cursor'] = null;
+        let cursor: NativeEditorPeerInfo['cursor'] = null;
         if (rawPeer.cursor !== null && rawPeer.cursor !== undefined) {
             if (!isPlainRecord(rawPeer.cursor)) return null;
             const anchor = nativeEditorV2U32(rawPeer.cursor.anchor);
@@ -387,8 +387,8 @@ export function describeRejectedV2Record(raw: unknown): string {
         : serialized;
 }
 
-export function invalidV2ResultError(): NativeEditorV2NonRetryableError {
-    return new NativeEditorV2NonRetryableError({
+export function invalidV2ResultError(): NativeEditorNonRetryableError {
+    return new NativeEditorNonRetryableError({
         domain: 'boundary',
         code: 'FFI_RESULT_INVALID',
         message: ERR_V2_NATIVE_RESPONSE,
@@ -400,8 +400,8 @@ export function invalidV2ResultError(): NativeEditorV2NonRetryableError {
     });
 }
 
-export function destroyedHandleError(): NativeEditorV2NonRetryableError {
-    return new NativeEditorV2NonRetryableError({
+export function destroyedHandleError(): NativeEditorNonRetryableError {
+    return new NativeEditorNonRetryableError({
         domain: 'lifecycle',
         code: 'ENGINE_DESTROYED',
         message: ERR_V2_DESTROYED,
@@ -413,8 +413,8 @@ export function destroyedHandleError(): NativeEditorV2NonRetryableError {
     });
 }
 
-export function invalidV2RequestError(message: string): NativeEditorV2BoundaryError {
-    return new NativeEditorV2BoundaryError({
+export function invalidV2RequestError(message: string): NativeEditorEngineBoundaryError {
+    return new NativeEditorEngineBoundaryError({
         domain: 'boundary',
         code: 'CONFIG_INVALID',
         message,

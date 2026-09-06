@@ -85,10 +85,10 @@ import {
 } from '../../NativeEditorBridge';
 
 import {
-    NativeEditorV2BoundaryError,
-    NativeEditorV2LifecycleError,
-    NativeEditorV2NonRetryableError,
-    NativeEditorV2OperationError,
+    NativeEditorEngineBoundaryError,
+    NativeEditorLifecycleError,
+    NativeEditorNonRetryableError,
+    NativeEditorOperationError,
 } from '../../NativeEditorBoundaryError';
 
 import * as EditorUpdateRevision from '../../EditorUpdateRevision';

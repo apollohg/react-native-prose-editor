@@ -196,7 +196,7 @@ export type {
     HistoryState,
     EditorUpdate,
     RenderBlocksPatch,
-    NativeEditorV2AtomicRenderSnapshot,
+    NativeEditorAtomicRenderSnapshot,
     DocumentJSON,
     CollaborationPeer,
 } from './NativeEditorBridge';
@@ -216,12 +216,12 @@ export {
     type NativeCollaborationTransportEvent,
     type NativeEditorLocalAwarenessIntent,
     type NativeEditorLocalAwarenessSelection,
-    type NativeEditorV2CreateConfig,
-    type NativeEditorV2EditorState,
-    type NativeEditorV2Initialization,
-    type NativeEditorV2PeerInfo,
-    type NativeEditorV2RoomSnapshot,
-    type NativeEditorV2SnapshotMetadata,
+    type NativeEditorCreateConfig,
+    type NativeEditorState,
+    type NativeEditorInitialization,
+    type NativeEditorPeerInfo,
+    type NativeEditorRoomSnapshot,
+    type NativeEditorSnapshotMetadata,
 } from './NativeEditorBridge';
 
 export {
@@ -244,20 +244,20 @@ export {
 
 export {
     NATIVE_EDITOR_BOUNDARY_ERROR_CODES,
-    NATIVE_EDITOR_V2_NON_RETRYABLE_CODES,
+    NATIVE_EDITOR_NON_RETRYABLE_CODES,
     NativeEditorBoundaryError,
-    NativeEditorV2ErrorBase,
-    NativeEditorV2BoundaryError,
-    NativeEditorV2DocumentError,
-    NativeEditorV2OperationError,
-    NativeEditorV2LifecycleError,
-    NativeEditorV2SnapshotError,
-    NativeEditorV2TransportError,
-    NativeEditorV2NonRetryableError,
+    NativeEditorErrorBase,
+    NativeEditorEngineBoundaryError,
+    NativeEditorDocumentError,
+    NativeEditorOperationError,
+    NativeEditorLifecycleError,
+    NativeEditorSnapshotError,
+    NativeEditorTransportError,
+    NativeEditorNonRetryableError,
     parseNativeBoundaryError,
     type NativeEditorBoundaryErrorCode,
     type NativeEditorErrorDomain,
-    type NativeEditorV2Error,
+    type NativeEditorError,
 } from './NativeEditorBoundaryError';
 
 export type { AtomViewport } from './AtomHost';

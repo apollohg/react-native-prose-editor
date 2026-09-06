@@ -16,7 +16,7 @@ import { createRef } from 'react';
 import { render, act } from '@testing-library/react-native';
 import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 
-import { NativeEditorV2LifecycleError } from '../NativeEditorBoundaryError';
+import { NativeEditorLifecycleError } from '../NativeEditorBoundaryError';
 
 describe('NativeRichTextEditor (v2 document mode)', () => {
     it('waits for composition cancellation before a controlled value reset is pushed', async () => {
@@ -76,7 +76,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();
         const received: unknown[] = [];
-        const cancellationError = new NativeEditorV2LifecycleError({
+        const cancellationError = new NativeEditorLifecycleError({
             domain: 'lifecycle',
             code: 'EXTERNAL_COMPOSITION_CANCEL_FAILED',
             message: 'Could not cancel external composition',
@@ -112,7 +112,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(mockNativeModule.editorV2ApplyLocalApi).not.toHaveBeenCalled();
         expect(mockNativeCancelExternalComposition).toHaveBeenCalledTimes(1);
         expect(received).toHaveLength(1);
-        expect(received[0]).toBeInstanceOf(NativeEditorV2LifecycleError);
+        expect(received[0]).toBeInstanceOf(NativeEditorLifecycleError);
         expect(received[0]).toMatchObject({ code: 'EXTERNAL_COMPOSITION_CANCEL_FAILED' });
         handle.destroy();
     });

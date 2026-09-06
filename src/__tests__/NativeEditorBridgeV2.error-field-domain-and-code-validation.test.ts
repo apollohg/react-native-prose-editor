@@ -9,14 +9,14 @@ import {
 import { normalizeNativeEditorV2Result, unwrapNativeEditorV2Result } from '../NativeEditorBridge';
 
 import {
-    NativeEditorV2BoundaryError,
-    NativeEditorV2DocumentError,
-    NativeEditorV2ErrorBase,
-    NativeEditorV2LifecycleError,
-    NativeEditorV2NonRetryableError,
-    NativeEditorV2OperationError,
-    NativeEditorV2SnapshotError,
-    NativeEditorV2TransportError,
+    NativeEditorEngineBoundaryError,
+    NativeEditorDocumentError,
+    NativeEditorErrorBase,
+    NativeEditorLifecycleError,
+    NativeEditorNonRetryableError,
+    NativeEditorOperationError,
+    NativeEditorSnapshotError,
+    NativeEditorTransportError,
     normalizeNativeEditorV2Error,
 } from '../NativeEditorBoundaryError';
 
@@ -25,12 +25,12 @@ describe('NativeEditorBridge v2', () => {
         const identity = (value: unknown): unknown => value;
 
         it.each([
-            ['boundary', NativeEditorV2BoundaryError],
-            ['document', NativeEditorV2DocumentError],
-            ['operation', NativeEditorV2OperationError],
-            ['lifecycle', NativeEditorV2LifecycleError],
-            ['snapshot', NativeEditorV2SnapshotError],
-            ['transport', NativeEditorV2TransportError],
+            ['boundary', NativeEditorEngineBoundaryError],
+            ['document', NativeEditorDocumentError],
+            ['operation', NativeEditorOperationError],
+            ['lifecycle', NativeEditorLifecycleError],
+            ['snapshot', NativeEditorSnapshotError],
+            ['transport', NativeEditorTransportError],
         ])(
             'throws the structured %s error class for recoverable errors',
             (domain, expectedClass) => {
@@ -50,9 +50,9 @@ describe('NativeEditorBridge v2', () => {
                     )
                 );
                 expect(error).toBeInstanceOf(expectedClass);
-                expect(error).toBeInstanceOf(NativeEditorV2ErrorBase);
-                expect(error).not.toBeInstanceOf(NativeEditorV2NonRetryableError);
-                const typed = error as NativeEditorV2ErrorBase;
+                expect(error).toBeInstanceOf(NativeEditorErrorBase);
+                expect(error).not.toBeInstanceOf(NativeEditorNonRetryableError);
+                const typed = error as NativeEditorErrorBase;
                 expect(typed.domain).toBe(domain);
                 expect(typed.code).toBe('OPERATION_INVALID');
                 expect(typed.message).toBe('operation invalid');
@@ -303,7 +303,7 @@ describe('NativeEditorBridge v2', () => {
                 )
             );
             expectNonRetryable(error, 'ENGINE_INVARIANT_FAILED');
-            expect(error).not.toBeInstanceOf(NativeEditorV2OperationError);
+            expect(error).not.toBeInstanceOf(NativeEditorOperationError);
         });
 
         it.each(['ENGINE_DESTROYED', 'ENGINE_DESTROYING'])(
@@ -316,8 +316,8 @@ describe('NativeEditorBridge v2', () => {
                     )
                 );
                 expectNonRetryable(error, code);
-                expect((error as NativeEditorV2ErrorBase).domain).toBe('lifecycle');
-                expect(error).not.toBeInstanceOf(NativeEditorV2LifecycleError);
+                expect((error as NativeEditorErrorBase).domain).toBe('lifecycle');
+                expect(error).not.toBeInstanceOf(NativeEditorLifecycleError);
             }
         );
 
@@ -333,8 +333,8 @@ describe('NativeEditorBridge v2', () => {
                     identity
                 )
             );
-            expect(error).toBeInstanceOf(NativeEditorV2LifecycleError);
-            expect(error).not.toBeInstanceOf(NativeEditorV2NonRetryableError);
+            expect(error).toBeInstanceOf(NativeEditorLifecycleError);
+            expect(error).not.toBeInstanceOf(NativeEditorNonRetryableError);
         });
     });
 });

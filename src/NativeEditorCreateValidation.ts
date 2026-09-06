@@ -1,9 +1,9 @@
 import { HARD_EDITOR_RESOURCE_LIMITS, validateEditorCreateLimits } from './ResourceLimits';
 import {
     NativeEditorBoundaryError,
-    NativeEditorV2BoundaryError,
+    NativeEditorEngineBoundaryError,
 } from './NativeEditorBoundaryError';
-import { type NativeEditorV2CreateConfig } from './NativeEditorTypes';
+import { type NativeEditorCreateConfig } from './NativeEditorTypes';
 
 export const V2_CREATE_CONFIG_KEYS = new Set([
     'initialization',
@@ -92,23 +92,23 @@ export const V2_CREATE_STRING_SLICE = String.prototype.slice;
 
 export const V2_CREATE_NUMBER_TO_STRING = Number.prototype.toString;
 
-export class NativeEditorV2CreateConfigError extends Error {
+export class NativeEditorCreateConfigError extends Error {
     constructor(message: string) {
         super(message);
-        this.name = 'NativeEditorV2CreateConfigError';
+        this.name = 'NativeEditorCreateConfigError';
     }
 }
 
-export function invalidV2CreateRequestError(message: string): NativeEditorV2CreateConfigError {
-    return new NativeEditorV2CreateConfigError(message);
+export function invalidV2CreateRequestError(message: string): NativeEditorCreateConfigError {
+    return new NativeEditorCreateConfigError(message);
 }
 
-export function validateV2CreateLimits(limits: NativeEditorV2CreateConfig['limits']): void {
+export function validateV2CreateLimits(limits: NativeEditorCreateConfig['limits']): void {
     try {
         validateEditorCreateLimits(limits);
     } catch (error) {
         if (!(error instanceof NativeEditorBoundaryError)) throw error;
-        throw new NativeEditorV2BoundaryError({
+        throw new NativeEditorEngineBoundaryError({
             domain: 'boundary',
             code: error.code,
             message: error.message,

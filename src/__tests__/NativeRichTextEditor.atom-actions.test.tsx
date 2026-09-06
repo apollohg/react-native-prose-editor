@@ -14,7 +14,7 @@ import {
 import { render, act } from '@testing-library/react-native';
 import { NativeRichTextEditor } from '../NativeRichTextEditor';
 import { type RenderBlocksPatch, type RenderElement } from '../NativeEditorBridge';
-import { NativeEditorV2OperationError } from '../NativeEditorBoundaryError';
+import { NativeEditorOperationError } from '../NativeEditorBoundaryError';
 
 import { AtomUpdateAttrsError } from '../atomInstances';
 
@@ -230,7 +230,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             });
         });
         jest.spyOn(handle.bridge, 'applyCommand').mockImplementationOnce(() => {
-            throw new NativeEditorV2OperationError({
+            throw new NativeEditorOperationError({
                 domain: 'operation',
                 code: 'REVISION_MISMATCH',
                 message: 'stale',

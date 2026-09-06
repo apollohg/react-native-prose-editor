@@ -1,4 +1,4 @@
-import type { DocumentJSON, NativeEditorV2PeerInfo } from '../../NativeEditorBridge';
+import type { DocumentJSON, NativeEditorPeerInfo } from '../../NativeEditorBridge';
 import {
     type FakeSession,
     type PendingRemote,
@@ -69,8 +69,8 @@ export function createFakeRuntimeState() {
     }
 
     /** The projected peer set the native side ships with every state event. */
-    function projectedPeers(session: FakeSession): NativeEditorV2PeerInfo[] {
-        const peers: NativeEditorV2PeerInfo[] = [];
+    function projectedPeers(session: FakeSession): NativeEditorPeerInfo[] {
+        const peers: NativeEditorPeerInfo[] = [];
         if (session.localAwarenessLive && session.desiredAwareness != null) {
             const local = projectFakeLocalAwareness(
                 session.desiredAwareness,
@@ -323,7 +323,7 @@ export function createFakeRuntimeState() {
 
     function applyRemoteAwarenessDelta(
         session: FakeSession,
-        entries: NativeEditorV2PeerInfo[]
+        entries: NativeEditorPeerInfo[]
     ): void {
         for (const peer of entries) {
             const clientId = canonicalV2U64(peer.clientId);
@@ -364,7 +364,7 @@ export function createFakeRuntimeState() {
 
     function remoteAwarenessClockLimitError(
         session: FakeSession,
-        entries: NativeEditorV2PeerInfo[]
+        entries: NativeEditorPeerInfo[]
     ): FakeErrorRecord | null {
         for (const peer of entries) {
             const clientId = canonicalV2U64(peer.clientId);
@@ -396,9 +396,9 @@ export function createFakeRuntimeState() {
     }
 
     function validateAndSortAwarenessDelta(
-        entries: NativeEditorV2PeerInfo[]
-    ): NativeEditorV2PeerInfo[] | null {
-        const validated: NativeEditorV2PeerInfo[] = [];
+        entries: NativeEditorPeerInfo[]
+    ): NativeEditorPeerInfo[] | null {
+        const validated: NativeEditorPeerInfo[] = [];
         for (const peer of entries) {
             const clientId = canonicalV2U64(peer.clientId);
             const clock = exactV2U32(peer.clock);

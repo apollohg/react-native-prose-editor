@@ -1,11 +1,11 @@
 import {
-    NativeEditorV2ErrorBase,
+    NativeEditorErrorBase,
     nativeEditorV2ErrorToException,
     normalizeNativeEditorV2Error,
 } from './NativeEditorBoundaryError';
 import {
-    type NativeEditorV2TransportState,
-    type NativeEditorV2EditorState,
+    type NativeEditorTransportState,
+    type NativeEditorState,
     invalidV2RequestError,
     isPlainRecord,
     whitelisted,
@@ -19,7 +19,7 @@ import {
 import { utf8V2JsonByteLength } from './NativeEditorCreateJson';
 
 /** One peer's awareness record, as Rust currently holds it. */
-export interface NativeEditorV2PeerInfo {
+export interface NativeEditorPeerInfo {
     /** Yjs client identity, as a decimal string. */
     clientId: string;
     /** Awareness clock, advancing with each of this peer's updates. */
@@ -102,7 +102,7 @@ export interface NativeCollaborationTransportConfig {
 export interface NativeCollaborationTransportDiagnostics {
     /** What woke the transport, e.g. a received message or an elapsed timer. */
     wakeReason: string;
-    transportState: NativeEditorV2TransportState;
+    transportState: NativeEditorTransportState;
     /** Decimal-string deadline for the next scheduled wake, if one is pending. */
     nextDeadlineMillis: string | null;
     /** Whether this wake applied a remote commit. */
@@ -122,8 +122,8 @@ export interface NativeCollaborationTransportStateEvent {
     eventSequence: string;
     generation: string | null;
     kind: 'state';
-    state: NativeEditorV2EditorState;
-    peers: NativeEditorV2PeerInfo[];
+    state: NativeEditorState;
+    peers: NativeEditorPeerInfo[];
     diagnostics: NativeCollaborationTransportDiagnostics;
 }
 
@@ -133,7 +133,7 @@ export interface NativeCollaborationTransportErrorEvent {
     eventSequence: string;
     generation: string | null;
     kind: 'error';
-    error: NativeEditorV2ErrorBase;
+    error: NativeEditorErrorBase;
 }
 
 /** Native is asking the configured protocol adapter to handle a prelude step. */

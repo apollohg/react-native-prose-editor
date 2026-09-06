@@ -1,6 +1,6 @@
 import {
-    NativeEditorV2ErrorBase,
-    NativeEditorV2NonRetryableError,
+    NativeEditorErrorBase,
+    NativeEditorNonRetryableError,
     nativeEditorV2ErrorToException,
     normalizeNativeEditorV2Error,
 } from './NativeEditorBoundaryError';
@@ -21,13 +21,13 @@ import {
     normalizeNativeEditorV2Unit,
     isPlainRecord,
     invalidV2ResultError,
-    type NativeEditorV2EditorState,
+    type NativeEditorState,
     normalizeNativeEditorV2StateValue,
     normalizeNativeEditorV2HtmlValue,
     requireNativeEditorV2U32,
-    type NativeEditorV2CommitInfo,
+    type NativeEditorCommitInfo,
     normalizeNativeEditorV2CommitValue,
-    type NativeEditorV2MutationOutcome,
+    type NativeEditorMutationOutcome,
     normalizeNativeEditorV2MutationOutcomeValue,
     normalizeNativeEditorV2ChangedValue,
     requireV2Bytes,
@@ -40,20 +40,20 @@ import {
 import {
     type DocumentJSON,
     type ContentSnapshot,
-    type NativeEditorV2AtomicRenderSnapshot,
-    type NativeEditorV2ReplaceDocumentRequest,
-    type NativeEditorV2InputRequest,
-    type NativeEditorV2CommandRequest,
-    type NativeEditorV2LocalApiRequest,
-    type NativeEditorV2SelectionRequest,
-    type NativeEditorV2SnapshotMetadata,
+    type NativeEditorAtomicRenderSnapshot,
+    type NativeEditorReplaceDocumentRequest,
+    type NativeEditorInputRequest,
+    type NativeEditorCommandRequest,
+    type NativeEditorLocalApiRequest,
+    type NativeEditorSelectionRequest,
+    type NativeEditorSnapshotMetadata,
     type NativeEditorLocalAwarenessIntent,
 } from './NativeEditorTypes';
 import {
     normalizeNativeEditorV2DocumentJsonValue,
     normalizeNativeEditorV2ContentSnapshotValue,
     normalizeNativeEditorV2RenderUpdateValue,
-    type NativeEditorV2SnapshotExport,
+    type NativeEditorSnapshotExport,
     normalizeNativeEditorV2SnapshotExportValue,
 } from './NativeEditorRenderNormalization';
 import {
@@ -67,11 +67,11 @@ import {
  * strings, and throws typed errors; results that arrive for a destroyed
  * handle (including re-entrant destroy races) are classified non-retryable.
  */
-export class NativeEditorV2Bridge {
+export class NativeEditorDocumentBridge {
     private readonly _editorId: string;
     private _destroyed = false;
     private _nextRequestId = 0n;
-    private readonly _errorListeners = new Set<(error: NativeEditorV2ErrorBase) => void>();
+    private readonly _errorListeners = new Set<(error: NativeEditorErrorBase) => void>();
     private _collaborationProtocolAdapter: NativeCollaborationProtocolAdapter | null = null;
     private _collaborationProtocolAdapterSubscription: { remove(): void } | null = null;
 
@@ -142,7 +142,7 @@ export class NativeEditorV2Bridge {
             // An already-destroyed native session still satisfies the
             // caller's goal; every other failure is reported.
             if (
-                error instanceof NativeEditorV2NonRetryableError &&
+                error instanceof NativeEditorNonRetryableError &&
                 (error.code === 'ENGINE_DESTROYED' || error.code === 'ENGINE_DESTROYING')
             ) {
                 // An already-destroyed native session still commits the
@@ -159,7 +159,7 @@ export class NativeEditorV2Bridge {
     }
 
     /** Subscribe to autonomous native failures; returns the unsubscribe. */
-    addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void {
+    addErrorListener(listener: (error: NativeEditorErrorBase) => void): () => void {
         this._errorListeners.add(listener);
         return () => {
             this._errorListeners.delete(listener);
@@ -185,7 +185,7 @@ export class NativeEditorV2Bridge {
         }
     }
 
-    getState(): NativeEditorV2EditorState {
+    getState(): NativeEditorState {
         return this.callV2(
             () => invokeNativeEditorV2('editorV2GetState', this._editorId),
             normalizeNativeEditorV2StateValue
@@ -222,7 +222,7 @@ export class NativeEditorV2Bridge {
     renderUpdate(mirrorScalarSelection?: {
         anchor: number;
         head: number;
-    }): NativeEditorV2AtomicRenderSnapshot {
+    }): NativeEditorAtomicRenderSnapshot {
         this.assertAlive();
         const mirrorAnchor = mirrorScalarSelection?.anchor ?? null;
         const mirrorHead = mirrorScalarSelection?.head ?? null;
@@ -245,7 +245,7 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    replaceDocument(request: NativeEditorV2ReplaceDocumentRequest): NativeEditorV2CommitInfo {
+    replaceDocument(request: NativeEditorReplaceDocumentRequest): NativeEditorCommitInfo {
         this.assertAlive();
         const payload: Record<string, unknown> = {};
         if (request.setJson !== undefined) payload.setJson = request.setJson;
@@ -258,7 +258,7 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    applyInput(request: NativeEditorV2InputRequest): NativeEditorV2MutationOutcome {
+    applyInput(request: NativeEditorInputRequest): NativeEditorMutationOutcome {
         this.assertAlive();
         const requestJson = this.buildEnvelopeJson(
             { text: request.text },
@@ -270,7 +270,7 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    applyCommand(request: NativeEditorV2CommandRequest): NativeEditorV2MutationOutcome {
+    applyCommand(request: NativeEditorCommandRequest): NativeEditorMutationOutcome {
         this.assertAlive();
         const requestJson = this.buildEnvelopeJson(
             { command: request.command },
@@ -282,7 +282,7 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    applyLocalApi(request: NativeEditorV2LocalApiRequest): NativeEditorV2MutationOutcome {
+    applyLocalApi(request: NativeEditorLocalApiRequest): NativeEditorMutationOutcome {
         this.assertAlive();
         const payload: Record<string, unknown> = {};
         if (request.setJson !== undefined) payload.setJson = request.setJson;
@@ -295,7 +295,7 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    setSelection(request: NativeEditorV2SelectionRequest): NativeEditorV2MutationOutcome {
+    setSelection(request: NativeEditorSelectionRequest): NativeEditorMutationOutcome {
         this.assertAlive();
         const requestJson = this.buildEnvelopeJson(
             { selection: request.selection },
@@ -325,7 +325,7 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    snapshotExport(): NativeEditorV2SnapshotExport {
+    snapshotExport(): NativeEditorSnapshotExport {
         return this.callV2(
             () => invokeNativeEditorV2('editorV2SnapshotExport', this._editorId),
             normalizeNativeEditorV2SnapshotExportValue
@@ -333,9 +333,9 @@ export class NativeEditorV2Bridge {
     }
 
     snapshotRestore(
-        metadata: NativeEditorV2SnapshotMetadata,
+        metadata: NativeEditorSnapshotMetadata,
         encodedState: Uint8Array
-    ): NativeEditorV2CommitInfo {
+    ): NativeEditorCommitInfo {
         this.assertAlive();
         const bytes = requireV2Bytes(encodedState, 'snapshot encodedState');
         return this.callV2(

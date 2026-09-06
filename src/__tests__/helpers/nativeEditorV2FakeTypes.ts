@@ -1,4 +1,4 @@
-import type { DocumentJSON, NativeEditorV2PeerInfo } from '../../NativeEditorBridge';
+import type { DocumentJSON, NativeEditorPeerInfo } from '../../NativeEditorBridge';
 import {
     type FakeDocumentState,
     type FakeTransportState,
@@ -57,7 +57,7 @@ export interface FakeSession {
     localAwarenessLive: boolean;
     pendingLocalAwarenessTombstone: Uint8Array | null;
     pendingLocalAwarenessTombstoneRetryMillis: bigint | null;
-    remotePeers: NativeEditorV2PeerInfo[];
+    remotePeers: NativeEditorPeerInfo[];
     remoteAwarenessClocks: Map<string, number>;
     awarenessNowMillis: bigint;
     lastLocalAwarenessPublishMillis: bigint | null;
@@ -132,7 +132,7 @@ export interface FakeNativeEditorV2Runtime {
     /** Queue the document the next accepted server Step 2 / update installs. */
     pushRemoteDoc(editorId: string, doc: DocumentJSON): void;
     /** Queue the clocked per-client delta the next inbound awareness frame applies. */
-    pushRemotePeers(editorId: string, peers: NativeEditorV2PeerInfo[]): void;
+    pushRemotePeers(editorId: string, peers: NativeEditorPeerInfo[]): void;
     /** Seed the exact last-issued u64 generation for boundary tests. */
     seedLastIssuedGeneration(editorId: string, generation: string): void;
     /** Seed the exact Rust-owned local awareness u32 clock for boundary tests. */
@@ -154,7 +154,7 @@ export interface FakeNativeEditorV2Runtime {
 
 export interface PendingRemote {
     docs: DocumentJSON[];
-    awarenessDeltas: NativeEditorV2PeerInfo[][];
+    awarenessDeltas: NativeEditorPeerInfo[][];
     applyLocalApiErrors: FakeErrorRecord[];
     applyCommandErrors: FakeErrorRecord[];
     awarenessBroadcastErrors: FakeErrorRecord[];

@@ -6,10 +6,10 @@ import {
     type DocumentJSON,
     type HistoryState,
     type NativeEditorDocumentHandle,
-    type NativeEditorV2DocumentOrigin,
-    type NativeEditorV2DocumentState,
+    type NativeEditorDocumentOrigin,
+    type NativeEditorDocumentState,
 } from './NativeEditorBridge';
-import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
+import { NativeEditorOperationError } from './NativeEditorBoundaryError';
 
 //
 // Headless document/control binding over a shared NativeEditorDocumentHandle
@@ -55,11 +55,11 @@ export interface UseNativeEditorDocumentReturn {
     /** True once the engine document is ready (LocalReady/RoomReady). */
     isReady: boolean;
     /** Raw engine readiness. Null before the first read. */
-    documentState: NativeEditorV2DocumentState | null;
+    documentState: NativeEditorDocumentState | null;
     /** Decimal-string engine document revision; null while awaiting the server document. */
     documentRevision: string | null;
     /** Trusted origin paired with documentRevision. */
-    documentOrigin: NativeEditorV2DocumentOrigin | null;
+    documentOrigin: NativeEditorDocumentOrigin | null;
     /** Current undo/redo availability. */
     historyState: HistoryState;
     /**
@@ -91,15 +91,15 @@ export interface UseNativeEditorDocumentReturn {
 const DEFAULT_V2_HISTORY_STATE: HistoryState = { canUndo: false, canRedo: false };
 
 function isRevisionMismatchError(error: unknown): boolean {
-    return error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH';
+    return error instanceof NativeEditorOperationError && error.code === 'REVISION_MISMATCH';
 }
 
 interface V2EngineView {
     editorId: string;
     ready: boolean;
-    documentState: NativeEditorV2DocumentState | null;
+    documentState: NativeEditorDocumentState | null;
     documentRevision: string | null;
-    documentOrigin: NativeEditorV2DocumentOrigin | null;
+    documentOrigin: NativeEditorDocumentOrigin | null;
     historyState: HistoryState;
     contentKey: string | null;
 }

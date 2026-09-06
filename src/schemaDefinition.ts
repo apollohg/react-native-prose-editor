@@ -103,7 +103,7 @@ export interface MarkSpec {
 
 /**
  * The node and mark types a document may contain. Fixed when the document
- * handle is created (`NativeEditorV2CreateConfig.schema`), or per render for
+ * handle is created (`NativeEditorCreateConfig.schema`), or per render for
  * `RichTextViewer`. Start from {@link defaultSchema},
  * {@link prosemirrorSchema}, or {@link tiptapCompatibleSchema} rather than
  * assembling one from scratch.

@@ -10,7 +10,7 @@ import { View } from 'react-native';
 import { render, act } from '@testing-library/react-native';
 import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 
-import { NativeEditorV2BoundaryError } from '../NativeEditorBoundaryError';
+import { NativeEditorEngineBoundaryError } from '../NativeEditorBoundaryError';
 import * as EditorUpdateRevision from '../EditorUpdateRevision';
 
 describe('NativeRichTextEditor (v2 document mode)', () => {
@@ -225,8 +225,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             pushedUpdateRevision
         );
         expect(onActiveStateChange).not.toHaveBeenCalled();
-        expect(errors.at(-1)).toBeInstanceOf(NativeEditorV2BoundaryError);
-        expect((errors.at(-1) as NativeEditorV2BoundaryError).code).toBe('CONFIG_INVALID');
+        expect(errors.at(-1)).toBeInstanceOf(NativeEditorEngineBoundaryError);
+        expect((errors.at(-1) as NativeEditorEngineBoundaryError).code).toBe('CONFIG_INVALID');
         allocateEditorUpdateRevision.mockRestore();
         handle.destroy();
     });

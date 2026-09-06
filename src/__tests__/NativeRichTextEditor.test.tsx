@@ -27,7 +27,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
 
         // The @ts-expect-error assertions are the public hard-cutover
-        // contract. Each field belongs to NativeEditorV2CreateConfig, never
+        // contract. Each field belongs to NativeEditorCreateConfig, never
         // to the mounted view.
         const removedComponentProps: readonly NativeRichTextEditorProps[] = [
             {

@@ -1,10 +1,10 @@
 import {
-    NativeEditorV2LifecycleError,
-    NativeEditorV2NonRetryableError,
+    NativeEditorLifecycleError,
+    NativeEditorNonRetryableError,
     nativeEditorV2ErrorToException,
     normalizeNativeEditorV2Error,
-    type NativeEditorV2Error,
-    type NativeEditorV2ErrorBase,
+    type NativeEditorError,
+    type NativeEditorErrorBase,
 } from './NativeEditorBoundaryError';
 
 export type ExternalTextCompositionEndCause =
@@ -17,7 +17,7 @@ export interface ExternalTextCompositionEndEvent {
     outcome: 'committed' | 'cancelled';
     cause: ExternalTextCompositionEndCause;
     text: string;
-    error?: NativeEditorV2ErrorBase;
+    error?: NativeEditorErrorBase;
 }
 
 export interface ExternalTextCompositionOptions {
@@ -49,9 +49,9 @@ type NativeCompositionResult =
           outcome: 'committed' | 'cancelled';
           cause: ExternalTextCompositionEndCause;
           text: string;
-          error?: NativeEditorV2Error;
+          error?: NativeEditorError;
       }
-    | { version: 1; type: 'error'; sessionId: string | null; error: NativeEditorV2Error };
+    | { version: 1; type: 'error'; sessionId: string | null; error: NativeEditorError };
 
 type NativeCompositionEndResult = Extract<NativeCompositionResult, { type: 'ended' }>;
 type Waiter = { resolve: () => void; reject: (error: unknown) => void };
@@ -83,8 +83,8 @@ function allocateExternalCompositionId(): string {
 export function createExternalCompositionLifecycleError(
     code: string,
     message: string
-): NativeEditorV2LifecycleError {
-    return new NativeEditorV2LifecycleError({
+): NativeEditorLifecycleError {
+    return new NativeEditorLifecycleError({
         domain: 'lifecycle',
         code,
         message,
@@ -96,8 +96,8 @@ export function createExternalCompositionLifecycleError(
     });
 }
 
-function invalidResultError(): NativeEditorV2NonRetryableError {
-    return new NativeEditorV2NonRetryableError({
+function invalidResultError(): NativeEditorNonRetryableError {
+    return new NativeEditorNonRetryableError({
         domain: 'boundary',
         code: 'EXTERNAL_COMPOSITION_RESULT_INVALID',
         message: 'Native external text composition returned an invalid result',
@@ -109,7 +109,7 @@ function invalidResultError(): NativeEditorV2NonRetryableError {
     });
 }
 
-function endedLifecycleError(): NativeEditorV2LifecycleError {
+function endedLifecycleError(): NativeEditorLifecycleError {
     return createExternalCompositionLifecycleError(
         'EXTERNAL_COMPOSITION_ENDED',
         'The external text composition session has ended'
@@ -136,7 +136,7 @@ const ERROR_KEYS = [
     'details',
 ] as const;
 
-function parseError(value: unknown): NativeEditorV2Error | null {
+function parseError(value: unknown): NativeEditorError | null {
     if (!isRecord(value) || !hasExactKeys(value, ERROR_KEYS)) return null;
     return normalizeNativeEditorV2Error({ error: value });
 }
@@ -248,7 +248,7 @@ class ManagedExternalTextCompositionSession implements ExternalTextCompositionSe
     latestText = '';
     private terminal = false;
     private terminalResult: NativeCompositionEndResult | null = null;
-    private terminalError: NativeEditorV2ErrorBase | null = null;
+    private terminalError: NativeEditorErrorBase | null = null;
     private resolveTerminal!: (result: NativeCompositionEndResult) => void;
     private readonly terminalCompletion = new Promise<NativeCompositionEndResult>((resolve) => {
         this.resolveTerminal = resolve;
@@ -430,7 +430,7 @@ class ManagedExternalTextCompositionSession implements ExternalTextCompositionSe
     private explicitCommitError(
         result: NativeCompositionEndResult,
         finalText: string
-    ): NativeEditorV2ErrorBase | undefined {
+    ): NativeEditorErrorBase | undefined {
         if (
             result.outcome === 'committed' &&
             result.cause === 'consumer' &&
@@ -570,7 +570,7 @@ export class ExternalTextCompositionManager {
         void this.invokeCancel(active.id, 'lifecycle').catch(() => undefined);
     }
 
-    private unsupportedError(): NativeEditorV2LifecycleError {
+    private unsupportedError(): NativeEditorLifecycleError {
         return createExternalCompositionLifecycleError(
             'EXTERNAL_COMPOSITION_UNSUPPORTED',
             'The mounted native editor does not support external text composition'

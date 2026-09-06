@@ -66,10 +66,10 @@ export const NATIVE_EDITOR_OPERATION_ERROR_CODES = [
 
 /**
  * A failure record from the native boundary, normalized for JavaScript. It is
- * carried on every {@link NativeEditorV2ErrorBase}; the numeric fields stay
+ * carried on every {@link NativeEditorErrorBase}; the numeric fields stay
  * decimal strings because they span the full Rust `u64` range.
  */
-export interface NativeEditorV2Error {
+export interface NativeEditorError {
     domain: NativeEditorErrorDomain;
     code: NativeEditorBoundaryErrorCode;
     message: string;
@@ -180,7 +180,7 @@ function hasValidKnownDetails(code: string, details: Record<string, unknown> | n
 }
 
 /** Normalize a raw FFI v2 error record without changing the legacy error parser contract. */
-export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Error | null {
+export function normalizeNativeEditorV2Error(value: unknown): NativeEditorError | null {
     const envelope = value as { error?: unknown };
     const nativeError = envelope?.error as Record<string, unknown> | undefined;
     if (nativeError == null || typeof nativeError !== 'object') return null;
@@ -229,18 +229,18 @@ export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Erro
 // throw the distinct non-retryable class.
 
 /** Codes that mark a failure as permanently non-retryable for this handle. */
-export const NATIVE_EDITOR_V2_NON_RETRYABLE_CODES = [
+export const NATIVE_EDITOR_NON_RETRYABLE_CODES = [
     'ENGINE_INVARIANT_FAILED',
     'ENGINE_DESTROYING',
     'ENGINE_DESTROYED',
 ] as const;
 
 export function isNativeEditorV2NonRetryableCode(code: string): boolean {
-    return (NATIVE_EDITOR_V2_NON_RETRYABLE_CODES as readonly string[]).includes(code);
+    return (NATIVE_EDITOR_NON_RETRYABLE_CODES as readonly string[]).includes(code);
 }
 
 /** Base class for every typed error raised from a normalized FFI v2 error record. */
-export class NativeEditorV2ErrorBase extends Error {
+export class NativeEditorErrorBase extends Error {
     readonly domain: NativeEditorErrorDomain;
     readonly code: NativeEditorBoundaryErrorCode;
     readonly requestId: string | null;
@@ -250,7 +250,7 @@ export class NativeEditorV2ErrorBase extends Error {
     readonly details: Record<string, unknown> | null;
 
     constructor(
-        readonly error: NativeEditorV2Error,
+        readonly error: NativeEditorError,
         name: string
     ) {
         super(error.message);
@@ -266,16 +266,16 @@ export class NativeEditorV2ErrorBase extends Error {
 }
 
 /** A value the engine refused to admit. */
-export class NativeEditorV2BoundaryError extends NativeEditorV2ErrorBase {
-    constructor(error: NativeEditorV2Error) {
-        super(error, 'NativeEditorV2BoundaryError');
+export class NativeEditorEngineBoundaryError extends NativeEditorErrorBase {
+    constructor(error: NativeEditorError) {
+        super(error, 'NativeEditorEngineBoundaryError');
     }
 }
 
 /** The document or schema was rejected. */
-export class NativeEditorV2DocumentError extends NativeEditorV2ErrorBase {
-    constructor(error: NativeEditorV2Error) {
-        super(error, 'NativeEditorV2DocumentError');
+export class NativeEditorDocumentError extends NativeEditorErrorBase {
+    constructor(error: NativeEditorError) {
+        super(error, 'NativeEditorDocumentError');
     }
 }
 
@@ -283,30 +283,30 @@ export class NativeEditorV2DocumentError extends NativeEditorV2ErrorBase {
  * A mutation could not be applied. `REVISION_MISMATCH` is the routine one:
  * the document moved on, so re-read it and retry against the fresh revision.
  */
-export class NativeEditorV2OperationError extends NativeEditorV2ErrorBase {
-    constructor(error: NativeEditorV2Error) {
-        super(error, 'NativeEditorV2OperationError');
+export class NativeEditorOperationError extends NativeEditorErrorBase {
+    constructor(error: NativeEditorError) {
+        super(error, 'NativeEditorOperationError');
     }
 }
 
 /** The session is not in a state that permits this call. */
-export class NativeEditorV2LifecycleError extends NativeEditorV2ErrorBase {
-    constructor(error: NativeEditorV2Error) {
-        super(error, 'NativeEditorV2LifecycleError');
+export class NativeEditorLifecycleError extends NativeEditorErrorBase {
+    constructor(error: NativeEditorError) {
+        super(error, 'NativeEditorLifecycleError');
     }
 }
 
 /** A room snapshot could not be exported or restored. */
-export class NativeEditorV2SnapshotError extends NativeEditorV2ErrorBase {
-    constructor(error: NativeEditorV2Error) {
-        super(error, 'NativeEditorV2SnapshotError');
+export class NativeEditorSnapshotError extends NativeEditorErrorBase {
+    constructor(error: NativeEditorError) {
+        super(error, 'NativeEditorSnapshotError');
     }
 }
 
 /** The collaboration transport failed. */
-export class NativeEditorV2TransportError extends NativeEditorV2ErrorBase {
-    constructor(error: NativeEditorV2Error) {
-        super(error, 'NativeEditorV2TransportError');
+export class NativeEditorTransportError extends NativeEditorErrorBase {
+    constructor(error: NativeEditorError) {
+        super(error, 'NativeEditorTransportError');
     }
 }
 
@@ -315,30 +315,30 @@ export class NativeEditorV2TransportError extends NativeEditorV2ErrorBase {
  * handle: ENGINE_INVARIANT_FAILED and the lifecycle-destroyed states
  * (ENGINE_DESTROYING / ENGINE_DESTROYED).
  */
-export class NativeEditorV2NonRetryableError extends NativeEditorV2ErrorBase {
-    constructor(error: NativeEditorV2Error) {
-        super(error, 'NativeEditorV2NonRetryableError');
+export class NativeEditorNonRetryableError extends NativeEditorErrorBase {
+    constructor(error: NativeEditorError) {
+        super(error, 'NativeEditorNonRetryableError');
     }
 }
 
 const NATIVE_EDITOR_V2_DOMAIN_ERROR_CLASSES: Record<
     NativeEditorErrorDomain,
-    new (error: NativeEditorV2Error) => NativeEditorV2ErrorBase
+    new (error: NativeEditorError) => NativeEditorErrorBase
 > = {
-    boundary: NativeEditorV2BoundaryError,
-    document: NativeEditorV2DocumentError,
-    operation: NativeEditorV2OperationError,
-    lifecycle: NativeEditorV2LifecycleError,
-    snapshot: NativeEditorV2SnapshotError,
-    transport: NativeEditorV2TransportError,
+    boundary: NativeEditorEngineBoundaryError,
+    document: NativeEditorDocumentError,
+    operation: NativeEditorOperationError,
+    lifecycle: NativeEditorLifecycleError,
+    snapshot: NativeEditorSnapshotError,
+    transport: NativeEditorTransportError,
 };
 
 /** Map a normalized FFI v2 error record to its typed imperative exception. */
 export function nativeEditorV2ErrorToException(
-    error: NativeEditorV2Error
-): NativeEditorV2ErrorBase {
+    error: NativeEditorError
+): NativeEditorErrorBase {
     if (isNativeEditorV2NonRetryableCode(error.code)) {
-        return new NativeEditorV2NonRetryableError(error);
+        return new NativeEditorNonRetryableError(error);
     }
     const ErrorClass = NATIVE_EDITOR_V2_DOMAIN_ERROR_CLASSES[error.domain];
     return new ErrorClass(error);

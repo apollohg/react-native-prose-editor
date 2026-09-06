@@ -5,8 +5,8 @@ import {
     type Selection,
     type ActiveState,
     type HistoryState,
-    type NativeEditorV2AtomicRenderSnapshot,
-    type NativeEditorV2AtomicRenderPayload,
+    type NativeEditorAtomicRenderSnapshot,
+    type NativeEditorAtomicRenderPayload,
     type DocumentJSON,
     type ContentSnapshot,
 } from './NativeEditorTypes';
@@ -221,7 +221,7 @@ export function deepFreezeV2Value<T>(value: T): T {
 /** Validate and freeze the one complete render/state snapshot. */
 export function normalizeNativeEditorV2RenderUpdateValue(
     value: unknown
-): NativeEditorV2AtomicRenderSnapshot | null {
+): NativeEditorAtomicRenderSnapshot | null {
     const parsed = parseNativeEditorV2JsonValue(value);
     if (!isPlainRecord(parsed)) return null;
     if (
@@ -261,7 +261,7 @@ export function normalizeNativeEditorV2RenderUpdateValue(
     ) {
         return null;
     }
-    let renderPayload: NativeEditorV2AtomicRenderPayload;
+    let renderPayload: NativeEditorAtomicRenderPayload;
     if (renderBlocks == null) {
         if (parsed.renderBlocks !== null || renderPatch == null) return null;
         renderPayload = { renderBlocks: null, renderPatch };
@@ -296,7 +296,7 @@ export function normalizeNativeEditorV2ContentSnapshotValue(
     return { html: parsed.html, json: parsed.json as DocumentJSON };
 }
 
-export interface NativeEditorV2SnapshotExport {
+export interface NativeEditorSnapshotExport {
     metadataJson: string;
     encodedState: Uint8Array;
 }
@@ -304,7 +304,7 @@ export interface NativeEditorV2SnapshotExport {
 /** The snapshot export record arrives as direct fields (JSON + bytes), not a JSON string. */
 export function normalizeNativeEditorV2SnapshotExportValue(
     value: unknown
-): NativeEditorV2SnapshotExport | null {
+): NativeEditorSnapshotExport | null {
     if (!isPlainRecord(value) || typeof value.metadataJson !== 'string') return null;
     const encodedState = normalizeNativeEditorV2Bytes(value.encodedState);
     if (encodedState == null) return null;

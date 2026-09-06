@@ -1,4 +1,4 @@
-import { NativeEditorV2BoundaryError } from './NativeEditorBoundaryError';
+import { NativeEditorEngineBoundaryError } from './NativeEditorBoundaryError';
 import { invalidV2RequestError, nativeEditorV2U32 } from './NativeEditorResultNormalization';
 import {
     type NativeEditorLocalAwarenessSelection,
@@ -101,7 +101,7 @@ export function normalizeLocalAwarenessState(value: unknown): Record<string, unk
         rejectReservedAwarenessCursor(normalized);
         return normalized;
     } catch (error) {
-        if (error instanceof NativeEditorV2BoundaryError) throw error;
+        if (error instanceof NativeEditorEngineBoundaryError) throw error;
         invalidLocalAwarenessIntent();
     }
 }
@@ -140,7 +140,7 @@ export function validateLocalAwarenessIntent(
         const selection = validateLocalAwarenessSelection(rawSelection);
         return { state, focused, selection: { type: 'text', ...selection } };
     } catch (error) {
-        if (error instanceof NativeEditorV2BoundaryError) throw error;
+        if (error instanceof NativeEditorEngineBoundaryError) throw error;
         invalidLocalAwarenessIntent();
     }
 }

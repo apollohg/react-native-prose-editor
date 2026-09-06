@@ -8,7 +8,7 @@ import {
     type MentionSuggestion,
 } from './addons';
 import { type EditorMentionTheme } from './EditorTheme';
-import { validEditorMentionTheme, type NativeEditorV2PositionAffinity } from './NativeEditorBridge';
+import { validEditorMentionTheme, type NativeEditorPositionAffinity } from './NativeEditorBridge';
 import { type NativeSyntheticEvent } from 'react-native';
 import { setEditorToolbarMentionState } from './EditorToolbar';
 import { useRichTextEditorState } from './useRichTextEditorState';
@@ -178,7 +178,7 @@ export function useRichTextEditorMentions(
             // range uses Before. The fallback changes only the stickiness
             // of the SAME position — it is not a guessed-position retry.
             const collapsed = anchorScalar === headScalar;
-            const syncSelection = (affinity: NativeEditorV2PositionAffinity) =>
+            const syncSelection = (affinity: NativeEditorPositionAffinity) =>
                 bridge.setSelection({
                     baseDocumentRevision: snapshot.documentVersion,
                     selection: {

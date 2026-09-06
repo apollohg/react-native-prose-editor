@@ -8,7 +8,7 @@ import {
 } from './helpers/NativeEditorBridgeV2Fixture';
 import { normalizeNativeEditorV2Result, unwrapNativeEditorV2Result } from '../NativeEditorBridge';
 
-import { NativeEditorV2ErrorBase } from '../NativeEditorBoundaryError';
+import { NativeEditorErrorBase } from '../NativeEditorBoundaryError';
 
 describe('NativeEditorBridge v2', () => {
     describe('exactly-one result record validation', () => {
@@ -77,7 +77,7 @@ describe('NativeEditorBridge v2', () => {
                 unwrapNativeEditorV2Result({ value: 'v', error: mockV2Error() }, (v) => v)
             );
             expectNonRetryable(error, 'FFI_RESULT_INVALID');
-            expect((error as NativeEditorV2ErrorBase).domain).toBe('boundary');
+            expect((error as NativeEditorErrorBase).domain).toBe('boundary');
         });
     });
 });

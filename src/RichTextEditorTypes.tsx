@@ -108,12 +108,12 @@ export interface ImageRequestContext {
 /**
  * The v2 prop contract. Initialization and input policy are NOT props:
  * - `initialContent` / `initialJSON` are gone: initial document state
- *   belongs to the handle's creation config (`NativeEditorV2Initialization`:
+ *   belongs to the handle's creation config (`NativeEditorInitialization`:
  *   `localEmpty` / `localJson` / `localHtml` / `room`).
- * - `schema` and `fragmentName` belong to `NativeEditorV2CreateConfig`.
+ * - `schema` and `fragmentName` belong to `NativeEditorCreateConfig`.
  * - `maxLength`, engine-enforced `allowBase64Images`, `readOnly`, and
- *   `inputFilter` belong to `NativeEditorV2CreateConfig.policy`.
- * - `resourceLimits` belongs to `NativeEditorV2CreateConfig.limits.resource`.
+ *   `inputFilter` belong to `NativeEditorCreateConfig.policy`.
+ * - `resourceLimits` belongs to `NativeEditorCreateConfig.limits.resource`.
  *   `editable` is only a per-view interaction gate; it never changes the
  *   handle's engine read-only policy.
  * - `autoDetectLinks`, `preserveSelectionOnValueJSONReset`, and

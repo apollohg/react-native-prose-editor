@@ -12,13 +12,13 @@ import {
 import {
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
-    type NativeEditorV2CreateConfig,
+    type NativeEditorCreateConfig,
 } from '../NativeEditorBridge';
 import * as NativeEditorBridgeExports from '../NativeEditorBridge';
 import {
     NativeEditorBoundaryError,
-    NativeEditorV2BoundaryError,
-    NativeEditorV2ErrorBase,
+    NativeEditorEngineBoundaryError,
+    NativeEditorErrorBase,
 } from '../NativeEditorBoundaryError';
 import { HARD_EDITOR_RESOURCE_LIMITS } from '../ResourceLimits';
 
@@ -29,7 +29,7 @@ describe('NativeEditorBridge v2', () => {
                 import {
                     createNativeEditorDocumentHandle,
                     type NativeEditorDocumentHandle,
-                    type NativeEditorV2CreateConfig,
+                    type NativeEditorCreateConfig,
                 } from '../NativeEditorBridge';
                 import type {
                     EditorCollaborationLimits,
@@ -64,7 +64,7 @@ describe('NativeEditorBridge v2', () => {
                     maxPendingDependencyUpdateBytes: 1,
                     maxPendingDependencyUpdateWork: 1,
                 };
-                const config: NativeEditorV2CreateConfig = {
+                const config: NativeEditorCreateConfig = {
                     initialization: { type: 'localEmpty' },
                     schema: undefined,
                     fragmentName: 'prosemirror',
@@ -77,7 +77,7 @@ describe('NativeEditorBridge v2', () => {
                     limits: { resource, editing, collaboration },
                 };
                 createNativeEditorDocumentHandle(config);
-                const removedRootPolicy: NativeEditorV2CreateConfig = {
+                const removedRootPolicy: NativeEditorCreateConfig = {
                     initialization: { type: 'localEmpty' },
                     // @ts-expect-error maxLength belongs under policy
                     maxLength: 100,
@@ -93,7 +93,7 @@ describe('NativeEditorBridge v2', () => {
             const { declaration, diagnostics } = emitNativeEditorBridgeDeclaration();
             expect(diagnostics).toBe('');
             expect(declaration).toContain(
-                'export declare function createNativeEditorDocumentHandle(config: NativeEditorV2CreateConfig): NativeEditorDocumentHandle;'
+                'export declare function createNativeEditorDocumentHandle(config: NativeEditorCreateConfig): NativeEditorDocumentHandle;'
             );
             expect(declaration).toContain('export interface NativeEditorDocumentHandle');
             expect(declaration).not.toMatch(/static create\s*\(/);
@@ -338,7 +338,7 @@ describe('NativeEditorBridge v2', () => {
 
             for (const config of invalidConfigs) {
                 const error = catchThrown(() =>
-                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                    createNativeEditorDocumentHandle(config as NativeEditorCreateConfig)
                 );
                 expect((error as { code?: string }).code).toBe('CONFIG_INVALID');
             }
@@ -372,7 +372,7 @@ describe('NativeEditorBridge v2', () => {
 
             for (const config of invalidConfigs) {
                 const error = catchThrown(() =>
-                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                    createNativeEditorDocumentHandle(config as NativeEditorCreateConfig)
                 );
                 expect((error as { code?: string }).code).toBe('CONFIG_INVALID');
             }
@@ -412,10 +412,10 @@ describe('NativeEditorBridge v2', () => {
                 { initialization: { type: 'localJson', json: document } },
             ]) {
                 const error = catchThrown(() =>
-                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                    createNativeEditorDocumentHandle(config as NativeEditorCreateConfig)
                 );
-                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+                expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+                expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
             }
             expect(getterCalls).toBe(0);
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
@@ -435,10 +435,10 @@ describe('NativeEditorBridge v2', () => {
             );
 
             const error = catchThrown(() =>
-                createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                createNativeEditorDocumentHandle(config as NativeEditorCreateConfig)
             );
-            expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-            expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+            expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         });
 
@@ -466,11 +466,11 @@ describe('NativeEditorBridge v2', () => {
             ]) {
                 const error = catchThrown(() =>
                     createNativeEditorDocumentHandle(
-                        config as unknown as NativeEditorV2CreateConfig
+                        config as unknown as NativeEditorCreateConfig
                     )
                 );
-                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+                expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+                expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
             }
             expect(toJsonCalls).toBe(0);
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
@@ -520,17 +520,17 @@ describe('NativeEditorBridge v2', () => {
             ]) {
                 const error = catchThrown(() =>
                     createNativeEditorDocumentHandle(
-                        config as unknown as NativeEditorV2CreateConfig
+                        config as unknown as NativeEditorCreateConfig
                     )
                 );
-                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+                expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+                expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
             }
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         });
 
         it('bounds JSON normalization and rejects repeated-reference amplification', () => {
-            const captureCode = (config: NativeEditorV2CreateConfig): string => {
+            const captureCode = (config: NativeEditorCreateConfig): string => {
                 try {
                     createNativeEditorDocumentHandle(config);
                     return 'accepted';
@@ -598,10 +598,10 @@ describe('NativeEditorBridge v2', () => {
 
             for (const config of invalidConfigs) {
                 const error = catchThrown(() =>
-                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                    createNativeEditorDocumentHandle(config as NativeEditorCreateConfig)
                 );
-                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+                expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+                expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
             }
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         });

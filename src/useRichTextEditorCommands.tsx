@@ -2,7 +2,7 @@ import { useCallback, useImperativeHandle, useRef } from 'react';
 import { type AtomAttrsUpdate } from './atoms';
 import { AtomUpdateAttrsError, type AtomInstance } from './atomInstances';
 import { resolveAtomAttrsUpdate } from './atomUpdates';
-import { NativeEditorV2ErrorBase, NativeEditorV2OperationError } from './NativeEditorBoundaryError';
+import { NativeEditorErrorBase, NativeEditorOperationError } from './NativeEditorBoundaryError';
 import { type DocumentJSON, type NativeEditorDocumentHandle } from './NativeEditorBridge';
 import { type EditorToolbarHeadingLevel } from './EditorToolbar';
 import { buildImageFragmentJson, type ImageNodeAttributes } from './schemas';
@@ -114,7 +114,7 @@ export function useRichTextEditorCommands(
                     );
                 }
                 if (
-                    error instanceof NativeEditorV2ErrorBase &&
+                    error instanceof NativeEditorErrorBase &&
                     (error.code === 'ENGINE_NOT_READY' ||
                         error.code === 'ENGINE_DESTROYING' ||
                         error.code === 'ENGINE_DESTROYED')
@@ -228,7 +228,7 @@ export function useRichTextEditorCommands(
     const runEngineMutation = useCallback(
         (invoke: (baseDocumentRevision: string) => unknown) => {
             if (!editableRef.current) {
-                throw new NativeEditorV2OperationError({
+                throw new NativeEditorOperationError({
                     domain: 'operation',
                     code: 'MUTATION_REJECTED',
                     message: 'NativeRichTextEditor: mutation rejected while editable is false',

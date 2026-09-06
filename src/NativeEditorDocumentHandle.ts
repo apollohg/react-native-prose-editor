@@ -1,13 +1,13 @@
 import { type ResolvedDocumentSchema } from './schemas';
-import { NativeEditorV2ErrorBase } from './NativeEditorBoundaryError';
-import { NativeEditorV2Bridge } from './NativeEditorV2Bridge';
+import { NativeEditorErrorBase } from './NativeEditorBoundaryError';
+import { NativeEditorDocumentBridge } from './NativeEditorDocumentBridge';
 import {
     type NativeCollaborationTransportConfig,
     type NativeCollaborationTransportEvent,
 } from './NativeEditorCollaborationTransport';
 import {
     type NativeEditorLocalAwarenessIntent,
-    type NativeEditorV2CreateConfig,
+    type NativeEditorCreateConfig,
 } from './NativeEditorTypes';
 import {
     invalidV2RequestError,
@@ -42,12 +42,12 @@ export interface NativeEditorDocumentHandle {
     /** Decimal-string session id, shared with the native view. */
     readonly editorId: string;
     /** Typed imperative access to the engine. The React APIs use this for you. */
-    readonly bridge: NativeEditorV2Bridge;
+    readonly bridge: NativeEditorDocumentBridge;
     readonly isDestroyed: boolean;
     /** Release the native session. Every later call fails as non-retryable. */
     destroy(): void;
     /** Observe engine failures raised outside a caller's own call. Returns an unsubscribe function. */
-    addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void;
+    addErrorListener(listener: (error: NativeEditorErrorBase) => void): () => void;
     /** Point the native transport at a server, or pass null to detach. */
     configureCollaborationTransport(config: NativeCollaborationTransportConfig | null): void;
     /** Publish local presence, or pass null to withdraw it. */
@@ -64,7 +64,7 @@ export class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandl
     constructor(
         token: typeof NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN,
         public readonly editorId: string,
-        public readonly bridge: NativeEditorV2Bridge,
+        public readonly bridge: NativeEditorDocumentBridge,
         documentDescriptor: ResolvedDocumentSchema
     ) {
         if (token !== NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN) {
@@ -84,7 +84,7 @@ export class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandl
         this.bridge.destroy();
     }
 
-    addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void {
+    addErrorListener(listener: (error: NativeEditorErrorBase) => void): () => void {
         return this.bridge.addErrorListener(listener);
     }
 
@@ -137,7 +137,7 @@ export function _assertNativeEditorDocumentHandle(
  * per document — `useMemo`, not on each render — and destroy it when its
  * owner unmounts.
  *
- * @throws NativeEditorV2ErrorBase when the config is rejected: a malformed
+ * @throws NativeEditorErrorBase when the config is rejected: a malformed
  * schema, an out-of-range limit, or content the engine cannot parse.
  *
  * @example
@@ -152,7 +152,7 @@ export function _assertNativeEditorDocumentHandle(
  * ```
  */
 export function createNativeEditorDocumentHandle(
-    config: NativeEditorV2CreateConfig
+    config: NativeEditorCreateConfig
 ): NativeEditorDocumentHandle {
     const { configJson, snapshotState, documentDescriptor } = buildV2CreateRequest(config);
     const value = unwrapNativeEditorV2Result(
@@ -162,7 +162,7 @@ export function createNativeEditorDocumentHandle(
     return new NativeEditorDocumentHandleImpl(
         NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN,
         value.editorId,
-        new NativeEditorV2Bridge(value.editorId),
+        new NativeEditorDocumentBridge(value.editorId),
         documentDescriptor
     );
 }

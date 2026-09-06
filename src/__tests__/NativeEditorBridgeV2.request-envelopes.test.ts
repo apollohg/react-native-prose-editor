@@ -6,7 +6,7 @@ import {
     catchThrown,
 } from './helpers/NativeEditorBridgeV2Fixture';
 
-import { NativeEditorV2BoundaryError, NativeEditorV2ErrorBase } from '../NativeEditorBoundaryError';
+import { NativeEditorEngineBoundaryError, NativeEditorErrorBase } from '../NativeEditorBoundaryError';
 
 describe('NativeEditorBridge v2', () => {
     describe('request envelopes', () => {
@@ -42,9 +42,9 @@ describe('NativeEditorBridge v2', () => {
             });
 
             const error = catchThrown(() => handle.bridge.redo());
-            expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-            expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
-            expect((error as NativeEditorV2ErrorBase).domain).toBe('boundary');
+            expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+            expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
+            expect((error as NativeEditorErrorBase).domain).toBe('boundary');
             expect(mockNativeModule.editorV2Redo).not.toHaveBeenCalled();
         });
 
@@ -64,8 +64,8 @@ describe('NativeEditorBridge v2', () => {
                 const error = catchThrown(() =>
                     handle.bridge.applyInput({ baseDocumentRevision, text: 'x' })
                 );
-                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+                expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+                expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
                 expect(mockNativeModule.editorV2ApplyInput).not.toHaveBeenCalled();
             }
         );
@@ -78,7 +78,7 @@ describe('NativeEditorBridge v2', () => {
                     text: 'x',
                 })
             );
-            expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+            expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
             expect(mockNativeModule.editorV2ApplyInput).not.toHaveBeenCalled();
         });
 

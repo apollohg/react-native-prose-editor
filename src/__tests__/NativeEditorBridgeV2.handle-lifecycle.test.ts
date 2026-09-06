@@ -14,13 +14,13 @@ import {
 } from './helpers/NativeEditorBridgeV2Fixture';
 import {
     createNativeEditorDocumentHandle,
-    type NativeEditorV2CreateConfig,
+    type NativeEditorCreateConfig,
 } from '../NativeEditorBridge';
 
 import {
-    NativeEditorV2BoundaryError,
-    NativeEditorV2ErrorBase,
-    NativeEditorV2OperationError,
+    NativeEditorEngineBoundaryError,
+    NativeEditorErrorBase,
+    NativeEditorOperationError,
 } from '../NativeEditorBoundaryError';
 
 describe('NativeEditorBridge v2', () => {
@@ -34,7 +34,7 @@ describe('NativeEditorBridge v2', () => {
                 initialization,
                 policy,
                 limits,
-            }) as NativeEditorV2CreateConfig;
+            }) as NativeEditorCreateConfig;
 
             createNativeEditorDocumentHandle(config);
 
@@ -149,7 +149,7 @@ describe('NativeEditorBridge v2', () => {
 
             for (const config of invalidConfigs) {
                 const error = catchThrown(() =>
-                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                    createNativeEditorDocumentHandle(config as NativeEditorCreateConfig)
                 );
                 expect((error as { code?: string }).code).toBe('CONFIG_INVALID');
             }
@@ -186,7 +186,7 @@ describe('NativeEditorBridge v2', () => {
                     const config = {
                         initialization: { type: 'localEmpty' },
                         limits: { [group]: { [field]: value } },
-                    } as unknown as NativeEditorV2CreateConfig;
+                    } as unknown as NativeEditorCreateConfig;
                     const error = catchThrown(() => createNativeEditorDocumentHandle(config));
                     expect((error as { code?: string }).code).toBe('INVALID_RESOURCE_LIMIT');
                 }
@@ -201,7 +201,7 @@ describe('NativeEditorBridge v2', () => {
                     limits: { resource: { maxInputBytes: 0 } },
                 })
             );
-            expect((limitError as NativeEditorV2ErrorBase).code).toBe('INVALID_RESOURCE_LIMIT');
+            expect((limitError as NativeEditorErrorBase).code).toBe('INVALID_RESOURCE_LIMIT');
 
             const replayingConfig = new Proxy(
                 {},
@@ -213,13 +213,13 @@ describe('NativeEditorBridge v2', () => {
             );
             const replayed = catchThrown(() =>
                 createNativeEditorDocumentHandle(
-                    replayingConfig as unknown as NativeEditorV2CreateConfig
+                    replayingConfig as unknown as NativeEditorCreateConfig
                 )
             );
 
             expect(replayed).not.toBe(limitError);
-            expect(replayed).toBeInstanceOf(NativeEditorV2BoundaryError);
-            expect((replayed as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            expect(replayed).toBeInstanceOf(NativeEditorEngineBoundaryError);
+            expect((replayed as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         });
 
@@ -256,8 +256,8 @@ describe('NativeEditorBridge v2', () => {
                 })
             );
             const error = catchThrown(() => createHandle());
-            expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-            expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            expect(error).toBeInstanceOf(NativeEditorEngineBoundaryError);
+            expect((error as NativeEditorErrorBase).code).toBe('CONFIG_INVALID');
         });
 
         it('rejects a malformed create editorId', () => {
@@ -295,15 +295,15 @@ describe('NativeEditorBridge v2', () => {
 
         it('retains a live handle and error listeners when destroy fails before a successful retry', () => {
             const handle = createHandle();
-            const received: NativeEditorV2ErrorBase[] = [];
+            const received: NativeEditorErrorBase[] = [];
             handle.addErrorListener((error) => received.push(error));
             mockNativeModule.editorV2Destroy
                 .mockReturnValueOnce(errRecord(mockV2Error()))
                 .mockReturnValueOnce(okRecord(true));
 
             const failure = catchThrown(() => handle.destroy());
-            expect(failure).toBeInstanceOf(NativeEditorV2OperationError);
-            expect((failure as NativeEditorV2ErrorBase).code).toBe('OPERATION_INVALID');
+            expect(failure).toBeInstanceOf(NativeEditorOperationError);
+            expect((failure as NativeEditorErrorBase).code).toBe('OPERATION_INVALID');
             expect(handle.isDestroyed).toBe(false);
 
             handle.bridge._emitAutonomousError(mockV2Error());
@@ -328,7 +328,7 @@ describe('NativeEditorBridge v2', () => {
             ]) {
                 const error = catchThrown(call);
                 expectNonRetryable(error, 'ENGINE_DESTROYED');
-                expect((error as NativeEditorV2ErrorBase).domain).toBe('lifecycle');
+                expect((error as NativeEditorErrorBase).domain).toBe('lifecycle');
             }
         });
 

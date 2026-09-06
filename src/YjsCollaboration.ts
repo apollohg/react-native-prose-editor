@@ -10,9 +10,9 @@ import {
     type NativeEditorDocumentHandle,
     type NativeEditorLocalAwarenessIntent,
     type NativeEditorLocalAwarenessSelection,
-    type NativeEditorV2EditorState,
-    type NativeEditorV2PeerInfo,
-    type NativeEditorV2TransportState,
+    type NativeEditorState,
+    type NativeEditorPeerInfo,
+    type NativeEditorTransportState,
     type Selection,
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
@@ -87,7 +87,7 @@ export interface YjsCollaborationOptions {
     /** Identity published to other peers. Omit to join without presence. */
     localAwareness?: LocalAwarenessUser;
     /** Called whenever the peer list changes. */
-    onPeersChange?: (peers: NativeEditorV2PeerInfo[]) => void;
+    onPeersChange?: (peers: NativeEditorPeerInfo[]) => void;
     /** Called on every state transition. */
     onStateChange?: (state: YjsCollaborationState) => void;
     /** Called on transport and engine failures. */
@@ -100,7 +100,7 @@ export interface YjsCollaborationOptions {
  */
 export interface YjsCollaborationController {
     readonly state: YjsCollaborationState;
-    readonly peers: NativeEditorV2PeerInfo[];
+    readonly peers: NativeEditorPeerInfo[];
     readonly documentHandle: NativeEditorDocumentHandle;
     /** Open the transport. */
     connect(): void;
@@ -136,7 +136,7 @@ export interface YjsCollaborationEditorBindings {
 export interface UseYjsCollaborationResult {
     state: YjsCollaborationState;
     /** Connected peers, including the local one. */
-    peers: NativeEditorV2PeerInfo[];
+    peers: NativeEditorPeerInfo[];
     /** True only while the transport is synchronized. */
     isConnected: boolean;
     connect(): void;
@@ -149,11 +149,11 @@ export interface UseYjsCollaborationResult {
 
 interface MutableCallbacks {
     onStateChange?: (state: YjsCollaborationState) => void;
-    onPeersChange?: (peers: NativeEditorV2PeerInfo[]) => void;
+    onPeersChange?: (peers: NativeEditorPeerInfo[]) => void;
     onError?: (error: Error) => void;
 }
 
-function mapTransportState(transport: NativeEditorV2TransportState): YjsTransportStatus {
+function mapTransportState(transport: NativeEditorTransportState): YjsTransportStatus {
     switch (transport) {
         case 'Detached':
             return 'idle';
@@ -184,7 +184,7 @@ function isStrictlyNewerSequence(candidate: string, current: string | null): boo
 }
 
 function peersToRemoteSelections(
-    peers: readonly NativeEditorV2PeerInfo[]
+    peers: readonly NativeEditorPeerInfo[]
 ): RemoteSelectionDecoration[] {
     return peers.flatMap((peer) => {
         if (peer.isLocal || peer.cursor == null) return [];
@@ -312,7 +312,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private lastEventSequence: string | null = null;
     private destroyed = false;
     private _state: YjsCollaborationState;
-    private _peers: NativeEditorV2PeerInfo[] = [];
+    private _peers: NativeEditorPeerInfo[] = [];
 
     constructor(options: YjsCollaborationOptions, callbacks: MutableCallbacks = {}) {
         _assertNativeEditorDocumentHandle(options.handle);
@@ -338,7 +338,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         return this._state;
     }
 
-    get peers(): NativeEditorV2PeerInfo[] {
+    get peers(): NativeEditorPeerInfo[] {
         return this._peers;
     }
 
@@ -484,7 +484,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     }
 
     private readEngineState(
-        engineState: NativeEditorV2EditorState,
+        engineState: NativeEditorState,
         previous?: YjsCollaborationState
     ): YjsCollaborationState {
         const awaitingRemote = engineState.documentState === 'AwaitRemote';
@@ -602,7 +602,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
         documentJson: null,
         documentRevision: null,
     });
-    const [peers, setPeers] = useState<NativeEditorV2PeerInfo[]>([]);
+    const [peers, setPeers] = useState<NativeEditorPeerInfo[]>([]);
 
     useEffect(() => {
         let controller: YjsCollaborationControllerImpl;

@@ -12,7 +12,7 @@ import { createRef } from 'react';
 import { render, act } from '@testing-library/react-native';
 import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 
-import { NativeEditorV2NonRetryableError } from '../NativeEditorBoundaryError';
+import { NativeEditorNonRetryableError } from '../NativeEditorBoundaryError';
 
 describe('NativeRichTextEditor (v2 document mode)', () => {
     it('binds the native view to the session editor id and is editable by default', () => {
@@ -153,8 +153,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             });
         });
         expect(received).toHaveLength(1);
-        expect(received[0]).toBeInstanceOf(NativeEditorV2NonRetryableError);
-        expect((received[0] as NativeEditorV2NonRetryableError).code).toBe('FFI_RESULT_INVALID');
+        expect(received[0]).toBeInstanceOf(NativeEditorNonRetryableError);
+        expect((received[0] as NativeEditorNonRetryableError).code).toBe('FFI_RESULT_INVALID');
 
         // The boundary event is non-terminal: a normal interaction remains usable.
         act(() => ref.current!.toggleMark('bold'));

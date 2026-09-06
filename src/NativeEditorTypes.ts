@@ -164,11 +164,11 @@ export type DeepReadonly<T> =
 /** A recursively immutable active-state view supplied by atomic render snapshots. */
 export type ReadonlyActiveState = DeepReadonly<ActiveState>;
 
-export type NativeEditorV2AtomicRenderPayload =
+export type NativeEditorAtomicRenderPayload =
     | { renderBlocks: RenderElement[][]; renderPatch: null }
     | { renderBlocks: null; renderPatch: RenderBlocksPatch };
 
-export type NativeEditorV2AtomicRenderSnapshotShape = NativeEditorV2AtomicRenderPayload & {
+export type NativeEditorAtomicRenderSnapshotShape = NativeEditorAtomicRenderPayload & {
     selection: Selection;
     activeState: ActiveState;
     historyState: HistoryState;
@@ -180,8 +180,8 @@ export type NativeEditorV2AtomicRenderSnapshotShape = NativeEditorV2AtomicRender
 };
 
 /** A recursively immutable view of the value frozen by renderUpdate(). */
-export type NativeEditorV2AtomicRenderSnapshot =
-    DeepReadonly<NativeEditorV2AtomicRenderSnapshotShape>;
+export type NativeEditorAtomicRenderSnapshot =
+    DeepReadonly<NativeEditorAtomicRenderSnapshotShape>;
 
 /** One coherent view of the document after a change: what to draw, plus selection and state. */
 export interface EditorUpdate {
@@ -235,13 +235,13 @@ export interface CommandBlockedInfo {
     reason: CommandBlockedReason | null;
 }
 
-export type NativeEditorV2HistoryMode = 'undoableBoundary' | 'resetAndClear';
+export type NativeEditorHistoryMode = 'undoableBoundary' | 'resetAndClear';
 
 /**
  * Provenance of an exported room snapshot. A snapshot only restores into a
  * handle whose document, lineage, fragment, and schema match.
  */
-export interface NativeEditorV2SnapshotMetadata {
+export interface NativeEditorSnapshotMetadata {
     /** Snapshot format version, so older exports can be recognized. */
     formatVersion: number;
     documentId: string;
@@ -252,8 +252,8 @@ export interface NativeEditorV2SnapshotMetadata {
 }
 
 /** An exported room document: its provenance plus the encoded Yjs state. */
-export interface NativeEditorV2RoomSnapshot {
-    metadata: NativeEditorV2SnapshotMetadata;
+export interface NativeEditorRoomSnapshot {
+    metadata: NativeEditorSnapshotMetadata;
     /** Encoded Yjs state. Bounded by `EditorResourceLimits.maxEncodedStateBytes`. */
     encodedState: Uint8Array;
 }
@@ -267,7 +267,7 @@ export interface NativeEditorV2RoomSnapshot {
  * - `room` — a collaborative document. It renders nothing until the server's
  *   document arrives, unless a `snapshot` seeds it offline.
  */
-export type NativeEditorV2Initialization =
+export type NativeEditorInitialization =
     | { type: 'localEmpty' }
     | { type: 'localJson'; json: DocumentJSON }
     | { type: 'localHtml'; html: string }
@@ -279,7 +279,7 @@ export type NativeEditorV2Initialization =
            *  snapshot only restores into a handle declaring the same lineage. */
           lineageId: string;
           /** Previously exported state, for offline restore. */
-          snapshot?: NativeEditorV2RoomSnapshot;
+          snapshot?: NativeEditorRoomSnapshot;
       };
 
 /**
@@ -287,8 +287,8 @@ export type NativeEditorV2Initialization =
  * schema, editing policy, and limits all live here rather than on the view,
  * so an editor and its collaboration controller cannot disagree about them.
  */
-export interface NativeEditorV2CreateConfig {
-    initialization: NativeEditorV2Initialization;
+export interface NativeEditorCreateConfig {
+    initialization: NativeEditorInitialization;
     /** Node and mark types this document admits. Defaults to `defaultSchema`. */
     schema?: SchemaDefinition;
     /** Yjs fragment the document lives in. Defaults to `'prosemirror'`. */
@@ -312,54 +312,54 @@ export interface NativeEditorV2CreateConfig {
     };
 }
 
-export interface NativeEditorV2InputRequest {
+export interface NativeEditorInputRequest {
     baseDocumentRevision: string;
     text: string;
 }
 
-export interface NativeEditorV2CommandRequest {
+export interface NativeEditorCommandRequest {
     baseDocumentRevision: string;
     command: Record<string, unknown>;
 }
 
-export interface NativeEditorV2LocalApiRequest {
+export interface NativeEditorLocalApiRequest {
     baseDocumentRevision: string;
     setJson?: DocumentJSON;
     setHtml?: string;
-    history: NativeEditorV2HistoryMode;
+    history: NativeEditorHistoryMode;
 }
 
-export type NativeEditorV2OffsetKind = 'scalar' | 'utf16';
+export type NativeEditorOffsetKind = 'scalar' | 'utf16';
 
-export type NativeEditorV2PositionAffinity = 'before' | 'after';
+export type NativeEditorPositionAffinity = 'before' | 'after';
 
 /**
  * Mirrors the Rust `PositionEnvelope`. `offset` is measured in the currency
  * named by `kind` — scalar offsets are Unicode scalars, not document positions.
  */
-export interface NativeEditorV2PositionEnvelope {
+export interface NativeEditorPositionEnvelope {
     offset: number;
-    kind: NativeEditorV2OffsetKind;
-    affinity?: NativeEditorV2PositionAffinity;
+    kind: NativeEditorOffsetKind;
+    affinity?: NativeEditorPositionAffinity;
 }
 
-export type NativeEditorV2SelectionEnvelope =
+export type NativeEditorSelectionEnvelope =
     | {
           type: 'text';
-          anchor: NativeEditorV2PositionEnvelope;
-          head: NativeEditorV2PositionEnvelope;
+          anchor: NativeEditorPositionEnvelope;
+          head: NativeEditorPositionEnvelope;
       }
-    | { type: 'node'; at: NativeEditorV2PositionEnvelope }
+    | { type: 'node'; at: NativeEditorPositionEnvelope }
     | { type: 'atom'; docPos: number; edge: 'node' | 'before' | 'after' }
     | { type: 'all' };
 
-export interface NativeEditorV2SelectionRequest {
+export interface NativeEditorSelectionRequest {
     baseDocumentRevision: string;
-    selection: NativeEditorV2SelectionEnvelope;
+    selection: NativeEditorSelectionEnvelope;
 }
 
-export interface NativeEditorV2ReplaceDocumentRequest {
+export interface NativeEditorReplaceDocumentRequest {
     setJson?: DocumentJSON;
     setHtml?: string;
-    history: NativeEditorV2HistoryMode;
+    history: NativeEditorHistoryMode;
 }

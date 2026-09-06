@@ -222,7 +222,7 @@ import {
     createNativeEditorLocalAwarenessSelection,
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
-    type NativeEditorV2CreateConfig,
+    type NativeEditorCreateConfig,
     type NativeEditorLocalAwarenessIntent,
     normalizeNativeEditorV2Bytes,
     normalizeNativeEditorV2DecimalId,
@@ -238,16 +238,16 @@ import * as NativeEditorBridgeExports from '../../NativeEditorBridge';
 
 import {
     NativeEditorBoundaryError,
-    NativeEditorV2BoundaryError,
-    NativeEditorV2DocumentError,
-    NativeEditorV2ErrorBase,
-    NativeEditorV2LifecycleError,
-    NativeEditorV2NonRetryableError,
-    NativeEditorV2OperationError,
-    NativeEditorV2SnapshotError,
-    NativeEditorV2TransportError,
+    NativeEditorEngineBoundaryError,
+    NativeEditorDocumentError,
+    NativeEditorErrorBase,
+    NativeEditorLifecycleError,
+    NativeEditorNonRetryableError,
+    NativeEditorOperationError,
+    NativeEditorSnapshotError,
+    NativeEditorTransportError,
     normalizeNativeEditorV2Error,
-    type NativeEditorV2Error,
+    type NativeEditorError,
 } from '../../NativeEditorBoundaryError';
 
 import { HARD_EDITOR_RESOURCE_LIMITS } from '../../ResourceLimits';
@@ -331,9 +331,9 @@ export function emitNativeEditorBridgeDeclaration(): { declaration: string; diag
 }
 
 export function expectNonRetryable(error: unknown, code: string): void {
-    expect(error).toBeInstanceOf(NativeEditorV2NonRetryableError);
-    expect(error).toBeInstanceOf(NativeEditorV2ErrorBase);
-    expect((error as NativeEditorV2ErrorBase).code).toBe(code);
+    expect(error).toBeInstanceOf(NativeEditorNonRetryableError);
+    expect(error).toBeInstanceOf(NativeEditorErrorBase);
+    expect((error as NativeEditorErrorBase).code).toBe(code);
 }
 
 export function catchThrown(fn: () => unknown): unknown {

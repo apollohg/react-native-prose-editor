@@ -21,7 +21,7 @@ import {
     V2_CREATE_COLLABORATION_LIMIT_KEYS,
     V2_CREATE_INITIALIZATION_KEYS,
     V2_CREATE_ROOM_SNAPSHOT_KEYS,
-    NativeEditorV2CreateConfigError,
+    NativeEditorCreateConfigError,
     validateV2CreateLimits,
 } from './NativeEditorCreateValidation';
 import {
@@ -30,7 +30,7 @@ import {
     normalizeV2JsonValue,
     serializeV2CreateEnvelope,
 } from './NativeEditorCreateJson';
-import { type NativeEditorV2CreateConfig } from './NativeEditorTypes';
+import { type NativeEditorCreateConfig } from './NativeEditorTypes';
 import { requireV2Bytes, invalidV2RequestError } from './NativeEditorResultNormalization';
 
 export function normalizeV2CreatePolicy(value: Record<string, unknown>): Record<string, unknown> {
@@ -81,9 +81,9 @@ export function normalizeV2SnapshotMetadata(value: unknown): Record<string, unkn
     return metadata;
 }
 
-export function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
+export function buildV2CreateRequestUnchecked(config: NativeEditorCreateConfig): {
     envelope: Record<string, unknown>;
-    limits: NativeEditorV2CreateConfig['limits'];
+    limits: NativeEditorCreateConfig['limits'];
     snapshotState: Uint8Array | null;
 } {
     if (!isV2CreateRecord(config)) {
@@ -219,7 +219,7 @@ export function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig
     if (limits !== undefined) envelope.limits = limits;
     return {
         envelope,
-        limits: limits as NativeEditorV2CreateConfig['limits'],
+        limits: limits as NativeEditorCreateConfig['limits'],
         snapshotState,
     };
 }
@@ -294,7 +294,7 @@ export function cloneAndFreezeDocumentDescriptor(
     });
 }
 
-export function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
+export function buildV2CreateRequest(config: NativeEditorCreateConfig): {
     configJson: string;
     snapshotState: Uint8Array | null;
     documentDescriptor: ResolvedDocumentSchema;
@@ -304,7 +304,7 @@ export function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
         normalized = buildV2CreateRequestUnchecked(config);
     } catch (error) {
         const message =
-            error instanceof NativeEditorV2CreateConfigError
+            error instanceof NativeEditorCreateConfigError
                 ? error.message
                 : 'NativeEditorBridge: invalid v2 create config';
         throw invalidV2RequestError(message);

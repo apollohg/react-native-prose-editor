@@ -294,7 +294,7 @@ it.each([
     const manager = new ExternalTextCompositionManager('7', () => native);
 
     await expect(manager.begin()).rejects.toMatchObject({
-        name: 'NativeEditorV2NonRetryableError',
+        name: 'NativeEditorNonRetryableError',
         code: 'EXTERNAL_COMPOSITION_RESULT_INVALID',
     });
 });
@@ -332,7 +332,7 @@ it('turns returned native error records into typed exceptions', async () => {
 
     await expect(
         new ExternalTextCompositionManager('7', () => native).begin()
-    ).rejects.toMatchObject({ name: 'NativeEditorV2OperationError', code: 'MUTATION_REJECTED' });
+    ).rejects.toMatchObject({ name: 'NativeEditorOperationError', code: 'MUTATION_REJECTED' });
 });
 
 it('rejects a begin error result for another session', async () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect } from 'react';
 import {
-    type NativeEditorV2AtomicRenderSnapshot,
-    type NativeEditorV2PositionAffinity,
+    type NativeEditorAtomicRenderSnapshot,
+    type NativeEditorPositionAffinity,
     type Selection,
 } from './NativeEditorBridge';
 import { applyRenderPatch, collectAtomInstanceBlocks } from './atomInstances';
@@ -90,7 +90,7 @@ export function useRichTextEditorUpdates(
     );
 
     const refreshAtomsFromUpdate = useCallback(
-        (update: NativeEditorV2AtomicRenderSnapshot) => {
+        (update: NativeEditorAtomicRenderSnapshot) => {
             const previous = atomStateRef.current;
             const source =
                 update.renderPatch != null &&
@@ -178,7 +178,7 @@ export function useRichTextEditorUpdates(
 
     const applyTypedUpdateState = useCallback(
         (
-            update: Pick<NativeEditorV2AtomicRenderSnapshot, 'selection' | 'activeState'>,
+            update: Pick<NativeEditorAtomicRenderSnapshot, 'selection' | 'activeState'>,
             isCurrent: () => boolean = () => true
         ) => {
             if (!isCurrent()) return false;
@@ -294,7 +294,7 @@ export function useRichTextEditorUpdates(
         const anchor = Math.min(pending.anchor, snapshot.scalarLength);
         const head = Math.min(pending.head, snapshot.scalarLength);
         const collapsed = anchor === head;
-        const setSelection = (affinity: NativeEditorV2PositionAffinity) =>
+        const setSelection = (affinity: NativeEditorPositionAffinity) =>
             bridge.setSelection({
                 baseDocumentRevision: snapshot.documentVersion,
                 selection: {

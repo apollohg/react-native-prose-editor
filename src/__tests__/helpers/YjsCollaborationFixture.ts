@@ -53,11 +53,11 @@ import {
 import {
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
-    type NativeEditorV2CreateConfig,
+    type NativeEditorCreateConfig,
     _resetNativeModuleCache,
     type DocumentJSON,
     type NativeEditorLocalAwarenessIntent,
-    type NativeEditorV2PeerInfo,
+    type NativeEditorPeerInfo,
 } from '../../NativeEditorBridge';
 
 import * as PublicApi from '../../index';
@@ -73,8 +73,8 @@ export const SNAPSHOT_DOC = fakeDocForText('snapshot');
 export const ALICE = { userId: '1', name: 'Alice', color: '#f00' };
 
 export function remotePeer(
-    overrides: Partial<NativeEditorV2PeerInfo> = {}
-): NativeEditorV2PeerInfo {
+    overrides: Partial<NativeEditorPeerInfo> = {}
+): NativeEditorPeerInfo {
     return {
         clientId: '42',
         clock: 3,
@@ -105,7 +105,7 @@ export function createRoomHandle(
     options: {
         documentId?: string;
         withSnapshot?: boolean;
-        limits?: NativeEditorV2CreateConfig['limits'];
+        limits?: NativeEditorCreateConfig['limits'];
     } = {}
 ): NativeEditorDocumentHandle {
     const documentId = options.documentId ?? 'doc-1';
@@ -144,7 +144,7 @@ export interface ControllerSetup {
     handle: NativeEditorDocumentHandle;
     states: YjsCollaborationState[];
     errors: Error[];
-    peersLog: NativeEditorV2PeerInfo[][];
+    peersLog: NativeEditorPeerInfo[][];
 }
 
 export function setupController(
@@ -152,7 +152,7 @@ export function setupController(
 ): ControllerSetup {
     const states: YjsCollaborationState[] = [];
     const errors: Error[] = [];
-    const peersLog: NativeEditorV2PeerInfo[][] = [];
+    const peersLog: NativeEditorPeerInfo[][] = [];
     const handle = overrides.handle ?? createRoomHandle();
     const controller = createYjsCollaborationController({
         documentId: 'doc-1',

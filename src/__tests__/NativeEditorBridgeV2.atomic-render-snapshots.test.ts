@@ -409,10 +409,10 @@ describe('NativeEditorBridge v2', () => {
             const diagnostics = compileTypeScriptContractFixture(`
                 import type {
                     EditorUpdate,
-                    NativeEditorV2AtomicRenderSnapshot,
+                    NativeEditorAtomicRenderSnapshot,
                 } from '../index';
 
-                declare const snapshot: NativeEditorV2AtomicRenderSnapshot;
+                declare const snapshot: NativeEditorAtomicRenderSnapshot;
 
                 // @ts-expect-error atomic arrays are readonly
                 snapshot.renderBlocks.push([]);

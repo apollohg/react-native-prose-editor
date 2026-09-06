@@ -15,8 +15,8 @@ import { render, act } from '@testing-library/react-native';
 import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 
 import {
-    NativeEditorV2NonRetryableError,
-    NativeEditorV2OperationError,
+    NativeEditorNonRetryableError,
+    NativeEditorOperationError,
 } from '../NativeEditorBoundaryError';
 
 import { V2_FAKE_STEP2_FRAME } from './helpers/nativeEditorV2Fake';
@@ -138,8 +138,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 thrown = error;
             }
         });
-        expect(thrown).toBeInstanceOf(NativeEditorV2OperationError);
-        expect((thrown as NativeEditorV2OperationError).code).toBe('POSITION_INVALID');
+        expect(thrown).toBeInstanceOf(NativeEditorOperationError);
+        expect((thrown as NativeEditorOperationError).code).toBe('POSITION_INVALID');
         handle.destroy();
     });
 
@@ -281,8 +281,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                     thrown = error;
                 }
             });
-            expect(thrown).toBeInstanceOf(NativeEditorV2OperationError);
-            expect((thrown as NativeEditorV2OperationError).code).toBe('MUTATION_REJECTED');
+            expect(thrown).toBeInstanceOf(NativeEditorOperationError);
+            expect((thrown as NativeEditorOperationError).code).toBe('MUTATION_REJECTED');
         }
         expect(mockNativeModule.editorV2ApplyCommand).not.toHaveBeenCalled();
         expect(mockNativeModule.editorV2ApplyInput).not.toHaveBeenCalled();
@@ -334,8 +334,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         } catch (error) {
             thrown = error;
         }
-        expect(thrown).toBeInstanceOf(NativeEditorV2NonRetryableError);
-        expect((thrown as NativeEditorV2NonRetryableError).code).toBe('ENGINE_DESTROYED');
+        expect(thrown).toBeInstanceOf(NativeEditorNonRetryableError);
+        expect((thrown as NativeEditorNonRetryableError).code).toBe('ENGINE_DESTROYED');
 
         // Events arriving for the destroyed session are dropped.
         onContentChange.mockClear();

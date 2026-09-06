@@ -1,11 +1,11 @@
 import { requireNativeModule } from 'expo-modules-core';
-import { type NativeEditorV2Error } from './NativeEditorBoundaryError';
+import { type NativeEditorError } from './NativeEditorBoundaryError';
 
-export let _nativeModule: NativeEditorV2Module | null = null;
+export let _nativeModule: NativeEditorModule | null = null;
 
-export function getNativeModule(): NativeEditorV2Module {
+export function getNativeModule(): NativeEditorModule {
     if (!_nativeModule) {
-        _nativeModule = requireNativeModule<NativeEditorV2Module>('NativeEditor');
+        _nativeModule = requireNativeModule<NativeEditorModule>('NativeEditor');
     }
     return _nativeModule;
 }
@@ -35,7 +35,7 @@ export const V2_ENVELOPE_VERSION = 1;
  * fidelity across the JavaScript boundary, and binaries travel as direct
  * Uint8Array values (never JSON number arrays).
  */
-export interface NativeEditorV2Module {
+export interface NativeEditorModule {
     editorV2Create(configJson: string, snapshotState: Uint8Array | null): unknown;
     editorV2Destroy(editorId: string): unknown;
     editorV2GetState(editorId: string): unknown;
@@ -77,9 +77,9 @@ export interface NativeEditorV2Module {
     ): { remove(): void };
 }
 
-export function invokeNativeEditorV2<K extends keyof NativeEditorV2Module>(
+export function invokeNativeEditorV2<K extends keyof NativeEditorModule>(
     name: K,
-    ...args: Parameters<NativeEditorV2Module[K]>
+    ...args: Parameters<NativeEditorModule[K]>
 ): unknown {
     const nativeModule = getNativeModule() as unknown as Record<string, unknown>;
     const method = nativeModule[name as string];
@@ -92,6 +92,6 @@ export function invokeNativeEditorV2<K extends keyof NativeEditorV2Module>(
 }
 
 /** The discriminated envelope every v2 result record normalizes into. */
-export type NativeEditorV2Result<T> =
+export type NativeEditorResult<T> =
     | { ok: true; value: T }
-    | { ok: false; error: NativeEditorV2Error };
+    | { ok: false; error: NativeEditorError };

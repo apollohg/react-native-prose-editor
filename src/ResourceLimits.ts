@@ -2,7 +2,7 @@ import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
 
 /**
  * Bounds on the documents, schemas, and collaboration payloads the Rust core
- * will admit. Set them on `NativeEditorV2CreateConfig.limits.resource` when
+ * will admit. Set them on `NativeEditorCreateConfig.limits.resource` when
  * creating a document handle, or on `RichTextViewer.resourceLimits`.
  *
  * Every field is optional; an omitted one uses
@@ -31,7 +31,7 @@ export interface EditorResourceLimits {
 
 /**
  * Bounds on editing work inside the engine, set on
- * `NativeEditorV2CreateConfig.limits.editing`. Omitted fields use the Rust
+ * `NativeEditorCreateConfig.limits.editing`. Omitted fields use the Rust
  * core's defaults; supplied values are validated against the same hard
  * ceilings the core enforces.
  */
@@ -48,7 +48,7 @@ export interface EditorEditingLimits {
 
 /**
  * Bounds on the native collaboration transport, set on
- * `NativeEditorV2CreateConfig.limits.collaboration`. Omitted fields use the
+ * `NativeEditorCreateConfig.limits.collaboration`. Omitted fields use the
  * Rust core's defaults; supplied values are validated against the same hard
  * ceilings the core enforces.
  */

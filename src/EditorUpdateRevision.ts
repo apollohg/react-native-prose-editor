@@ -1,8 +1,8 @@
-import type { NativeEditorV2Error } from './NativeEditorBoundaryError';
+import type { NativeEditorError } from './NativeEditorBoundaryError';
 
 const MAX_EDITOR_UPDATE_REVISION = 0xffff_ffff;
 
-export type EditorUpdateRevisionAllocation = { revision: number } | { error: NativeEditorV2Error };
+export type EditorUpdateRevisionAllocation = { revision: number } | { error: NativeEditorError };
 
 /** Allocate the u32 revision carried by the native view update prop. */
 export function allocateEditorUpdateRevision(

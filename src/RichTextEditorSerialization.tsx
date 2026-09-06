@@ -1,11 +1,11 @@
-import { NativeEditorV2ErrorBase, NativeEditorV2OperationError } from './NativeEditorBoundaryError';
+import { NativeEditorErrorBase, NativeEditorOperationError } from './NativeEditorBoundaryError';
 import { type EditorMentionTheme } from './EditorTheme';
 import {
     normalizeNativeEditorV2DecimalId,
     normalizeNativeEditorV2RenderUpdateValue,
     requireNativeEditorV2U32,
     type ActiveState,
-    type NativeEditorV2AtomicRenderSnapshot,
+    type NativeEditorAtomicRenderSnapshot,
     type ReadonlyActiveState,
     type Selection,
 } from './NativeEditorBridge';
@@ -25,7 +25,7 @@ import {
 } from './RichTextEditorTypes';
 
 export function externalCompositionErrorPayload(error: unknown): unknown {
-    return error instanceof NativeEditorV2ErrorBase ? error.error : error;
+    return error instanceof NativeEditorErrorBase ? error.error : error;
 }
 
 export const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
@@ -66,7 +66,7 @@ export const EMPTY_ACTIVE_STATE: ActiveState = {
     insertableNodes: [],
 };
 
-export type AtomRenderBlocks = NonNullable<NativeEditorV2AtomicRenderSnapshot['renderBlocks']>;
+export type AtomRenderBlocks = NonNullable<NativeEditorAtomicRenderSnapshot['renderBlocks']>;
 
 export interface AtomRenderState {
     blocks: AtomRenderBlocks;
@@ -157,11 +157,11 @@ export function parseActiveStateFromUpdate(value: unknown): ActiveState | null {
 }
 
 export function isRevisionMismatchError(error: unknown): boolean {
-    return error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH';
+    return error instanceof NativeEditorOperationError && error.code === 'REVISION_MISMATCH';
 }
 
 export function isPositionInvalidError(error: unknown): boolean {
-    return error instanceof NativeEditorV2OperationError && error.code === 'POSITION_INVALID';
+    return error instanceof NativeEditorOperationError && error.code === 'POSITION_INVALID';
 }
 
 export interface NativeCommitPayload {
@@ -172,7 +172,7 @@ export interface NativeCommitPayload {
 
 export interface AcceptedNativeCommit {
     documentRevision: string;
-    snapshot: NativeEditorV2AtomicRenderSnapshot;
+    snapshot: NativeEditorAtomicRenderSnapshot;
 }
 
 /**
