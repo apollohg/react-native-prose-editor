@@ -84,6 +84,8 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var isReparentingAtomChild = false
     private var mountedReactChildren: [UIView] = []
     private var mountedAtomKeys: [ObjectIdentifier: String] = [:]
+    var lastEditorUpdateJSONProp: String?
+    var pendingEditorUpdateResetJSON: String?
     var pendingEditorUpdateJSON: String?
     var pendingEditorUpdateEditorId: String?
     var pendingEditorUpdateRevision = 0

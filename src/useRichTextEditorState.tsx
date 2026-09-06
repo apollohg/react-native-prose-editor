@@ -356,6 +356,7 @@ export function useRichTextEditorState(
 
     const [pushedUpdate, setPushedUpdate] = useState<{
         json: string;
+        resetJson?: string;
         revision: number;
         editorId: string;
     } | null>(null);

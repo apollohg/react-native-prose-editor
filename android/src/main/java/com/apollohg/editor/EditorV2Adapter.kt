@@ -269,6 +269,72 @@ internal class EditorV2Adapter private constructor(
         return cachedAtomicRenderJson
     }
 
+    @Volatile
+    internal var latestJSDrivenDocumentRevision: ULong = 0uL
+
+    private fun parseExternalReset(resetJson: String): JSONObject? {
+        val reset = try { JSONObject(resetJson) } catch (_: Exception) { null }
+        if (reset == null || reset.optString("history") != "resetAndClear" ||
+            reset.keys().asSequence().toSet() != setOf("history", "documentRevision", if (reset.has("setJson")) "setJson" else "setHtml") ||
+            (reset.opt("setJson") !is JSONObject && reset.opt("setHtml") !is String) ||
+            canonicalV2U64(reset.opt("documentRevision") as? String) == null
+        ) {
+            emit(contractError("external reset intent is malformed"))
+            return null
+        }
+        return reset
+    }
+
+    internal fun validateExternalReset(resetJson: String): Boolean = parseExternalReset(resetJson) != null
+
+    @Synchronized
+    internal fun adoptExternalReset(renderJson: String, resetJson: String): String? {
+        val reset = parseExternalReset(resetJson) ?: return null
+        val current = refreshFromRustState(null) ?: return null
+        if (parseAtomicRenderSnapshot(current)?.documentRevision == reset.getString("documentRevision").toULong()) {
+            return adoptExternalRender(renderJson)
+        }
+        if (latestJSDrivenDocumentRevision > reset.getString("documentRevision").toULong()) return current
+        when (val result = backend.getState(editorId)) {
+            is EditorV2CallResult.Err -> {
+                emit(result.error)
+                return null
+            }
+            is EditorV2CallResult.Ok -> {
+                val origin = try { JSONObject(result.value).getString("documentOrigin") } catch (_: Exception) { null }
+                if (origin == null) {
+                    emit(contractError("v2 reset state violates the frozen shape"))
+                    return null
+                }
+                if (origin != "nativeView") return refreshFromRustState(null)
+            }
+        }
+        reset.remove("documentRevision")
+        return when (val result = callWithEnvelope(reset, includeBaseRevision = false) { requestJson ->
+            backend.replaceDocument(editorId, requestJson)
+        }) {
+            is EditorV2CallResult.Err -> {
+                emit(result.error)
+                null
+            }
+            is EditorV2CallResult.Ok -> {
+                val commit = try { JSONObject(result.value) } catch (_: Exception) { null }
+                if (commit?.opt("changed") !is Boolean ||
+                    (commit.opt("documentRevision") as? String)?.toULongOrNull() == null
+                ) {
+                    emit(contractError("v2 reset result violates the frozen shape"))
+                    return null
+                }
+                val update = refreshFromRustState(null) ?: return null
+                if (commit.getBoolean("changed")) {
+                    publishCachedCollaborationSelection()
+                    notifyCollaborationMutation()
+                }
+                update
+            }
+        }
+    }
+
     internal fun adoptExternalRender(renderJson: String): String? {
         if (destroyed) {
             emit(destroyedError())

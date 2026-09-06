@@ -14,6 +14,77 @@ import { NativeEditorEngineBoundaryError } from '../NativeEditorBoundaryError';
 import * as EditorUpdateRevision from '../EditorUpdateRevision';
 
 describe('NativeRichTextEditor (v2 document mode)', () => {
+    it('carries reset content with clearContent and drops reset intent for later replacements', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const { getByTestId } = render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
+
+        act(() => ref.current!.clearContent());
+        const resetJson = getByTestId('native-editor-view').props.editorUpdateResetJson;
+        expect(typeof resetJson).toBe('string');
+        expect(JSON.parse(resetJson)).toEqual({
+            setJson: handle.bridge.getDocumentJson(),
+            history: 'resetAndClear',
+            documentRevision: handle.bridge.getState().documentRevision,
+        });
+
+        act(() => ref.current!.setContent('<p>later</p>'));
+        expect(getByTestId('native-editor-view').props.editorUpdateResetJson).toBeUndefined();
+    });
+
+    it('carries reset intent for controlled replacements using reset history', async () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const empty = { type: 'doc', content: [{ type: 'paragraph' }] };
+        const { getByTestId, rerender } = render(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                valueJSON={V2_INITIAL_DOC}
+                valueJSONUpdateMode='reset'
+            />
+        );
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                valueJSON={empty}
+                valueJSONUpdateMode='reset'
+            />
+        );
+        await act(async () => Promise.resolve());
+        expect(
+            JSON.parse(getByTestId('native-editor-view').props.editorUpdateResetJson)
+        ).toMatchObject({
+            setJson: empty,
+            history: 'resetAndClear',
+        });
+    });
+
+    it('pushes another reset when clearContent leaves the engine revision unchanged', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const { getByTestId } = render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
+        act(() => ref.current!.clearContent());
+        const firstRevision = getByTestId('native-editor-view').props.editorUpdateRevision;
+        act(() => ref.current!.clearContent());
+        const props = getByTestId('native-editor-view').props;
+        expect(props.editorUpdateRevision).toBeGreaterThan(firstRevision);
+        expect(JSON.parse(props.editorUpdateResetJson).history).toBe('resetAndClear');
+    });
+
+    it('preserves the reset revision when native typing races the render handoff', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const { getByTestId } = render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
+        let resetRevision: string;
+        act(() => {
+            ref.current!.clearContent();
+            resetRevision = handle.bridge.getState().documentRevision;
+            handle.bridge.applyInput({ text: 'raced', baseDocumentRevision: resetRevision });
+        });
+        const props = getByTestId('native-editor-view').props;
+        expect(JSON.parse(props.editorUpdateResetJson).documentRevision).toBe(resetRevision!);
+        expect(JSON.parse(props.editorUpdateJson).documentVersion).not.toBe(resetRevision!);
+    });
+
     it('applies a JS-driven render snapshot locally without parsing its native handoff JSON', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();

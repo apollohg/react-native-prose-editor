@@ -253,12 +253,27 @@ internal fun createEditorV2FromModule(
 
 private fun mutationResult(
     editorId: String,
-    result: FfiJsonResult,
+    operation: () -> FfiJsonResult,
 ): Map<String, Any?> {
+    val adapter = EditorV2Registry.viewTokenForHandle(editorId)?.let(EditorV2Registry::adapterForViewToken)
+    val result = if (adapter == null) operation() else synchronized(adapter) {
+        val result = operation()
+        if (result.error == null && result.value != null) {
+            val outcome = runCatching { JSONObject(result.value!!) }.getOrNull()
+            var revision = (outcome?.opt("documentRevision") as? String)?.toULongOrNull()
+            if (revision == null && outcome?.optBoolean("changed", false) == true) {
+                revision = runCatching {
+                    JSONObject(editorV2GetState(editorId).value!!).getString("documentRevision").toULong()
+                }.getOrNull()
+            }
+            if (revision != null) {
+                adapter.latestJSDrivenDocumentRevision = maxOf(adapter.latestJSDrivenDocumentRevision, revision)
+            }
+        }
+        result
+    }
     if (result.error == null && result.value != null) {
-        val changed = runCatching {
-            JSONObject(result.value!!).optBoolean("changed", false)
-        }.getOrDefault(false)
+        val changed = runCatching { JSONObject(result.value!!).optBoolean("changed", false) }.getOrDefault(false)
         if (changed) {
             NativeCollaborationTransportRegistry.notifyOutboundAvailable(
                 editorId,
@@ -341,25 +356,25 @@ class NativeEditorModule : Module() {
             editorV2GetContentSnapshot(editorId).toJSMap()
         }
         Function("editorV2ReplaceDocument") { editorId: String, requestJson: String ->
-            mutationResult(editorId, editorV2ReplaceDocument(editorId, requestJson))
+            mutationResult(editorId) { editorV2ReplaceDocument(editorId, requestJson) }
         }
         Function("editorV2ApplyInput") { editorId: String, requestJson: String ->
-            mutationResult(editorId, editorV2ApplyInput(editorId, requestJson))
+            mutationResult(editorId) { editorV2ApplyInput(editorId, requestJson) }
         }
         Function("editorV2ApplyCommand") { editorId: String, requestJson: String ->
-            mutationResult(editorId, editorV2ApplyCommand(editorId, requestJson))
+            mutationResult(editorId) { editorV2ApplyCommand(editorId, requestJson) }
         }
         Function("editorV2ApplyLocalApi") { editorId: String, requestJson: String ->
-            mutationResult(editorId, editorV2ApplyLocalApi(editorId, requestJson))
+            mutationResult(editorId) { editorV2ApplyLocalApi(editorId, requestJson) }
         }
         Function("editorV2SetSelection") { editorId: String, requestJson: String ->
             editorV2SetSelection(editorId, requestJson).toJSMap()
         }
         Function("editorV2Undo") { editorId: String, requestJson: String ->
-            mutationResult(editorId, editorV2Undo(editorId, requestJson))
+            mutationResult(editorId) { editorV2Undo(editorId, requestJson) }
         }
         Function("editorV2Redo") { editorId: String, requestJson: String ->
-            mutationResult(editorId, editorV2Redo(editorId, requestJson))
+            mutationResult(editorId) { editorV2Redo(editorId, requestJson) }
         }
         Function("editorV2RenderUpdate") { editorId: String, mirrorScalarAnchor: Double?, mirrorScalarHead: Double? ->
             // The render accessor for the interactive component: after a
@@ -422,10 +437,9 @@ class NativeEditorModule : Module() {
             editorV2SnapshotExport(editorId).toJSMap()
         }
         Function("editorV2SnapshotRestore") { editorId: String, metadataJson: String, encodedState: ByteArray ->
-            mutationResult(
-                editorId,
-                editorV2SnapshotRestore(editorId, metadataJson, encodedState),
-            )
+            mutationResult(editorId) {
+                editorV2SnapshotRestore(editorId, metadataJson, encodedState)
+            }
         }
 
         View(NativeEditorExpoView::class) {
@@ -514,6 +528,9 @@ class NativeEditorModule : Module() {
             }
             Prop("toolbarFrameJson") { view: NativeEditorExpoView, toolbarFrameJson: String? ->
                 view.setToolbarFrameJson(toolbarFrameJson)
+            }
+            Prop("editorUpdateResetJson") { view: NativeEditorExpoView, resetJson: String? ->
+                view.pendingEditorUpdateResetJson = resetJson
             }
             Prop("editorUpdateJson") { view: NativeEditorExpoView, editorUpdateJson: String? ->
                 view.setPendingEditorUpdateJson(editorUpdateJson)

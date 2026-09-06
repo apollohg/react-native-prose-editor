@@ -3,7 +3,9 @@ import UIKit
 
 extension NativeEditorExpoView {
     func clearPendingEditorUpdateRetries() {
+        lastEditorUpdateJSONProp = nil
         pendingEditorUpdateJSON = nil
+        pendingEditorUpdateResetJSON = nil
         pendingEditorUpdateEditorId = nil
         pendingEditorUpdateRevision = 0
         appliedEditorUpdateRevision = 0

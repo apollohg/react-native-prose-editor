@@ -49,6 +49,7 @@ export interface NativeEditorViewProps {
     toolbarFrameJson?: string;
     remoteSelectionsJson?: string;
     editorUpdateJson?: string;
+    editorUpdateResetJson?: string;
     editorUpdateEditorId?: string;
     editorUpdateRevision?: number;
     onEditorUpdate: (event: NativeSyntheticEvent<NativeUpdateEvent>) => void;

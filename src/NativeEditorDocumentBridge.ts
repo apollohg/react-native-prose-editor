@@ -70,6 +70,8 @@ import {
 export class NativeEditorDocumentBridge {
     private readonly _editorId: string;
     private _destroyed = false;
+    /** @internal Reset intent waiting for the interactive view handoff. */
+    _pendingViewReset: { json: string } | null = null;
     private _nextRequestId = 0n;
     private readonly _errorListeners = new Set<(error: NativeEditorErrorBase) => void>();
     private _collaborationProtocolAdapter: NativeCollaborationProtocolAdapter | null = null;
@@ -252,10 +254,18 @@ export class NativeEditorDocumentBridge {
         if (request.setHtml !== undefined) payload.setHtml = request.setHtml;
         payload.history = request.history;
         const requestJson = this.buildEnvelopeJson(payload);
-        return this.callV2(
+        const result = this.callV2(
             () => invokeNativeEditorV2('editorV2ReplaceDocument', this._editorId, requestJson),
             normalizeNativeEditorV2CommitValue
         );
+        if (request.history === 'resetAndClear' && 'documentRevision' in result) {
+            this._pendingViewReset = {
+                json: JSON.stringify({ ...payload, documentRevision: result.documentRevision }),
+            };
+        } else {
+            this._pendingViewReset = null;
+        }
+        return result;
     }
 
     applyInput(request: NativeEditorInputRequest): NativeEditorMutationOutcome {
@@ -289,10 +299,18 @@ export class NativeEditorDocumentBridge {
         if (request.setHtml !== undefined) payload.setHtml = request.setHtml;
         payload.history = request.history;
         const requestJson = this.buildEnvelopeJson(payload, request.baseDocumentRevision);
-        return this.callV2(
+        const result = this.callV2(
             () => invokeNativeEditorV2('editorV2ApplyLocalApi', this._editorId, requestJson),
             normalizeNativeEditorV2MutationOutcomeValue
         );
+        if (request.history === 'resetAndClear' && 'documentRevision' in result) {
+            this._pendingViewReset = {
+                json: JSON.stringify({ ...payload, documentRevision: result.documentRevision }),
+            };
+        } else {
+            this._pendingViewReset = null;
+        }
+        return result;
     }
 
     setSelection(request: NativeEditorSelectionRequest): NativeEditorMutationOutcome {

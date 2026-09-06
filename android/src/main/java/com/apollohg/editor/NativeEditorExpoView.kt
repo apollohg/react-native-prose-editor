@@ -242,6 +242,7 @@ class NativeEditorExpoView(
     internal var showsToolbar = true
     internal var toolbarPlacement = ToolbarPlacement.KEYBOARD
     internal var currentImeBottom = 0
+    internal var pendingEditorUpdateResetJson: String? = null
     internal var pendingEditorUpdateJson: String? = null
     @set:JvmName("setPendingEditorUpdateEditorIdState")
     internal var pendingEditorUpdateEditorId: Long? = null

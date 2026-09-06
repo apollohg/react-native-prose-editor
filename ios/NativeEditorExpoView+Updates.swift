@@ -3,6 +3,7 @@ import UIKit
 
 extension NativeEditorExpoView {
     func setPendingEditorUpdateJson(_ editorUpdateJson: String?) {
+        lastEditorUpdateJSONProp = editorUpdateJson
         pendingEditorUpdateJSON = editorUpdateJson
         if editorUpdateJson == nil {
             pendingEditorUpdateEditorId = nil
@@ -21,6 +22,9 @@ extension NativeEditorExpoView {
     }
 
     func setPendingEditorUpdateRevision(_ editorUpdateRevision: Int) {
+        if editorUpdateRevision != 0, pendingEditorUpdateJSON == nil {
+            pendingEditorUpdateJSON = lastEditorUpdateJSONProp
+        }
         pendingEditorUpdateRevision = editorUpdateRevision
     }
 
@@ -36,7 +40,7 @@ extension NativeEditorExpoView {
             consumePendingEditorUpdate(revision: pendingRevision)
             return
         }
-        switch applyEditorUpdateOutcome(updateJSON, sourceEditorId: pendingEditorUpdateEditorId) {
+        switch applyEditorUpdateOutcome(updateJSON, sourceEditorId: pendingEditorUpdateEditorId, resetJSON: pendingEditorUpdateResetJSON) {
         case .applied:
             consumePendingEditorUpdate(revision: pendingRevision)
         case .retryableDeferred:
@@ -147,7 +151,8 @@ extension NativeEditorExpoView {
 
     private func applyEditorUpdateOutcome(
         _ updateJson: String,
-        sourceEditorId: String?
+        sourceEditorId: String?,
+        resetJSON: String? = nil
     ) -> EditorUpdateApplyOutcome {
         let boundEditorId = richTextView.editorId
         guard boundEditorId != 0 else {
@@ -187,6 +192,24 @@ extension NativeEditorExpoView {
         // retryable. Classify it before entering composition preflight.
         guard adapter.validateExternalRender(updateJson) else {
             return .rejected
+        }
+        if let resetJSON {
+            guard adapter.validateExternalReset(resetJSON) else { return .rejected }
+            isApplyingJSUpdate = true
+            defer { isApplyingJSUpdate = false }
+            richTextView.textView.discardTransientNativeInputForEditorReset()
+            guard let update = adapter.adoptExternalReset(updateJson, resetJSON: resetJSON) else {
+                return .rejected
+            }
+            clearPendingViewCommandUpdateRetry()
+            let applied = imageLoadOwner.withCurrent {
+                richTextView.textView.applyUpdateJSON(update)
+            }
+            if applied, renderRevision(fromUpdateJSON: update)?.document != renderRevision(fromUpdateJSON: updateJson)?.document {
+                isApplyingJSUpdate = false
+                editorTextView(richTextView.textView, didReceiveUpdate: update)
+            }
+            return applied ? .applied : .rejected
         }
         if isSupersededEditorUpdate(updateJson) {
             return .applied

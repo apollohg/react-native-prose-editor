@@ -20,6 +20,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
     ) {
         var text = StringBuilder("")
         var revision = 0uL
+        var documentOrigin = "jsApi"
         var destroyed = false
         var anchor = 0
         var head = 0
@@ -210,6 +211,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         return EditorV2CallResult.Ok(
             JSONObject()
                 .put("documentState", "LocalReady")
+                .put("documentOrigin", session.documentOrigin)
                 .put("transportState", "Detached")
                 .put("renderState", "Ready")
                 .put("documentRevision", session.revision.toString())
@@ -387,6 +389,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         session.anchor = 0
         session.head = 0
         session.revision += 1u
+        session.documentOrigin = "jsApi"
         return EditorV2CallResult.Ok(
             JSONObject()
                 .put("type", "replacement")
@@ -398,7 +401,14 @@ internal class FakeEditorV2Backend : EditorV2Backend {
 
     override fun replaceDocument(editorId: String, requestJson: String): EditorV2CallResult<String> {
         calls.add("replaceDocument")
-        return applyLocalApi(editorId, requestJson)
+        val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        val request = JSONObject(requestJson).put("baseDocumentRevision", session.revision.toString())
+        return when (val result = applyLocalApi(editorId, request.toString())) {
+            is EditorV2CallResult.Err -> result
+            is EditorV2CallResult.Ok -> EditorV2CallResult.Ok(
+                JSONObject(result.value).apply { remove("type") }.toString()
+            )
+        }
     }
 
     override fun setSelection(editorId: String, requestJson: String): EditorV2CallResult<String> {
@@ -747,6 +757,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
             session.text.toString(),
             affinityAfter = collapsed,
         )
+        val revisionBefore = session.revision
         val outcome = when (intent.getString("type")) {
             "setSelection" -> transactionOutcome(
                 session,
@@ -809,6 +820,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
                 (result as EditorV2CallResult.Ok).value
             }
         }
+        if (session.revision != revisionBefore) session.documentOrigin = "nativeView"
         val retained = JSONObject(outcome).put("positionFallback", false).toString()
         session.nativeOutcomes.getOrPut(ownerId) { LinkedHashMap() }[requestId] = retained
         return EditorV2CallResult.Ok(retained)
@@ -860,6 +872,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         session.anchor = from
         session.head = from
         session.revision += 1u
+        session.documentOrigin = "nativeView"
         return transactionOutcome(session, changed = true)
     }
 

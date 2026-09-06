@@ -97,15 +97,35 @@ func v2CollaborationTickResultDictionary(
 
 private func v2MutationResultDictionary(
     editorId: String,
-    result: FfiJsonResult
+    result operation: @autoclosure () -> FfiJsonResult
 ) -> [String: Any] {
+    let result = performEditorV2JsonOperation(editorId: editorId) {
+        let result = operation()
+        if result.error == nil,
+           let value = result.value,
+           let data = value.data(using: .utf8),
+           let outcome = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let nativeEditorId = v2UInt64Argument(editorId),
+           let adapter = EditorV2Registry.adapter(forLegacyId: nativeEditorId) {
+            var revision = EditorV2Adapter.uint64Field(outcome, "documentRevision")
+            if revision == nil, outcome["changed"] as? Bool == true,
+               let stateJSON = editorV2GetState(editorId: editorId).value,
+               let stateData = stateJSON.data(using: .utf8),
+               let state = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any] {
+                revision = EditorV2Adapter.uint64Field(state, "documentRevision")
+            }
+            if let revision {
+                adapter.latestJSDrivenDocumentRevision = max(adapter.latestJSDrivenDocumentRevision, revision)
+            }
+        }
+        return result
+    }
     if result.error == nil,
        let value = result.value,
        let data = value.data(using: .utf8),
        let outcome = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
        outcome["changed"] as? Bool == true,
-       let nativeEditorId = v2UInt64Argument(editorId)
-    {
+       let nativeEditorId = v2UInt64Argument(editorId) {
         NativeCollaborationTransportRegistry.notifyOutboundAvailable(
             editorId: nativeEditorId,
             reason: .moduleMutation
@@ -795,6 +815,9 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
             }
             Prop("toolbarFrameJson") { (view: NativeEditorExpoView, toolbarFrameJson: String?) in
                 view.setToolbarFrameJson(toolbarFrameJson)
+            }
+            Prop("editorUpdateResetJson") { (view: NativeEditorExpoView, resetJson: String?) in
+                view.pendingEditorUpdateResetJSON = resetJson
             }
             Prop("editorUpdateJson") { (view: NativeEditorExpoView, editorUpdateJson: String?) in
                 view.setPendingEditorUpdateJson(editorUpdateJson)

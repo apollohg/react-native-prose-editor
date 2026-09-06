@@ -261,6 +261,7 @@ export function useRichTextEditorUpdates(
             bridge._emitAutonomousError(allocation.error);
             return;
         }
+        const reset = bridge._pendingViewReset;
         const snapshot = bridge.renderUpdate();
         // renderUpdate can synchronously re-enter React and bind this
         // component to another handle. Do not let any side effect from A
@@ -280,9 +281,11 @@ export function useRichTextEditorUpdates(
         if (!isCurrentSource()) return;
         setPushedUpdate({
             json: updateJson,
+            resetJson: reset?.json,
             revision: allocation.revision,
             editorId: sourceEditorId,
         });
+        if (bridge._pendingViewReset === reset) bridge._pendingViewReset = null;
     }, [applyTypedUpdateState, bridge, documentHandle, refreshAtomsFromUpdate]);
 
     useLayoutEffect(() => {
@@ -330,6 +333,8 @@ export function useRichTextEditorUpdates(
         });
     }, [editorId]);
 
+    const pendingViewReset = bridge._pendingViewReset;
+
     // After a JS-driven engine change (controlled apply, remote commit,
     // document-API mutation) the view learns the new state here. Native-
     // driven commits (typing, native toolbar) already updated the view
@@ -344,18 +349,23 @@ export function useRichTextEditorUpdates(
         }
         if (!document.isReady || document.documentRevision == null) return;
         const revision = document.documentRevision;
-        if (!didObserveInitialRevisionRef.current) {
+        if (!pendingViewReset && !didObserveInitialRevisionRef.current) {
             didObserveInitialRevisionRef.current = true;
             lastPushedEngineRevisionRef.current = revision;
             return;
         }
-        if (revision === lastPushedEngineRevisionRef.current) {
+        if (
+            !pendingViewReset &&
+            lastPushedEngineRevisionRef.current != null &&
+            BigInt(revision) <= BigInt(lastPushedEngineRevisionRef.current)
+        ) {
             return;
         }
         if (
-            revision === lastNativeDrivenRevisionRef.current ||
-            document.documentOrigin === 'nativeView' ||
-            document.documentOrigin === 'remoteCollaboration'
+            !pendingViewReset &&
+            (revision === lastNativeDrivenRevisionRef.current ||
+                document.documentOrigin === 'nativeView' ||
+                document.documentOrigin === 'remoteCollaboration')
         ) {
             if (document.documentOrigin === 'remoteCollaboration' && !documentHandle.isDestroyed) {
                 refreshAtomsFromUpdate(bridge.renderUpdate());
@@ -366,6 +376,7 @@ export function useRichTextEditorUpdates(
         lastNativeDrivenRevisionRef.current = null;
         pushEngineUpdateToView();
     }, [
+        pendingViewReset,
         didRebindRevisionScope,
         document.isReady,
         document.documentRevision,

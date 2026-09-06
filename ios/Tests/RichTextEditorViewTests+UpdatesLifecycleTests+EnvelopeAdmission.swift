@@ -2,6 +2,101 @@ import XCTest
 import ExpoModulesCore
 
 extension RichTextEditorViewTests {
+    func testPendingResetDiscardsMarkedTextAndWinsRacingNativeCommit() throws {
+        for input in ["marked", "committed", "queued"] {
+            let editorId = makeV2Editor()
+            defer { destroyV2Editor(id: editorId) }
+            _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>before</p>")
+            let view = NativeEditorExpoView()
+            view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+            let window = hostNativeEditorExpoView(view)
+            defer {
+                view.removeFromSuperview()
+                window.isHidden = true
+            }
+            view.setEditorId(editorId)
+            let errors = AutonomousErrorEventSink()
+            view.onEditorErrorForTesting = errors.record
+            let textView = view.richTextView.textView
+            _ = textView.becomeFirstResponder()
+            setCollapsedSelection(in: textView, utf16Offset: 6)
+            if input == "queued" {
+                textView.textStorage.replaceCharacters(in: NSRange(location: 0, length: 6), with: "pending")
+                XCTAssertTrue(textView.nativeTextMutationCommitScheduled)
+            } else {
+                textView.setMarkedText("pending", selectedRange: NSRange(location: 7, length: 0))
+            }
+            _ = EditorV2Shadow.setHtml(id: editorId, html: "<p></p>")
+            let resetRender = try XCTUnwrap(editorV2RenderUpdate(
+                editorId: String(editorId), mirrorScalarAnchor: nil, mirrorScalarHead: nil
+            ).value)
+            if input == "committed" {
+                textView.unmarkText()
+                XCTAssertTrue(EditorV2Shadow.getHtml(id: editorId).contains("pending"))
+            }
+            view.setPendingEditorUpdateJson(resetRender)
+            view.pendingEditorUpdateResetJSON = try encodedJSONObject([
+                "setHtml": "<p></p>", "history": "resetAndClear",
+                "documentRevision": parseJSONObject(resetRender)["documentVersion"]!
+            ])
+            view.setPendingEditorUpdateEditorId(String(editorId))
+            view.setPendingEditorUpdateRevision(1)
+            view.applyPendingEditorUpdateIfNeeded()
+            flushMainQueue()
+
+            XCTAssertEqual(textView.coreReportedDocumentIsEmpty, true)
+            XCTAssertFalse(textView.textStorage.string.contains("pending"))
+            XCTAssertNil(textView.markedTextRange)
+            XCTAssertNil(textView.pendingNativeTextMutation)
+            XCTAssertFalse(textView.isComposing)
+            let state = parseJSONObject(try XCTUnwrap(editorV2GetState(editorId: String(editorId)).value))
+            XCTAssertEqual(state["canUndo"] as? Bool, false)
+            let render = parseJSONObject(try XCTUnwrap(editorV2RenderUpdate(
+                editorId: String(editorId), mirrorScalarAnchor: nil, mirrorScalarHead: nil
+            ).value))
+            XCTAssertEqual(render["documentIsEmpty"] as? Bool, true)
+
+            textView.setMarkedText("again", selectedRange: NSRange(location: 5, length: 0))
+            view.setPendingEditorUpdateRevision(2)
+            XCTAssertNotNil(view.pendingEditorUpdateJSON, input)
+            XCTAssertNotNil(view.pendingEditorUpdateResetJSON, input)
+            view.applyPendingEditorUpdateIfNeeded()
+            XCTAssertTrue(errors.errors.isEmpty, "\(errors.errors)")
+            XCTAssertEqual(textView.coreReportedDocumentIsEmpty, true, "before flush: \(input)")
+            XCTAssertFalse(textView.textStorage.string.contains("again"), "before flush: \(input)")
+            flushMainQueue()
+            XCTAssertNil(textView.markedTextRange)
+            XCTAssertEqual(textView.coreReportedDocumentIsEmpty, true)
+            XCTAssertFalse(textView.textStorage.string.contains("again"), input)
+        }
+    }
+
+    func testDelayedResetPreservesLaterJSReplacementAndTyping() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let adapter = try XCTUnwrap(EditorV2Registry.adapter(forLegacyId: editorId))
+        let view = NativeEditorExpoView()
+        view.setEditorId(editorId)
+        let resetRender = try XCTUnwrap(editorV2RenderUpdate(
+            editorId: String(editorId), mirrorScalarAnchor: nil, mirrorScalarHead: nil
+        ).value)
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>later</p>")
+        adapter.latestJSDrivenDocumentRevision = adapter.baseDocumentRevision
+        let typed = EditorV2Shadow.insertTextScalar(id: editorId, scalarPos: 5, text: "!")
+        view.richTextView.textView.applyUpdateJSON(typed)
+        view.setPendingEditorUpdateJson(resetRender)
+        view.pendingEditorUpdateResetJSON = try encodedJSONObject([
+            "setHtml": "<p></p>", "history": "resetAndClear",
+            "documentRevision": parseJSONObject(resetRender)["documentVersion"]!
+        ])
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "later!")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>later!</p>")
+    }
+
     func testBindingAdoptsExactlyOneAtomicSnapshotForViewAndToolbar() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

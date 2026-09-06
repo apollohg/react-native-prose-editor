@@ -68,6 +68,19 @@ extension EditorTextView {
         )?.resultJSON
     }
 
+    func discardTransientNativeInputForEditorReset() {
+        _ = finishExternalTextComposition(cause: "documentChange", finalText: nil, cancel: true)
+        deferredInsertTexts.removeAll()
+        deferredInsertDrainScheduled = false
+        isReplayingDeferredInsertText = false
+        resetPendingNativeTextMutationState()
+        clearPendingInputTraitRetry()
+        performTransientTextMutation {
+            super.unmarkText()
+        }
+        clearMarkedTextTracking()
+    }
+
     @discardableResult
     func discardTransientNativeInputForEditorRebind() -> String? {
         localTextDragState = .idle

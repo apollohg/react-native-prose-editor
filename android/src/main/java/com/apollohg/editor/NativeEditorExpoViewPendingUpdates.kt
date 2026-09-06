@@ -235,7 +235,10 @@ internal fun NativeEditorExpoView.applyPendingEditorUpdateIfNeededImpl() {
             refreshReadyStateIfSettled()
             return@Runnable
         }
-        val outcome = applyEditorUpdateOutcome(
+        val resetJson = pendingEditorUpdateResetJson
+        val outcome = if (resetJson != null) {
+            applyEditorResetUpdateOutcome(updateJson, resetJson)
+        } else applyEditorUpdateOutcome(
             updateJson,
             scheduleViewCommandRetry = false,
         )
@@ -273,6 +276,7 @@ internal fun NativeEditorExpoView.clearPendingEditorUpdateState(resetAppliedRevi
     pendingEditorUpdateEditorId = null
     pendingEditorUpdateRevision = 0L
     if (resetAppliedRevision) {
+        pendingEditorUpdateResetJson = null
         appliedEditorUpdateRevision = 0L
     }
     cancelPendingEditorUpdateRetry(PendingEditorUpdateKind.ORDINARY)

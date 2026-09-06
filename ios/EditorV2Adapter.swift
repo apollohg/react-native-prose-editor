@@ -72,6 +72,7 @@ final class EditorV2Adapter {
         }
     }
     /// The document revision the next mutation will be based on.
+    var latestJSDrivenDocumentRevision: UInt64 = 0
     var baseDocumentRevision: UInt64 = 0
     /// The state revision paired atomically with `baseDocumentRevision` by
     /// the render accessor. It is intentionally not reconstructed through a

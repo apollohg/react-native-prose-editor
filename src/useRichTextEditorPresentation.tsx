@@ -492,6 +492,7 @@ export function useRichTextEditorPresentation(
                 toolbarFrameJson={toolbarFrameJson}
                 remoteSelectionsJson={remoteSelectionsJson}
                 editorUpdateJson={currentPushedUpdate?.json}
+                editorUpdateResetJson={currentPushedUpdate?.resetJson}
                 editorUpdateEditorId={currentPushedUpdate?.editorId}
                 editorUpdateRevision={currentPushedUpdate?.revision ?? 0}
                 onEditorUpdate={handleEditorUpdate}

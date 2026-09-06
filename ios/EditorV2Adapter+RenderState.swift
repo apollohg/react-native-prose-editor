@@ -89,9 +89,81 @@ extension EditorV2Adapter {
         return cachedAtomicRenderJSON
     }
 
-    /// Atomically parse and adopt a render supplied by JS before the paired
-    /// native view accepts further input. The caller applies the returned
-    /// payload synchronously in the same editor-scoped operation.
+    private func parseExternalReset(_ resetJSON: String) -> (payload: [String: Any], revision: UInt64)? {
+        guard let data = resetJSON.data(using: .utf8),
+              let reset = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              reset["history"] as? String == "resetAndClear",
+              Set(reset.keys) == ["history", "documentRevision", reset["setJson"] != nil ? "setJson" : "setHtml"],
+              reset["setJson"] is [String: Any] || reset["setHtml"] is String,
+              let revision = Self.uint64Field(reset, "documentRevision")
+        else {
+            rejectExternalRenderEnvelope("external reset intent is malformed")
+            return nil
+        }
+        return (reset, revision)
+    }
+
+    func validateExternalReset(_ resetJSON: String) -> Bool {
+        parseExternalReset(resetJSON) != nil
+    }
+
+    func adoptExternalReset(_ renderJSON: String, resetJSON: String) -> String? {
+        guard beginRuntimeOperation() else { return nil }
+        defer { endRuntimeOperation() }
+        guard let intent = parseExternalReset(resetJSON) else { return nil }
+        var reset = intent.payload
+        let resetRevision = intent.revision
+        guard let current = fetchAtomicRenderSnapshot(mirrorScalarSelection: nil) else { return nil }
+        if current.documentRevision == resetRevision {
+            return adoptExternalRender(renderJSON)
+        }
+        if latestJSDrivenDocumentRevision > resetRevision {
+            return adopt(current, strippingViewSelection: false)?.updateJSON
+        }
+        switch Self.normalizeJsonResult(editorV2GetState(editorId: editorId)) {
+        case .failure(let error):
+            emit(error)
+            return nil
+        case .success(let json):
+            guard let data = json.data(using: .utf8),
+                  let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let origin = state["documentOrigin"] as? String
+            else {
+                emit(contractError("v2 reset state violates the frozen shape"))
+                return nil
+            }
+            if origin != "nativeView" {
+                return refreshInternal(mirrorSelection: nil, strippingViewSelection: false)?.updateJSON
+            }
+        }
+        reset.removeValue(forKey: "documentRevision")
+        let result = callWithEnvelope(reset, includeBaseRevision: false) { requestJSON in
+            editorV2ReplaceDocument(editorId: self.editorId, requestJson: requestJSON)
+        }
+        switch Self.normalizeJsonResult(result) {
+        case .failure(let error):
+            emit(error)
+            return nil
+        case .success(let json):
+            guard let data = json.data(using: .utf8),
+                  let commit = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let changed = commit["changed"] as? Bool,
+                  Self.uint64Field(commit, "documentRevision") != nil
+            else {
+                emit(contractError("v2 reset result violates the frozen shape"))
+                return nil
+            }
+            guard let update = refreshInternal(mirrorSelection: nil, strippingViewSelection: false) else {
+                return nil
+            }
+            if changed {
+                publishCachedCollaborationSelection()
+                notifyCollaborationMutation()
+            }
+            return update.updateJSON
+        }
+    }
+
     func adoptExternalRender(_ renderJSON: String) -> String? {
         guard beginRuntimeOperation() else { return nil }
         defer { endRuntimeOperation() }

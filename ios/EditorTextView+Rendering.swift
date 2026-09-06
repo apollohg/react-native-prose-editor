@@ -330,6 +330,7 @@ extension EditorTextView {
         }
 
         let patchTrace: PatchApplyTrace? = if !shouldSkipRender
+            && textStorage.string == lastAuthorizedText
             && lastAppliedRenderAppearanceRevision == renderAppearanceRevision
         {
             renderPatch.map(applyRenderPatchIfPossible)

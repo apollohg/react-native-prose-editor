@@ -14,19 +14,18 @@ internal fun NativeEditorExpoView.applyEditorResetUpdateImpl(updateJson: String)
     return applyEditorResetUpdateOutcome(updateJson) == PendingEditorUpdateApplyOutcome.APPLIED
 }
 
-internal fun NativeEditorExpoView.applyEditorResetUpdateOutcome(updateJson: String): PendingEditorUpdateApplyOutcome {
+internal fun NativeEditorExpoView.applyEditorResetUpdateOutcome(updateJson: String, resetJson: String? = null): PendingEditorUpdateApplyOutcome {
     if (Looper.myLooper() != Looper.getMainLooper()) {
         val postedEditorId = richTextView.editorId
         val apply = Runnable {
             if (postedEditorId != richTextView.editorId) return@Runnable
-            applyEditorResetUpdateOutcome(updateJson)
+            applyEditorResetUpdateOutcome(updateJson, resetJson)
         }
         if (!post(apply)) {
             richTextView.post(apply)
         }
         return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
     }
-    cancelActiveExternalTextComposition("documentChange")
     if (handleDestroyedCurrentEditorIfNeeded()) {
         return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
     }
@@ -34,25 +33,35 @@ internal fun NativeEditorExpoView.applyEditorResetUpdateOutcome(updateJson: Stri
     if (adapter != null && !adapter.validateExternalRender(updateJson)) {
         return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
     }
+    if (adapter != null && resetJson != null && !adapter.validateExternalReset(resetJson)) {
+        return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+    }
     if (!isEditorReadyForNativeUpdate()) {
         return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
     }
     // The reset must be a valid external snapshot before it is allowed to
     // supersede any distinct ordinary pending update.
+    cancelActiveExternalTextComposition("documentChange")
+    richTextView.editorEditText.discardTransientNativeInputForExternalRecovery()
     clearPendingEditorUpdateState(resetAppliedRevision = false)
     clearPendingViewCommandUpdateRetry()
     val adoptedUpdateJson = if (adapter == null) updateJson else {
-        adapter.adoptExternalRender(updateJson)
+        (if (resetJson == null) adapter.adoptExternalRender(updateJson)
+        else adapter.adoptExternalReset(updateJson, resetJson))
             ?: return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
     }
     drainPendingEditorUpdateEvents()
     isApplyingJSUpdate = true
     val applied = try {
-        richTextView.editorEditText.applyUpdateJSON(
+        val previousText = richTextView.editorEditText.text?.toString()
+        val didApply = richTextView.editorEditText.applyUpdateJSON(
             adoptedUpdateJson,
             refreshInputConnectionForExternalUpdate = true
         )
-        true
+        if (didApply && richTextView.editorEditText.text?.toString() == previousText) {
+            richTextView.editorEditText.restartInputForEditorIfFocused("reset")
+        }
+        didApply
     } catch (error: Throwable) {
         Log.w(LOG_TAG, "Failed to apply JS editor reset update", error)
         false
@@ -60,6 +69,9 @@ internal fun NativeEditorExpoView.applyEditorResetUpdateOutcome(updateJson: Stri
         isApplyingJSUpdate = false
     }
     if (applied) {
+        if (resetJson != null && documentVersionFromUpdateJSON(adoptedUpdateJson) != documentVersionFromUpdateJSON(updateJson)) {
+            onEditorUpdate(adoptedUpdateJson)
+        }
         refreshReadyStateIfSettled()
     }
     return if (applied) {

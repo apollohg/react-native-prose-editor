@@ -25,6 +25,113 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 internal class NativeEditorExpoViewControlledUpdateResetTest : NativeEditorExpoViewControlledUpdateTestFixture() {
     @Test
+    fun `same content reset cancels composition and restarts the focused keyboard`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        try {
+            bindFocusedViewForTypingTest(activity, view, viewToken, mutableListOf())
+            val editText = view.richTextView.editorEditText
+            val resetRender = adapter.refreshFromRustState(null)!!
+            val connection = editText.onCreateInputConnection(EditorInfo())!!
+            assertTrue(connection.setComposingText("pending", 1))
+            view.setPendingEditorUpdateJson(resetRender)
+            view.pendingEditorUpdateResetJson = JSONObject()
+                .put("setHtml", "<p></p>")
+                .put("history", "resetAndClear")
+                .put("documentRevision", JSONObject(resetRender).getString("documentVersion"))
+                .toString()
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(1)
+            view.applyPendingEditorUpdateIfNeeded()
+
+            assertEquals("", editText.text.toString())
+            assertTrue(view.imeTraceSnapshotForTypingTest().any { it.startsWith("restartInput:source=reset") })
+            connection.commitText("stale", 1)
+            assertEquals("", editText.text.toString())
+            assertEquals("", backend.sessions.getValue(adapter.editorId).text.toString())
+            assertTrue(editText.onCreateInputConnection(EditorInfo())!!.commitText("fresh", 1))
+            assertEquals("fresh", editText.text.toString())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `delayed reset preserves a subsequent JS replacement`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        try {
+            bindFocusedViewForTypingTest(activity, view, viewToken, mutableListOf())
+            val resetRender = adapter.refreshFromRustState(null)!!
+            val later = adapter.setContentHtml("<p>later</p>")!!
+            adapter.latestJSDrivenDocumentRevision = backend.sessions.getValue(adapter.editorId).revision
+            view.richTextView.editorEditText.applyUpdateJSON(later)
+            assertTrue(commitBoundText(view, "!"))
+            val expected = backend.sessions.getValue(adapter.editorId).text.toString()
+            view.setPendingEditorUpdateJson(resetRender)
+            view.pendingEditorUpdateResetJson = JSONObject()
+                .put("setHtml", "<p></p>")
+                .put("history", "resetAndClear")
+                .put("documentRevision", JSONObject(resetRender).getString("documentVersion"))
+                .toString()
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(1)
+            view.applyPendingEditorUpdateIfNeeded()
+
+            assertTrue(expected.contains("later"))
+            assertEquals(expected, view.richTextView.editorEditText.text.toString())
+            assertEquals(expected, backend.sessions.getValue(adapter.editorId).text.toString())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `reset intent in ordinary prop wins a racing native commit`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity, activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        try {
+            val payloads = mutableListOf<Map<String, Any>>()
+            bindFocusedViewForTypingTest(activity, view, viewToken, payloads)
+            val resetRender = adapter.refreshFromRustState(null)!!
+            assertTrue(commitBoundText(view, "raced"))
+            view.setPendingEditorUpdateJson(resetRender)
+            view.pendingEditorUpdateResetJson = JSONObject()
+                .put("setHtml", "<p></p>")
+                .put("history", "resetAndClear")
+                .put("documentRevision", JSONObject(resetRender).getString("documentVersion"))
+                .toString()
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(1)
+            view.applyPendingEditorUpdateIfNeeded()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+
+            assertEquals("", view.richTextView.editorEditText.text.toString())
+            assertEquals("", backend.sessions.getValue(adapter.editorId).text.toString())
+            assertTrue(backend.calls.contains("replaceDocument"))
+            assertEquals(backend.sessions.getValue(adapter.editorId).revision.toString(), payloads.last()["documentRevision"])
+            assertFalse(backend.sessions.getValue(adapter.editorId).undoStack.isNotEmpty())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
     fun `JS editor reset update bypasses preflight and clears stale pending updates`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
