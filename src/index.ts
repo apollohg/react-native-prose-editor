@@ -98,6 +98,7 @@ export type {
     EditorFontStyle,
     EditorFontWeight,
 } from './EditorTheme';
+export { serializeEditorTheme } from './EditorTheme';
 
 export { EditorStyleSheet } from './EditorStyleSheet';
 export type {
