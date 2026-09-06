@@ -390,7 +390,7 @@ internal class EditorV2Adapter private constructor(
     }
 
     override fun currentStateJson(): String? =
-        refreshInternal(cachedAuthoritativeScalarSelection?.copyOf())
+        refreshInternal(cachedAuthoritativeScalarSelection?.copyOf(), stripViewSelection = false)
 
     override fun documentHtml(): String? {
         if (destroyed) return null
@@ -431,7 +431,7 @@ internal class EditorV2Adapter private constructor(
         cachedHistoryState?.let { exactBool(it.opt("canRedo")) }
 
     override fun selectionJson(): String? {
-        val update = refreshInternal(cachedAuthoritativeScalarSelection?.copyOf()) ?: return null
+        val update = refreshInternal(cachedAuthoritativeScalarSelection?.copyOf(), stripViewSelection = false) ?: return null
         return try {
             JSONObject(update).getJSONObject("selection").toString()
         } catch (error: Exception) {

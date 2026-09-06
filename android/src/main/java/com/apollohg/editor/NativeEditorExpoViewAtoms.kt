@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
 
@@ -32,6 +33,8 @@ internal fun NativeEditorExpoView.removeAtomChildImpl(child: View) {
 
 internal fun NativeEditorExpoView.emitAtomLayout(widthPx: Float, positions: List<AtomLayoutPosition>) {
     val density = resources.displayMetrics.density.takeIf { it > 0f } ?: 1f
+    val contentOrigin = Rect()
+    offsetDescendantRectToMyCoords(richTextView.editorContentFrame, contentOrigin)
     val event = mapOf<String, Any>(
         "width" to widthPx / density,
         "positions" to positions.map { position ->
@@ -39,6 +42,8 @@ internal fun NativeEditorExpoView.emitAtomLayout(widthPx: Float, positions: List
                 "key" to position.key,
                 "x" to position.xPx / density,
                 "y" to position.yPx / density,
+                "hostX" to (contentOrigin.left + position.xPx) / density,
+                "hostY" to (contentOrigin.top + position.yPx) / density,
                 "height" to position.heightPx / density,
                 "width" to position.widthPx / density,
             )

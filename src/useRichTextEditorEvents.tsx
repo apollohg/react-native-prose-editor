@@ -248,6 +248,8 @@ export function useRichTextEditorEvents(
                     typeof position?.key !== 'string' ||
                     !Number.isFinite(position.x) ||
                     !Number.isFinite(position.y) ||
+                    (position.hostX !== undefined && !Number.isFinite(position.hostX)) ||
+                    (position.hostY !== undefined && !Number.isFinite(position.hostY)) ||
                     (position.width !== undefined &&
                         (!Number.isFinite(position.width) || position.width < 0))
                 ) {
@@ -261,6 +263,8 @@ export function useRichTextEditorEvents(
                     const previous = current.get(key);
                     if (
                         previous?.x !== position.x ||
+                        previous.hostX !== position.hostX ||
+                        previous.hostY !== position.hostY ||
                         previous.y !== position.y ||
                         previous.height !== position.height ||
                         previous.width !== position.width

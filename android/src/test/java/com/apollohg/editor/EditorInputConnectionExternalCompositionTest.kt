@@ -60,9 +60,9 @@ internal class EditorInputConnectionExternalCompositionTest : EditorInputConnect
         }
         val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
         val originalText = editText.text.toString()
-        val spellcheckText = originalText.substring(0, bodyStart + 3)
+        val spellcheckText = originalText.substring(bodyStart, bodyStart + 3)
 
-        assertTrue(inputConnection.setComposingRegion(0, bodyStart + 3))
+        assertTrue(inputConnection.setComposingRegion(0, 3))
         assertTrue(inputConnection.setComposingText(spellcheckText, 0))
 
         assertEquals(originalText, editText.text.toString())

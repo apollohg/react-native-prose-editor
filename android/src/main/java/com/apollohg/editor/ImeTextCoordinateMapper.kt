@@ -1,6 +1,7 @@
 package com.apollohg.editor
 
 import android.text.NoCopySpan
+import android.text.Annotation
 import android.text.SpannableString
 import android.text.Selection
 import android.text.Spanned
@@ -32,10 +33,20 @@ internal class ImeTextCoordinateMapper private constructor(
         fun build(raw: CharSequence, generation: Long): ImeTextCoordinateMapper {
             val rawToIme = IntArray(raw.length + 1)
             val visible = StringBuilder(raw.length)
+            val generatedMarkers = BooleanArray(raw.length)
+            if (raw is Spanned) {
+                raw.getSpans(0, raw.length, Annotation::class.java)
+                    .filter { it.key == RenderBridge.NATIVE_LIST_MARKER_ANNOTATION }
+                    .forEach { marker ->
+                        for (offset in raw.getSpanStart(marker) until raw.getSpanEnd(marker)) {
+                            generatedMarkers[offset] = true
+                        }
+                    }
+            }
             var visibleOffset = 0
             rawToIme[0] = 0
             for (rawOffset in raw.indices) {
-                if (!isInvisiblePlaceholder(raw[rawOffset])) {
+                if (!isInvisiblePlaceholder(raw[rawOffset]) && !generatedMarkers[rawOffset]) {
                     visible.append(raw[rawOffset])
                     visibleOffset += 1
                 }

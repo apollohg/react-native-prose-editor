@@ -102,6 +102,9 @@ export interface NativeAtomLayoutEvent {
 }
 
 export interface NativeAtomPosition {
+    /** Native editor coordinates used for Fabric responder measurements. */
+    hostX?: number;
+    hostY?: number;
     height?: number;
     width?: number;
     key: string;

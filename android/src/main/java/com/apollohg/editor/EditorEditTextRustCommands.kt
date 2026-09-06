@@ -132,6 +132,7 @@ internal fun EditorEditText.deleteBackwardAtSelectionScalarInRust(scalarAnchor: 
         return
     }
     v2Driver?.let { driver ->
+        if (selectAtomBeforeEmptyTrailingParagraph(driver)) return
         driver.deleteBackwardAtSelection(scalarAnchor, scalarHead)?.let { applyRustUpdateJSON(it) }
     }
 }

@@ -15,6 +15,19 @@ internal fun EditorV2Adapter.clampScalar(scalar: Int): Int {
     return scalar.coerceIn(0, extent)
 }
 
+internal fun EditorV2Adapter.selectAtomNode(docPos: Int): String? {
+    val selection = JSONObject().put("type", "atom").put("docPos", docPos).put("edge", "node")
+    return when (val result = callWithEnvelope(JSONObject().put("selection", selection)) {
+        backend.setSelection(editorId, it)
+    }) {
+        is EditorV2CallResult.Err -> handleMutationError(result.error)
+        is EditorV2CallResult.Ok -> {
+            invalidateCachedAtomicState(null)
+            recoverNativeRender()
+        }
+    }
+}
+
 internal fun EditorV2Adapter.invalidateCachedAtomicState(selection: IntArray?) {
     cachedAuthoritativeScalarSelection = selection?.copyOf()
     cachedScalarLength = null

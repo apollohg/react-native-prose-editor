@@ -168,9 +168,29 @@ internal fun EditorEditText.handleStructuralBackspaceImpl() {
         return
     }
     v2Driver?.let { driver ->
+        if (selectAtomBeforeEmptyTrailingParagraph(driver)) return
         val updateJSON = driver.deleteBackwardAtSelection(anchor, head)
         applyNonOptimisticRustUpdate(driver, updateJSON)
     }
+}
+
+internal fun EditorEditText.selectAtomBeforeEmptyTrailingParagraph(driver: EditorV2Driver): Boolean {
+    val adapter = driver as? EditorV2Adapter ?: return false
+    val content = text ?: return false
+    if (selectionStart != selectionEnd) return false
+    val raw = content.toString()
+    val paragraphStart = raw.lastIndexOf('\n') + 1
+    if (paragraphStart < 2 || selectionEnd < paragraphStart) return false
+    val trailingText = raw.substring(paragraphStart)
+    if (trailingText.isNotEmpty() && trailingText != LayoutConstants.SYNTHETIC_PLACEHOLDER_CHARACTER) return false
+    val atom = content.getSpans(paragraphStart - 2, paragraphStart - 1, AtomBlockSpan::class.java)
+        .firstOrNull { content.getSpanEnd(it) == paragraphStart - 1 } ?: return false
+    deferredRustUpdateJSON?.let { applyUpdateJSON(it) }
+    adapter.selectAtomNode(atom.docPos)?.let {
+        applyUpdateJSON(it, notifyListener = false)
+        editorListener?.onSelectionChanged(atom.docPos, atom.docPos + 1)
+    }
+    return true
 }
 
 internal fun EditorEditText.handleStructuralDeleteImpl(

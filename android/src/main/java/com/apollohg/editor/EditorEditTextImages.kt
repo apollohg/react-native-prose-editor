@@ -157,9 +157,8 @@ internal fun EditorEditText.movedBeyondImageTouchSlop(gesture: ImageGesture, eve
 
 internal fun EditorEditText.imageSpanHitAt(x: Float, y: Float): ImageSpanHit? {
     val spannable = text as? Spanned ?: return null
-    imageSpanRangeNearTouchOffset(spannable, x, y)?.let { return it }
     val textLayout = layout ?: return null
-    return imageSpanRectHit(spannable, textLayout, x, y)
+    return imageSpanRectHit(spannable, textLayout, x + scrollX, y + scrollY)
 }
 
 internal fun EditorEditText.imageSpanRectHit(
@@ -239,32 +238,6 @@ internal fun EditorEditText.isExactImageSpanRange(spannable: Spanned, start: Int
         .getSpans(start, end, BlockImageSpan::class.java)
         .firstOrNull() ?: return false
     return spannable.getSpanStart(imageSpan) == start && spannable.getSpanEnd(imageSpan) == end
-}
-
-internal fun EditorEditText.imageSpanRangeNearTouchOffset(
-    spannable: Spanned,
-    x: Float,
-    y: Float
-): ImageSpanHit? {
-    val safeOffset = runCatching { getOffsetForPosition(x, y) }.getOrNull() ?: return null
-    val nearbyOffsets = linkedSetOf(
-        safeOffset,
-        (safeOffset - 1).coerceAtLeast(0),
-        (safeOffset + 1).coerceAtMost(spannable.length)
-    )
-    for (offset in nearbyOffsets) {
-        val searchStart = (offset - 1).coerceAtLeast(0)
-        val searchEnd = (offset + 1).coerceAtMost(spannable.length)
-        val imageSpan = spannable
-            .getSpans(searchStart, searchEnd, BlockImageSpan::class.java)
-            .firstOrNull() ?: continue
-        val spanStart = spannable.getSpanStart(imageSpan)
-        val spanEnd = spannable.getSpanEnd(imageSpan)
-        if (spanStart >= 0 && spanEnd > spanStart) {
-            return ImageSpanHit(imageSpan, spanStart, spanEnd)
-        }
-    }
-    return null
 }
 
 internal fun EditorEditText.resolvedImageRect(

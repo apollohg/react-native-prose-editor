@@ -153,8 +153,8 @@ internal class EditorTextSurfaceInteraction(private val view: EditorTextSurface)
     private fun handlePosition(offset: Int): Pair<Float, Float> {
         val layout = view.layout
         val safe = offset.coerceIn(0, view.text.length)
-        val line = layout.getLineForOffset(safe)
-        return layout.getPrimaryHorizontal(safe) to layout.editorTextLineBottom(line).toFloat()
+        val bounds = CaretGeometry.verticalBounds(layout, safe, view.paint, view.text)
+        return layout.getPrimaryHorizontal(safe) to bounds.bottom
     }
 
     private fun handleCenter(offset: Int): Pair<Float, Float> {
@@ -181,10 +181,11 @@ internal class EditorTextSurfaceInteraction(private val view: EditorTextSurface)
     fun drawHandles(canvas: Canvas) {
         if (!view.hasFocus() || view.selectionStart < 0 || (view.selectionStart == view.selectionEnd && !insertionHandleVisible)) return
         handlePaint.color = (view as? EditorEditText)?.caretColor ?: view.currentTextColor
+        handlePaint.strokeWidth = 2f * density
         for (offset in listOf(view.selectionStart, view.selectionEnd).distinct()) {
             val (x, y) = handleCenter(offset)
-            val lineBottom = handlePosition(offset).second
-            canvas.drawRect(x - density, minOf(lineBottom, y), x + density, maxOf(lineBottom, y), handlePaint)
+            val (caretX, caretBottom) = handlePosition(offset)
+            canvas.drawLine(caretX, caretBottom, x, y, handlePaint)
             canvas.drawCircle(x, y, 6f * density, handlePaint)
         }
     }

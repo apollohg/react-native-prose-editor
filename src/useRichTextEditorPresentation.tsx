@@ -292,8 +292,8 @@ export function useRichTextEditorPresentation(
                               collapsable={false}
                               style={{
                                   position: 'absolute',
-                                  top: 0,
-                                  left: 0,
+                                  top: Platform.OS === 'android' ? (position?.hostY ?? 0) : 0,
+                                  left: Platform.OS === 'android' ? (position?.hostX ?? 0) : 0,
                                   width,
                               }}>
                               <AtomHost

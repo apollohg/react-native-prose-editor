@@ -634,7 +634,7 @@ class AtomMountingTest {
         val event = events.last()
         assertEquals(expectedWidth, event["width"] as Float)
         assertEquals(
-            listOf(mapOf("key" to "counterCard:0", "x" to expectedX, "y" to expectedY, "height" to span.reservedHeightPx / density, "width" to (editText.width - editText.compoundPaddingLeft - editText.compoundPaddingRight) / density)),
+            listOf(mapOf("key" to "counterCard:0", "x" to expectedX, "y" to expectedY, "hostX" to expectedX, "hostY" to expectedY, "height" to span.reservedHeightPx / density, "width" to (editText.width - editText.compoundPaddingLeft - editText.compoundPaddingRight) / density)),
             event["positions"],
         )
         assertEquals(mapOf("y" to 0f, "height" to editor.richTextView.editorScrollView.height / density), event["viewport"])
