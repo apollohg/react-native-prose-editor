@@ -1,4 +1,3 @@
-import { Platform } from 'react-native';
 import { EditorStyleSheet } from 'react-native-rich-text-editor';
 import type {
     EditorMentionTheme,
@@ -15,7 +14,6 @@ export const PALETTE = {
     spruceDeep: '#123e3b',
     spruce: '#1f5f5b',
     spruceTint: '#dcebe8',
-    mint: '#9fc7c0',
     paper: '#ffffff',
     wash: '#f2f4f3',
     hairline: '#e1e6e4',
@@ -28,9 +26,6 @@ export const PALETTE = {
 
 /** Generic family names resolve natively on both platforms. */
 export const SERIF_FAMILY = 'serif';
-
-/** React Native text needs a concrete family per platform. */
-export const APP_SERIF_FAMILY = Platform.select({ ios: 'Georgia', default: 'serif' });
 
 export const FONT_SIZE = {
     caption: 13,
@@ -68,6 +63,9 @@ export const MIN_TOUCH_TARGET = 44;
 const HEADING_SIZES = [32, 25, 21, 19, 17, 16] as const;
 const HEADING_LINE_HEIGHT_RATIO = 1.2;
 const HEADING_SPACING_RATIO = 0.35;
+
+const TASK_CHECKBOX_SIZE = 18;
+const TASK_CHECKBOX_BORDER_WIDTH = 1.5;
 
 /** iOS keyboard accessory height; the package sizes buttons from it. */
 const TOOLBAR_HEIGHT = 44;
@@ -126,6 +124,16 @@ export const editorTheme = EditorStyleSheet.create({
     listItem: { marginBottom: SPACE.xs },
     taskItem: { marginBottom: SPACE.xs },
     listMarker: { color: PALETTE.spruce, scale: 1, gap: SPACE.sm },
+    taskCheckbox: {
+        size: TASK_CHECKBOX_SIZE,
+        gap: SPACE.sm,
+        borderWidth: TASK_CHECKBOX_BORDER_WIDTH,
+        borderColor: PALETTE.spruce,
+        borderRadius: SPACE.xs,
+        backgroundColor: PALETTE.paper,
+        checkColor: PALETTE.paper,
+        checked: { backgroundColor: PALETTE.spruce, borderColor: PALETTE.spruce },
+    },
     horizontalRule: { backgroundColor: PALETTE.hairline, height: 1, marginVertical: SPACE.xl },
     link: { color: PALETTE.spruce, textDecorationLine: 'underline', fontWeight: '500' },
     codeBlock: {
