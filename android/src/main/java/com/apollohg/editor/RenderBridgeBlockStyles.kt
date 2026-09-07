@@ -2,8 +2,10 @@ package com.apollohg.editor
 
 import android.graphics.Color
 import android.text.Annotation
+import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextPaint
 import android.text.style.LeadingMarginSpan
 import org.json.JSONObject
 
@@ -18,10 +20,6 @@ internal fun RenderBridge.applyBlockStyle(
 ) {
     val currentBlock = effectiveBlockContext(blockStack) ?: return
     val indent = calculateIndent(currentBlock, blockStack, theme, density)
-    val markerWidth = if (currentBlock.listContext?.optString("kind") == "task" && theme?.styleSheet != null) {
-        val checkbox = resolvedCheckboxStyle(theme.styleSheet, currentBlock.listContext.optBoolean("checked"))
-        ((checkbox.size ?: 18f) + (checkbox.gap ?: 6f)) * density
-    } else calculateMarkerWidth(density)
     val quoteDepth = blockquoteDepth(blockStack)
     val indentPerDepth = (theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density
     val listBaseIndentAdjustment =
@@ -62,7 +60,7 @@ internal fun RenderBridge.applyBlockStyle(
         if (currentBlock.listContext != null) {
             pendingLeadingMargins[paragraphStart] = PendingLeadingMargin(
                 indentPx = indent.toInt(),
-                restIndentPx = (indent + markerWidth).toInt(),
+                restIndentPx = indent.toInt() + renderedListMarkerWidth(builder, paragraphStart),
                 blockquoteIndentPx = blockquoteIndentPx,
                 blockquoteStripeColor = quoteStripeColor,
                 blockquoteStripeWidthPx = quoteStripeWidth,
@@ -98,6 +96,17 @@ internal fun RenderBridge.applyBlockStyle(
         quoteDepth > 0
     ).lineHeight
     applyLineHeightSpan(builder, start, end, lineHeight, density)
+}
+
+private fun renderedListMarkerWidth(builder: Spanned, paragraphStart: Int): Int {
+    val marker = builder.getSpans(paragraphStart, paragraphStart + 1, Annotation::class.java)
+        .firstOrNull { it.key == RenderBridge.NATIVE_LIST_MARKER_ANNOTATION }
+        ?: return 0
+    val markerText = SpannableStringBuilder(builder, builder.getSpanStart(marker), builder.getSpanEnd(marker))
+    // Desired width includes paragraph margins unless they are removed.
+    markerText.getSpans(0, markerText.length, LeadingMarginSpan::class.java).forEach(markerText::removeSpan)
+    val width = Layout.getDesiredWidth(markerText, TextPaint())
+    return kotlin.math.ceil(width.toDouble()).toInt()
 }
 
 internal fun RenderBridge.applyLineHeightSpan(

@@ -2,6 +2,45 @@ import XCTest
 import CoreText
 
 extension RenderBridgeTests {
+    func testWrappedListTextAlignsWithFirstLine() {
+        let json = """
+        [
+            {"type":"blockStart","nodeType":"listItem","depth":0,"listContext":{"ordered":true,"index":2}},
+            {"type":"blockStart","nodeType":"paragraph","depth":1},
+            {"type":"textRun","text":"Tap a counter to select it, then delete it like any block","marks":[]},
+            {"type":"blockEnd"},{"type":"blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "version": 1,
+            "styles": [
+                "content": ["paddingLeft": 20, "paddingRight": 20],
+                "text": ["fontSize": 17],
+                "paragraph": ["lineHeight": 27, "marginBottom": 12],
+                "orderedList": ["indent": 20, "baseIndentMultiplier": 1],
+                "listMarker": ["scale": 1, "gap": 8],
+            ],
+        ])
+        let rendered = RenderBridge.renderElements(fromJSON: json, baseFont: baseFont, textColor: textColor, theme: theme)
+        for padding: CGFloat in [0, 5] {
+            let view = EditorTextView(frame: CGRect(x: 0, y: 0, width: 440, height: 130), textContainer: nil)
+            view.theme = theme
+            view.textContainer.lineFragmentPadding = padding
+            view.textStorage.setAttributedString(rendered)
+            view.layoutIfNeeded()
+            let manager = view.layoutManager
+            manager.ensureLayout(for: view.textContainer)
+            var starts: [CGFloat] = []
+            manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { rect, _, _, range, _ in
+                starts.append(rect.minX + manager.location(forGlyphAt: range.location).x)
+            }
+            XCTAssertEqual(starts.count, 2)
+            for start in starts.dropFirst() {
+                XCTAssertEqual(start, starts[0], accuracy: 0.01)
+            }
+        }
+    }
+
     func testRender_themeOverridesHorizontalRuleMetrics() {
         let json = """
         [

@@ -34,6 +34,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -41,6 +42,70 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 internal class RenderBridgeListsTest : RenderBridgeTestFixture() {
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `render - paragraph padding does not change the list marker width`() {
+        val json = """[
+            {"type":"blockStart","nodeType":"listItem","depth":0,"listContext":{"ordered":true,"index":1}},
+            {"type":"blockStart","nodeType":"paragraph","depth":1},
+            {"type":"textRun","text":"word word word word word word word word word word","marks":[]},
+            {"type":"blockEnd"},
+            {"type":"blockStart","nodeType":"paragraph","depth":1},
+            {"type":"textRun","text":"Another paragraph","marks":[]},
+            {"type":"blockEnd"},{"type":"blockEnd"}
+        ]"""
+        val theme = EditorTheme.fromJson("""{"version":1,"styles":{"paragraph":{"paddingLeft":10}}}""")
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme)
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = baseFontSize }
+        val layout = EditorDocumentLayout(result, paint, 150)
+        val textStart = result.toString().indexOf("word")
+        assertTrue(layout.getLineStart(1) < result.toString().indexOf('\n'))
+        assertEquals(layout.getPrimaryHorizontal(textStart),
+            layout.getPrimaryHorizontal(layout.getLineStart(1)), 0.01f)
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `render - wrapped list text aligns with first line`() {
+        for (context in listOf(
+            "{\"ordered\":false}",
+            "{\"ordered\":true,\"index\":1}",
+            "{\"ordered\":true,\"index\":123}",
+            "{\"kind\":\"task\",\"checked\":false}"
+        )) {
+            val json = """[
+                {"type":"blockStart","nodeType":"listItem","depth":0,"listContext":$context},
+                {"type":"blockStart","nodeType":"paragraph","depth":1},
+                {"type":"textRun","text":"word word word word word word word word word word","marks":[]},
+                {"type":"blockEnd"},{"type":"blockEnd"}
+            ]"""
+            val themes = listOf(null, EditorTheme.fromJson("""{
+                "version":1,"styles":{
+                    "text":{"fontSize":17},
+                    "listMarker":{"gap":8,"ordered":{"schemes":["upperRoman"]}},
+                    "checkbox":{"size":19,"gap":7}
+                }
+            }"""))
+            for (theme in themes) for (density in listOf(1f, 2.625f)) {
+                val result = RenderBridge.buildSpannable(json, baseFontSize * density, textColor, theme, density)
+                val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = baseFontSize * density }
+                val width = (150 * density).toInt()
+                val layouts = listOf(
+                    StaticLayout.Builder.obtain(result, 0, result.length, paint, width).build(),
+                    EditorDocumentLayout(result, paint, width)
+                )
+                val textStart = result.toString().indexOf("word")
+                for (layout in layouts) {
+                    assertTrue(layout.lineCount > 1)
+                    for (line in 1 until layout.lineCount) {
+                        assertEquals("$context density=$density", layout.getPrimaryHorizontal(textStart),
+                            layout.getPrimaryHorizontal(layout.getLineStart(line)), 0.01f)
+                    }
+                }
+            }
+        }
+    }
+
     @Test
     fun `render - scalar positions follow canonical marker while replacement paints longer label`() {
         val json = """
