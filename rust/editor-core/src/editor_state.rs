@@ -241,6 +241,23 @@ fn command_applicability_with_known_node_count_impl(
             root_wrap_range.as_ref(),
         ),
     );
+    commands.insert(
+        "wrapTaskList".into(),
+        can_apply_list_type_local(
+            document,
+            schema,
+            selection,
+            if schema.node("task_list").is_some() {
+                "task_list"
+            } else {
+                "taskList"
+            },
+            limits,
+            document_node_count,
+            block_range.as_ref(),
+            root_wrap_range.as_ref(),
+        ),
+    );
     commands
 }
 

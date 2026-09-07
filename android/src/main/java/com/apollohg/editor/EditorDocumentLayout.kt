@@ -17,6 +17,7 @@ import android.text.TextDirectionHeuristics
 import android.text.TextPaint
 import android.text.style.AlignmentSpan
 import android.text.style.ReplacementSpan
+import android.text.style.MetricAffectingSpan
 import kotlin.math.ceil
 
 internal class EditorDocumentLayout(
@@ -72,10 +73,15 @@ internal class EditorDocumentLayout(
         }
         val opens = Array(paragraphs.size) { mutableListOf<Box>() }
         val closes = Array(paragraphs.size) { mutableListOf<Box>() }
+        val trailingCodeLines = boxes.filter {
+            ((it.span as? EditorBlockBoxSpan)?.nodeType == "codeBlock" || it.span is CodeBlockSpan) &&
+                it.start >= 0 && it.end > it.start && content[it.end - 1] == '\n'
+        }.map { it.end }.toSet()
         for (box in boxes) {
             if (box.start < 0 || box.end < box.start) continue
             opens[paragraphAt(box.start)] += box
-            closes[paragraphAt(maxOf(box.start, box.end - 1))] += box
+            val lastOffset = if (box.end in trailingCodeLines) box.end else maxOf(box.start, box.end - 1)
+            closes[paragraphAt(lastOffset)] += box
         }
         val reusable = if (previous != null && previous.paintKey == paintKey && previous.includeFontPadding == includeFontPadding && previous.fragmentSpacingMultiplier == spacingMultiplier && previous.fragmentSpacingAdd == spacingAdd) {
             previous.fragments.groupBy { it.key }.mapValues { it.value.toMutableList() }.toMutableMap()
@@ -97,6 +103,11 @@ internal class EditorDocumentLayout(
                 y += ceil(box.style.outerInset.top).toInt()
             }
             val local = SpannableStringBuilder(content, paragraph.start, paragraph.end)
+            if (local.isEmpty() && paragraph.start in trailingCodeLines) {
+                content.getSpans(paragraph.start - 1, paragraph.start, MetricAffectingSpan::class.java)
+                    .filter { content.getSpanStart(it) < paragraph.start && content.getSpanEnd(it) >= paragraph.start }
+                    .forEach { local.setSpan(it, 0, 0, Spanned.SPAN_MARK_MARK) }
+            }
             local.getSpans(0, local.length, Any::class.java).filter {
                 it is EditorBlockBoxSpan || it is CodeBlockSpan || it is NoCopySpan
             }.forEach(local::removeSpan)
@@ -125,7 +136,7 @@ internal class EditorDocumentLayout(
             val cached = reusable[key]?.removeFirstOrNull()
             val fragmentPaint = TextPaint(this.paint)
             val emptyStyles = if (local.isEmpty()) local.getSpans(0, 0, EditorResolvedTextSpan::class.java).toList() else emptyList()
-            emptyStyles.forEach { it.updateMeasureState(fragmentPaint) }
+            if (local.isEmpty()) local.getSpans(0, 0, MetricAffectingSpan::class.java).forEach { it.updateMeasureState(fragmentPaint) }
             val shaped = cached?.layout ?: StaticLayout.Builder.obtain(SpannedString(local), 0, local.length, fragmentPaint, available)
                 .setIncludePad(includeFontPadding)
                 .setAlignment(alignment)
@@ -160,6 +171,10 @@ internal class EditorDocumentLayout(
         monotonicLineTops = (1 until lines.size).all { textLineTop(it - 1) <= textLineTop(it) }
         documentHeight = y
         reusedFragmentCount = reused
+    }
+
+    internal fun emptyLinePaint(offset: Int): TextPaint? = lines[getLineForOffset(offset)].fragment.let {
+        if (it.start == it.end) it.layout.paint else null
     }
 
     internal fun contentLeft(line: Int): Float = lines[line].let { it.fragment.x + it.fragment.layout.getParagraphLeft(it.local) }

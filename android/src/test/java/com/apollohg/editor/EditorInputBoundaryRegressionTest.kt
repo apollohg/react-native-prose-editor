@@ -189,6 +189,55 @@ internal class EditorInputBoundaryRegressionTest : EditorInputConnectionTestFixt
         }
     }
 
+    @Test
+    fun `IME backspace after horizontal rule keeps caret inside editable paragraph`() {
+        assertBackspaceAfterHorizontalRule { editor ->
+            assertTrue(requireNotNull(editor.onCreateInputConnection(EditorInfo())).deleteSurroundingText(1, 0))
+        }
+    }
+
+    @Test
+    fun `code point backspace after horizontal rule keeps caret inside editable paragraph`() {
+        assertBackspaceAfterHorizontalRule { editor ->
+            assertTrue(requireNotNull(editor.onCreateInputConnection(EditorInfo())).deleteSurroundingTextInCodePoints(1, 0))
+        }
+    }
+
+    @Test
+    fun `hardware backspace after horizontal rule keeps caret inside editable paragraph`() {
+        assertBackspaceAfterHorizontalRule { it.handleBackspace() }
+    }
+
+    private fun assertBackspaceAfterHorizontalRule(backspace: (EditorEditText) -> Unit) {
+        val harness = atomHarness()
+        try {
+            val editor = harness.editText
+            editor.applyUpdateJSON(requireNotNull(harness.adapter.setContentJson(
+                """{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Before"}]},{"type":"horizontalRule"},{"type":"paragraph"}]}"""
+            )), notifyListener = false)
+            editor.setSelection(editor.text!!.length)
+            backspace(editor)
+
+            editor.measure(
+                View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            )
+            editor.layout(0, 0, editor.measuredWidth, editor.measuredHeight)
+            val caret = requireNotNull(editor.nativeCursorDrawRect())
+            assertTrue("caret=$caret layoutHeight=${editor.layout.height}", caret.bottom <= editor.layout.height)
+            val document = requireNotNull(harness.adapter.documentJson())
+            assertFalse(document, document.contains("horizontalRule"))
+            assertEquals("paragraph", JSONObject(document).getJSONArray("content").let {
+                it.getJSONObject(it.length() - 1).getString("type")
+            })
+            assertTrue(requireNotNull(editor.onCreateInputConnection(EditorInfo())).commitText("Q", 1))
+            val blocks = JSONObject(requireNotNull(harness.adapter.documentJson())).getJSONArray("content")
+            assertEquals("Q", blocks.getJSONObject(blocks.length() - 1).getJSONArray("content").getJSONObject(0).getString("text"))
+        } finally {
+            harness.adapter.destroy()
+        }
+    }
+
     private fun atomHarness(): RealExternalCompositionHarness {
         return realExternalCompositionHarness("Before", """
             {

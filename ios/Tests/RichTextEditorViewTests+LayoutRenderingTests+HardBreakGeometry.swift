@@ -2,6 +2,37 @@ import XCTest
 import ExpoModulesCore
 
 extension RichTextEditorViewTests {
+    func testReturnAtCodeBlockEndKeepsBlankLineInsideCodeThenExits() throws {
+        try assertCodeBlockReturn(suffix: "<p>After</p>", typeCode: false)
+    }
+
+    func testReturnAllowsTypingCodeLineAtDocumentEndBeforeExiting() throws {
+        try assertCodeBlockReturn(suffix: "", typeCode: true)
+    }
+
+    private func assertCodeBlockReturn(suffix: String, typeCode: Bool) throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 260))
+        textView.theme = try XCTUnwrap(EditorTheme.from(json: ##"{"version":1,"styles":{"codeBlock":{"padding":12,"backgroundColor":"#eeeeee"}}}"##))
+        textView.bindEditor(id: editorId, initialHTML: "<pre><code>code</code></pre>" + suffix)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 4, scalarHead: 4)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        textView.insertText("\n")
+        textView.layoutIfNeeded()
+
+        let offset = textView.selectedRange.location
+        XCTAssertEqual(offset, 5)
+        XCTAssertNotNil(textView.textStorage.attribute(editorCodeBlockAttribute, at: offset, effectiveRange: nil))
+        if typeCode {
+            textView.insertText("next")
+            textView.insertText("\n")
+        }
+        textView.insertText("\n")
+        textView.insertText("Outside")
+        XCTAssertEqual(textView.textStorage.string, (typeCode ? "code\nnext" : "code") + "\nOutside" + (suffix.isEmpty ? "" : "\nAfter"))
+    }
+
     func testReturnInsideBlockquoteAfterPlainParagraphKeepsOneStripeGroup() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

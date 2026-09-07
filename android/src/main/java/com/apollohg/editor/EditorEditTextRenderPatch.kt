@@ -86,7 +86,14 @@ internal fun EditorEditText.firstCharacterOffsetForTopLevelChildIndex(content: S
                 var candidate = spanStart
                 while (candidate < spanEnd && candidate < content.length) {
                     when (content[candidate]) {
-                        '\n', '\r' -> candidate += 1
+                        '\n', '\r' -> {
+                            val isHardBreak = content.getSpans(candidate, candidate + 1, Annotation::class.java).any {
+                                it.key == "nativeVoidNodeType" && EditorNodeTypes.isHardBreak(it.value) &&
+                                    content.getSpanStart(it) <= candidate && content.getSpanEnd(it) > candidate
+                            }
+                            if (isHardBreak) return@mapNotNull candidate
+                            candidate += 1
+                        }
                         else -> return@mapNotNull candidate
                     }
                 }

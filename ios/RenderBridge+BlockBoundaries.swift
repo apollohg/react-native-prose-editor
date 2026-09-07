@@ -263,7 +263,7 @@ extension RenderBridge {
         max(existingSpacing, adjacentHorizontalRuleMargin) - adjacentHorizontalRuleMargin
     }
 
-    static func appendTrailingHardBreakPlaceholderIfNeeded(
+    static func appendTrailingLineBreakPlaceholderIfNeeded(
         in result: NSMutableAttributedString,
         endedBlock: BlockContext,
         remainingBlockStack: [BlockContext],
@@ -273,13 +273,15 @@ extension RenderBridge {
     ) {
         guard result.length > 0 else { return }
         guard !isListItemNodeType(endedBlock.nodeType) else { return }
-        guard let nodeType = result.attribute(
+        let nodeType = result.attribute(
             RenderBridgeAttributes.voidNodeType,
             at: result.length - 1,
             effectiveRange: nil
-        ) as? String, EditorNodeTypes.isHardBreak(nodeType) else {
-            return
-        }
+        ) as? String
+        let isHardBreak = nodeType.map(EditorNodeTypes.isHardBreak) ?? false
+        let isCodeNewline = EditorStyleSheet.element(endedBlock.nodeType) == "codeBlock"
+            && (result.string as NSString).character(at: result.length - 1) == 0x000A
+        guard isHardBreak || isCodeNewline else { return }
 
         let placeholderBlockStack = remainingBlockStack + [endedBlock]
         let blockFont = resolvedFont(

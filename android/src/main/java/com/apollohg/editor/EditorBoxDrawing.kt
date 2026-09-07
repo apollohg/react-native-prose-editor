@@ -23,12 +23,23 @@ internal object EditorBoxDrawing {
         val innerBounds = RectF(bounds.left + box.border.left, bounds.top + box.border.top, bounds.right - box.border.right, bounds.bottom - box.border.bottom)
         val inner = path(innerBounds, innerCorners(box))
         val ring = Path(outer).apply { op(inner, Path.Op.DIFFERENCE) }
+        if (box.borderStyle == "solid" && box.borderColors.distinct().size == 1) {
+            paint.color = box.borderColors.first()
+            canvas.drawPath(ring, paint)
+            return
+        }
         val widths = listOf(box.border.top, box.border.right, box.border.bottom, box.border.left)
+        // Extend side clips through the rounded inner corners.
+        val horizontal = box.border.left + box.border.right
+        val vertical = box.border.top + box.border.bottom
+        val reach = minOf(if (horizontal > 0) bounds.width() / horizontal else Float.POSITIVE_INFINITY, if (vertical > 0) bounds.height() / vertical else Float.POSITIVE_INFINITY)
+        if (!reach.isFinite()) return
+        val join = RectF(bounds.left + box.border.left * reach, bounds.top + box.border.top * reach, bounds.right - box.border.right * reach, bounds.bottom - box.border.bottom * reach)
         val vertices = listOf(
-            floatArrayOf(bounds.left, bounds.top, bounds.right, bounds.top, innerBounds.right, innerBounds.top, innerBounds.left, innerBounds.top),
-            floatArrayOf(bounds.right, bounds.top, bounds.right, bounds.bottom, innerBounds.right, innerBounds.bottom, innerBounds.right, innerBounds.top),
-            floatArrayOf(bounds.right, bounds.bottom, bounds.left, bounds.bottom, innerBounds.left, innerBounds.bottom, innerBounds.right, innerBounds.bottom),
-            floatArrayOf(bounds.left, bounds.bottom, bounds.left, bounds.top, innerBounds.left, innerBounds.top, innerBounds.left, innerBounds.bottom),
+            floatArrayOf(bounds.left, bounds.top, bounds.right, bounds.top, join.right, join.top, join.left, join.top),
+            floatArrayOf(bounds.right, bounds.top, bounds.right, bounds.bottom, join.right, join.bottom, join.right, join.top),
+            floatArrayOf(bounds.right, bounds.bottom, bounds.left, bounds.bottom, join.left, join.bottom, join.right, join.bottom),
+            floatArrayOf(bounds.left, bounds.bottom, bounds.left, bounds.top, join.left, join.top, join.left, join.bottom),
         )
         widths.forEachIndexed { index, width ->
             if (width <= 0) return@forEachIndexed

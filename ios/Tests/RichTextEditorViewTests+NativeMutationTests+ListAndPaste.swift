@@ -2,6 +2,31 @@ import XCTest
 import ExpoModulesCore
 
 extension RichTextEditorViewTests {
+    func testBackspaceAtListItemStartAfterNestedListMergesIntoPreviousText() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: "<ul><li><p>Parent</p><ul><li><p>Nested</p></li></ul></li><li><p>Last</p></li></ul>")
+        let lastRange = (view.textView.textStorage.string as NSString).range(of: "Last")
+        XCTAssertNotEqual(lastRange.location, NSNotFound)
+        setCollapsedSelection(in: view.textView, utf16Offset: lastRange.location)
+        flushMainQueue()
+        view.textView.deleteBackward()
+
+        XCTAssertEqual(
+            EditorV2Shadow.getHtml(id: editorId),
+            "<ul><li><p>Parent</p><ul><li><p>NestedLast</p></li></ul></li></ul>"
+        )
+        view.textView.insertText("!")
+        XCTAssertTrue(EditorV2Shadow.getHtml(id: editorId).contains("Nested!Last"))
+    }
+
     func testPendingNativeTextMutationInListUsesAdjustedScalarOffsetsBeforeNextTypedCharacter() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

@@ -652,3 +652,27 @@ fn a_blank_line_added_with_return_stops_the_document_being_empty() {
 
     destroy_handle(&id);
 }
+
+#[test]
+fn code_block_return_adds_line_then_exits_on_extra_return() {
+    let id = create_handle(local_json_config(
+        r#"{"type":"doc","content":[{"type":"codeBlock","attrs":{"language":"rust"},"content":[{"type":"text","text":"code"}]}]}"#,
+    ));
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(), selection_envelope_with_affinity(1, revision_of(&id), 4, 4, "before"),
+    ));
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(), command_envelope(2, revision_of(&id), json!({"type":"splitBlock"})),
+    ));
+    assert_eq!(document_json_of(&id)["content"][0]["content"][0]["text"], "code\n");
+    assert_eq!(caret_scalar(&id), 5);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(), command_envelope(3, revision_of(&id), json!({"type":"splitBlock"})),
+    ));
+    let document = document_json_of(&id);
+    assert_eq!(document["content"].as_array().unwrap().len(), 2);
+    assert_eq!(document["content"][0]["content"][0]["text"], "code");
+    assert_eq!(document["content"][0]["attrs"]["language"], "rust");
+    assert_eq!(document["content"][1]["type"], "paragraph");
+    destroy_handle(&id);
+}

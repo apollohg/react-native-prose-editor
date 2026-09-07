@@ -250,3 +250,39 @@ fn node_selection_preserves_collapsed_stored_marks() {
     );
     assert_eq!(state.marks.get("bold"), Some(&true));
 }
+
+#[test]
+fn task_list_wrap_availability_matches_schema_and_limits() {
+    for list_name in ["taskList", "task_list"] {
+        let schema = Schema::from_json(&serde_json::json!({"nodes": [
+            {"name":"doc","content":"block+","role":"doc"},
+            {"name":"paragraph","content":"text*","group":"block","role":"textBlock"},
+            {"name":list_name,"content":"taskItem+","group":"block","role":"list"},
+            {"name":"taskItem","content":"paragraph block*","role":"listItem","attrs":{"checked":{"default":false}}},
+            {"name":"text","role":"text"}
+        ],"marks":[]})).unwrap();
+        let document = document(vec![paragraph("one")]);
+        for (schema, limits, expected) in [
+            (&schema, ResourceLimits::default(), true),
+            (
+                &schema,
+                ResourceLimits {
+                    max_document_nodes: 3,
+                    ..ResourceLimits::default()
+                },
+                false,
+            ),
+            (&crate::tiptap_schema(), ResourceLimits::default(), false),
+        ] {
+            let state = active_state_for_debug_invariant(
+                &document,
+                schema,
+                &Selection::cursor(1),
+                None,
+                &limits,
+                document_node_count(document.root()),
+            );
+            assert_eq!(state.commands.get("wrapTaskList"), Some(&expected));
+        }
+    }
+}

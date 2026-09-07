@@ -718,3 +718,49 @@ fn move_selection_command_preserves_custom_atom_attributes() {
     );
     destroy_handle(&id);
 }
+
+#[test]
+fn backspace_in_empty_paragraph_after_horizontal_rule_removes_rule() {
+    let id = create_handle(local_json_config(
+        r#"{"type":"doc","content":[{"type":"horizontalRule"},{"type":"paragraph"}]}"#,
+    ));
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope_with_affinity(1, revision_of(&id), 3, 3, "before"),
+    ));
+    let outcome = ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision_of(&id), json!({ "type": "deleteBackward" })),
+    ));
+    assert_eq!(outcome["type"], "transaction");
+    assert_eq!(
+        document_json_of(&id),
+        json!({"type":"doc","content":[{"type":"paragraph"}]})
+    );
+    assert_eq!(caret_scalar(&id), 1);
+    destroy_handle(&id);
+}
+
+#[test]
+fn backspace_in_empty_paragraph_preserves_protected_horizontal_rule() {
+    for node_type in ["horizontalRule", "horizontal_rule"] {
+        let mut config = terminal_custom_atom_config();
+        config["schema"]["nodes"][3]["name"] = json!(node_type);
+        config["schema"]["nodes"][3]["deletableOnBackspace"] = json!(false);
+        let rule = json!({"type": node_type, "attrs": {"count": 7}});
+        config["initialization"]["json"]["content"] = json!([
+            rule.clone(), {"type": "paragraph"},
+        ]);
+        let id = create_handle(config);
+        ok_json(&v2::editor_v2_set_selection(
+            id.clone(),
+            selection_envelope_with_affinity(1, revision_of(&id), 3, 3, "before"),
+        ));
+        ok_json(&v2::editor_v2_apply_command(
+            id.clone(),
+            command_envelope(2, revision_of(&id), json!({"type": "deleteBackward"})),
+        ));
+        assert_eq!(document_json_of(&id), json!({"type": "doc", "content": [rule]}));
+        destroy_handle(&id);
+    }
+}

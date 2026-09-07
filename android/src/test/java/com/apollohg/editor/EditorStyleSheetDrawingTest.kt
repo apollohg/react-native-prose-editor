@@ -18,6 +18,16 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class EditorStyleSheetDrawingTest {
     @Test
+    fun `rounded border fills the corners around its rounded interior`() {
+        val bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+        val box = EditorBoxStyle(backgroundColor = Color.WHITE, border = EditorEdges(10f, 10f, 10f, 10f), borderColors = List(4) { Color.RED }, corners = EditorCorners(30f, 30f, 30f, 30f))
+        EditorBoxDrawing.draw(Canvas(bitmap), RectF(0f, 0f, 100f, 100f), box)
+        assertEquals(Color.RED, bitmap.getPixel(13, 13))
+        assertEquals(Color.WHITE, bitmap.getPixel(30, 30))
+        assertEquals(Color.TRANSPARENT, bitmap.getPixel(0, 0))
+    }
+
+    @Test
     fun `asymmetric edges omit zero side and clip loaded image corners`() {
         val bitmap = Bitmap.createBitmap(80, 60, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)

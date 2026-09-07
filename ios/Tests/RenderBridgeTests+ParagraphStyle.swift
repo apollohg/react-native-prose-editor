@@ -836,3 +836,17 @@ extension RenderBridgeTests {
         XCTAssertTrue(quoteBoxes.contains { $0.box.color("borderLeftColor") == EditorTheme.color(from: "#123456ff") })
     }
 }
+
+
+extension RenderBridgeTests {
+    func testRoundedBorderFillsCornersAroundRoundedInterior() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8, bytesPerRow: 400, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let box = EditorStyleBox(["borderWidth": 10, "borderRadius": 30, "borderColor": UIColor.red, "backgroundColor": UIColor.white])
+        box.draw(in: CGRect(x: 0, y: 0, width: 100, height: 100), context: context)
+        let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        XCTAssertEqual(pixels[(13 * 100 + 13) * 4 + 1], 0)
+        XCTAssertEqual(pixels[(30 * 100 + 30) * 4 + 1], 255)
+        XCTAssertEqual(pixels[3], 0)
+    }
+}

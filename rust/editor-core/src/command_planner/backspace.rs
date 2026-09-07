@@ -58,6 +58,11 @@ fn marker_backspace_action(
     }
     let item_index = usize::try_from(resolved.node_path[depth]).ok()?;
     if item_index > 0 {
+        if let Some(plan) =
+            merge_into_previous_nested_list(document, schema, &resolved.node_path, depth)
+        {
+            return Some(plan);
+        }
         // A later bullet merges into the one above it. Joining the two items
         // alone would leave their paragraphs side by side inside a single
         // bullet, so the paragraphs are joined too.
@@ -93,6 +98,63 @@ fn marker_backspace_action(
     Some(SemanticCommandPlan::one(
         SemanticOperation::UnwrapFromList { pos: doc_to },
     ))
+}
+
+fn merge_into_previous_nested_list(
+    document: &Document,
+    schema: &Schema,
+    block_path: &[u32],
+    item_depth: usize,
+) -> Option<SemanticCommandPlan> {
+    let mut previous_path = block_path[..=item_depth].to_vec();
+    *previous_path.last_mut()? = previous_path.last()?.checked_sub(1)?;
+    let previous_item = document.node_at(&previous_path)?;
+    let last_index = previous_item.content()?.child_count().checked_sub(1)?;
+    previous_path.push(u32::try_from(last_index).ok()?);
+    let mut previous = document.node_at(&previous_path)?;
+    if !matches!(
+        schema.node(previous.node_type())?.role,
+        NodeRole::List { .. }
+    ) {
+        return None;
+    }
+    loop {
+        match schema.node(previous.node_type())?.role {
+            NodeRole::TextBlock => break,
+            NodeRole::List { .. } | NodeRole::ListItem => {
+                let last_index = previous.content()?.child_count().checked_sub(1)?;
+                previous_path.push(u32::try_from(last_index).ok()?);
+                previous = document.node_at(&previous_path)?;
+            }
+            _ => return None,
+        }
+    }
+    let block = document.node_at(block_path)?;
+    let caret = node_delete_start(document, &previous_path)?
+        .checked_add(1)?
+        .checked_add(previous.content_size())?;
+    let item_boundary = node_delete_start(document, &block_path[..=item_depth])?;
+    // The item join removes two tokens; inserting the text shifts the old paragraph.
+    let paragraph_start = node_delete_start(document, block_path)?
+        .checked_sub(2)?
+        .checked_add(block.content_size())?;
+    Some(SemanticCommandPlan {
+        operations: vec![
+            SemanticOperation::JoinBlocks { pos: item_boundary },
+            SemanticOperation::ReplaceRange {
+                from: caret,
+                to: caret,
+                content: block.content()?.clone(),
+            },
+            SemanticOperation::ReplaceRange {
+                from: paragraph_start,
+                to: paragraph_start.checked_add(block.node_size())?,
+                content: Fragment::from(Vec::new()),
+            },
+        ],
+        selection_after: Some(Selection::cursor(caret)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
 }
 
 fn move_into_previous_blockquote_action(

@@ -188,13 +188,24 @@ struct EditorStyleBox {
         context.clip()
         if let background = color("backgroundColor") { context.setFillColor(background.cgColor); context.fill(rect) }
         let edges = borders
-        let inner = rect.inset(by: edges)
         let outer = [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)]
-        let inside = [CGPoint(x: inner.minX, y: inner.minY), CGPoint(x: inner.maxX, y: inner.minY), CGPoint(x: inner.maxX, y: inner.maxY), CGPoint(x: inner.minX, y: inner.maxY)]
+        // Extend side clips through the rounded inner corners.
+        let reach = min(edges.left + edges.right > 0 ? rect.width / (edges.left + edges.right) : .infinity,
+                        edges.top + edges.bottom > 0 ? rect.height / (edges.top + edges.bottom) : .infinity)
+        guard reach.isFinite else { return }
+        let join = rect.inset(by: UIEdgeInsets(top: edges.top * reach, left: edges.left * reach, bottom: edges.bottom * reach, right: edges.right * reach))
+        let inside = [CGPoint(x: join.minX, y: join.minY), CGPoint(x: join.maxX, y: join.minY), CGPoint(x: join.maxX, y: join.maxY), CGPoint(x: join.minX, y: join.maxY)]
         let ring = path(in: rect)
         ring.append(path(in: rect, inner: true))
         context.addPath(ring.cgPath)
         context.clip(using: .evenOdd)
+        let borderColors = ["Top", "Right", "Bottom", "Left"].map { color("border" + $0 + "Color") ?? color("borderColor") ?? .black }
+        if (values["borderStyle"] as? String ?? "solid") == "solid",
+           borderColors.allSatisfy({ $0 == borderColors[0] }) {
+            context.setFillColor(borderColors[0].cgColor)
+            context.fill(rect)
+            return
+        }
         for (index, side) in ["Top", "Right", "Bottom", "Left"].enumerated() {
             let width = [edges.top, edges.right, edges.bottom, edges.left][index]
             guard width > 0 else { continue }

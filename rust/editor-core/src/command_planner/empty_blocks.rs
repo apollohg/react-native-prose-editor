@@ -370,6 +370,15 @@ fn empty_block_delete_action(
     if !same_doc && !boundary {
         return None;
     }
+    if is_collapsed_backward_delete
+        && matches!(previous.node_type(), "horizontalRule" | "horizontal_rule")
+    {
+        if let Some(plan) = delete_previous_void_block_action(
+            document, map, schema, scalar_from, scalar_to, doc_to,
+        ) {
+            return Some(plan);
+        }
+    }
     Some(SemanticCommandPlan {
         operations: vec![SemanticOperation::DeleteRange {
             from: open,

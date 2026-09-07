@@ -41,6 +41,20 @@ class RichTextEditorView @JvmOverloads constructor(
     }
 
     private inner class EditorScrollView(context: Context) : ScrollView(context) {
+        override fun computeScrollDeltaToGetChildRectOnScreen(rect: Rect): Int {
+            val delta = super.computeScrollDeltaToGetChildRectOnScreen(rect)
+            val child = getChildAt(0) ?: return delta
+            val screenBottom = scrollY + height
+            if (viewportBottomInsetPx <= 0 || rect.bottom <= child.bottom ||
+                rect.bottom <= screenBottom || rect.top <= scrollY
+            ) return delta
+
+            // ScrollView's reveal clamp omits the padding reserved for the keyboard.
+            val requested = if (rect.height() > height) rect.top - scrollY else rect.bottom - screenBottom
+            val available = (child.bottom + paddingBottom - screenBottom).coerceAtLeast(0)
+            return maxOf(delta, minOf(requested, available))
+        }
+
         private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
         private var atomDown = false
         private var downX = 0f

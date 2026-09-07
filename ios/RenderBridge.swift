@@ -517,7 +517,7 @@ final class RenderBridge {
 
             case "blockEnd":
                 if let endedBlock = blockStack.popLast() {
-                    appendTrailingHardBreakPlaceholderIfNeeded(
+                    appendTrailingLineBreakPlaceholderIfNeeded(
                         in: result,
                         endedBlock: endedBlock,
                         remainingBlockStack: blockStack,

@@ -19,6 +19,8 @@ import {
     type ImageRequestContext,
     type LinkRequestContext,
     type MentionQueryChangeEvent,
+    type MentionSuggestion,
+    type ReadonlyActiveState,
     type RichTextEditorRef,
 } from 'react-native-rich-text-editor';
 
@@ -26,33 +28,30 @@ import { counterCardAtom } from './components/CounterCard';
 import { LinkEditorModal } from './components/LinkEditorModal';
 import {
     APP_TITLE,
+    buildToolbarItems,
     EDITOR_PLACEHOLDER,
-    INITIAL_CONTENT,
+    INITIAL_DOCUMENT,
     INSERT_COUNTER_ACTION_KEY,
     MENTION_SUGGESTIONS,
     MENTION_TRIGGER,
-    TOOLBAR_ITEMS,
+    TOGGLE_TASK_LIST_ACTION_KEY,
 } from './content';
-import {
-    APP_SERIF_FAMILY,
-    editorTheme,
-    FONT_SIZE,
-    LINE_HEIGHT,
-    mentionTheme,
-    PALETTE,
-    RADIUS,
-    SPACE,
-} from './theme';
+import { TASK_LIST_NODE_NAME, withTaskListSchema } from './taskList';
+import { editorTheme, FONT_SIZE, LINE_HEIGHT, mentionTheme, PALETTE, RADIUS, SPACE } from './theme';
 
-const WORD_COUNT_DEBOUNCE_MS = 150;
 const PICKED_IMAGE_COMPRESSION = 0.8;
 const NEW_COUNTER_TITLE = 'New counter';
 
-const documentSchema = withAtomsSchema(withImagesSchema(withMentionsSchema(defaultSchema)), [
-    counterCardAtom,
-]);
+const documentSchema = withAtomsSchema(
+    withTaskListSchema(withImagesSchema(withMentionsSchema(defaultSchema))),
+    [counterCardAtom]
+);
 
 const editorAtoms = [counterCardAtom];
+
+const codeHighlightingAddon = createCodeHighlightingAddon({ theme: 'InspiredGitHub' });
+
+const NO_MENTION_SUGGESTIONS: readonly MentionSuggestion[] = [];
 
 export default function App() {
     return (
@@ -67,68 +66,62 @@ function EditorScreen() {
     const insets = useSafeAreaInsets();
     const keyboardHeight = useKeyboardHeight();
     const editorRef = useRef<RichTextEditorRef>(null);
-    const [wordCount, setWordCount] = useState(0);
-    const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+    const [mentionSuggestions, setMentionSuggestions] =
+        useState<readonly MentionSuggestion[]>(NO_MENTION_SUGGESTIONS);
     const [linkRequest, setLinkRequest] = useState<LinkRequestContext | null>(null);
+    const [taskListActive, setTaskListActive] = useState(false);
+    const [taskListAvailable, setTaskListAvailable] = useState(false);
 
     const documentHandle = useMemo(
         () =>
             createNativeEditorDocumentHandle({
                 schema: documentSchema,
-                initialization: { type: 'localHtml', html: INITIAL_CONTENT },
+                initialization: { type: 'localJson', json: INITIAL_DOCUMENT },
             }),
         []
     );
 
     useEffect(() => () => documentHandle.destroy(), [documentHandle]);
 
-    const wordCountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    const refreshWordCount = useCallback(() => {
-        wordCountTimerRef.current = null;
-        const text = editorRef.current?.getTextContent() ?? '';
-        setWordCount(countWords(text));
-    }, []);
-
-    const handleContentChange = useCallback(() => {
-        if (wordCountTimerRef.current != null) {
-            return;
-        }
-        wordCountTimerRef.current = setTimeout(refreshWordCount, WORD_COUNT_DEBOUNCE_MS);
-    }, [refreshWordCount]);
-
-    useEffect(() => {
-        refreshWordCount();
-        return () => {
-            if (wordCountTimerRef.current != null) {
-                clearTimeout(wordCountTimerRef.current);
-                wordCountTimerRef.current = null;
-            }
-        };
-    }, [refreshWordCount]);
-
+    /** Keeps the previous list when the filter result is unchanged, so the addons prop is stable across keystrokes. */
     const handleMentionQueryChange = useCallback((event: MentionQueryChangeEvent) => {
-        setMentionQuery(event.isActive ? event.query : null);
+        const next = filterMentionSuggestions(event.isActive ? event.query : null);
+        setMentionSuggestions((current) => (sameSuggestions(current, next) ? current : next));
     }, []);
 
     const addons = useMemo<EditorAddons>(
         () => [
-            createCodeHighlightingAddon({ theme: 'InspiredGitHub' }),
+            codeHighlightingAddon,
             createMentionsAddon({
                 trigger: MENTION_TRIGGER,
-                suggestions: filterMentionSuggestions(mentionQuery),
+                suggestions: mentionSuggestions,
                 theme: mentionTheme,
                 onQueryChange: handleMentionQueryChange,
             }),
         ],
-        [handleMentionQueryChange, mentionQuery]
+        [handleMentionQueryChange, mentionSuggestions]
+    );
+
+    const handleActiveStateChange = useCallback((state: ReadonlyActiveState) => {
+        setTaskListActive(state.nodes[TASK_LIST_NODE_NAME] === true);
+        setTaskListAvailable(state.commands.wrapTaskList === true);
+    }, []);
+
+    const toolbarItems = useMemo(
+        () => buildToolbarItems({ taskListActive, taskListAvailable }),
+        [taskListActive, taskListAvailable]
     );
 
     const handleToolbarAction = useCallback((key: string) => {
-        if (key === INSERT_COUNTER_ACTION_KEY) {
-            editorRef.current?.insertContentJson(
-                counterCardAtom.buildFragmentJson({ title: NEW_COUNTER_TITLE, count: 0 })
-            );
+        switch (key) {
+            case INSERT_COUNTER_ACTION_KEY:
+                editorRef.current?.insertContentJson(
+                    counterCardAtom.buildFragmentJson({ title: NEW_COUNTER_TITLE, count: 0 })
+                );
+                break;
+            case TOGGLE_TASK_LIST_ACTION_KEY:
+                editorRef.current?.toggleList(TASK_LIST_NODE_NAME);
+                break;
         }
     }, []);
 
@@ -158,9 +151,6 @@ function EditorScreen() {
                 <Text accessibilityRole='header' style={styles.title}>
                     {APP_TITLE}
                 </Text>
-                <Text style={styles.wordCount}>
-                    {wordCount} {wordCount === 1 ? 'word' : 'words'}
-                </Text>
             </View>
 
             <View style={styles.sheet}>
@@ -170,7 +160,7 @@ function EditorScreen() {
                     atoms={editorAtoms}
                     addons={addons}
                     theme={theme}
-                    toolbarItems={TOOLBAR_ITEMS}
+                    toolbarItems={toolbarItems}
                     toolbarPlacement='keyboard'
                     heightBehavior='fixed'
                     placeholder={EDITOR_PLACEHOLDER}
@@ -179,7 +169,7 @@ function EditorScreen() {
                     autoCapitalize='sentences'
                     autoCorrect
                     allowImageResizing
-                    onContentChange={handleContentChange}
+                    onActiveStateChange={handleActiveStateChange}
                     onToolbarAction={handleToolbarAction}
                     onRequestLink={setLinkRequest}
                     onRequestImage={handleRequestImage}
@@ -217,14 +207,9 @@ function useKeyboardHeight(): number {
     return height;
 }
 
-function countWords(text: string): number {
-    const trimmed = text.trim();
-    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
-}
-
-function filterMentionSuggestions(query: string | null) {
+function filterMentionSuggestions(query: string | null): readonly MentionSuggestion[] {
     if (query == null) {
-        return [];
+        return NO_MENTION_SUGGESTIONS;
     }
     const needle = query.trim().toLowerCase();
     if (needle.length === 0) {
@@ -235,6 +220,13 @@ function filterMentionSuggestions(query: string | null) {
             suggestion.title.toLowerCase().includes(needle) ||
             (suggestion.label ?? '').toLowerCase().includes(needle)
     );
+}
+
+function sameSuggestions(
+    a: readonly MentionSuggestion[],
+    b: readonly MentionSuggestion[]
+): boolean {
+    return a.length === b.length && a.every((suggestion, index) => suggestion.key === b[index].key);
 }
 
 /** Opens the photo library and downsizes the pick to the editor's decode limit. */
@@ -269,24 +261,14 @@ const styles = StyleSheet.create({
         backgroundColor: PALETTE.spruceDeep,
     },
     header: {
-        flexDirection: 'row',
-        alignItems: 'baseline',
-        justifyContent: 'space-between',
         paddingHorizontal: SPACE.xl,
         paddingBottom: SPACE.lg,
     },
     title: {
         color: PALETTE.paper,
-        fontFamily: APP_SERIF_FAMILY,
         fontSize: FONT_SIZE.title,
         lineHeight: LINE_HEIGHT.title,
         fontWeight: '700',
-    },
-    wordCount: {
-        color: PALETTE.mint,
-        fontSize: FONT_SIZE.caption,
-        lineHeight: LINE_HEIGHT.caption,
-        fontVariant: ['tabular-nums'],
     },
     sheet: {
         flex: 1,

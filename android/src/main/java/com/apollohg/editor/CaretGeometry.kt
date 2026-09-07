@@ -53,7 +53,7 @@ object CaretGeometry {
     ): VerticalBounds {
         val line = layout.getLineForOffset(offset.coerceIn(0, layout.text.length))
         val top = layout.editorTextLineTop(line).toFloat()
-        val resolvedPaint = resolvedPaintAtOffset(
+        val resolvedPaint = (layout as? EditorDocumentLayout)?.emptyLinePaint(offset) ?: resolvedPaintAtOffset(
             fallbackPaint,
             text,
             offset,

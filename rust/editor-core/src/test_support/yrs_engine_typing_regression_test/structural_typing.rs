@@ -602,3 +602,96 @@ fn wrapping_and_unwrapping_a_list_preserves_marks_on_the_text() {
         .expect("unwrap must apply");
     assert_eq!(document(&engine), doc(vec![paragraph(runs)]));
 }
+
+#[test]
+fn backspace_after_nested_list_merges_into_its_last_text_block() {
+    let mut engine = engine();
+    let text_block = |text: &str| paragraph(serde_json::json!([plain(text)]));
+    import_json(
+        &mut engine,
+        doc(vec![bullet_list(vec![
+            list_item(vec![
+                text_block("Parent"),
+                bullet_list(vec![list_item(vec![text_block("Nested")])]),
+            ]),
+            list_item(vec![text_block("Last")]),
+        ])]),
+    );
+    place_caret(&mut engine, 1, 20, Affinity::After);
+    press_backspace(&mut engine, 2);
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![
+            text_block("Parent"),
+            bullet_list(vec![list_item(vec![text_block("NestedLast")])]),
+        ])])])
+    );
+    type_text(&mut engine, 3, "!");
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![
+            text_block("Parent"),
+            bullet_list(vec![list_item(vec![text_block("Nested!Last")])]),
+        ])])])
+    );
+}
+
+#[test]
+fn backspace_after_nested_list_preserves_marks_siblings_and_history() {
+    for list_type in ["bulletList", "orderedList"] {
+        for depth in [1, 3] {
+            let text_block = |text: &str| paragraph(serde_json::json!([plain(text)]));
+            let nested = |tail: serde_json::Value| {
+                let mut list = serde_json::json!({ "type": list_type, "content": [
+                    list_item(vec![text_block("Sibling")]), list_item(vec![tail]),
+                ] });
+                for _ in 1..depth {
+                    list = bullet_list(vec![list_item(vec![text_block("Middle"), list])]);
+                }
+                list
+            };
+            let original = doc(vec![bullet_list(vec![
+                list_item(vec![text_block("Parent"), nested(text_block("Nested"))]),
+                list_item(vec![
+                    paragraph(
+                        serde_json::json!([marked("Last", &["bold"]), {"type": "hardBreak"}, plain("💡")]),
+                    ),
+                    text_block("Extra"),
+                    bullet_list(vec![list_item(vec![text_block("Child")])]),
+                ]),
+                list_item(vec![text_block("Following")]),
+            ])]);
+            let schema = tiptap_schema();
+            let parsed = from_prosemirror_json(&original, &schema, UnknownTypeMode::Error).unwrap();
+            let rendered = crate::render::rendered_text(&parsed, &schema);
+            let offset = rendered[..rendered.find("Last").unwrap()].chars().count() as u32;
+            let mut engine = engine();
+            import_json(&mut engine, original);
+            let before = document(&engine);
+            place_caret(&mut engine, 1, offset, Affinity::After);
+            press_backspace(&mut engine, 2);
+            let expected = doc(vec![bullet_list(vec![
+                list_item(vec![
+                    text_block("Parent"),
+                    nested(paragraph(serde_json::json!([
+                        plain("Nested"),
+                        marked("Last", &["bold"]),
+                        {"type": "hardBreak"},
+                        plain("💡")
+                    ]))),
+                    text_block("Extra"),
+                    bullet_list(vec![list_item(vec![text_block("Child")])]),
+                ]),
+                list_item(vec![text_block("Following")]),
+            ])]);
+            // Import normalizes default attributes, including ordered-list start.
+            let mut expected_engine = self::engine();
+            import_json(&mut expected_engine, expected);
+            assert_eq!(document(&engine), document(&expected_engine));
+            engine.undo(3).unwrap().unwrap();
+            assert_eq!(document(&engine), before);
+            engine.redo(4).unwrap().unwrap();
+            assert_eq!(document(&engine), document(&expected_engine));
+        }
+    }
+}
