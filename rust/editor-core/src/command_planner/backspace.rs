@@ -106,6 +106,63 @@ fn marker_backspace_action(
     ))
 }
 
+fn merge_into_previous_list_action(
+    document: &Document,
+    map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    doc_to: u32,
+) -> Option<SemanticCommandPlan> {
+    if scalar_from.checked_add(1) != Some(scalar_to)
+        || map.doc_to_scalar(doc_to, document) != scalar_to {
+        return None;
+    }
+    let resolved = document.resolve(doc_to).ok()?;
+    let block = resolved.parent(document);
+    if !is_text_block(schema, block) || resolved.parent_offset != 0 || block.content_size() == 0 {
+        return None;
+    }
+    let mut previous_path = resolved.node_path.clone();
+    let index = previous_path.last_mut()?;
+    *index = index.checked_sub(1)?;
+    let mut previous = document.node_at(&previous_path)?;
+    if !matches!(schema.node(previous.node_type())?.role, NodeRole::List { .. }) {
+        return None;
+    }
+    loop {
+        match schema.node(previous.node_type())?.role {
+            NodeRole::TextBlock => break,
+            NodeRole::List { .. } | NodeRole::ListItem => {
+                let last_index = previous.content()?.child_count().checked_sub(1)?;
+                previous_path.push(u32::try_from(last_index).ok()?);
+                previous = document.node_at(&previous_path)?;
+            }
+            _ => return None,
+        }
+    }
+    let caret = node_delete_start(document, &previous_path)?
+        .checked_add(1)?
+        .checked_add(previous.content_size())?;
+    let block_start = node_delete_start(document, &resolved.node_path)?;
+    Some(SemanticCommandPlan {
+        operations: vec![
+            SemanticOperation::ReplaceRange {
+                from: block_start,
+                to: block_start.checked_add(block.node_size())?,
+                content: Fragment::from(Vec::new()),
+            },
+            SemanticOperation::ReplaceRange {
+                from: caret,
+                to: caret,
+                content: block.content()?.clone(),
+            },
+        ],
+        selection_after: Some(Selection::cursor(caret)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
+}
+
 fn move_into_previous_blockquote_action(
     document: &Document,
     map: &PositionMap,
@@ -456,4 +513,30 @@ fn plan_empty_blockquote_exit(
         selection_after: Some(Selection::cursor(cursor.checked_add(1)?)),
         history: SemanticCommandHistory::InputBoundary,
     })
+}
+
+#[cfg(test)]
+mod list_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn paragraph_merge_does_not_intercept_a_larger_selected_range() {
+        let schema = crate::tiptap_schema();
+        let document = crate::serialize::from_prosemirror_json(
+            &serde_json::json!({"type":"doc", "content":[
+                {"type":"bulletList", "content":[{"type":"listItem", "content":[
+                    {"type":"paragraph", "content":[{"type":"text", "text":"Nested"}]}
+                ]}]},
+                {"type":"paragraph", "content":[{"type":"text", "text":"Last"}]}
+            ]}),
+            &schema,
+            crate::serialize::UnknownTypeMode::Error,
+        ).unwrap();
+        let map = PositionMap::build(&document, &schema);
+        let rendered = crate::render::rendered_text(&document, &schema);
+        let to = rendered[..rendered.find("Last").unwrap()].chars().count() as u32;
+        let doc_to = map.scalar_to_doc(to, &document);
+        assert!(merge_into_previous_list_action(&document, &map, &schema, to - 3, to, doc_to).is_none());
+        assert!(merge_into_previous_list_action(&document, &map, &schema, to - 1, to, doc_to).is_some());
+    }
 }

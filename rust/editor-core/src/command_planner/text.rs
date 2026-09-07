@@ -357,6 +357,16 @@ fn plan_delete_scalar_range_impl(
     if let Some(plan) = empty_block_plan {
         return Ok(Some(plan));
     }
+    if let Some(plan) = super::merge_into_previous_list_action(
+        document,
+        position_map,
+        schema,
+        scalar_from,
+        scalar_to,
+        doc_to,
+    ) {
+        return Ok(Some(plan));
+    }
     if let Some(plan) = super::move_into_previous_blockquote_action(
         document,
         position_map,

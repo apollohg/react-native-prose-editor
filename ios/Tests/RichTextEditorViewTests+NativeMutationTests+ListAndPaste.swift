@@ -29,6 +29,38 @@ extension RichTextEditorViewTests {
         }
     }
 
+    func testRepeatedBackspaceAfterNestedListContinuesThroughParagraph() {
+        for tag in ["ul", "ol"] {
+            let editorId = makeV2Editor()
+            defer { destroyV2Editor(id: editorId) }
+            let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+            let window = hostEditorView(view)
+            defer {
+                view.removeFromSuperview()
+                window.isHidden = true
+            }
+            view.editorId = editorId
+            view.setContent(html: "<\(tag)><li><p>Parent</p><\(tag)><li><p>Nested</p></li></\(tag)></li><li><p>Last</p></li></\(tag)>")
+            let lastRange = (view.textView.textStorage.string as NSString).range(of: "Last")
+            XCTAssertNotEqual(lastRange.location, NSNotFound)
+            setCollapsedSelection(in: view.textView, utf16Offset: lastRange.location)
+            flushMainQueue()
+            view.textView.deleteBackward()
+            view.textView.deleteBackward()
+            XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId),
+                "<\(tag)><li><p>Parent</p><\(tag)><li><p>NestedLast</p></li></\(tag)></li></\(tag)>")
+            view.textView.insertText("!")
+            XCTAssertTrue(EditorV2Shadow.getHtml(id: editorId).contains("Nested!Last"))
+            for _ in 0..<32 {
+                let before = EditorV2Shadow.getHtml(id: editorId)
+                if before == "<p>Last</p>" { break }
+                view.textView.deleteBackward()
+                XCTAssertNotEqual(EditorV2Shadow.getHtml(id: editorId), before)
+            }
+            XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Last</p>")
+        }
+    }
+
     func testPendingNativeTextMutationInListUsesAdjustedScalarOffsetsBeforeNextTypedCharacter() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

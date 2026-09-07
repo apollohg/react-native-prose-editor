@@ -675,3 +675,89 @@ fn backspace_after_nested_list_preserves_marks_siblings_and_history() {
         }
     }
 }
+
+#[test]
+fn repeated_backspace_after_nested_list_does_not_get_stuck() {
+    for list_type in ["bulletList", "orderedList"] {
+        let text_block = |text: &str| paragraph(serde_json::json!([plain(text)]));
+        let list = |items: Vec<serde_json::Value>| serde_json::json!({"type": list_type, "content": items});
+        let mut engine = engine();
+        import_json(&mut engine, doc(vec![list(vec![
+            list_item(vec![text_block("Parent"), list(vec![list_item(vec![text_block("Nested")])])]),
+            list_item(vec![text_block("Last")]),
+        ])]));
+        place_caret(&mut engine, 1, 20, Affinity::After);
+        press_backspace(&mut engine, 2);
+        let result = press_backspace(&mut engine, 3);
+        let mut expected = self::engine();
+        import_json(&mut expected, doc(vec![list(vec![list_item(vec![
+            text_block("Parent"), list(vec![list_item(vec![text_block("NestedLast")])]),
+        ])])]));
+        assert_eq!(document(&engine), document(&expected));
+        let ResolvedSelection::Text { head, .. } = result.selection else { panic!("expected caret") };
+        let schema = tiptap_schema();
+        let parsed = from_prosemirror_json(&document(&engine), &schema, UnknownTypeMode::Error).unwrap();
+        let rendered = crate::render::rendered_text(&parsed, &schema);
+        assert_eq!(head.scalar, rendered[..rendered.find("Last").unwrap()].chars().count() as u32);
+        engine.undo(4).unwrap().unwrap();
+        import_json(&mut expected, doc(vec![list(vec![list_item(vec![
+            text_block("Parent"), list(vec![list_item(vec![text_block("Nested")])]),
+        ])]), text_block("Last")]));
+        assert_eq!(document(&engine), document(&expected));
+        engine.redo(5).unwrap().unwrap();
+        type_text(&mut engine, 6, "!");
+        import_json(&mut expected, doc(vec![list(vec![list_item(vec![
+            text_block("Parent"), list(vec![list_item(vec![text_block("Nested!Last")])]),
+        ])])]));
+        assert_eq!(document(&engine), document(&expected));
+        for request_id in 7..40 {
+            let before = document(&engine);
+            let result = press_backspace(&mut engine, request_id);
+            assert_ne!(document(&engine), before);
+            let ResolvedSelection::Text { head, .. } = result.selection else { panic!("expected caret") };
+            if head.scalar == 0 { break; }
+        }
+        assert_eq!(document(&engine), doc(vec![text_block("Last")]));
+    }
+}
+
+#[test]
+fn backspace_paragraph_after_list_preserves_marks_and_surrounding_content() {
+    for list_type in ["bulletList", "orderedList"] {
+        for depth in [0, 1, 3] {
+            let text_block = |text: &str| paragraph(serde_json::json!([plain(text)]));
+            let list = |items: Vec<serde_json::Value>| serde_json::json!({"type": list_type, "content": items});
+            let preceding = |tail| {
+                let mut value = list(vec![list_item(vec![text_block("Sibling")]), list_item(vec![tail])]);
+                for _ in 0..depth {
+                    value = list(vec![list_item(vec![text_block("Parent"), value])]);
+                }
+                value
+            };
+            let original = doc(vec![
+                preceding(text_block("Nested")),
+                paragraph(serde_json::json!([marked("Last", &["bold"]), {"type":"hardBreak"}, plain("💡")])),
+                text_block("Following"),
+            ]);
+            let schema = tiptap_schema();
+            let parsed = from_prosemirror_json(&original, &schema, UnknownTypeMode::Error).unwrap();
+            let rendered = crate::render::rendered_text(&parsed, &schema);
+            let offset = rendered[..rendered.find("Last").unwrap()].chars().count() as u32;
+            let mut engine = engine();
+            import_json(&mut engine, original);
+            let before = document(&engine);
+            place_caret(&mut engine, 1, offset, Affinity::After);
+            press_backspace(&mut engine, 2);
+            let mut expected = self::engine();
+            import_json(&mut expected, doc(vec![
+                preceding(paragraph(serde_json::json!([plain("Nested"), marked("Last", &["bold"]), {"type":"hardBreak"}, plain("💡")]))),
+                text_block("Following"),
+            ]));
+            assert_eq!(document(&engine), document(&expected));
+            engine.undo(3).unwrap().unwrap();
+            assert_eq!(document(&engine), before);
+            engine.redo(4).unwrap().unwrap();
+            assert_eq!(document(&engine), document(&expected));
+        }
+    }
+}
