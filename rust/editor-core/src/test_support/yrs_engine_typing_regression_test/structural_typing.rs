@@ -604,36 +604,22 @@ fn wrapping_and_unwrapping_a_list_preserves_marks_on_the_text() {
 }
 
 #[test]
-fn backspace_after_nested_list_merges_into_its_last_text_block() {
-    let mut engine = engine();
-    let text_block = |text: &str| paragraph(serde_json::json!([plain(text)]));
-    import_json(
-        &mut engine,
-        doc(vec![bullet_list(vec![
-            list_item(vec![
-                text_block("Parent"),
-                bullet_list(vec![list_item(vec![text_block("Nested")])]),
-            ]),
-            list_item(vec![text_block("Last")]),
-        ])]),
-    );
-    place_caret(&mut engine, 1, 20, Affinity::After);
-    press_backspace(&mut engine, 2);
-    assert_eq!(
-        document(&engine),
-        doc(vec![bullet_list(vec![list_item(vec![
-            text_block("Parent"),
-            bullet_list(vec![list_item(vec![text_block("NestedLast")])]),
-        ])])])
-    );
-    type_text(&mut engine, 3, "!");
-    assert_eq!(
-        document(&engine),
-        doc(vec![bullet_list(vec![list_item(vec![
-            text_block("Parent"),
-            bullet_list(vec![list_item(vec![text_block("Nested!Last")])]),
-        ])])])
-    );
+fn backspace_after_nested_list_unwraps_into_a_paragraph() {
+    for list_type in ["bulletList", "orderedList"] {
+        let text_block = |text: &str| paragraph(serde_json::json!([plain(text)]));
+        let list = |items: Vec<serde_json::Value>| serde_json::json!({"type": list_type, "content": items});
+        let parent = list_item(vec![text_block("Parent"), list(vec![list_item(vec![text_block("Nested")])])]);
+        let mut engine = engine();
+        import_json(&mut engine, doc(vec![list(vec![parent.clone(), list_item(vec![text_block("Last")])])]));
+        place_caret(&mut engine, 1, 20, Affinity::After);
+        press_backspace(&mut engine, 2);
+        let mut expected = self::engine();
+        import_json(&mut expected, doc(vec![list(vec![parent.clone()]), text_block("Last")]));
+        assert_eq!(document(&engine), document(&expected));
+        type_text(&mut engine, 3, "!");
+        import_json(&mut expected, doc(vec![list(vec![parent]), text_block("!Last")]));
+        assert_eq!(document(&engine), document(&expected));
+    }
 }
 
 #[test]
@@ -650,7 +636,8 @@ fn backspace_after_nested_list_preserves_marks_siblings_and_history() {
                 }
                 list
             };
-            let original = doc(vec![bullet_list(vec![
+            let list = |items: Vec<serde_json::Value>| serde_json::json!({"type": list_type, "content": items});
+            let original = doc(vec![list(vec![
                 list_item(vec![text_block("Parent"), nested(text_block("Nested"))]),
                 list_item(vec![
                     paragraph(
@@ -670,20 +657,13 @@ fn backspace_after_nested_list_preserves_marks_siblings_and_history() {
             let before = document(&engine);
             place_caret(&mut engine, 1, offset, Affinity::After);
             press_backspace(&mut engine, 2);
-            let expected = doc(vec![bullet_list(vec![
-                list_item(vec![
-                    text_block("Parent"),
-                    nested(paragraph(serde_json::json!([
-                        plain("Nested"),
-                        marked("Last", &["bold"]),
-                        {"type": "hardBreak"},
-                        plain("💡")
-                    ]))),
-                    text_block("Extra"),
-                    bullet_list(vec![list_item(vec![text_block("Child")])]),
-                ]),
-                list_item(vec![text_block("Following")]),
-            ])]);
+            let expected = doc(vec![
+                list(vec![list_item(vec![text_block("Parent"), nested(text_block("Nested"))])]),
+                paragraph(serde_json::json!([marked("Last", &["bold"]), {"type": "hardBreak"}, plain("💡")])),
+                text_block("Extra"),
+                bullet_list(vec![list_item(vec![text_block("Child")])]),
+                list(vec![list_item(vec![text_block("Following")])]),
+            ]);
             // Import normalizes default attributes, including ordered-list start.
             let mut expected_engine = self::engine();
             import_json(&mut expected_engine, expected);
