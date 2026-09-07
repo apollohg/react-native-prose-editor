@@ -1,9 +1,12 @@
 package com.apollohg.editor
 
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
+import android.util.AttributeSet
 import android.util.TypedValue
+import kotlin.math.abs
 
 internal fun EditorEditText.setEditorAccessibilityHintImpl(hint: CharSequence?) {
     editorAccessibilityHint = hint
@@ -17,8 +20,37 @@ internal fun EditorEditText.nativeCursorDrawRectImpl(): RectF? {
     val textLayout = layout ?: return null
     val offset = selectionEnd.coerceIn(0, textLayout.text.length)
     val bounds = CaretGeometry.verticalBounds(textLayout, offset, paint, textLayout.text)
-    val left = textLayout.getPrimaryHorizontal(offset)
+    // Match Android's cursor pixel snapping and viewport-edge clamping.
+    val horizontal = maxOf(0.5f, textLayout.getPrimaryHorizontal(offset) - 0.5f)
+    val viewportWidth = width - compoundPaddingLeft - compoundPaddingRight
+    val left = when {
+        horizontal - scrollX >= viewportWidth - 1f -> scrollX + viewportWidth - caretWidthPx
+        abs(horizontal - scrollX) <= 1f -> scrollX.toFloat()
+        else -> horizontal.toInt().toFloat()
+    }
     return RectF(left, bounds.top, left + caretWidthPx, bounds.bottom)
+}
+
+internal fun EditorEditText.resolveCaretWidth(attrs: AttributeSet?, defStyleAttr: Int): Float {
+    val attributes = context.obtainStyledAttributes(
+        attrs,
+        intArrayOf(android.R.attr.textCursorDrawable),
+        defStyleAttr,
+        0,
+    )
+    try {
+        val drawable = attributes.getDrawable(0)
+        if (drawable != null) {
+            val padding = Rect()
+            drawable.getPadding(padding)
+            // Native cursor drawables include transparent horizontal insets.
+            val width = drawable.intrinsicWidth - padding.left - padding.right
+            if (width > 0) return width.toFloat()
+        }
+    } finally {
+        attributes.recycle()
+    }
+    return 2f * resources.displayMetrics.density
 }
 
     /**

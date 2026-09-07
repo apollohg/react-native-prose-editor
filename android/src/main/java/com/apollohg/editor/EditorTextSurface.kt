@@ -72,7 +72,7 @@ open class EditorTextSurface @JvmOverloads constructor(
     }
     private var blinkVisible = true
     internal var selectionActionMode: ActionMode? = null
-    internal val interaction by lazy { EditorTextSurfaceInteraction(this) }
+    internal val interaction by lazy { EditorTextSurfaceInteraction(this, attrs, defStyleAttr) }
     private val dragDrop by lazy { EditorTextSurfaceDragDrop(this) }
     private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val selectionPath = Path()
@@ -115,7 +115,15 @@ open class EditorTextSurface @JvmOverloads constructor(
     var isCursorVisible = true
         set(value) { field = value; invalidate() }
     var textCursorDrawable: Drawable? = null
-    var highlightColor: Int = 0x6633B5E5
+    var highlightColor: Int = context.obtainStyledAttributes(
+        attrs, intArrayOf(android.R.attr.textColorHighlight), defStyleAttr, 0,
+    ).let { attributes ->
+        try {
+            attributes.getColor(0, 0x6633B5E5)
+        } finally {
+            attributes.recycle()
+        }
+    }
         set(value) { field = value; invalidate() }
     var textColors: ColorStateList = ColorStateList.valueOf(Color.BLACK)
         private set

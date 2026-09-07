@@ -14,6 +14,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.EditText
+import android.view.ContextThemeWrapper
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -26,12 +28,78 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
+import org.robolectric.util.ReflectionHelpers.ClassParameter
+import android.graphics.drawable.Drawable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 internal class RichTextEditorViewCaretGeometryTest : RichTextEditorViewTestFixture() {
+    @Test
+    @Config(qualifiers = "xxhdpi")
+    fun `caret horizontal bounds match native cursor placement`() {
+        val context = ContextThemeWrapper(RuntimeEnvironment.getApplication(), android.R.style.Theme_Material_Light_NoActionBar)
+        val native = EditText(context)
+        val editor = EditorEditText(context)
+        for (view in listOf<View>(native, editor)) {
+            view.setPadding(12, 0, 12, 0)
+            view.measure(View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY))
+            view.layout(0, 0, 600, 240)
+        }
+        val nativeCursor = requireNotNull(native.textCursorDrawable)
+        val padding = Rect()
+        nativeCursor.getPadding(padding)
+        val nativeEditor: Any = ReflectionHelpers.getField(native, "mEditor")
+        editor.setText("Hello")
+        editor.setSelection(2)
+        for (scroll in listOf(0, 1, -600)) {
+            native.scrollTo(scroll, 0)
+            editor.scrollTo(scroll, 0)
+            val horizontal = editor.layout.getPrimaryHorizontal(editor.selectionEnd)
+            val nativeLeft: Int = ReflectionHelpers.callInstanceMethod(nativeEditor, "clampHorizontalPosition",
+                ClassParameter.from(Drawable::class.java, nativeCursor),
+                ClassParameter.from(Float::class.javaPrimitiveType, horizontal))
+            assertEquals("scroll=$scroll", (nativeLeft + padding.left).toFloat(), editor.nativeCursorDrawRect()!!.left, 0.01f)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "mdpi")
+    fun `caret thickness matches native EditText at mdpi`() {
+        assertNativeCaretThickness()
+    }
+
+    @Test
+    @Config(qualifiers = "xxhdpi")
+    fun `caret thickness matches native EditText at xxhdpi`() {
+        assertNativeCaretThickness()
+    }
+
+    private fun assertNativeCaretThickness() {
+        val context = ContextThemeWrapper(
+            RuntimeEnvironment.getApplication(),
+            android.R.style.Theme_Material_Light_NoActionBar,
+        )
+        val nativeCursor = requireNotNull(EditText(context).textCursorDrawable)
+        val padding = Rect()
+        nativeCursor.getPadding(padding)
+        val nativeWidth = nativeCursor.intrinsicWidth - padding.left - padding.right
+        assertTrue(nativeWidth > 0)
+
+        val editor = EditorEditText(context)
+        editor.setText("Hello")
+        editor.measure(
+            View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY),
+        )
+        editor.layout(0, 0, editor.measuredWidth, editor.measuredHeight)
+        editor.setSelection(2)
+
+        assertEquals(nativeWidth.toFloat(), editor.nativeCursorDrawRect()!!.width(), 0.01f)
+    }
+
     @Test
     fun `caret rect is reported in editor view coordinates`() {
         val context = RuntimeEnvironment.getApplication()

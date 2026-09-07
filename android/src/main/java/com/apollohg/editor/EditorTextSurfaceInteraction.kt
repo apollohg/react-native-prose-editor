@@ -2,13 +2,14 @@ package com.apollohg.editor
 
 import android.content.ClipData
 import android.graphics.Canvas
-import android.graphics.Paint
+import android.graphics.drawable.Drawable
 import android.graphics.Rect
 import android.graphics.Point
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.os.Bundle
 import android.text.Selection
+import android.util.AttributeSet
 import android.view.ActionMode
 import android.view.GestureDetector
 import android.view.KeyEvent
@@ -23,11 +24,29 @@ import android.view.inputmethod.InputMethodManager
 import java.text.BreakIterator
 import kotlin.math.abs
 
-internal class EditorTextSurfaceInteraction(private val view: EditorTextSurface) {
+internal class EditorTextSurfaceInteraction(
+    private val view: EditorTextSurface,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = android.R.attr.editTextStyle,
+) {
     private val density get() = view.resources.displayMetrics.density
-    private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val handleDrawables by lazy {
+        val attributes = view.context.obtainStyledAttributes(
+            attrs,
+            intArrayOf(android.R.attr.textSelectHandleLeft, android.R.attr.textSelectHandleRight),
+            defStyleAttr,
+            0,
+        )
+        try {
+            attributes.getDrawable(0)?.mutate() to attributes.getDrawable(1)?.mutate()
+        } finally {
+            attributes.recycle()
+        }
+    }
+    private val handlesVisible get() = view.hasFocus() && view.selectionStart >= 0 &&
+        view.selectionEnd >= 0 && view.selectionStart != view.selectionEnd
     private var draggingHandle = 0
-    private var insertionHandleVisible = false
+    private var handleDragOffsetX = 0f
     private var handleDragOffsetY = 0f
     private var downX = 0f
     private var downY = 0f
@@ -43,7 +62,6 @@ internal class EditorTextSurfaceInteraction(private val view: EditorTextSurface)
             view.requestFocus()
             view.setSelection(view.getOffsetForPosition(e.x, e.y))
             endSelectionActionMode()
-            insertionHandleVisible = true
             showKeyboard()
             view.performClick()
             return true
@@ -77,16 +95,18 @@ internal class EditorTextSurfaceInteraction(private val view: EditorTextSurface)
                 draggingHandle = hitHandle(event.x, event.y)
                 if (draggingHandle != 0) {
                     val offset = if (draggingHandle == 1) view.selectionStart else view.selectionEnd
-                    handleDragOffsetY = event.y + view.scrollY - view.totalPaddingTop - handlePosition(offset).second
+                    val (x, bottom) = handlePosition(offset)
+                    handleDragOffsetX = event.x + view.scrollX - view.totalPaddingLeft - x
+                    handleDragOffsetY = event.y + view.scrollY - view.totalPaddingTop - bottom
                     view.parent?.requestDisallowInterceptTouchEvent(true)
                 }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (abs(event.x - downX) > slop || abs(event.y - downY) > slop) moved = true
                 if (draggingHandle != 0) {
-                    val offset = view.getOffsetForPosition(event.x, event.y - handleDragOffsetY - 1f)
-                    if (draggingHandle == 3) view.setSelection(offset)
-                    else if (draggingHandle == 1) view.setSelection(offset, view.selectionEnd.coerceAtLeast(0))
+                    val current = if (draggingHandle == 1) view.selectionStart else view.selectionEnd
+                    val offset = offsetForHandlePosition(event.x - handleDragOffsetX, event.y - handleDragOffsetY - 1f, current)
+                    if (draggingHandle == 1) view.setSelection(offset, view.selectionEnd.coerceAtLeast(0))
                     else view.setSelection(view.selectionStart.coerceAtLeast(0), offset)
                     view.bringPointIntoView(offset)
                 } else if (longPressed && moved) {
@@ -102,7 +122,7 @@ internal class EditorTextSurfaceInteraction(private val view: EditorTextSurface)
         }
         gestures.onTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
-            if (draggingHandle != 0 && (view.selectionStart != view.selectionEnd || (!moved && event.actionMasked == MotionEvent.ACTION_UP))) startSelectionActionMode()
+            if (draggingHandle != 0 && view.selectionStart != view.selectionEnd) startSelectionActionMode()
             draggingHandle = 0
             view.parent?.requestDisallowInterceptTouchEvent(false)
         }
@@ -154,52 +174,90 @@ internal class EditorTextSurfaceInteraction(private val view: EditorTextSurface)
         val layout = view.layout
         val safe = offset.coerceIn(0, view.text.length)
         val bounds = CaretGeometry.verticalBounds(layout, safe, view.paint, view.text)
-        return layout.getPrimaryHorizontal(safe) to bounds.bottom
+        val isStart = offset == minOf(view.selectionStart, view.selectionEnd)
+        val rtl = layout.isRtlCharAt(if (isStart) safe else (safe - 1).coerceAtLeast(0))
+        val paragraphRtl = layout.getParagraphDirection(layout.getLineForOffset(safe)) == -1
+        val x = if (rtl == paragraphRtl) layout.getPrimaryHorizontal(safe) else layout.getSecondaryHorizontal(safe)
+        return x to bounds.bottom
     }
 
-    private fun handleCenter(offset: Int): Pair<Float, Float> {
+    private fun offsetForHandlePosition(x: Float, y: Float, current: Int): Int {
+        val layout = view.layout
+        val primary = view.getOffsetForPosition(x, y)
+        if (layout.getPrimaryHorizontal(primary) == layout.getSecondaryHorizontal(primary)) return primary
+        val line = layout.getLineForVertical((y + view.scrollY - view.totalPaddingTop).toInt())
+        val localX = x + view.scrollX - view.totalPaddingLeft
+        var offset = primary
+        var distance = abs(layout.getPrimaryHorizontal(primary) - localX)
+        // A bidi boundary can have two offsets at the same visual position.
+        for (candidate in layout.getLineStart(line)..layout.getLineEnd(line).coerceAtMost(view.text.length)) {
+            if (layout.getLineForOffset(candidate) != line) continue
+            val secondary = layout.getSecondaryHorizontal(candidate)
+            if (secondary == layout.getPrimaryHorizontal(candidate)) continue
+            val candidateDistance = abs(secondary - localX)
+            if (candidateDistance < distance - 0.5f ||
+                (abs(candidateDistance - distance) <= 0.5f && abs(candidate - current) < abs(offset - current))) {
+                offset = candidate
+                distance = candidateDistance
+            }
+        }
+        return PositionBridge.snapToGraphemeBoundary(offset, view.text.toString())
+    }
+
+    private fun handleGeometry(offset: Int): Pair<Drawable, Rect>? {
+        val isStart = offset == minOf(view.selectionStart, view.selectionEnd)
+        val rtl = view.layout.isRtlCharAt(if (isStart) offset else (offset - 1).coerceAtLeast(0))
+        val leftHandle = isStart != rtl
+        val drawable = (if (leftHandle) handleDrawables.first else handleDrawables.second) ?: return null
+        val width = drawable.intrinsicWidth.coerceAtLeast(1)
+        val height = drawable.intrinsicHeight.coerceAtLeast(1)
+        val hotspot = if (leftHandle) width * 3 / 4 else width / 4
         val (x, bottom) = handlePosition(offset)
-        val radius = 6f * density
-        val maxY = view.layout.height + view.totalPaddingBottom - radius
-        val centerY = (bottom + 10f * density).coerceAtMost(maxY).coerceAtLeast(radius)
-        return x.coerceIn(radius - view.totalPaddingLeft, maxOf(radius - view.totalPaddingLeft, view.width - view.totalPaddingLeft - radius)) to centerY
+        val minX = view.scrollX - view.totalPaddingLeft
+        val maxX = maxOf(minX, minX + view.width - width)
+        val minY = view.scrollY - view.totalPaddingTop
+        val maxY = maxOf(minY, minY + view.height - height)
+        if (bottom <= minY || bottom > minY + view.height || x < minX || x > minX + view.width) return null
+        // Unlike Android's popup handles, these draw inside the editor surface.
+        val left = ((x - 0.5f).toInt() - hotspot).coerceIn(minX, maxX)
+        val top = bottom.toInt().coerceIn(minY, maxY)
+        return drawable to Rect(left, top, left + width, top + height)
     }
 
     private fun hitHandle(x: Float, y: Float): Int {
-        if (!view.hasFocus() || view.selectionStart < 0 || (view.selectionStart == view.selectionEnd && !insertionHandleVisible)) return 0
+        if (!handlesVisible) return 0
         val localX = x + view.scrollX - view.totalPaddingLeft
         val localY = y + view.scrollY - view.totalPaddingTop
         val radius = 24f * density
-        val offsets = if (view.selectionStart == view.selectionEnd) listOf(view.selectionEnd) else listOf(view.selectionStart, view.selectionEnd)
+        val offsets = listOf(view.selectionStart, view.selectionEnd)
         for ((index, offset) in offsets.withIndex()) {
-            val (hx, hy) = handleCenter(offset)
-            if (abs(localX - hx) <= radius && abs(localY - hy) <= radius) return if (offsets.size == 1) 3 else index + 1
+            val (_, bounds) = handleGeometry(offset) ?: continue
+            if (abs(localX - bounds.exactCenterX()) <= maxOf(radius, bounds.width() / 2f) &&
+                abs(localY - bounds.exactCenterY()) <= maxOf(radius, bounds.height() / 2f)) return index + 1
         }
         return 0
     }
 
     fun drawHandles(canvas: Canvas) {
-        if (!view.hasFocus() || view.selectionStart < 0 || (view.selectionStart == view.selectionEnd && !insertionHandleVisible)) return
-        handlePaint.color = (view as? EditorEditText)?.caretColor ?: view.currentTextColor
-        handlePaint.strokeWidth = 2f * density
+        if (!handlesVisible) return
         for (offset in listOf(view.selectionStart, view.selectionEnd).distinct()) {
-            val (x, y) = handleCenter(offset)
-            val (caretX, caretBottom) = handlePosition(offset)
-            canvas.drawLine(caretX, caretBottom, x, y, handlePaint)
-            canvas.drawCircle(x, y, 6f * density, handlePaint)
+            val (drawable, bounds) = handleGeometry(offset) ?: continue
+            drawable.state = view.drawableState
+            drawable.setTint((view as? EditorEditText)?.caretColor ?: view.currentTextColor)
+            drawable.bounds = bounds
+            drawable.draw(canvas)
         }
     }
 
     fun selectionChanged() {
         if (view.selectionStart == view.selectionEnd) {
             endSelectionActionMode()
-            if (draggingHandle != 3) insertionHandleVisible = false
         }
         else view.selectionActionMode?.invalidateContentRect()
         view.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED)
     }
     fun viewportChanged() { view.selectionActionMode?.invalidateContentRect() }
-    fun dispose() { endSelectionActionMode(); draggingHandle = 0; insertionHandleVisible = false }
+    fun dispose() { endSelectionActionMode(); draggingHandle = 0 }
     fun endSelectionActionMode() { view.selectionActionMode?.finish(); view.selectionActionMode = null }
 
     private fun startSelectionActionMode() {

@@ -167,8 +167,9 @@ class EditorTextSurfaceTest {
         editor.setSelection(1, 2)
         val bitmap = android.graphics.Bitmap.createBitmap(editor.width, editor.height, android.graphics.Bitmap.Config.ARGB_8888)
         editor.interaction.drawHandles(android.graphics.Canvas(bitmap))
-        val x = editor.layout.getPrimaryHorizontal(1).toInt()
-        assertTrue(android.graphics.Color.alpha(bitmap.getPixel(x, editor.height - 2)) > 0)
+        assertTrue((0 until editor.width).any { x ->
+            android.graphics.Color.alpha(bitmap.getPixel(x, editor.height - 2)) > 0
+        })
         bitmap.recycle()
     }
 

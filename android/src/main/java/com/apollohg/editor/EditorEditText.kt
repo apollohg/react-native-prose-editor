@@ -329,7 +329,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     internal val legacyCursorClipPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-    internal val caretWidthPx: Float by lazy { maxOf(MIN_CARET_WIDTH_PX, resources.displayMetrics.density) }
+    internal val caretWidthPx: Float by lazy { resolveCaretWidth(attrs, defStyleAttr) }
     internal val caretColor: Int by lazy { resolveCaretColor() }
     internal var editorAccessibilityHint: CharSequence? = null
 
@@ -1005,7 +1005,6 @@ class EditorEditText @JvmOverloads constructor(
         internal const val RECENT_HANDLED_HARDWARE_KEY_DOWN_WINDOW_MS = 750L
         internal const val LOG_TAG = "NativeEditor"
 
-        internal const val MIN_CARET_WIDTH_PX = 2f
         internal const val MARKER_TAP_HORIZONTAL_SLOP_DP = 8f
     }
 }

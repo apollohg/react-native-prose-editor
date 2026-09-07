@@ -312,7 +312,12 @@ internal class EditorDocumentLayout(
                     op(Path().apply { addRect(bounds, Path.Direction.CW) }, Path.Op.INTERSECT)
                 }
             }
-            fragment.layout.draw(canvas, localHighlight, highlightPaint, cursorOffsetVertical)
+            if (Build.VERSION.SDK_INT >= 34) {
+                // Android 14+ skips selection drawing when both highlight lists are null.
+                fragment.layout.draw(canvas, emptyList(), emptyList(), localHighlight, highlightPaint, cursorOffsetVertical)
+            } else {
+                fragment.layout.draw(canvas, localHighlight, highlightPaint, cursorOffsetVertical)
+            }
             canvas.restoreToCount(saved)
         }
     }
